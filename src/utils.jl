@@ -7,65 +7,9 @@ Central definition of typeof, which is specific to the use-required in this pack
 @unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
 @unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
-function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=nothing)
-    first_item = iterate(lines)
-    isnothing(first_item) && return nothing
-    line, state = first_item
-    rest_prefix = "│ "
-    first_width = _boxed_message_width(io, first_prefix)
-    rest_width = _boxed_message_width(io, rest_prefix)
-    first_wrapped = _wrap_boxed_line(line, first_width)
-    println(io, first_prefix, first(first_wrapped))
-    for wrapped_line in Base.tail(first_wrapped)
-        println(io, rest_prefix, wrapped_line)
-    end
-    while true
-        item = iterate(lines, state)
-        isnothing(item) && break
-        line, state = item
-        for wrapped_line in _wrap_boxed_line(line, rest_width)
-            println(io, rest_prefix, wrapped_line)
-        end
-    end
-    return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
-end
-
-@inline function _boxed_message_width(io::IO, prefix::AbstractString)
-    cols = get(io, :displaysize, displaysize(io))[2]
-    return max(20, cols - textwidth(prefix))
-end
-
-function _wrap_boxed_line(line, width::Int)
-    text = string(line)
-    isempty(text) && return (text,)
-    width < 1 && return (text,)
-    textwidth(text) <= width && return (text,)
-
-    wrapped = String[]
-    remaining = text
-    while textwidth(remaining) > width
-        split_idx = nothing
-        for idx in eachindex(remaining)
-            textwidth(SubString(remaining, 1, idx)) > width && break
-            remaining[idx] == ' ' && (split_idx = idx)
-        end
-        if isnothing(split_idx)
-            split_idx = firstindex(remaining)
-            for idx in eachindex(remaining)
-                textwidth(SubString(remaining, firstindex(remaining), idx)) > width && break
-                split_idx = idx
-            end
-        end
-        push!(wrapped, rstrip(SubString(remaining, firstindex(remaining), split_idx)))
-        remaining = lstrip(SubString(remaining, nextind(remaining, split_idx)))
-        isempty(remaining) && break
-    end
-    isempty(remaining) || push!(wrapped, remaining)
-    return Tuple(wrapped)
-end
-
+# Mooncake's box is unindented and, unlike `Nfwd`'s, ends with a newline.
 function _print_boxed_error(io::IO, lines; footer=nothing)
-    _print_boxed_block(io, "", lines; footer)
+    return Nfwd._nfwd_print_boxed_error(io, lines; indent="", footer, newline=true)
 end
 
 """
@@ -221,17 +165,6 @@ function _map_if_assigned!(
         end
     end
     return y
-end
-
-"""
-    _map(f, x...)
-
-Same as `map` but requires all elements of `x` to have equal length.
-The usual function `map` doesn't enforce this for `Array`s.
-"""
-@unstable @inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
-    @assert allequal(map(length, x))
-    return map(f, x...)
 end
 
 """
@@ -576,17 +509,18 @@ _copy(x::Type) = x
 # test_utils.jl) once https://github.com/JuliaLang/julia/issues/61368 is fixed and
 # Julia 1.10 support is dropped.
 #
-# Julia 1.10 codegen bug (julia#61368 / #51016): jl_compile_workqueue crashes in
-# emit_specsig_oc_call when compiling an OC body that transitively calls another OC
-# type whose CodeInstance has been invalidated (null specfun) by a world-counter advance
-# (e.g. from loading DispatchDoctor or defining new methods).
+# Julia 1.10 codegen bug (julia#51016 / #61368): the code generator crashes in
+# emit_specsig_oc_call when emitting a specsig OpaqueClosure call that either has a dead /
+# `Union{}`-typed argument position (#51016) or targets a nested OC whose CodeInstance has been
+# invalidated (null specfun) by a world-counter advance — e.g. loading DispatchDoctor or
+# defining new methods (#61368). Both are fixed upstream by #51017 (Julia 1.11+).
 #
-# Fix: __call_rule type-erases rule via Base.inferencebarrier on Julia 1.10 so the
-# compiled code calls through jl_apply_generic (which never invokes emit_specsig_oc_call).
-# The @noinline wrapper ensures this erased call is a separate compilation unit. On Julia
-# 1.11+ the bug is absent and __call_rule is a direct call. The type-erasure causes
-# isbits argument boxing at each nested rule callsite (jl_apply_generic requires boxed
-# args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
+# On Julia 1.10, __call_rule forces jl_apply_generic, bypassing emit_specsig_oc_call.
+# @nospecialize prevents per-callee specialisation; `(rule::Any)` forbids a specsig call;
+# @noinline hides the concrete callee from codegen. Inferencebarrier alone still permits
+# re-specialisation. The OC argument guard produces TypeError instead of a segfault.
+# Julia 1.11+ calls directly. Generic dispatch boxes isbits arguments at nested callsites,
+# hence test_utils skips zero-allocation checks on Julia < 1.11.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
 #   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
@@ -609,8 +543,11 @@ _copy(x::Type) = x
 #   Base.Experimental.@opaque (x::Float64) -> w(x)  # crash: workqueue compiles
 #                                 # Wrapper::call, reaches typeof(inner) with null specfun
 @static if VERSION < v"1.11-"
-    @noinline __call_rule_erased!(rule, args) = rule(args...)
-    @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+    @noinline __call_rule(@nospecialize(rule), args) = (rule::Any)(args...)
+    @noinline function __call_rule(oc::Core.OpaqueClosure{A}, args::Tuple) where {A}
+        args isa A || throw(TypeError(:opaque_closure, "", A, Tuple{map(typeof, args)...}))
+        return (oc::Any)(args...)
+    end
 else
     @inline __call_rule(rule, args) = rule(args...)
 end

@@ -1002,18 +1002,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
-    @static if VERSION > v"1.11-"
-        test_cases = vcat(
-            test_cases,
-            [(
-                false,
-                :none,
-                (lb=1e-3, ub=50.0, is_primitive=false),
-                A -> sum(LAPACK.lacpy!(A, A, 'U')),
-                ones(2, 2),
-            )],
-        )
-    end
     test_cases = Any[test_cases...]
     for P in complexPs
         append!(test_cases, _lapack_alias_test_cases(P))
@@ -1051,6 +1039,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
             end
         end...,
     )
+    @static if VERSION > v"1.11-"
+        test_cases = vcat(
+            test_cases,
+            [(
+                false,
+                :none,
+                (lb=1e-3, ub=50.0),
+                A -> sum(LAPACK.lacpy!(A, A, 'U')),
+                ones(2, 2),
+            )],
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end

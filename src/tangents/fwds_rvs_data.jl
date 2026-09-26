@@ -212,6 +212,7 @@ end
 end
 
 fdata_type(::Type{T}) where {T<:Ptr} = T
+fdata_type(::Type{VoidPtrTangent}) = VoidPtrTangent
 
 @generated function fdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{fdata_type($(P.a)),fdata_type($(P.b))})
@@ -339,6 +340,7 @@ end
 __verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEOrBFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr{Nothing}, ::VoidPtrTangent) = nothing
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     if size(p) != size(f)
@@ -499,6 +501,7 @@ end
 end
 
 rdata_type(::Type{<:Ptr}) = NoRData
+rdata_type(::Type{VoidPtrTangent}) = NoRData
 
 @generated function rdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{rdata_type($(P.a)),rdata_type($(P.b))})
@@ -933,23 +936,23 @@ end
     Rb = R.a == NoRData ? R.b : R.a
     Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
 end
-# More specific than the generic F<:Union{NoFData, T} method below on F. _validate_union
+# More specific than the generic F<:Union{NoFData, T} method below on F. _check_union
 # is unnecessary: FData carries no rdata by construction.
 @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{NoFData,FData}}
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
-# Generic Union{NoFData, T} for non-FData T (e.g. Array). _validate_union rejects T
+# Generic Union{NoFData, T} for non-FData T (e.g. Array). _check_union rejects T
 # values that would silently carry rdata.
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
-    _validate_union(F)
+    _check_union(F)
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
 
-function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
+function _check_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
     # rdata_type throws for non-IEEEFloat primitive types; guard before calling it.
     if isprimitivetype(_T) || rdata_type(_T) != NoRData
@@ -1025,6 +1028,7 @@ tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEOrBFloat) = r
 tangent(f::Array, ::NoRData) = f
 tangent(f::Ptr, ::NoRData) = f
+tangent(f::VoidPtrTangent, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)

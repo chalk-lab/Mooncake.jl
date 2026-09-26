@@ -193,7 +193,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
     )
-    for P in (Float32, Float64), (o, c) in ((zero(P), complex), (-zero(P), conj ∘ complex))
+    for P in (Float32, Float64), o in (zero(P), -zero(P))
         for (f, _) in _complex_derivatives,
             z in (complex(P(f === acosh ? 1.2 : 0.4), o), complex(o, P(0.7)))
 
@@ -208,18 +208,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         )
             push!(test_cases, (false, :stability_and_allocs, nothing, f, args...))
         end
-        for (f, x) in (
-            ((y -> g(c(y)), P(v)) for g in (sqrt, asin, acos, acosh), v in (2, -2, 0.5))...,
-            (x -> Base._cpow(c(x), oftype(x, 0.5)), -one(P)),
-            (x -> Base._cpow(c(x), complex(oftype(x, 2.3), oftype(x, 0.4))), -P(1.2)),
-        )
-            push!(
-                test_cases, (false, :allocs, (lb=1e-3, ub=50.0, is_primitive=false), f, x)
-            )
-        end
     end
     memory = Any[]
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
+    test_cases = Any[]
+    for P in (Float32, Float64), c in (complex, conj ∘ complex)
+        for (f, x) in (
+            ((y -> g(c(y)), P(v)) for g in (sqrt, asin, acos, acosh), v in (2, -2, 0.5))...,
+            (x -> Base._cpow(c(x), oftype(x, 0.5)), -one(P)),
+            (x -> Base._cpow(c(x), complex(oftype(x, 2.3), oftype(x, 0.4))), -P(1.2)),
+        )
+            push!(test_cases, (false, :allocs, (lb=1e-3, ub=50.0), f, x))
+        end
+    end
+    return test_cases, Any[]
+end

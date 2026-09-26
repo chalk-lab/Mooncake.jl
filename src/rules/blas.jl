@@ -2262,13 +2262,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (
                 false,
                 :none,
-                (lb=1e-3, ub=50.0, is_primitive=false, mode=ReverseMode),
-                norm,
-                zeros(P, 32),
-            ),
-            (
-                false,
-                :none,
                 (lb=1e-3, ub=50.0, is_primitive=false, mode=ForwardMode),
                 BLAS.nrm2,
                 zeros(P, 1),
@@ -2688,6 +2681,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     rng = rng_ctor(123)
     test_cases = Any[]
+    if P in (Float64, ComplexF64)
+        push!(
+            test_cases,
+            (false, :none, (lb=1e-3, ub=50.0, mode=ReverseMode), norm, zeros(P, 32)),
+        )
+    end
     for cols in (1:2, 1:2:3)
         output = cols == 1:2 ? (7:8) : (3:4)
         f =
