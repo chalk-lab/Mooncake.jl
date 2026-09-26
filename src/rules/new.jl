@@ -1,14 +1,74 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
-    y = _new_(P, tuple_map(primal, x)...)
-    T = tangent_type(P)
-    dy = if T == NoTangent
-        NoTangent()
-    else
-        build_output_tangent(P, tuple_map(primal, x), tuple_map(tangent, x))
+# Keep construction and dual_type calls in returned code to respect call-world overloads.
+# Constructor-omitted fields use uninitialised backing, as in build_output_tangent.
+@generated function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,M}
+) where {P,Nw,M}
+    if !isconcretetype(P)
+        msg = "_new_ Lifted: P=$P is not concrete"
+        return :(error($msg))
     end
-    return Dual(y, dy)
+    if P <: Union{Tuple,NamedTuple}
+        fields = :(tuple_map(tangent, x))
+        if P <: NamedTuple
+            fields = :(NamedTuple{$(P.parameters[1]::Tuple)}($fields))
+        end
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            # Non-differentiable tuples, including Tuple{}, collapse to whole NoDual.
+            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
+            return Lifted{P,Nw}(y, $fields)
+        end
+    elseif fieldcount(P) == 0
+        # Fieldless types (including primitives) have no differentiable content.
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            return Lifted{P,Nw}(y, NoDual())
+        end
+    else
+        wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        inits = always_initialised(P)
+        # Use declared backing types: abstract fields store Any, and possibly uninitialised
+        # fields wrap supplied values or remain uninitialised when omitted. This keeps V canonical.
+        field_exprs = map(1:fieldcount(P)) do i
+            i > M && return :(fieldtype(backing, $i)())
+            base = :(tangent(x[$i]))
+            inits[i] ? base : :(fieldtype(backing, $i)($base))
+        end
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            # Non-differentiable structs also collapse to whole NoDual.
+            V = dual_type(Val(Nw), P)
+            V === NoDual && return Lifted{P,Nw}(y, NoDual())
+            # Dedicated containers need specific rules; struct backing construction is invalid for them.
+            V <: Union{ImmutableDual,MutableDual} || error(
+                "forward _new_($P, ...): the canonical forward representation is $V, not a " *
+                "struct-lift Immutable/MutableDual, so the generic struct construction does " *
+                "not apply. Construct the value via its dedicated primitive (e.g. " *
+                "`memoryrefnew` for `MemoryRef`), or add a specific `frule!!` for this signature.",
+            )
+            backing = fieldtype(V, 1)
+            return Lifted{P,Nw}(y, $wrapper(backing(($(field_exprs...),))))
+        end
+    end
+end
+
+# Real/complex RefValue uses NDualRef, not struct lift; seed its per-lane partials.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}, x::Lifted{P,Nw}
+) where {Nw,P<:NDualEltype}
+    pr = Base.RefValue{P}(primal(x))
+    parts = ntuple(k -> _nfwd_dual_partial(tangent(x), k), Val(Nw))
+    return Lifted{Base.RefValue{P},Nw}(
+        pr, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(parts))
+    )
+end
+# Uninitialised real/complex RefValue needs zero-init NDualRef, not MutableDual.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}
+) where {Nw,P<:NDualEltype}
+    return Lifted{Base.RefValue{P},Nw}(Base.RefValue{P}(), NDualRef{P,Nw}())
 end
 
 function rrule!!(
@@ -52,6 +112,14 @@ function rrule!!(
 ) where {P<:IdDict,N}
     y = _new_(P, tuple_map(primal, x)...)
     return CoDual(y, tangent_type(P)()), NoPullback(f, p, x...)
+end
+# IdDict uses a dedicated dual container; its non-differentiable constructor fields
+# produce an empty dual dict.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,N}
+) where {P<:IdDict,Nw,N}
+    y = _new_(P, tuple_map(primal, x)...)
+    return Lifted{P,Nw}(y, dual_type(Val(Nw), P)())
 end
 
 @inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
@@ -129,6 +197,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     # Specialised test cases for _new_.
     specific_test_cases = Any[
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{}),
+        # `Ref(x)` / `RefValue{P}(x)` construction (real + complex): the canonical V is `NDualRef`.
+        # `:none` perf — a mutable `Ref` allocates, so the alloc check does not apply.
+        (false, :none, nothing, _new_, Base.RefValue{Float64}, 5.0),
+        (false, :none, nothing, _new_, Base.RefValue{ComplexF64}, 1.0 + 2.0im),
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Float64}, 5.0),
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Int, x::Int}, 5, 4),
         (
@@ -239,8 +311,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)
     end
-    test_cases = vcat(specific_test_cases, general_test_cases)
-    memory = Any[]
+    # Dedicated containers must report the coherence error and supported primitive.
+    # MemoryRef is unavailable before Julia 1.11.
+    coherence_cases, coherence_memory = @static if VERSION >= v"1.11-"
+        let mem = fill!(Memory{Float64}(undef, 3), 1.0), ref = memoryref(mem)
+            Any[(
+                false,
+                :none,
+                (throws="memoryrefnew", mode=ForwardMode),
+                _new_,
+                MemoryRef{Float64},
+                zero_lifted(Val(1), ref.ptr_or_offset),
+                mem,
+            )],
+            Any[mem, ref]
+        end
+    else
+        Any[], Any[]
+    end
+    test_cases = vcat(specific_test_cases, general_test_cases, coherence_cases)
+    memory = coherence_memory
     return test_cases, memory
 end
 

@@ -31,6 +31,15 @@ using Test
     end
 end
 
+@testset "forward refuses expression trees; reverse is unaffected" begin
+    # Ref{Any} prevents constant folding and inference's recursion limiter from masking
+    # a runtime stack overflow. TangentNode breaks recursion in reverse; forward must refuse.
+    # These interface preconditions cannot be expressed in the rule registry.
+    P = Ref{Any}(Node{Float64,2})
+    @test Mooncake._check_representable_input(Mooncake.ReverseMode(), P[], 0) === nothing
+    @test_throws ArgumentError Mooncake.dual_type(Val(1), P[])
+end
+
 @testset "Basic usage checks" begin
     let
         # Build up expression

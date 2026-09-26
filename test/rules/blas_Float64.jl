@@ -30,17 +30,63 @@
                 _t2 .= zero(P)
                 @test _t == _t2
             end
+            @testset "forward view: $(typeof(x)), width $N" for x in xs, N in (1, 8)
+                x isa SubArray || continue
+                _, parts = Mooncake.arrayify(Mooncake.zero_lifted(Val(N), x))
+                @test all(p -> p isa StridedArray, parts)
+            end
+        end
+
+        # Check wrapper type and write-through aliasing, which numerical rule tests do not pin.
+        @testset "forward _arrayify_lane: $W" for W in (
+            UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular
+        )
+            A = randn(StableRNG(1), 3, 3)
+            for x in (W(A), W(view(A, 1:2, 1:2))), N in (1, 2, 8)
+                slot = Mooncake.zero_lifted(Val(N), x)
+                _x, parts = Mooncake.arrayify(slot)
+                @test _x === x
+                @test length(parts) == N
+                @test all(p -> p isa W, parts)  # lane partials reconstruct the same wrapper
+                i, j = W in (UpperTriangular, UnitUpperTriangular) ? (1, 2) : (2, 1)
+                parts[1][i, j] = 1
+                _, parts2 = Mooncake.arrayify(slot)
+                @test parts2[1][i, j] == 1
+                @test all(p -> iszero(p[i, j]), parts2[2:end])
+            end
         end
     end
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
-end
 
-@testset "blas (Float64)" begin
-    TestUtils.run_rule_test_cases(StableRNG, Val(:blas_Float64))
-end
+    # Primitive C coverage must match the matrix-only rules; vector C needs fallback.
+    @testset "gemm! is_primitive C-slot lockstep" begin
+        w = Base.get_world_counter()
+        gemm = typeof(BLAS.gemm!)
+        vecC = Tuple{
+            gemm,Char,Char,Float64,Matrix{Float64},Vector{Float64},Float64,Vector{Float64}
+        }
+        matC = Tuple{
+            gemm,Char,Char,Float64,Matrix{Float64},Vector{Float64},Float64,Matrix{Float64}
+        }
+        for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+            @test !Mooncake.is_primitive(Mooncake.MinimalCtx, mode, vecC, w)  # vector C: not primitive
+            @test Mooncake.is_primitive(Mooncake.MinimalCtx, mode, matC, w)   # matrix C: primitive
+        end
+    end
 
-@testset "reverse strong zeros" begin
+    # Empty gemv skips β scaling; uninitialised dot lanes can be denormal garbage
+    # that passes finite differences. Pin exact zero with bespoke assertions.
+    @testset "empty dot gives exactly-zero partials: width $Nw" for Nw in (1, 2, 3)
+        o = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(Nw), dot),
+            Mooncake.zero_lifted(Val(Nw), Float64[]),
+            Mooncake.zero_lifted(Val(Nw), Float64[]),
+        )
+        @test primal(o) === 0.0
+        @test all(k -> tangent(o, k) === 0.0, 1:Nw)
+    end
+
     # Strong zeros permit NaN in unreferenced operands. Finite differences cannot
     # express these inputs, so check the primal exactly against its BLAS semantics.
     @testset "BLAS strong zeros with a NaN operand" begin
@@ -127,5 +173,88 @@ end
                 ),
             )
         end
+
+        # Seeded dα needs the solve, but the α == 0 primal must still be zero
+        # even when the solve reads NaN from A.
+        @testset "trsm! α=0, seeded dα=$seeded: width $Nw" for seeded in (false, true),
+            Nw in (1, 2, 3)
+
+            α = if seeded
+                Mooncake.randn_lifted(Val(Nw), StableRNG(9), 0.0)
+            else
+                Mooncake.zero_lifted(Val(Nw), 0.0)
+            end
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
+                Mooncake.lift('L', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.lift('N', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                α,
+                Mooncake.zero_lifted(Val(Nw), copy(nan3)),
+                Mooncake.zero_lifted(Val(Nw), copy(B)),
+            )
+            @test all(iszero, primal(r))
+            if !seeded
+                @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
+            end
+        end
     end
+
+    # At β=0, C may be uninitialised/NaN; the dβ*C term must mask NaN entries.
+    @testset "syrk! dβ*C NaN-C guard at β=0" begin
+        A = randn(StableRNG(1), 3, 2)
+        for C in (fill(NaN, 3, 3), randn(StableRNG(2), 3, 3))
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), BLAS.syrk!),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.lift('N', Mooncake.NoTangent()),
+                Mooncake.lift(1.0, 0.0),
+                Mooncake.lift(A, zero(A)),
+                Mooncake.lift(0.0, 1.0),
+                Mooncake.lift(copy(C), zeros(3, 3)),
+            )
+            d = tangent(r)
+            if isnan(C[1, 1])
+                @test !any(isnan, [d[i, j].partials[1] for i in 1:3 for j in i:3])
+            else
+                @test d[1, 2].partials[1] ≈ C[1, 2]
+            end
+        end
+    end
+end
+
+@testset "blas (Float64)" begin
+    TestUtils.run_rule_test_cases(StableRNG, Val(:blas_Float64))
+end
+
+@testset "gemm! reproduces its own primal at the alpha/beta zeros" begin
+    # Builds may multiply or skip A at α=0: compare with the running BLAS.
+    # The registry's finite-difference harness cannot handle NaN operands.
+    Anan = [NaN 0.0; 0.0 0.0]
+    I2 = [1.0 0.0; 0.0 1.0]
+    C0 = [1.0 2.0; 3.0 4.0]
+    alpha_zero(C, A, B) = (BLAS.gemm!('N', 'N', 0.0, A, B, 1.0, C); sum(C))
+    got = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(alpha_zero, copy(C0), Anan, I2),
+        alpha_zero,
+        copy(C0),
+        Anan,
+        I2,
+    )[1]
+    @test isequal(got, alpha_zero(copy(C0), Anan, I2))
+    # β=0 must ignore NaN in C. Keep A/B distinct to isolate β semantics from
+    # repeated-mutable-argument handling in the prepared cache.
+    Cnan = [NaN 0.0; 0.0 0.0]
+    Aone = [1.0 0.0; 0.0 1.0]
+    Bone = [1.0 0.0; 0.0 1.0]
+    beta_zero(C, A, B) = (BLAS.gemm!('N', 'N', 1.0, A, B, 0.0, C); sum(C))
+    got_b = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(beta_zero, copy(Cnan), Aone, Bone),
+        beta_zero,
+        copy(Cnan),
+        Aone,
+        Bone,
+    )[1]
+    @test isequal(got_b, beta_zero(copy(Cnan), Aone, Bone))
 end

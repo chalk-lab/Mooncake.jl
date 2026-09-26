@@ -331,13 +331,13 @@ end
 Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`s.
 """
 function new_inst_vec(x::CC.InstructionStream)
-    stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
+    stmts = stmt(x)
     @static if VERSION > v"1.12-"
         # In Julia 1.12+, x.line is flat: 3 codeloc entries per instruction, not one line.
-        n = length(stmt)
+        n = length(stmts)
         return [
             NewInstruction(
-                stmt[i],
+                stmts[i],
                 x.type[i],
                 x.info[i],
                 (x.line[3i - 2], x.line[3i - 1], x.line[3i]),
@@ -345,7 +345,7 @@ function new_inst_vec(x::CC.InstructionStream)
             ) for i in 1:n
         ]
     else
-        return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+        return map((v...,) -> NewInstruction(v...), stmts, x.type, x.info, x.line, x.flag)
     end
 end
 
@@ -886,7 +886,8 @@ end
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
 @inline function get_zeroed_shared_data_field(shared_data, n)
     x = getfield(shared_data, n)
-    # Captured fdata containing `Ptr` is unsupported because it cannot be reset generically.
+    # A captured constant whose fdata contains a `Ptr` is unsupported: `Ptr` has no rdata to
+    # pair the fdata with, so this raises `InvalidFDataException` instead of rebuilding a tangent.
     t = set_to_zero!!(zero_tangent(primal(x), tangent(x)))
     return CoDual(primal(x), fdata(t))
 end
@@ -958,6 +959,9 @@ struct ADInfo
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
     rvs_ret_type::Type
+    # Track bindings separately: shared data cannot distinguish non-const globals,
+    # whose values may change between build and call, from constants.
+    global_bindings::Vector{GlobalBinding}
 end
 
 # The constructor that you should use for ADInfo if you don't have CFG blocks lying around.
@@ -991,6 +995,7 @@ function ADInfo(
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
         fwd_ret_type,
         rvs_ret_type,
+        GlobalBinding[],
     )
 end
 
@@ -1238,7 +1243,7 @@ function inc_args(x::PhiCNode)
     end
     return PhiCNode(new_values)
 end
-inc_args(x::UpsilonNode) = UpsilonNode(__inc(x.val))
+inc_args(x::UpsilonNode) = isdefined(x, :val) ? UpsilonNode(__inc(x.val)) : x
 
 __inc(x::Argument) = Argument(x.n + 1)
 __inc(x) = x
@@ -1396,6 +1401,9 @@ end
 function make_ad_stmts!(stmt::GlobalRef, line::ID, info::ADInfo)
     isconst(stmt) && return const_ad_stmt(stmt, line, info)
 
+    # Re-read the global each call; __verify_const wraps it with uninit_fcodual.
+    # Track its binding so rebinding cannot leave the alias guard checking a stale value.
+    push!(info.global_bindings, GlobalBinding(stmt.mod, stmt.name))
     const_id, globalref_id = ID(), ID()
     fwds = [
         (globalref_id, new_inst(stmt)),
@@ -1802,14 +1810,42 @@ struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
     pb_oc_ref::Base.RefValue{RuleMC{Tpb_args,Tpb_ret}}
     nargs::Tnargs
+    # Build-time fdata primals that arguments must not alias; see _aliasable_constants.
+    consts::ConstAliasSet
 end
 
 _isva(::DerivedRule{A,B,C,D,E,isva}) where {A,B,C,D,E,isva} = isva
 
 function DerivedRule(
-    sig, fwds_oc::RuleMC{FA,FR}, pb_oc::Base.RefValue{RuleMC{RA,RR}}, isva::Bool, nargs::W
+    sig,
+    fwds_oc::RuleMC{FA,FR},
+    pb_oc::Base.RefValue{RuleMC{RA,RR}},
+    isva::Bool,
+    nargs::W,
+    consts::ConstAliasSet=ConstAliasSet(),
 ) where {FA,FR,RA,RR,W}
-    return DerivedRule{sig,FA,FR,RA,RR,isva,W}(fwds_oc, pb_oc, nargs)
+    return DerivedRule{sig,FA,FR,RA,RR,isva,W}(fwds_oc, pb_oc, nargs, consts)
+end
+
+"""
+    _aliasable_constants(shared_data::Tuple)
+
+Collect IR constants, QuoteNodes and GlobalRefs selected by `record_const_alias!`.
+Their `const_codual_stmt` build-time fdata is unshared, so `DerivedRule` must refuse
+aliased arguments or silently lose the constant's contribution. Empty for most rules.
+"""
+function _aliasable_constants(
+    shared_data::Tuple, bindings::Vector{GlobalBinding}=GlobalBinding[]
+)
+    consts = Any[]
+    for b in bindings
+        isdefined(b.mod, b.name) || continue
+        record_const_alias!(consts, getglobal(b.mod, b.name), b)
+    end
+    for d in shared_data
+        d isa CoDual && record_const_alias!(consts, primal(d))
+    end
+    return ConstAliasSet(consts)
 end
 
 # Extends functionality defined for debug_mode.
@@ -1823,25 +1859,28 @@ function _copy(x::P) where {P<:DerivedRule}
     new_captures = _copy(x.fwds_oc.oc.captures)
     new_fwds_oc = replace_captures(x.fwds_oc, new_captures)
     new_pb_oc_ref = Ref(replace_captures(x.pb_oc_ref[], new_captures))
-    return P(new_fwds_oc, new_pb_oc_ref, x.nargs)
+    return P(new_fwds_oc, new_pb_oc_ref, x.nargs, x.consts)
 end
 
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
+    _check_constant_aliasing(fwds.consts, args)
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
+    # On 1.10 __call_rule uses jl_apply_generic to avoid specsig OC crashes
+    # (julia#51016/julia#61368); 1.11+ calls directly. Pass MistyClosure because
+    # forward-over-reverse cannot lift its .oc field (_get_lifted_field is undefined).
+    # This uses the generic barrier, bypassing the bare OpaqueClosure's args isa A guard:
+    # unlike DerivedFRule, mismatched calls on 1.10 do not get that clean TypeError.
+    return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
-# type parameters; the Pullback's nargs comes from the number of args at the call site.
+# On 1.10, @noinline plus (rule::Any) avoids specsig OC codegen crashes.
+# Restore type stability from DerivedRule's parameters and the call-site argument count.
 @static if VERSION < v"1.11-"
-    @inline function __call_rule(
+    @noinline function __call_rule(
         rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
     ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return __call_rule_erased!(
-            Base.inferencebarrier(rule), args
-        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+        return ((rule::Any)(args...))::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
     end
 end
 
@@ -2112,7 +2151,14 @@ function build_derived_rrule(
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)
             sig = flatten_va_sig(sig, dri.isva, nargs)
-            raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
+            raw_rule = DerivedRule(
+                sig,
+                fwd_oc,
+                Ref(rvs_oc),
+                dri.isva,
+                Val(nargs),
+                _aliasable_constants(dri.shared_data, dri.info.global_bindings),
+            )
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
             return rule
@@ -2895,7 +2941,7 @@ _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 # Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no dispatch barrier needed.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
@@ -2938,8 +2984,8 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
-        # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
-        # time only and does not affect hot-path performance.
+        # this allocates a throwaway instance; the cost is compile-time only and does not
+        # affect hot-path performance.
         rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end

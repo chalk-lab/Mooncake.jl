@@ -7,6 +7,10 @@
 # JuliaLang/julia#56201 fixes this in Julia 1.13. Remove this file once all supported
 # Julia versions contain that fix.
 #
+# On 1.10, only the struct/forwarders apply here; reprocess_instruction! is patched in
+# ir_utils.jl. optimise_ir! installs BugPatchInterpreter uniformly below 1.13:
+# its pass-through on 1.10 has no measurable rule-building overhead.
+#
 # The only place in which this code seeps into Mooncake.jl code is in Mooncake.optimise_ir!,
 # located in src/interpreter/ir_utils.jl . In particular, we replace the `local_interp`
 # variable with the `AbstractInterpreter`.

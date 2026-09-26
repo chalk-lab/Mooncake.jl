@@ -107,6 +107,20 @@ sr(n::Int) = StableRNG(n)
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
     end
 
+    # Assert primitive dispatch only in forward mode; reverse uses derived rules.
+    @testset "forward-only primitives" begin
+        for P in (Float64, Float32), (f, x) in ((log1psq, P(0.3)), (log2mexp, P(0.1)))
+            test_rule(
+                sr(123456),
+                f,
+                x;
+                perf_flag=:allocs,
+                is_primitive=true,
+                mode=Mooncake.ForwardMode,
+            )
+        end
+    end
+
     @testset "zero multipliers and inactive directions" begin
         # Finite differences cannot check the infinite boundary slope or inactive lanes.
         for T in (Float16, Float32, Float64), x in (zero(T), -zero(T), nextfloat(zero(T)))
@@ -117,9 +131,9 @@ sr(n::Int) = StableRNG(n)
             @test pb(zero(T))[2] == zero(T)
             for dx in (one(T), -one(T), zero(T))
                 expected = iszero(dx) ? zero(T) : d * dx
-                result = Mooncake.frule!!(Mooncake.zero_dual(xlogx), Mooncake.Dual(x, dx))
+                result = Mooncake.frule!!(Mooncake.zero_dual(xlogx), Mooncake.lift(x, dx))
                 @test isequal(Mooncake.primal(result), xlogx(x))
-                @test Mooncake.tangent(result) == expected
+                @test only(Mooncake.tangent(result).partials) == expected
                 for N in (1, 8)
                     result = xlogx(NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)))
                     @test isequal(result.value, xlogx(x))
@@ -149,10 +163,10 @@ sr(n::Int) = StableRNG(n)
                 dx, dy = T(dx), T(dy)
                 expected = (iszero(dx) ? zero(T) : a) + (iszero(dy) ? zero(T) : b)
                 result = Mooncake.frule!!(
-                    Mooncake.zero_dual(f), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
+                    Mooncake.zero_dual(f), Mooncake.lift(x, dx), Mooncake.lift(y, dy)
                 )
                 @test isequal(Mooncake.primal(result), f(x, y))
-                @test Mooncake.tangent(result) == expected
+                @test only(Mooncake.tangent(result).partials) == expected
                 for N in (1, 8)
                     result = f(
                         NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)),

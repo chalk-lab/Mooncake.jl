@@ -70,9 +70,9 @@ end
             @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
                 tangent_type(P)
         end
-        # _validate_union: primitive branch (Float64 is a primitive type).
+        # _check_union: primitive branch (Float64 is a primitive type).
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
-        # _validate_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
+        # _check_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
         @test_throws InvalidFDataException tangent_type(
             Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
         )
@@ -120,6 +120,17 @@ end
         )
         @test !can_produce_zero_rdata_from_type(Tuple)
         @test zero_rdata_from_type(Tuple) == CannotProduceZeroRDataFromType()
+        # Float sub-unions must use the generic fallback: they cannot construct zeros.
+        @testset "float sub-unions produce no zero rdata: $T" for T in (
+            Union{Float32,Float64}, Union{Float16,Float64}, Union{Float16,Float32,Float64}
+        )
+            @test !can_produce_zero_rdata_from_type(T)
+            @test zero_rdata_from_type(T) == CannotProduceZeroRDataFromType()
+        end
+        @testset "concrete floats still do: $P" for P in (Float16, Float32, Float64)
+            @test can_produce_zero_rdata_from_type(P)
+            @test zero_rdata_from_type(P) === zero(P)
+        end
         @test !can_produce_zero_rdata_from_type(Union{Tuple{Float64},Tuple{Int}})
         @test ==(
             zero_rdata_from_type(Union{Tuple{Float64},Tuple{Int}}),

@@ -13,6 +13,15 @@ using Mooncake:
     build_rrule,
     tangent_type
 
+const HVP_ALIAS_GLOBAL = [1.0, 2.0]
+hvp_alias_global(x) = x[1] * HVP_ALIAS_GLOBAL[1] + x[2] * HVP_ALIAS_GLOBAL[2]
+
+# A first-order tangent need not support differentiation of itself.
+struct FirstOrderTangent
+    x::Float64
+end
+Mooncake.tangent_type(::Type{FirstOrderTangent}) = Mooncake.NoTangent
+
 struct SimplePair
     x1::Float64
     x2::Float64
@@ -27,10 +36,87 @@ struct ScalarBox
     x::Float64
 end
 
+struct WeightedVector <: AbstractVector{Float64}
+    data::Vector{Float64}
+    weight::Float64
+end
+Base.size(x::WeightedVector) = size(x.data)
+Base.getindex(x::WeightedVector, i::Int) = x.weight * x.data[i]
+Base.similar(x::WeightedVector) = WeightedVector(similar(x.data), x.weight)
+
+mutable struct IntScaler
+    a::Int
+end
+(s::IntScaler)(v) = s.a * sum(v)
+
 mutable struct AliasedPair
     a::Vector{Float64}
     b::Vector{Float64}
 end
+
+# A callable holding an array, so the callable can share storage with an argument.
+struct FwdAliasHolder{V}
+    v::V
+end
+(h::FwdAliasHolder)(x) = sum(h.v .* x)
+
+# A callable holding an array that returns its mutated argument. Its own dimensions put the Jacobian
+# sweep on the non-packable path, where the returned value aliases the caller's input.
+struct FwdInPlaceScaler{V}
+    v::V
+end
+(h::FwdInPlaceScaler)(x) = (x.=(h.v .* x); x)
+
+# Two fields that may be the same array: aliasing inside ONE argument. Called, it is also a
+# callable each of whose fields can be one of the arguments — two shared leaves, not one.
+struct FwdAliasPair{A}
+    p::A
+    q::A
+end
+(h::FwdAliasPair)(a, b) = sum(h.p .* a) + sum(h.q .* b)
+
+# A differentiable array beside a non-differentiable `Int` that selects how much of it is read.
+# Passed as an ARGUMENT (a differentiable callable would leave the zero-allocation structured
+# path, which is where the prepare-time state was kept).
+struct FwdPrefixSum{V}
+    w::V
+    k::Int
+end
+fwd_prefix_sum(m::FwdPrefixSum) = sum(m.w[1:m.k])
+
+# An abstractly-typed non-differentiable field: prepared at an `Int`, a call passing a `Float64`
+# needs derivative storage the cache does not have.
+struct FwdAbstractField
+    a::Real
+    w::Vector{Float64}
+end
+fwd_abstract_field(s::FwdAbstractField) = s.a * sum(s.w)
+
+# A MUTABLE non-differentiable argument that `f` mutates.
+mutable struct FwdCounter
+    n::Int
+end
+fwd_counting(w, c::FwdCounter) = (c.n += 1; sum(w) + c.n)
+
+# A `const` field cannot be written with `setfield!`, and a mutable NESTED in the argument stays
+# shared with the caller unless the copy into the cache's object recurses.
+mutable struct FwdConstTag
+    const tag::Int
+    n::Int
+end
+fwd_const_tag(w, c::FwdConstTag) = (c.n += 1; sum(w) + c.n + c.tag)
+
+mutable struct FwdNestedCounter
+    inner::FwdCounter
+end
+fwd_nested_counting(w, o::FwdNestedCounter) = (o.inner.n += 1; sum(w) + o.inner.n)
+
+struct StructuredPair{A,B}
+    u::A
+    v::B
+end
+
+fwd_load_ptr(p::Ptr{Float64}) = unsafe_load(p)
 
 mutable struct AnyCycleNode
     next::Any
@@ -43,6 +129,78 @@ mutable struct MaybeInitBox
     MaybeInitBox(x::Float64) = new(x)
 end
 
+mutable struct PartialInput
+    a::Vector{Float64}
+    b::Vector{Float64}
+    PartialInput(a) = new(a)
+    PartialInput(a, b) = new(a, b)
+end
+
+struct ImmutablePartialInput
+    a::Vector{Float64}
+    b::Vector{Float64}
+    ImmutablePartialInput(a) = new(a)
+    ImmutablePartialInput(a, b) = new(a, b)
+end
+
+mutable struct OpaqueIntegerState
+    values::Vector{Int}
+end
+Mooncake.tangent_type(::Type{OpaqueIntegerState}) = Mooncake.NoTangent
+struct OpaqueStateWrapper
+    state::OpaqueIntegerState
+end
+Mooncake.tangent_type(::Type{OpaqueStateWrapper}) = Mooncake.NoTangent
+mutable struct WithOpaqueState{S}
+    weights::Vector{Float64}
+    state::S
+end
+opaque_state(s::OpaqueIntegerState) = s
+opaque_state(s::OpaqueStateWrapper) = s.state
+function opaque_grow(p)
+    s = opaque_state(p.state)
+    push!(s.values, 1)
+    return length(s.values) * sum(abs2, p.weights)
+end
+function opaque_rebind(p)
+    s = opaque_state(p.state)
+    push!(s.values, 1)
+    s.values = [1, 2, 3, 4]
+    return length(s.values) * sum(abs2, p.weights)
+end
+function opaque_throw(p)
+    push!(opaque_state(p.state).values, 1)
+    error("opaque mutation")
+end
+
+mutable struct RestoreAnyBox
+    a::Any
+    x::Vector{Float64}
+end
+
+mutable struct RestorePartialInput
+    a::Vector{Float64}
+    b::Vector{Int}
+    RestorePartialInput(a) = new(a)
+end
+
+mutable struct RebindBox{V}
+    w::V
+end
+
+# An opaque leaf with only the documented copy overloads. Its field must never be walked.
+mutable struct CustomSnapshotLeaf
+    data::Vector{Float64}
+end
+const CUSTOM_SNAPSHOT_HITS = Ref(0)
+const CUSTOM_RESTORE_HITS = Ref(0)
+function Mooncake._copy_output(x::CustomSnapshotLeaf)
+    (CUSTOM_SNAPSHOT_HITS[] += 1; CustomSnapshotLeaf(copy(x.data)))
+end
+function Mooncake._copy_to_output!!(d::CustomSnapshotLeaf, s::CustomSnapshotLeaf)
+    (CUSTOM_RESTORE_HITS[] += 1; copyto!(d.data, s.data); d)
+end
+
 const CHUNK_SCALAR_EVAL_COUNT = Ref(0)
 struct CountedChunkScalarCall end
 (::CountedChunkScalarCall)(x, y) = (CHUNK_SCALAR_EVAL_COUNT[] += 1; x * y + cos(x))
@@ -53,11 +211,646 @@ struct CountedChunkArrayCall end
 
 const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
-function _ndual_prepare_side_effect(x::Mooncake.Nfwd.NDual)
-    throw(Mooncake.Nfwd.NDualUnsupportedError(:test_prepare_side_effect))
-end
 
 @testset "interface" begin
+    # These API checks require cache reuse, original object identities, and different
+    # prepare/call partitions, which a rule registry case cannot express.
+    @testset "chunked restore re-points rebound aliases" begin
+        rebound(p) = (p.a=2 .* p.a; sum(abs2, p.a) + sum(abs2, p.b))
+        rebound_b(p) = (p.b=2 .* p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        rebound_both(p) = (p.a=2 .* p.a; p.b=3 .* p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        merge(p) = (p.a=p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        outer(o) = (o.u.a=2 .* o.u.a; sum(abs2, o.u.a) + sum(abs2, o.u.b) + sum(abs2, o.v))
+        a = [1.0, 2.0, 3.0]
+        @testset "chunk_size=$w" for w in (1, 2, 8)
+            for (f, coefficient) in ((rebound, 10), (rebound_b, 10), (rebound_both, 26))
+                cache = Mooncake.prepare_derivative_cache(
+                    f, AliasedPair(a, a); config=Mooncake.Config(; chunk_size=w)
+                )
+                shared = copy(a)
+                arg = AliasedPair(shared, shared)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(cache, f, arg)
+                    @test y == coefficient * sum(abs2, a) / 2
+                    @test Mooncake.get_tangent_field(g[2], :a) == coefficient * a
+                    @test Mooncake.get_tangent_field(g[2], :b) == coefficient * a
+                    @test arg.a === arg.b === shared
+                    @test shared == a
+                end
+            end
+            shared = copy(a)
+            arg = StructuredPair(AliasedPair(shared, shared), shared)
+            cache = Mooncake.prepare_derivative_cache(
+                outer, arg; config=Mooncake.Config(; chunk_size=w)
+            )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, outer, arg)
+                @test y == 84.0
+                @test Mooncake.get_tangent_field(g[2], :v) == 12a
+                @test arg.u.a === arg.u.b === shared
+                @test shared == a
+            end
+            # A merge must restore two distinct original arrays as well.
+            left, right = copy(a), 2a
+            arg = AliasedPair(left, right)
+            cache = Mooncake.prepare_derivative_cache(
+                merge, arg; config=Mooncake.Config(; chunk_size=w)
+            )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, merge, arg)
+                @test y == 112.0
+                @test Mooncake.get_tangent_field(g[2], :a) == zero(a)
+                @test Mooncake.get_tangent_field(g[2], :b) == 8a
+                @test arg.a === left
+                @test arg.b === right
+                @test left == a
+                @test right == 2a
+            end
+        end
+        for friendly in (false, true)
+            shared = copy(a)
+            arg = AliasedPair(shared, shared)
+            direction =
+                friendly ? AliasedPair(ones(3), ones(3)) : Mooncake.zero_tangent(arg)
+            if !friendly
+                fill!(Mooncake.get_tangent_field(direction, :a), 1.0)
+            end
+            cache = Mooncake.prepare_derivative_cache(
+                rebound, arg; config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (rebound, Mooncake.NoTangent()), (arg, direction)
+                )
+                @test (y, dy) == (70.0, 60.0)
+                @test arg.a === arg.b === shared
+                @test shared == a
+            end
+        end
+    end
+
+    # Rule tests cannot check copied output sharing after the public call restores its inputs.
+    @testset "output backing storage" begin
+        for T in (Float64, Any), reverse_order in (false, true)
+            a = T[1.0, 2.0, 3.0]
+            b = reshape(a, 1, :)
+            src = reverse_order ? (b, a) : (a, b)
+            copied = Mooncake._copy_output(src)
+            @test typeof(copied) === typeof(src)
+            copied[1][1] = 17.0
+            @test copied[2][1] == 17.0
+            @test a[1] == 1.0
+        end
+        a = [1.0, 2.0, 3.0]
+        b = reshape(reshape(a, 1, :), :)
+        copied = Mooncake._copy_output((a, b))
+        @test (copied[1] === copied[2]) == (a === b)
+        copied[1][1] = 17.0
+        @test copied[2][1] == 17.0
+        a = Any[nothing]
+        b = reshape(a, 1, :)
+        a[1] = b
+        copied = Mooncake._copy_output((b, a))
+        @test copied[1][1] === copied[1]
+        @test copied[2][1] === copied[1]
+        for make in (a -> reshape(a, 1, :), a -> view(a, 1:2))
+            f = let make = make
+                x -> (x .*= 2; (x, make(x)))
+            end
+            a = [1.0, 2.0, 3.0]
+            cache = Mooncake.prepare_derivative_cache(f, a)
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (a, ones(3))
+                )
+                @test y[1] == 2a
+                @test dy[1] == fill(2.0, 3)
+                @test a == [1.0, 2.0, 3.0]
+                y[1][1] = 17.0
+                @test y[2][1] == 17.0
+            end
+        end
+        empty_array = Float64[]
+        empty_copy = Mooncake._copy_output((empty_array, reshape(empty_array, 0, 1)))
+        @test size(empty_copy[1]) == (0,)
+        @test size(empty_copy[2]) == (0, 1)
+        @static if VERSION >= v"1.11.0-rc4"
+            @test empty_copy[1].ref.mem === empty_copy[2].ref.mem
+            empty_ref = Mooncake._copy_output(empty_array.ref)
+            @test isempty(empty_ref.mem)
+            @test isempty(Mooncake._copy_to_output!!(empty_ref, empty_array.ref).mem)
+            for T in (Float64, Any), offset in (1, 3), reverse_order in (false, true)
+                mem = Memory{T}(undef, 6)
+                a = Vector{T}(undef, 0)
+                setfield!(a, :ref, Core.memoryrefnew(Core.memoryrefnew(mem), offset, true))
+                setfield!(a, :size, (2,))
+                a[1] = 1.0
+                src = reverse_order ? (mem, a, a.ref) : (a, mem, a.ref)
+                copied = Mooncake._copy_output(src)
+                ca, cm = reverse_order ? (copied[2], copied[1]) : (copied[1], copied[2])
+                @test ca.ref.mem === cm === copied[3].mem
+                @test Core.memoryrefoffset(ca.ref) == offset
+                ca[1] = 17.0
+                @test cm[offset] == 17.0
+                @test Core.memoryrefget(copied[3], :not_atomic, true) == 17.0
+                @test a[1] == 1.0
+                T === Any && @test !isassigned(ca, 2)
+            end
+            a = Any[nothing]
+            a[1] = a
+            copied = Mooncake._copy_output((a.ref.mem, a))
+            @test copied[2][1] === copied[2]
+            @test copied[2].ref.mem === copied[1]
+            f = x -> (x .*= 2; (x, x.ref))
+            a = [1.0, 2.0, 3.0]
+            cache = Mooncake.prepare_derivative_cache(f, a)
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (a, ones(3))
+                )
+                @test y[1].ref.mem === y[2].mem
+                @test y[1] == 2a
+                @test dy[1] == fill(2.0, 3)
+                @test a == [1.0, 2.0, 3.0]
+                y[1][1] = 17.0
+                @test Core.memoryrefget(y[2], :not_atomic, true) == 17.0
+            end
+        end
+    end
+
+    @testset "aggregate snapshots preserve repeated leaves" begin
+        for constructor in (a -> (a, a), a -> (; p=a, q=a), a -> Core.svec(a, a))
+            a = [1.0, 2.0, 3.0]
+            src = constructor(a)
+            snapshot = Mooncake._copy_output(src)
+            @test snapshot[1] === snapshot[2]
+            @test snapshot[1] !== a
+            @test Mooncake._copy_to_output!!(snapshot, src)[1] === snapshot[1]
+        end
+        for constructor in (a -> (a, a), a -> (; p=a, q=a)), w in (1, 2, 8)
+            a = [1.0, 2.0, 3.0]
+            x = constructor(a)
+            f(t) = sum(abs2, t[1]) + sum(abs2, t[2])
+            cache = Mooncake.prepare_derivative_cache(
+                f, x; config=Mooncake.Config(; chunk_size=w)
+            )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, f, x)
+                @test y == 28.0
+                @test g[2][1] == g[2][2] == 4a
+                @test x[1] === x[2] === a
+            end
+        end
+    end
+
+    @testset "forward cache rejects changed leaf partitions" begin
+        for constructor in (tuple, (a, b) -> (; a, b)), w in (1, 2)
+            a = [1.0, 2.0, 3.0]
+            f(t) = (t[1] .*= 2; sum(abs2, t[2]))
+            cache = Mooncake.prepare_derivative_cache(
+                f, constructor(copy(a), copy(a)); config=Mooncake.Config(; chunk_size=w)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                cache, f, constructor(a, a)
+            )
+            @test a == [1.0, 2.0, 3.0]
+        end
+        for n in (3, 24)
+            f(xs...) = sum(xs[2]) + 10sum(xs[3])
+            arrays = ntuple(i -> [Float64(i)], n)
+            prepared = (arrays[1], arrays[2], arrays[2], arrays[4:end]...)
+            called = (arrays[1], arrays[2], arrays[1], arrays[4:end]...)
+            directions = ntuple(i -> [1.0], n)
+            directions = (directions[1], [2.0], directions[1], directions[4:end]...)
+            cache = Mooncake.prepare_derivative_cache(
+                f, prepared...; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                cache, (f, Mooncake.NoTangent()), map(tuple, called, directions)...
+            )
+        end
+    end
+
+    @testset "custom snapshot leaves" begin
+        leaf = CustomSnapshotLeaf([1.0, 2.0])
+        arg = StructuredPair(RebindBox(leaf), leaf)
+        CUSTOM_SNAPSHOT_HITS[] = 0
+        snapshot = Mooncake._copy_output(arg)
+        @test CUSTOM_SNAPSHOT_HITS[] == 1
+        @test snapshot.u.w === snapshot.v
+        CUSTOM_RESTORE_HITS[] = 0
+        snapshots, contexts = Mooncake._snapshot_inputs!!((snapshot,), (arg,))
+        @test CUSTOM_RESTORE_HITS[] == 1
+        arg.u.w = CustomSnapshotLeaf([8.0, 9.0])
+        leaf.data .= 0
+        Mooncake._restore_inputs!!((arg,), snapshots, contexts)
+        @test CUSTOM_RESTORE_HITS[] == 2
+        @test arg.u.w === arg.v === leaf
+        @test leaf.data == [1.0, 2.0]
+    end
+
+    # Registries seed one primal shape; these checks need different source/destination
+    # definedness and reuse a cache prepared with an undefined field.
+    @testset "defined source into undefined destination" for T in (
+        PartialInput, ImmutablePartialInput
+    )
+        for cached in (false, true)
+            src = T([2.0], [3.0])
+            dst = T([1.0])
+            args = cached ? (IdDict{Any,Any}(),) : ()
+            out = Mooncake._copy_to_output!!(dst, src, args...)
+            @test out.a == [2.0]
+            @test out.b == [3.0]
+            @test out.a === dst.a
+            @test out.b !== src.b
+        end
+        f = p -> begin
+            y = sum(abs2, p.a) + (isdefined(p, :b) ? sum(abs2, p.b) : 0.0)
+            isdefined(p, :b) && (p.b .*= 2)
+            y
+        end
+        for friendly in (false, true)
+            cache = Mooncake.prepare_derivative_cache(
+                f, T([1.0]); config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                p = T([2.0], [3.0])
+                y, g = Mooncake.value_and_gradient!!(cache, f, p)
+                @test y == 13.0
+                @test p.a == [2.0]
+                @test p.b == [3.0]
+                expected = friendly ? T([4.0], [6.0]) : Mooncake.zero_tangent(p)
+                if !friendly
+                    Mooncake.get_tangent_field(expected, :a) .= 4.0
+                    Mooncake.get_tangent_field(expected, :b) .= 6.0
+                end
+                @test TestUtils.has_equal_data(g[2], expected)
+            end
+        end
+    end
+
+    # Rule registries check one rule execution, not snapshot destination state, cache
+    # reuse across chunks, or restoration of caller identities after an exception.
+    @testset "restore changed slots and extents" begin
+        containers = Any[Vector{Any}]
+        @static if VERSION >= v"1.11.0-rc4"
+            push!(containers, Memory{Any})
+        end
+        for make in containers
+            a = make(undef, 2)
+            a[1] = 1.0
+            snapshots, contexts = Mooncake._snapshot_inputs!!(
+                (Mooncake._copy_output(a),), (a,)
+            )
+            a[2] = 2.0
+            Mooncake._restore_inputs!!((a,), snapshots, contexts)
+            @test !isassigned(a, 2)
+            dst = make(undef, 2)
+            dst[1] = dst[2] = 3.0
+            Mooncake._copy_to_output!!(dst, a)
+            @test !isassigned(dst, 2)
+        end
+        for T in (PartialInput, ImmutablePartialInput)
+            out = Mooncake._copy_to_output!!(T([1.0], [2.0]), T([3.0]))
+            @test out.a == [3.0]
+            @test !isdefined(out, :b)
+        end
+        undef_f = u -> begin
+            scale = isdefined(u, :b) ? 3.0 : 2.0
+            u.b = [1]
+            scale * sum(abs2, u.a)
+        end
+        grow = x -> (push!(x, 2x[1]); sum(abs2, x))
+        grow_struct = t -> (push!(t[1], 2t[1][1]); sum(abs2, t[1]))
+        change = p -> (p.a=nothing; sum(abs2, p.x))
+        for W in (1, 2, 8)
+            config = Mooncake.Config(; chunk_size=W)
+            u = RestorePartialInput([1.0, 2.0, 3.0])
+            restore_cache = Mooncake.prepare_derivative_cache(undef_f, u; config)
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(restore_cache, undef_f, u)
+                @test y == 28.0
+                @test g[2].fields.a == [4.0, 8.0, 12.0]
+                @test !isdefined(u, :b)
+            end
+            for (f, x) in ((grow, [1.0, 2.0, 3.0]), (grow_struct, ([1.0, 2.0, 3.0],)))
+                restore_cache = Mooncake.prepare_derivative_cache(f, x; config)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(restore_cache, f, x)
+                    @test y == 18.0
+                    @test (x isa Tuple ? g[2][1] : g[2]) == [10.0, 4.0, 6.0]
+                    @test (x isa Tuple ? x[1] : x) == [1.0, 2.0, 3.0]
+                end
+                bad = x isa Tuple ? ([1.0, 2.0],) : [1.0, 2.0]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    restore_cache, f, bad
+                )
+            end
+            for capture in (false, true)
+                x = [1.0, 2.0, 3.0]
+                f = capture ? let a=x
+                    x -> (push!(a, 2a[1]); x)
+                end : x -> (push!(x, 2x[1]); x)
+                restore_cache = Mooncake.prepare_derivative_cache(f, x; config)
+                for _ in 1:2
+                    y, J = Mooncake.value_and_jacobian!!(restore_cache, f, x)
+                    @test y == [1.0, 2.0, 3.0, 2.0]
+                    @test J == [1.0 0 0; 0 1 0; 0 0 1; 2 0 0]
+                    @test x == [1.0, 2.0, 3.0]
+                end
+            end
+            for old in (2.0, (2.0, 3.0), ([2.0],))
+                p = RestoreAnyBox(old, [1.0, 2.0, 3.0])
+                restore_cache = Mooncake.prepare_derivative_cache(change, p; config)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(restore_cache, change, p)
+                    @test y == 14.0
+                    @test g[2].fields.x == [2.0, 4.0, 6.0]
+                    @test p.a === old
+                end
+            end
+        end
+        node = RestoreAnyBox(nothing, [1.0])
+        outer = (node,)
+        node.a = outer
+        snapshots, contexts = Mooncake._snapshot_inputs!!(
+            (Mooncake._copy_output(node),), (node,)
+        )
+        node.a = nothing
+        node.x[1] = 9.0
+        Mooncake._restore_inputs!!((node,), snapshots, contexts)
+        @test node.a[1] === node
+        @test node.x == [1.0]
+        undef_throw = u -> (u.b=[1]; error("undefined failed"))
+        u = RestorePartialInput([1.0])
+        restore_cache = Mooncake.prepare_derivative_cache(undef_throw, u)
+        for _ in 1:2
+            @test_throws "undefined failed" Mooncake.value_and_gradient!!(
+                restore_cache, undef_throw, u
+            )
+            @test !isdefined(u, :b)
+        end
+        for friendly in (false, true), throwing in (false, true)
+            f = throwing ? x -> (push!(x, 2x[1]); error("grow failed")) : grow
+            x = [1.0, 2.0, 3.0]
+            restore_cache = Mooncake.prepare_derivative_cache(
+                f, x; config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                args = ((f, NoTangent()), (x, ones(3)))
+                if throwing
+                    @test_throws "grow failed" Mooncake.value_and_derivative!!(
+                        restore_cache, args...
+                    )
+                else
+                    @test Mooncake.value_and_derivative!!(restore_cache, args...) ==
+                        (18.0, 20.0)
+                end
+                @test x == [1.0, 2.0, 3.0]
+            end
+        end
+        for throwing in (false, true), capture in (false, true)
+            x = Float64[]
+            f = if capture
+                let a=x, throwing=throwing
+                    x -> (push!(a, 1.0); throwing && error("empty failed"); x)
+                end
+            else
+                if throwing
+                    x -> (push!(x, 1.0); error("empty failed"))
+                else
+                    x -> (push!(x, 1.0); x)
+                end
+            end
+            restore_cache = Mooncake.prepare_derivative_cache(f, x)
+            for _ in 1:2
+                if throwing
+                    @test_throws "empty failed" Mooncake.value_and_jacobian!!(
+                        restore_cache, f, x
+                    )
+                else
+                    @test Mooncake.value_and_jacobian!!(restore_cache, f, x) ==
+                        ([1.0], zeros(1, 0))
+                end
+                @test isempty(x)
+            end
+        end
+    end
+
+    # Copy ownership and post-restore output lifetime are interface contracts; rule
+    # registries do not copy returned refs or reuse prepared output storage.
+    @static if VERSION >= v"1.11.0-rc4"
+        @testset "MemoryRef copies" begin
+            for i in (1, 3), T in (Float64, Any)
+                x=T[1.0, 2.0, 3.0]
+                r=Core.memoryrefnew(x.ref, i, true)
+                copied=Mooncake._copy_output((r, r.mem))
+                @test copied[1].mem === copied[2]
+                @test Core.memoryrefoffset(copied[1]) == i
+                x[i]=9.0
+                @test Core.memoryrefget(copied[1], :not_atomic, true) == Float64(i)
+                @test copied[1].mem[i] == Float64(i)
+                dst=Mooncake._copy_output(r)
+                x[i]=Float64(i)
+                out=Mooncake._copy_to_output!!(dst, r)
+                x[i]=17.0
+                @test Core.memoryrefget(out, :not_atomic, true) == Float64(i)
+                @test Core.memoryrefoffset(out) == i
+            end
+            f=r->begin
+                v=Core.memoryrefget(r, :not_atomic, true)
+                Core.memoryrefset!(r, 2v, :not_atomic, true)
+                r
+            end
+            for i in (1, 3)
+                x=[1.0, 2.0, 3.0];
+                r=Core.memoryrefnew(x.ref, i, true)
+                restore_cache=Mooncake.prepare_derivative_cache(f, r)
+                dr=Mooncake.zero_tangent(r);
+                fill!(dr.mem, 1.0)
+                for _ in 1:2
+                    y, dy=Mooncake.value_and_derivative!!(
+                        restore_cache, (f, Mooncake.NoTangent()), (r, dr)
+                    )
+                    @test Core.memoryrefget(y, :not_atomic, true) == 2i
+                    @test y.mem[i] == 2i
+                    @test x == [1.0, 2.0, 3.0]
+                    x[i]=17.0
+                    @test Core.memoryrefget(y, :not_atomic, true) == 2i
+                    x[i]=Float64(i)
+                end
+            end
+        end
+    end
+
+    # Cache extent restoration and reuse require the public interface, not a rule registry.
+    @testset "opaque state restoration" begin
+        for wrap in (identity, OpaqueStateWrapper),
+            W in (1, 2, 8),
+            f in (opaque_grow, opaque_rebind)
+
+            ints = [1, 2]
+            state = OpaqueIntegerState(ints)
+            p = WithOpaqueState([1.0, 2.0, 3.0], wrap(state))
+            weights = p.weights
+            coefficient = f === opaque_grow ? 3 : 4
+            cache = Mooncake.prepare_derivative_cache(
+                f, p; config=Mooncake.Config(chunk_size=W)
+            )
+            @test cache.gradient_seed === nothing
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, f, p)
+                @test y == 14coefficient
+                @test g[2].fields.weights == 2coefficient * weights
+                @test p.weights === weights
+                @test opaque_state(p.state) === state
+                @test state.values === ints
+                @test ints == [1, 2]
+            end
+            if f === opaque_grow
+                reverse_cache = Mooncake.prepare_gradient_cache(f, p)
+                y, g = Mooncake.value_and_gradient!!(reverse_cache, f, p)
+                @test y == 14coefficient
+                @test g[2].fields.weights == 2coefficient * weights
+                @test state.values === ints
+                @test ints == [1, 2]
+            end
+            push!(ints, 3)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                cache, f, p
+            )
+            @test ints == [1, 2, 3]
+        end
+        for W in (1, 2, 8)
+            ints = [1, 2]
+            p = WithOpaqueState([1.0, 2.0, 3.0], OpaqueIntegerState(ints))
+            cache = Mooncake.prepare_derivative_cache(
+                opaque_throw, p; config=Mooncake.Config(chunk_size=W)
+            )
+            for _ in 1:2
+                @test_throws r"opaque mutation" Mooncake.value_and_gradient!!(
+                    cache, opaque_throw, p
+                )
+                @test p.state.values === ints
+                @test ints == [1, 2]
+            end
+        end
+    end
+
+    # The rule's JVP is already correct; only the public gradient assembly scatters
+    # an infinite coefficient across a basis tangent, so a rule registry cannot expose it.
+    @testset "singular generic scatter" begin
+        for W in (1, 2, 8), complex in (false, true)
+            t = complex ? (Ref(0.0), 2.0+3.0im) : (Ref(0.0), 2.0)
+            f = complex ? t->sqrt(t[1][])+real(t[2])+2imag(t[2]) : t->sqrt(t[1][])+t[2]
+            scatter_cache=Mooncake.prepare_derivative_cache(
+                f, t; config=Mooncake.Config(chunk_size=W)
+            )
+            y, g=Mooncake.value_and_gradient!!(scatter_cache, f, t)
+            @test y == (complex ? 8.0 : 2.0)
+            @test Mooncake.val(g[2][1].fields.x) == Inf
+            @test g[2][2] == (complex ? 1.0+2.0im : 1.0)
+        end
+    end
+
+    # Rule registries do not exercise prepared-cache conversion or seed admission.
+    @testset "complex friendly tangents" begin
+        z = 1.0 + 2.0im
+        dz = 0.3 - 0.7im
+        for x in (z, (z,))
+            f = x isa Tuple ? t -> abs2(t[1]) : abs2
+            cache = prepare_gradient_cache(
+                f, x; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            _, grad = value_and_gradient!!(cache, f, x)
+            @test grad[2] == (x isa Tuple ? (2z,) : 2z)
+        end
+        for f in (z -> z^2 + conj(z), z -> (z^2 + conj(z),))
+            cache = Mooncake.prepare_derivative_cache(
+                f, z; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            y, dy = Mooncake.value_and_derivative!!(cache, (f, NoTangent()), (z, dz))
+            expected = 2z * dz + conj(dz)
+            @test y == f(z)
+            @test (y isa Tuple ? only(dy) : dy) ≈ expected
+        end
+    end
+
+    # These validate API contracts, not differentiation rules, so the rule registry does not
+    # exercise them.
+    @testset "value checks" begin
+        @test Mooncake._check_vector_argument([1.0]; caller=(value_and_jacobian!!)) ===
+            Float64
+        # Empty input is supported by every caller; there is no `allow_empty` opt-in.
+        @test Mooncake._check_vector_argument(Float64[]; caller=(value_and_jacobian!!)) ===
+            Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            [1]; caller=(value_and_jacobian!!)
+        )
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            ones(2, 2); caller=(value_and_jacobian!!)
+        )
+        v = view([1.0, 2.0], :)
+        @test Mooncake._check_vector_argument(v; caller=(value_and_jacobian!!)) === Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            v; caller=(value_and_jacobian!!), dense=true
+        )
+        @test Mooncake._check_scalar_output(1.0; caller=(value_and_gradient!!)) === nothing
+        @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake._check_scalar_output(
+            [1.0]; caller=(value_and_gradient!!)
+        )
+        @test Mooncake._check_vector_output(
+            [1.0]; caller=(value_and_jacobian!!), eltypes=Float64
+        ) === Float64
+        @test_throws "to match" Mooncake._check_vector_output(
+            Float32[1]; caller=(value_and_jacobian!!), eltypes=Float64
+        )
+        @test_throws "element types" Mooncake._check_vector_output(
+            [1]; caller=(value_and_jacobian!!), eltypes=IEEEFloat
+        )
+        # The message names the API, and the mode when a cache says which.
+        @test_throws "forward-mode value_and_gradient!!" Mooncake._check_scalar_output(
+            [1.0]; caller=(value_and_gradient!!), cache=prepare_derivative_cache(sum, [1.0])
+        )
+        @test_throws "this function" Mooncake._check_vector_argument([1];)
+    end
+
+    # Prepared-cache admission, not a rule: the registry seeds well-formed inputs and never
+    # reaches these paths.
+    @testset "vector API admission" begin
+        # Empty input is supported everywhere: a zero-dimension sweep has nothing to run, but the
+        # value and the `n x 0` Jacobian are still well defined.
+        e = Float64[]
+        for mk in (Mooncake.prepare_derivative_cache, Mooncake.prepare_pullback_cache)
+            y, J = Mooncake.value_and_jacobian!!(mk(identity, e), identity, e)
+            @test y == e
+            @test size(J) == (0, 0)
+        end
+        hc = Mooncake.prepare_hessian_cache(sum, e)
+        @test Mooncake.value_gradient_and_hessian!!(hc, sum, e) == (0.0, e, zeros(0, 0))
+
+        # Forward stores partials per element, so an `NDualArray` element type must be concrete.
+        # Reverse builds a plain array and is unaffected — refusing there would remove working
+        # behaviour.
+        u = Union{Float32,Float64}[1.0, 2.0]
+        @test_throws ArgumentError Mooncake.prepare_derivative_cache(sum, u)
+        _, gu = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(sum, u), sum, u
+        )
+        @test gu[2] == [1.0, 1.0]
+        # Element types that map to another representation are unaffected in forward.
+        for v in (Any[1.0, 2.0], Union{Nothing,Float64}[1.0, 2.0], Real[1.0, 2.0])
+            @test Mooncake.prepare_derivative_cache(sum, v) isa Any
+        end
+
+        # A wrapper OUTPUT has no flat array to read Jacobian columns from.
+        for wrapper_f in (x -> view(x, 1:2), x -> 1.0:2.0)
+            wrapper_cache = Mooncake.prepare_derivative_cache(wrapper_f, [1.0, 2.0])
+            @test_throws "dense vector outputs" Mooncake.value_and_jacobian!!(
+                wrapper_cache, wrapper_f, [1.0, 2.0]
+            )
+        end
+    end
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
         ([1.0, 1.0], x -> [sin(x), sin(2x)], 3.0),
@@ -115,9 +908,11 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
+            # Prepared calls must allocate nothing on 1.11+; bound 1.10's __call_rule barrier
+            # cost instead (julia#61368; see src/utils.jl).
             alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
-            if alloc_count > 0
-                @test_broken alloc_count == 0
+            @static if VERSION < v"1.11-"
+                @test alloc_count <= 4
             else
                 @test alloc_count == 0
             end
@@ -138,11 +933,15 @@ end
                 sin, 1.0; config=Mooncake.Config(; debug_mode=false, friendly_tangents=true)
             )
             reverse_show = sprint(show, reverse_cache)
+            @test reverse_show ==
+                "Mooncake.Cache(mode=:reverse, friendly_tangents=true, inputs=1)"
             @test occursin("Mooncake.Cache(", reverse_show)
             @test occursin("mode=:reverse", reverse_show)
             @test occursin("friendly_tangents=true", reverse_show)
 
             reverse_plain = repr(MIME"text/plain"(), reverse_cache)
+            @test reverse_plain ==
+                "Mooncake.Cache\n  mode: reverse\n  friendly_tangents: true\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
             @test occursin("Mooncake.Cache", reverse_plain)
             @test occursin("mode: reverse", reverse_plain)
             @test occursin("friendly_tangents: true", reverse_plain)
@@ -153,24 +952,26 @@ end
                 sin,
                 1.0;
                 config=Mooncake.Config(;
-                    debug_mode=false,
-                    friendly_tangents=true,
-                    chunk_size=2,
-                    enable_nfwd=false,
+                    debug_mode=false, friendly_tangents=true, chunk_size=2
                 ),
             )
             forward_show = sprint(show, forward_cache)
-            @test occursin("Mooncake.ForwardCache(", forward_show)
+            @test forward_show ==
+                "Mooncake.FCache(mode=:forward, friendly_tangents=true, chunk=false, chunk_size=1, inputs=1)"
+            @test occursin("Mooncake.FCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
-            @test occursin("nfwd=false", forward_show)
+            # A scalar input has 1 dimension, so no width-`W` chunk rule is built.
+            @test occursin("chunk=false", forward_show)
             @test occursin("chunk_size=1", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
-            @test occursin("Mooncake.ForwardCache", forward_plain)
+            @test forward_plain ==
+                "Mooncake.FCache\n  mode: forward\n  friendly_tangents: true\n  chunk: false\n  chunk_size: 1\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
+            @test occursin("Mooncake.FCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
             @test occursin("friendly_tangents: true", forward_plain)
-            @test occursin("nfwd: false", forward_plain)
+            @test occursin("chunk: false", forward_plain)
             @test occursin("chunk_size: 1", forward_plain)
             @test occursin("input_1: Float64 (scalar)", forward_plain)
             @test occursin("output: Float64 (scalar)", forward_plain)
@@ -180,13 +981,12 @@ end
                 1.0,
                 2.0;
                 config=Mooncake.Config(;
-                    debug_mode=false,
-                    friendly_tangents=true,
-                    chunk_size=2,
-                    enable_nfwd=false,
+                    debug_mode=false, friendly_tangents=true, chunk_size=2
                 ),
             )
             forward_chunk2_show = sprint(show, forward_cache_chunk2)
+            # 2 dimension at chunk_size=2 builds a width-2 native chunk rule.
+            @test occursin("chunk=true", forward_chunk2_show)
             @test occursin("chunk_size=2", forward_chunk2_show)
 
             forward_chunk2_plain = repr(MIME"text/plain"(), forward_cache_chunk2)
@@ -194,14 +994,18 @@ end
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
             hvp_show = sprint(show, hvp_cache)
+            @test hvp_show ==
+                "Mooncake.HVPCache(mode=:forward_over_reverse, chunk=false, inputs=1)"
             @test occursin("Mooncake.HVPCache(", hvp_show)
             @test occursin("mode=:forward_over_reverse", hvp_show)
-            @test occursin("nfwd=false", hvp_show)
+            @test occursin("chunk=false", hvp_show)
 
             hvp_plain = repr(MIME"text/plain"(), hvp_cache)
+            @test hvp_plain ==
+                "Mooncake.HVPCache\n  mode: forward_over_reverse\n  chunk: false\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
             @test occursin("Mooncake.HVPCache", hvp_plain)
             @test occursin("mode: forward_over_reverse", hvp_plain)
-            @test occursin("nfwd: false", hvp_plain)
+            @test occursin("chunk: false", hvp_plain)
             @test occursin("input_1: Float64 (scalar)", hvp_plain)
             @test occursin("output: Float64 (scalar)", hvp_plain)
         end
@@ -308,11 +1112,55 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
-            if alloc_count > 0
-                @test_broken alloc_count == 0
+            # As for the gradient above: exactly zero on 1.11 and 1.12, and on 1.10 bounded by
+            # the `__call_rule` dispatch barrier (julia#61368).
+            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
+            @static if VERSION < v"1.11-"
+                @test alloc_count <= 3
             else
                 @test alloc_count == 0
+            end
+        end
+
+        @testset "output aliasing an input the rule grew" begin
+            # Snapshot grown outputs before the pullback restores input size. The registry
+            # cannot check prepared output buffers or cache reuse.
+            grow(x) = (push!(x, 2 * x[1]); x)
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                x = [1.0, 2.0]
+                cache = Mooncake.prepare_pullback_cache(
+                    grow, x; config=Mooncake.Config(; friendly_tangents=fr)
+                )
+                @test x == [1.0, 2.0]
+                @test occursin(
+                    "output: Vector{Float64} (size (3,))", repr(MIME"text/plain"(), cache)
+                )
+                for x2 in ([1.0, 2.0], [3.0, 4.0])
+                    original = copy(x2)
+                    value, (_, dx) = Mooncake.value_and_pullback!!(
+                        cache, [2.0, 3.0, 4.0], grow, x2
+                    )
+                    # y = [x1, x2, 2x1], so dx = [2*1 + 4*2, 3] for ybar = [2, 3, 4].
+                    @test value == [original; 2 * original[1]]
+                    @test dx == [10.0, 3.0]
+                    @test x2 == original
+                end
+            end
+        end
+
+        @testset "a gradient cache also serves value_and_pullback!!" begin
+            # Cross-API reuse requires a gradient cache's output-tangent buffer for friendly
+            # pullbacks; a rule registry cannot express this cache contract.
+            fsq = x -> sum(abs2, x)
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                x = [1.0, 2.0]
+                cache = Mooncake.prepare_gradient_cache(
+                    fsq, x; config=Mooncake.Config(; friendly_tangents=fr)
+                )
+                @test Mooncake.value_and_pullback!!(cache, 1.0, fsq, x) ==
+                    (5.0, (Mooncake.NoTangent(), [2.0, 4.0]))
+                @test Mooncake.value_and_gradient!!(cache, fsq, x) ==
+                    (5.0, (Mooncake.NoTangent(), [2.0, 4.0]))
             end
         end
 
@@ -608,11 +1456,23 @@ end
             oc = Base.Experimental.@opaque x -> x + 1
             @test Mooncake._copy_output(oc) === oc
 
-            # The gradient closure captures the compiled rule; copying it StackOverflowed.
-            f = x -> sum(abs2, x)
-            @test Mooncake.prepare_hvp_cache(
-                f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; friendly_tangents=true)
-            ) isa Mooncake.HVPCache
+            # Broadcast sum(x.^2) captures a compiled reverse rule; primitive sum(abs2, x)
+            # does not. Friendly preparation must avoid walking cyclic reflection graphs and
+            # keep the inner forward cache non-friendly, preserving HVP/Hessian results.
+            x = [1.0, 2.0, 3.0]
+            v = [1.0, 0.0, 0.0]
+            for f in (x -> sum(x .^ 2), x -> sum(abs2, x)), ft in (false, true)
+                cfg = Mooncake.Config(; friendly_tangents=ft)
+                hvp_cache = Mooncake.prepare_hvp_cache(f, x; config=cfg)
+                @test hvp_cache isa Mooncake.HVPCache
+                _, g, h = Mooncake.value_and_hvp!!(hvp_cache, f, v, x)
+                @test g ≈ 2 .* x
+                @test h ≈ 2 .* v
+                hess_cache = Mooncake.prepare_hessian_cache(f, x; config=cfg)
+                @test hess_cache isa Mooncake.HVPCache
+                _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, f, x)
+                @test H ≈ 2 * LinearAlgebra.I(3)
+            end
         end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [
@@ -640,67 +1500,69 @@ end
                 fx...; config=Mooncake.Config(; kwargs...)
             )
 
-            # legacy Dual interface
-            z_and_dz_dual = Mooncake.value_and_derivative!!(
-                cache, map(Mooncake.Dual, fx, dfx)...
-            )
-            @test z_and_dz_dual isa Mooncake.Dual
-            @test Mooncake.primal(z_and_dz_dual) == z
-            @test Mooncake.tangent(z_and_dz_dual) == dz
-
-            # new tuple interface
+            # tuple interface
             z_and_dz_tup = Mooncake.value_and_derivative!!(cache, zip(fx, dfx)...)
             @test z_and_dz_tup isa Tuple{Float64,Float64}
             @test first(z_and_dz_tup) == z
             @test last(z_and_dz_tup) == dz
 
-            z_and_dz_chunk_tup = Mooncake.value_and_derivative!!(
-                cache,
-                (f, Mooncake.zero_tangent(f)),
-                (x, Mooncake.NTangent((dx, 0.0))),
-                (y, Mooncake.NTangent((0.0, dy))),
+            # multi-argument single-direction tuple interface
+            z_and_dz_multi = Mooncake.value_and_derivative!!(
+                cache, (f, Mooncake.zero_tangent(f)), (x, dx), (y, dy)
             )
-            @test z_and_dz_chunk_tup isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_chunk_tup) == z
-            @test length(last(z_and_dz_chunk_tup)) == 2
-            @test last(z_and_dz_chunk_tup) ==
-                Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy))
+            @test z_and_dz_multi isa Tuple{Float64,Float64}
+            @test first(z_and_dz_multi) == z
+            @test last(z_and_dz_multi) == dz
         end
 
         @testset "Array inputs" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
-            dx_arr_1 = [dx, 0.0]
-            dx_arr_2 = [0.0, dy]
+            dir = [dx, dy]
 
             cache_arr = Mooncake.prepare_derivative_cache(
                 f_arr, x_arr; config=Mooncake.Config(; kwargs...)
             )
-            z_and_dz_arr_chunk = Mooncake.value_and_derivative!!(
-                cache_arr,
-                (f_arr, Mooncake.zero_tangent(f_arr)),
-                (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
+            z_and_dz_arr = Mooncake.value_and_derivative!!(
+                cache_arr, (f_arr, Mooncake.zero_tangent(f_arr)), (x_arr, dir)
             )
-            @test z_and_dz_arr_chunk isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_arr_chunk) == sum(abs2, x_arr)
-            @test length(last(z_and_dz_arr_chunk)) == 2
-            @test last(z_and_dz_arr_chunk) == Mooncake.NTangent((2 * x * dx, 2 * y * dy))
+            @test first(z_and_dz_arr) == sum(abs2, x_arr)
+            # directional derivative of sum(abs2, x) is 2x ⋅ dir
+            @test last(z_and_dz_arr) == 2 * x * dx + 2 * y * dy
+
+            # Widths that split and span the array must fill every gradient entry, including on
+            # 1.10's flat partials storage.
+            x3 = [1.0, 2.0, 3.0]
+            for cs in (1, 2, 3)
+                gc = Mooncake.prepare_derivative_cache(
+                    f_arr, x3; config=Mooncake.Config(; chunk_size=cs, kwargs...)
+                )
+                _, (_, g) = Mooncake.value_and_gradient!!(gc, f_arr, x3)
+                @test g == 2 .* x3
+            end
         end
 
         @testset "Non-differentiable outputs" begin
             f_int = x -> x > 0 ? 1 : 2
             cache_int = Mooncake.prepare_derivative_cache(
-                f_int, x; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
+                f_int, x; config=Mooncake.Config(; kwargs...)
             )
-            z_and_dz_int_chunk = Mooncake.value_and_derivative!!(
-                cache_int,
-                (f_int, Mooncake.zero_tangent(f_int)),
-                (x, Mooncake.NTangent((dx, dy))),
+            z_and_dz_int = Mooncake.value_and_derivative!!(
+                cache_int, (f_int, Mooncake.zero_tangent(f_int)), (x, dx)
             )
-            @test first(z_and_dz_int_chunk) == 1
-            @test last(z_and_dz_int_chunk) isa Mooncake.NTangent
-            @test last(z_and_dz_int_chunk) ==
-                Mooncake.NTangent((Mooncake.NoTangent(), Mooncake.NoTangent()))
+            @test first(z_and_dz_int) == 1
+            @test last(z_and_dz_int) == Mooncake.NoTangent()
+        end
+
+        # Rule registries seed matching tangents; malformed directions need API tests.
+        @testset "Unfriendly tangent shapes" begin
+            xs = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(
+                sum, xs; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            run(v) = Mooncake.value_and_derivative!!(cache, (sum, NoTangent()), (xs, v))
+            @test run([3.0, 4.0]) == (3.0, 7.0)
+            @test_throws "must match the primal axes" run([3.0, 4.0, 5.0])
         end
 
         @testset "Structured types" begin
@@ -717,21 +1579,6 @@ end
             @test dz_sp.x1 ≈ dz
             @test dz_sp.x2 == 0.0
 
-            z_and_dz_sp_chunk = Mooncake.value_and_derivative!!(
-                cache_sp_friendly,
-                (g, Mooncake.zero_tangent(g)),
-                (
-                    SimplePair(x, y),
-                    Mooncake.NTangent((SimplePair(dx, 0.0), SimplePair(0.0, dy))),
-                ),
-            )
-            @test z_and_dz_sp_chunk isa Tuple{SimplePair,Mooncake.NTangent}
-            @test first(z_and_dz_sp_chunk) == SimplePair(z, 2.0)
-            @test length(last(z_and_dz_sp_chunk)) == 2
-            @test last(z_and_dz_sp_chunk) == Mooncake.NTangent((
-                SimplePair(dx * y + dx * (-sin(x)), 0.0), SimplePair(x * dy, 0.0)
-            ))
-
             cache_sp_unfriendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
             )
@@ -746,26 +1593,19 @@ end
         @testset "Tuple-like inputs" begin
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)
-            tuple_dx_1 = (dx, 0.0)
-            tuple_dx_2 = (0.0, dy)
             cache_tuple = Mooncake.prepare_derivative_cache(
                 f_tuple,
                 tuple_x;
                 config=Mooncake.Config(; friendly_tangents=true, kwargs...),
             )
             z_and_dz_tuple = Mooncake.value_and_derivative!!(
-                cache_tuple,
-                (f_tuple, Mooncake.zero_tangent(f_tuple)),
-                (tuple_x, Mooncake.NTangent((tuple_dx_1, tuple_dx_2))),
+                cache_tuple, (f_tuple, Mooncake.zero_tangent(f_tuple)), (tuple_x, (dx, dy))
             )
-            @test z_and_dz_tuple isa Tuple{Float64,Mooncake.NTangent}
             @test first(z_and_dz_tuple) == x^2 + sin(y)
-            @test last(z_and_dz_tuple) == Mooncake.NTangent((2 * x * dx, cos(y) * dy))
+            @test last(z_and_dz_tuple) == 2 * x * dx + cos(y) * dy
 
             f_named = nt -> nt.a * sin(nt.b)
             named_x = (; a=x, b=y)
-            named_dx_1 = (; a=dx, b=0.0)
-            named_dx_2 = (; a=0.0, b=dy)
             cache_named = Mooncake.prepare_derivative_cache(
                 f_named,
                 named_x;
@@ -774,57 +1614,88 @@ end
             z_and_dz_named = Mooncake.value_and_derivative!!(
                 cache_named,
                 (f_named, Mooncake.zero_tangent(f_named)),
-                (named_x, Mooncake.NTangent((named_dx_1, named_dx_2))),
+                (named_x, (; a=dx, b=dy)),
             )
-            @test z_and_dz_named isa Tuple{Float64,Mooncake.NTangent}
             @test first(z_and_dz_named) == x * sin(y)
-            @test last(z_and_dz_named) == Mooncake.NTangent((dx * sin(y), x * cos(y) * dy))
+            @test last(z_and_dz_named) == dx * sin(y) + x * cos(y) * dy
         end
 
-        @testset "Chunk path fast path" begin
-            if get(kwargs, :debug_mode, false)
-                @test true
-            else
-                scalar_call(cache, f, x, y, dx, dy) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f, Mooncake.zero_tangent(f)),
-                    (x, Mooncake.NTangent((dx, 0.0))),
-                    (y, Mooncake.NTangent((0.0, dy))),
+        @testset "forward gradient accepts a `Dict` / `Set` argument" begin
+            # Dict/Set backing storage includes nondifferentiable Memory (Vectors on 1.10).
+            # Distinct coefficients check that the seed cursor follows tangent_dim order.
+            # Shared Dict values must also share partials; registering only the backing container
+            # would lose element aliasing. The enclosing kwargs cover debug mode on and off.
+            galias(dd) = sum(dd[1]) + sum(dd[2])
+            # A multi-line function, not `mkalias() = (v = …; …)`: inside a `@testset`, a
+            # one-line function whose body is a `;`-block assigns to the ENCLOSING scope, so a
+            # local named `z` there silently overwrites the testset's own `z`.
+            function mkalias()
+                shared = [1.0, 2.0, 3.0]
+                return Dict{Int,Vector{Float64}}(1 => shared, 2 => shared)
+            end
+            vals_of(g) = [
+                g.fields.vals[i] for
+                i in eachindex(g.fields.vals) if isassigned(g.fields.vals, i)
+            ]
+            _, g_rev = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(galias, mkalias()), galias, mkalias()
+            )
+            @testset "aliased Dict values, chunk_size=$w" for w in (1, 2)
+                _, g_fwd = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        galias, mkalias(); config=Mooncake.Config(; chunk_size=w, kwargs...)
+                    ),
+                    galias,
+                    mkalias(),
                 )
-                scalar_f = CountedChunkScalarCall()
-                scalar_cache = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test scalar_call(scalar_cache, scalar_f, x, y, dx, dy) ==
-                    (z, Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy)))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 1
+                # Analytic: the primal is 2*sum(z), so every entry is 2.0.
+                @test all(v -> v == fill(2.0, 3), vals_of(g_fwd[2]))
+                @test vals_of(g_fwd[2]) == vals_of(g_rev[2])
+            end
 
-                array_f = CountedChunkArrayCall()
-                x_arr = [x, y]
-                dx_arr_1 = [dx, 0.0]
-                dx_arr_2 = [0.0, dy]
-                array_call(cache, f_arr, x_arr, dx_arr_1, dx_arr_2) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f_arr, Mooncake.zero_tangent(f_arr)),
-                    (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
+            fdict(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
+            mkd() = Dict(:a => 2.0, :b => 3.0)
+            v0 = [5.0, 7.0]
+            vr, gr = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(fdict, mkd(), v0), fdict, mkd(), copy(v0)
+            )
+            @testset "chunk_size=$w" for w in (1, 2, 3)
+                vf, gf = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        fdict, mkd(), v0; config=Mooncake.Config(; chunk_size=w, kwargs...)
+                    ),
+                    fdict,
+                    mkd(),
+                    copy(v0),
                 )
-                array_cache = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                @test vf == vr
+                @test gf[3] == gr[3]
+                @test collect(gf[2].fields.vals) == collect(gr[2].fields.vals)
+            end
+            # IdDict interleaves keys/values in one backing ht. Check per-key gradients as well as
+            # d/dv to detect a seed cursor that disagrees with tangent_dim order.
+            fid(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
+            mkid() = IdDict{Symbol,Float64}(:a => 2.0, :b => 3.0)
+            vir, gir = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(fid, mkid(), v0), fid, mkid(), copy(v0)
+            )
+            @testset "IdDict, chunk_size=$w" for w in (1, 2, 3)
+                vif, gif = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        fid, mkid(), v0; config=Mooncake.Config(; chunk_size=w, kwargs...)
+                    ),
+                    fid,
+                    mkid(),
+                    copy(v0),
                 )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test array_call(array_cache, array_f, x_arr, dx_arr_1, dx_arr_2) ==
-                    (sum(abs2, x_arr), Mooncake.NTangent((2 * x * dx, 2 * y * dy)))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+                @test vif == vir
+                @test gif[3] == gir[3]
+                @test gif[2][:a] == gir[2][:a]
+                @test gif[2][:b] == gir[2][:b]
             end
         end
 
-        @testset "value_and_gradient!! via ForwardCache" begin
+        @testset "value_and_gradient!! via FCache" begin
             cache_grad_fwd = Mooncake.prepare_derivative_cache(
                 f, x, y; config=Mooncake.Config(; kwargs...)
             )
@@ -845,6 +1716,25 @@ end
             )
             @test Mooncake.value_and_gradient!!(tuple_cache_grad_fwd, f_tuple, tuple_x) ==
                 (x^2 + sin(y), (Mooncake.NoTangent(), (2 * x, cos(y))))
+
+            # Ref seeds use the generic chunked path; complex Refs consume two dimensions.
+            for (ref_f, ref_x) in (
+                (t -> t[1][]^2 + sin(t[2]), (Ref(x), y)),
+                (t -> abs2(t[1][]) + sin(t[2]), (Ref(ComplexF64(x, y)), y)),
+            )
+                ref_fwd = Mooncake.prepare_derivative_cache(
+                    ref_f, ref_x; config=Mooncake.Config(; chunk_size=2, kwargs...)
+                )
+                ref_rev = Mooncake.prepare_gradient_cache(ref_f, ref_x)
+                yf_ref, gf_ref = Mooncake.value_and_gradient!!(
+                    ref_fwd, ref_f, deepcopy(ref_x)
+                )
+                yr_ref, gr_ref = Mooncake.value_and_gradient!!(
+                    ref_rev, ref_f, deepcopy(ref_x)
+                )
+                @test yf_ref == yr_ref
+                @test TestUtils.has_equal_data(gf_ref, gr_ref)
+            end
 
             h = (sp::SimplePair) -> sp.x1^2 + sin(sp.x2)
             sp = SimplePair(x, y)
@@ -912,10 +1802,101 @@ end
             @test Mooncake.get_tangent_field(uninit_box_grad, :x) == 2 * x
             @test !Mooncake.is_init(uninit_y_grad) || Mooncake.val(uninit_y_grad) == 0.0
 
+            # The packable path must evaluate the CALL-time `f`, not the prepare-time
+            # instance captured in the seed (regression: a value-stateful non-diff
+            # callable silently used stale state).
+            sc_cache = Mooncake.prepare_derivative_cache(
+                IntScaler(1), collect(1.0:4.0); config=Mooncake.Config(; kwargs...)
+            )
+            sc_val, sc_grad = Mooncake.value_and_gradient!!(
+                sc_cache, IntScaler(2), collect(1.0:4.0)
+            )
+            @test sc_val == 20.0
+            @test sc_grad[2] == fill(2.0, 4)
+
+            # An in-place-mutating `f` must not compound across packable chunks: the seed
+            # primals are restored from the user's arrays at the top of every chunk
+            # (regression: y and the chunk-2 gradient slots were silently wrong).
+            mut_f = v -> (s=sum(abs2, v); v .*= 2; s)
+            mut_x = collect(1.0:12.0)  # tangent_dim > default chunk width 8 → two chunks
+            mut_cache = Mooncake.prepare_derivative_cache(
+                mut_f, copy(mut_x); config=Mooncake.Config(; kwargs...)
+            )
+            mut_y, mut_grad = Mooncake.value_and_gradient!!(mut_cache, mut_f, copy(mut_x))
+            @test mut_y == sum(abs2, mut_x)
+            @test mut_grad[2] == 2 .* mut_x
+
+            # A differentiable callable needs the generic path to sweep its own dimensions too;
+            # a single scalar seed cannot represent them.
+            closure_f = let c = 3.0
+                v -> c * v
+            end
+            closure_cache = Mooncake.prepare_derivative_cache(
+                closure_f, x; config=Mooncake.Config(; kwargs...)
+            )
+            closure_y, closure_grad = Mooncake.value_and_gradient!!(
+                closure_cache, closure_f, x
+            )
+            @test closure_y == 3.0 * x
+            @test closure_grad[2] == 3.0
+            @test Mooncake.get_tangent_field(closure_grad[1], :c) == x
+
+            # Width-N Lifted inputs against a cache without a chunk rule (scalar dimension → no
+            # chunk built), and against a chunk rule of a different width, must raise a
+            # clear PreparedCacheError, not a MethodError/typeassert.
+            sq = z -> z^2
+            scalar_cache = Mooncake.prepare_derivative_cache(
+                sq, 1.5; config=Mooncake.Config(; kwargs...)
+            )
+            w3 = Mooncake.Lifted{Float64,3}(
+                1.5, Mooncake.Nfwd.NDual{Float64,3}(1.5, (1.0, 0.0, 0.0))
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                scalar_cache, Mooncake.zero_lifted(Val(3), sq), w3
+            )
+            wide_cache = Mooncake.prepare_derivative_cache(
+                mut_f, collect(1.0:12.0); config=Mooncake.Config(; kwargs...)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                wide_cache,
+                Mooncake.zero_lifted(Val(3), mut_f),
+                Mooncake.randn_lifted(Val(3), Xoshiro(1), collect(1.0:12.0)),
+            )
+            # Mixed-width slots whose FIRST slot matches the cache's chunk width must still raise a
+            # clear PreparedCacheError (every slot must share the width; checking only `first`
+            # would let a trailing differently-sized slot reach the chunk rule's OC as a typeassert).
+            chunk2_cache = Mooncake.prepare_derivative_cache(
+                f, x, y; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                chunk2_cache,
+                Mooncake.zero_lifted(Val(2), f),
+                Mooncake.zero_lifted(Val(2), x),
+                Mooncake.zero_lifted(Val(3), y),
+            )
+
+            # Exercise width-W vararg group assembly, beyond the fixed-arity chunk cases.
+            vararg_f = (a, bs...) -> a + sum(bs)
+            vararg_cache = Mooncake.prepare_derivative_cache(
+                vararg_f, x, y, 3.0; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(vararg_cache, vararg_f, x, y, 3.0) ==
+                (x + y + 3.0, (Mooncake.NoTangent(), 1.0, 1.0, 1.0))
+            # All-non-differentiable vararg group: `dual_type(Val(2), Tuple{Int,Int})` is `NoDual`,
+            # exercising the `group_v === NoDual ? NoDual()` collapse branch at width 2.
+            vararg_nd = (a, ns::Vararg{Int}) -> a + sum(ns)
+            vararg_nd_cache = Mooncake.prepare_derivative_cache(
+                vararg_nd, x, 2, 3; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(vararg_nd_cache, vararg_nd, x, 2, 3) == (
+                x + 5,
+                (Mooncake.NoTangent(), 1.0, Mooncake.NoTangent(), Mooncake.NoTangent()),
+            )
+
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)
             f32_scalar_cache = Mooncake.prepare_derivative_cache(
-                f32_scalar, x32; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
+                f32_scalar, x32; config=Mooncake.Config(; kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_scalar_cache, f32_scalar, x32) ==
                 (f32_scalar(x32), (Mooncake.NoTangent(), Float32(2x32 + cos(x32))))
@@ -923,7 +1904,7 @@ end
             f32_vec = x -> Float32(sum(abs2, x))
             x32_vec = Float32[x, y]
             f32_vec_cache = Mooncake.prepare_derivative_cache(
-                f32_vec, x32_vec; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
+                f32_vec, x32_vec; config=Mooncake.Config(; kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_vec_cache, f32_vec, x32_vec) ==
                 (f32_vec(x32_vec), (Mooncake.NoTangent(), Float32.(2 .* x32_vec)))
@@ -931,7 +1912,7 @@ end
             f32_tuple = t -> Float32(t[1]^2 + sin(t[2]))
             tuple_x32 = (Float32(x), Float32(y))
             f32_tuple_cache = Mooncake.prepare_derivative_cache(
-                f32_tuple, tuple_x32; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
+                f32_tuple, tuple_x32; config=Mooncake.Config(; kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_tuple_cache, f32_tuple, tuple_x32) == (
                 f32_tuple(tuple_x32),
@@ -941,130 +1922,584 @@ end
                 ),
             )
 
-            if get(kwargs, :debug_mode, false)
-                @test true
-            else
-                scalar_allocs = TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
-                )
-                @test scalar_allocs == 0
+            # A view's similar returns a Vector, so flat seeds mismatch its cache/rule type.
+            # Require the structured path and its parent-field gradient to agree with reverse.
+            view_f = v -> sum(abs2, v)
+            view_x = view(collect(1.0:6.0), 1:3)
+            view_cache = Mooncake.prepare_derivative_cache(
+                view_f, view_x; config=Mooncake.Config(; kwargs...)
+            )
+            view_val, view_grad = Mooncake.value_and_gradient!!(view_cache, view_f, view_x)
+            @test view_val == sum(abs2, view_x)
+            @test Mooncake.get_tangent_field(view_grad[2], :parent) ==
+                vcat(2 .* collect(1.0:3.0), zeros(3))
 
-                scalar_f = CountedChunkScalarCall()
-                scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    scalar_cache_grad_fwd, scalar_f, x, y
-                ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 1
+            # Rule registries bypass prepared-cache admission; check the sweep here.
+            @testset "vector with extra tangent dimensions" for data in
+                                                                (Float64[], [2.0, 4.0]),
+                W in (1, 8)
 
-                scalar_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
+                weighted_f = v -> v.weight
+                weighted_cache = Mooncake.prepare_derivative_cache(
+                    weighted_f,
+                    WeightedVector(data, 3.0);
+                    config=Mooncake.Config(; chunk_size=W, kwargs...),
+                )
+                for weight in (3.0, 5.0)
+                    value, grad = Mooncake.value_and_gradient!!(
+                        weighted_cache, weighted_f, WeightedVector(copy(data), weight)
+                    )
+                    @test value == weight
+                    @test TestUtils.has_equal_data(
+                        grad[2], Mooncake.Tangent((; data=zeros(length(data)), weight=1.0))
+                    )
+                end
+            end
+
+            # Nested arrays must match size, not only length: otherwise the rule sees the stale
+            # cached shape. Top-level cache validation cannot detect this.
+            nested_f = t -> sum(t[1] * permutedims(t[1]))
+            nested_cache = Mooncake.prepare_derivative_cache(
+                nested_f,
+                (reshape(collect(1.0:6.0), 2, 3),);
+                config=Mooncake.Config(; kwargs...),
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                nested_cache, nested_f, (reshape(collect(1.0:6.0), 3, 2),)
+            )
+            nested_A2 = reshape(collect(7.0:12.0), 2, 3)
+            @test first(
+                Mooncake.value_and_gradient!!(nested_cache, nested_f, (nested_A2,))
+            ) == nested_f((nested_A2,))
+
+            # Debug-mode rules wrap every rule and allocate, so the zero-allocation assertions
+            # below are checked outside debug mode only. Everything else here runs under it.
+            check_allocs = !get(kwargs, :debug_mode, false)
+            scalar_allocs = TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
+            )
+            check_allocs && @test scalar_allocs == 0
+
+            # Keep the width-1, automatic-width, singleton and friendly cases distinct.
+            x_arr = [x, y]
+            singleton_x_arr = [x]
+            for (args, chunk_size, friendly, calls, allocs) in (
+                ((x, y), nothing, false, 1, false),
+                ((x, y), 1, false, 2, false),
+                ((x_arr,), nothing, false, 1, true),
+                ((x_arr,), 1, false, 2, false),
+                ((singleton_x_arr,), nothing, false, 1, true),
+                ((singleton_x_arr,), nothing, true, 1, false),
+            )
+                scalar = first(args) isa Number
+                cf = scalar ? CountedChunkScalarCall() : CountedChunkArrayCall()
+                counter = scalar ? CHUNK_SCALAR_EVAL_COUNT : CHUNK_ARRAY_EVAL_COUNT
+                expected = if scalar
+                    (z, (Mooncake.NoTangent(), y - sin(x), x))
+                else
+                    a = only(args)
+                    (sum(abs2, a), (friendly ? cf : Mooncake.NoTangent(), 2 .* a))
+                end
+                counted_cache = Mooncake.prepare_derivative_cache(
+                    cf,
+                    args...;
                     config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, chunk_size=1
+                        debug_mode=false, friendly_tangents=friendly, chunk_size
                     ),
                 )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    scalar_cache_grad_fwd_chunked, scalar_f, x, y
-                ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 2
+                counter[] = 0
+                @test Mooncake.value_and_gradient!!(counted_cache, cf, args...) == expected
+                @test counter[] == calls
+                check_allocs &&
+                    allocs &&
+                    @test TestUtils.count_allocs(
+                        Mooncake.value_and_gradient!!, counted_cache, cf, args...
+                    ) == 0
+            end
 
-                array_f = CountedChunkArrayCall()
-                x_arr = [x, y]
-                array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
+            # Full and partial final chunks must both validate and run without allocation.
+            for n in (5, 10)
+                xn = collect(1.0:n)
+                fn = x -> sum(abs2, x)
+                cn = Mooncake.prepare_derivative_cache(
+                    fn,
+                    xn;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(array_cache_grad_fwd, array_f, x_arr) ==
-                    (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
-                ) == 0
-
-                array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, chunk_size=1
-                    ),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    array_cache_grad_fwd_chunked, array_f, x_arr
-                ) == (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 2
-
-                singleton_x_arr = [x]
-                singleton_array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    singleton_x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    singleton_array_cache_grad_fwd, array_f, singleton_x_arr
-                ) == (
-                    sum(abs2, singleton_x_arr), (Mooncake.NoTangent(), 2 .* singleton_x_arr)
-                )
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!,
-                    singleton_array_cache_grad_fwd,
-                    array_f,
-                    singleton_x_arr,
-                ) == 0
-
-                singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    singleton_x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=true),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    singleton_array_cache_grad_fwd_friendly, array_f, singleton_x_arr
-                ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-
-                # Regression: _validate_prepared_cache_inputs must not allocate.
-                # length-5 vector: small_vector_gradient_frule path (chunk_size=5),
-                # output_tangent is NTuple{5,Float64} (isa Tuple branch in extraction loop).
-                x5 = collect(1.0:5.0)
-                f5 = x -> sum(abs2, x)
-                cache_5 = Mooncake.prepare_derivative_cache(
-                    f5,
-                    x5;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                @test Mooncake.value_and_gradient!!(cache_5, f5, x5) ==
-                    (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, cache_5, f5, x5
-                ) == 0
-
-                # length-10 vector: gradient_rrule path (DOF > _CHUNK_NFWD_MAX_LANES = 8).
-                x10 = collect(1.0:10.0)
-                f10 = x -> sum(abs2, x)
-                cache_10 = Mooncake.prepare_derivative_cache(
-                    f10,
-                    x10;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                @test Mooncake.value_and_gradient!!(cache_10, f10, x10) ==
-                    (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, cache_10, f10, x10
+                @test Mooncake.value_and_gradient!!(cn, fn, xn) ==
+                    (sum(abs2, xn), (Mooncake.NoTangent(), 2 .* xn))
+                check_allocs && @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cn, fn, xn
                 ) == 0
             end
+
+            # Non-packable inputs (here a NamedTuple) also chunk through the generic
+            # chunked gradient path: multi-dimension builds a native chunk rule and the
+            # gradient is correct. (Such inputs were previously pinned to width 1.)
+            nt_x = (; a=1.3, b=2.1, c=0.7)
+            f_nt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+            cache_nt = Mooncake.prepare_derivative_cache(
+                f_nt, nt_x; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
+            )
+            @test getfield(cache_nt, :gradient_chunk_size).width > 1
+            @test getfield(cache_nt, :chunk_rule) !== nothing
+            y_nt, g_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, nt_x)
+            @test y_nt == f_nt(nt_x)
+            @test g_nt[2].a ≈ 2 * nt_x.a * nt_x.b + cos(nt_x.a) * nt_x.c
+            @test g_nt[2].b ≈ nt_x.a^2
+            @test g_nt[2].c ≈ sin(nt_x.a)
+
+            # Array-backed structured inputs take the zero-allocation leaf-table path
+            # (StructuredGradSeed): tuple/Matrix of float arrays — correct + zero-alloc.
+            ft = t -> sum(abs2, t[1]) + sum(abs2, t[2])
+            tx = ([1.0, 2.0, 3.0], [4.0, 5.0])
+            ct = Mooncake.prepare_derivative_cache(
+                ft, tx; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(ct, :gradient_seed) isa Mooncake.StructuredGradSeed
+            yt, gt = Mooncake.value_and_gradient!!(ct, ft, tx)
+            @test yt == ft(tx)
+            @test gt[2][1] ≈ 2 .* tx[1]
+            @test gt[2][2] ≈ 2 .* tx[2]
+            check_allocs &&
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, ct, ft, tx) == 0
+
+            fA = A -> sum(abs2, A)
+            Ax = [1.0 2.0; 3.0 4.0]
+            cA = Mooncake.prepare_derivative_cache(
+                fA, Ax; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(cA, :gradient_seed) isa Mooncake.StructuredGradSeed
+            check_allocs &&
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) == 0
+            _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
+            @test gA[2] ≈ 2 .* Ax
+
+            # Field rebinding can orphan cached leaves. Widths below the dimension count expose
+            # this on later chunks; repeated calls also check restoration across reuse.
+            fr = b -> (b.w=2 .* b.w; sum(abs2, b.w))
+            w0 = [1.0, 2.0, 3.0]
+            for W in (1, 2, 3, 4)
+                cr_b = Mooncake.prepare_derivative_cache(
+                    fr,
+                    RebindBox(copy(w0));
+                    config=Mooncake.Config(;
+                        friendly_tangents=false, chunk_size=W, kwargs...
+                    ),
+                )
+                @test getfield(cr_b, :gradient_seed) isa Mooncake.StructuredGradSeed
+                for _ in 1:2
+                    _, gr_b = Mooncake.value_and_gradient!!(cr_b, fr, RebindBox(copy(w0)))
+                    @test gr_b[2].fields.w ≈ 8 .* w0
+                end
+            end
+
+            # Primal refresh: prepare at one point, evaluate at another.
+            cr = Mooncake.prepare_derivative_cache(
+                ft,
+                ([1.0, 1.0, 1.0], [1.0, 1.0]);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            tx2 = ([2.0, 3.0, 4.0], [5.0, 6.0])
+            yr, gr = Mooncake.value_and_gradient!!(cr, ft, tx2)
+            @test yr == ft(tx2)
+            @test gr[2][1] ≈ 2 .* tx2[1]
+            @test gr[2][2] ≈ 2 .* tx2[2]
+
+            # Dimension 10 forces two chunks: restore seed primals and zero partials each chunk
+            # to prevent mutation from compounding.
+            fip = t -> begin
+                t[1] .= t[1] .* 2.0
+                sum(abs2, t[1])
+            end
+            tip0 = (collect(1.0:10.0),)
+            cip = Mooncake.prepare_derivative_cache(
+                fip, tip0; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            tip = (collect(1.0:10.0),)
+            _, gip = Mooncake.value_and_gradient!!(cip, fip, tip)
+            @test gip[2][1] ≈ 8 .* collect(1.0:10.0)   # d/dt Σ(2t)² = 8t, across both chunks
+            @test tip == (collect(1.0:10.0),)          # user input not mutated
+
+            # The seed must not alias the user's prepare-time arrays: prepare AND evaluate at
+            # the SAME object with an in-place `f` — the input must be left unchanged.
+            fsame = t -> begin
+                t[1] .= t[1] .* 2.0
+                sum(abs2, t[1]) + sum(abs2, t[2])
+            end
+            tsame = ([1.0, 2.0, 3.0], [4.0, 5.0])
+            csame = Mooncake.prepare_derivative_cache(
+                fsame, tsame; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            _, gsame = Mooncake.value_and_gradient!!(csame, fsame, tsame)  # same object
+            @test tsame == ([1.0, 2.0, 3.0], [4.0, 5.0])   # user input not clobbered
+            @test gsame[2][1] ≈ 8 .* [1.0, 2.0, 3.0]
+            @test gsame[2][2] ≈ 2 .* [4.0, 5.0]
+
+            # Zero-dimension input (no float dimensions) with an in-place `f`: the total_dim==0 generic
+            # branch must also snapshot/restore the user's input.
+            fz0 = x -> (x[1] += 1; 2.5)
+            xz0 = [10, 20, 30]
+            cz0 = Mooncake.prepare_derivative_cache(
+                fz0, xz0; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            yz0, _ = Mooncake.value_and_gradient!!(cz0, fz0, xz0)
+            @test yz0 == 2.5
+            @test xz0 == [10, 20, 30]                      # user input not mutated
+
+            # Mixed array + scalar input has a non-array dimension, so the gather bails and the
+            # generic chunked path runs — still correct.
+            fmix = nt -> sum(nt.v) + nt.s^2
+            mx = (; v=[1.0, 2.0], s=3.0)
+            cmix = Mooncake.prepare_derivative_cache(
+                fmix, mx; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
+            )
+            @test !(getfield(cmix, :gradient_seed) isa Mooncake.StructuredGradSeed)
+            _, gmix = Mooncake.value_and_gradient!!(cmix, fmix, mx)
+            @test gmix[2].v ≈ ones(2)
+            @test gmix[2].s ≈ 2 * mx.s
+
+            # Complex leaves use the layout path; widths splitting an element's real/imaginary
+            # dimensions check range arithmetic. Rule registries cannot assert seed-path admission.
+            @testset "complex leaves take the layout path, chunk width $W" for W in
+                                                                               (1, 3, 8)
+                fcx = nt -> sum(abs2, nt.p) + 2 * sum(abs2, nt.q)
+                cx = (p=ComplexF64[1 + 2im, 3 + 4im], q=ComplexF64[5 + 6im])
+                ccx = Mooncake.prepare_derivative_cache(
+                    fcx, cx; config=Mooncake.Config(; chunk_size=W, kwargs...)
+                )
+                @test getfield(ccx, :gradient_seed) isa Mooncake.StructuredGradSeed
+                _, gcx = Mooncake.value_and_gradient!!(ccx, fcx, cx)
+                @test gcx[2].p ≈ 2 .* cx.p
+                @test gcx[2].q ≈ 4 .* cx.q
+            end
+
+            # Isbits scalar structures must use IsbitsGradSeed and remain allocation-free.
+            fnt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+            ntx = (; a=1.3, b=2.1, c=0.7)
+            cnt = Mooncake.prepare_derivative_cache(
+                fnt, ntx; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(cnt, :gradient_seed) isa Mooncake.IsbitsGradSeed
+            ynt, gnt = Mooncake.value_and_gradient!!(cnt, fnt, ntx)
+            @test ynt == fnt(ntx)
+            @test gnt[2].a ≈ 2 * ntx.a * ntx.b + cos(ntx.a) * ntx.c
+            @test gnt[2].b ≈ ntx.a^2
+            @test gnt[2].c ≈ sin(ntx.a)
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, cnt, fnt, ntx
+            ) == 0
+
+            # immutable struct of scalars: native gradient is a `Tangent` (scattered via the
+            # `Tangent` branch), and prepare-at-x0/evaluate-at-x1 (primal refresh) is correct.
+            fsp = p -> p.x1^2 * p.x2
+            csp = Mooncake.prepare_derivative_cache(
+                fsp,
+                SimplePair(1.0, 1.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test getfield(csp, :gradient_seed) isa Mooncake.IsbitsGradSeed
+            ysp, gsp = Mooncake.value_and_gradient!!(csp, fsp, SimplePair(3.0, 4.0))
+            @test ysp == fsp(SimplePair(3.0, 4.0))
+            @test gsp[2].fields.x1 ≈ 2 * 3.0 * 4.0
+            @test gsp[2].fields.x2 ≈ 3.0^2
+
+            # Multi-chunk scalar input (dimension 10 > max chunk width): correct + zero-alloc.
+            nt10 = NamedTuple{Tuple(Symbol.("x", 1:10))}(ntuple(Float64, 10))
+            f10 = nt -> sum(abs2, values(nt))
+            c10 = Mooncake.prepare_derivative_cache(
+                f10, nt10; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(c10, :gradient_chunk_size).width < 10
+            _, g10 = Mooncake.value_and_gradient!!(c10, f10, nt10)
+            @test g10[2].x1 ≈ 2.0
+            @test g10[2].x10 ≈ 20.0
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, c10, f10, nt10
+            ) == 0
+
+            # Complex scalar dimensions have an isbits V but two dimensions per element, which the isbits
+            # barrier's scatter cannot handle — they must take the generic path, not crash.
+            fz = z -> abs2(z)
+            cz = Mooncake.prepare_derivative_cache(
+                fz,
+                1.0 + 2.0im;
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(cz, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            yz, gz = Mooncake.value_and_gradient!!(cz, fz, 1.0 + 2.0im)
+            @test yz == abs2(1.0 + 2.0im)
+            @test gz[2] ≈ 2.0 + 4.0im
+            fzt = t -> abs2(t[1]) + t[2]^2
+            czt = Mooncake.prepare_derivative_cache(
+                fzt,
+                (1.0 + 2.0im, 3.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(czt, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            _, gzt = Mooncake.value_and_gradient!!(czt, fzt, (1.0 + 2.0im, 3.0))
+            @test gzt[2] == (2.0 + 4.0im, 6.0)
+
+            # A non-isbits `f` (closure capturing a Vector) over scalar args must NOT take the
+            # isbits barrier (its per-chunk seed rebuild would allocate) — generic path instead.
+            clo = let k = [10.0]
+                x -> k[1] * x.a + x.b^2
+            end
+            cclo = Mooncake.prepare_derivative_cache(
+                clo,
+                (; a=1.0, b=2.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(cclo, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            _, gclo = Mooncake.value_and_gradient!!(cclo, clo, (; a=1.0, b=2.0))
+            @test gclo[2].a ≈ 10.0
+            @test gclo[2].b ≈ 4.0
+        end
+
+        @testset "a mutating `f` over one repeated argument shares partials" begin
+            # Aliased primals must share partials through one lift cache. Mutation through one
+            # argument must affect the other's derivative too; a non-mutating product cannot expose
+            # independent partial blocks because its product rule still gives the right answer.
+            fmut(x, y) = (x .*= 2.0; sum(y))
+            mk() = collect(1.0:4.0)
+            # Analytic: g(a) = 2*sum(a), so the value is 20.0 and the JVP along ones(4) is 8.0.
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                a = mk()
+                cache = Mooncake.prepare_derivative_cache(
+                    fmut, a, a; config=Mooncake.Config(; friendly_tangents=fr, kwargs...)
+                )
+                # ONE array passed at both positions — `mk()` twice would be two distinct
+                # arrays, and the prepared-aliased cache rightly refuses that.
+                aa, dd = mk(), ones(4)
+                v, d = Mooncake.value_and_derivative!!(
+                    cache, (fmut, Mooncake.NoTangent()), (aa, dd), (aa, dd)
+                )
+                @test (v, d) == (20.0, 8.0)
+            end
+            # The rule-level tuple method takes no `Config` at all and had the same gap.
+            let a = mk()
+                aa, dd = mk(), ones(4)
+                v, d = Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, dd),
+                    (aa, dd),
+                )
+                @test (v, d) == (20.0, 8.0)
+                # Rule-direct tuple calls must also refuse conflicting tangents for shared storage;
+                # choosing the first seed gives an arbitrary JVP.
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, ones(4)),
+                    (aa, zeros(4)),
+                )
+                @test_throws "same mutable object" Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, ones(4)),
+                    (aa, zeros(4)),
+                )
+            end
+        end
+
+        @testset "friendly cache refuses only prepared-aliased/called-distinct" begin
+            # Prepare-time aliased arguments share one tangent buffer, so a call with distinct
+            # arguments leaves both positions holding the last tangent written: 6.0 for a truth
+            # of 5.0. Reverse already rejects this.
+            g_al = (a, b) -> sum(a .* b)
+            X_al = [1.0, 2.0]
+            A_al, dA_al = [1.0, 2.0], [1.0, 0.0]
+            B_al, dB_al = [3.0, 4.0], [0.0, 1.0]
+            friendly = Mooncake.Config(; friendly_tangents=true, kwargs...)
+            c_al = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=friendly)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                c_al, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
+            )
+            # The opposite direction is correct and must keep working: distinct buffers each hold
+            # the caller's seed, and the aliased primal receives both.
+            c_di = Mooncake.prepare_derivative_cache(g_al, A_al, B_al; config=friendly)
+            dX_al = [1.0, 1.0]
+            v_di, d_di = Mooncake.value_and_derivative!!(
+                c_di, (g_al, Mooncake.NoTangent()), (X_al, dX_al), (X_al, dX_al)
+            )
+            @test d_di ≈ 2 * sum(dX_al .* X_al)
+            # The non-friendly method needs no check: it lifts the caller's own tangents afresh.
+            c_nf = Mooncake.prepare_derivative_cache(g_al, X_al, X_al)
+            _, d_nf = Mooncake.value_and_derivative!!(
+                c_nf, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
+            )
+            @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
+
+            # Conflicting tangents for one mutable primal are ill-posed in both tuple interfaces;
+            # choosing the first or last seed would silently produce different JVPs.
+            for cfg in (friendly, Mooncake.Config(; friendly_tangents=false, kwargs...))
+                c_rep = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=cfg)
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dB_al)
+                )
+                # The same tangent at both positions is well-posed and still answered.
+                _, d_rep = Mooncake.value_and_derivative!!(
+                    c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dA_al)
+                )
+                @test d_rep ≈ 2 * sum(dA_al .* X_al)
+            end
+
+            # A callable's captured argument evades top-level identity checks but still requires
+            # one shared tangent. Only the non-friendly cache can compare these supplied seeds;
+            # see `_check_shared_input_tangents` for the other entry points' limitations.
+            mk_capturing(a) = y -> sum(y) * sum(a)
+            cap_arr = [1.0, 2.0]
+            d_cap = [1.0, 0.0]
+            f_cap = mk_capturing(cap_arr)
+            c_cap = Mooncake.prepare_derivative_cache(
+                f_cap, cap_arr; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                c_cap, (f_cap, Mooncake.zero_tangent(f_cap)), (cap_arr, d_cap)
+            )
+            # One tangent shared across both positions is well-posed and still answered.
+            _, d_shared = Mooncake.value_and_derivative!!(
+                c_cap, (f_cap, Mooncake.Tangent((a=d_cap,))), (cap_arr, d_cap)
+            )
+            @test d_shared ≈ 2 * sum(d_cap) * sum(cap_arr)
+
+            # One coherently shared leaf cannot vouch for a second leaf with conflicting seeds.
+            # Check both conflicting directions, then the fully coherent case.
+            ap_a = [1.0]
+            ap_b = [1.0]
+            f_ap = FwdAliasPair(ap_a, ap_b)
+            c_ap = Mooncake.prepare_derivative_cache(
+                f_ap,
+                ap_a,
+                ap_b;
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            for dq in ([0.0], [5.0])
+                dp = [1.0]  # `p` shared, exactly as the caller should
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    c_ap, (f_ap, Mooncake.Tangent((p=dp, q=dq))), (ap_a, dp), (ap_b, [1.0])
+                )
+            end
+            # Both leaves shared is well-posed and still answered.
+            dp_ap = [1.0]
+            dq_ap = [1.0]
+            _, d_ap = Mooncake.value_and_derivative!!(
+                c_ap,
+                (f_ap, Mooncake.Tangent((p=dp_ap, q=dq_ap))),
+                (ap_a, dp_ap),
+                (ap_b, dq_ap),
+            )
+            @test d_ap ≈ 2 * sum(dp_ap .* ap_a) + 2 * sum(dq_ap .* ap_b)
+        end
+
+        @testset "reused cache reads call-time non-differentiable state" begin
+            # Refresh call-time nondifferentiable fields as well as differentiable buffers.
+            w491 = [1.0, 2.0, 3.0, 4.0]
+            plain = Mooncake.Config(; friendly_tangents=false, kwargs...)
+            c491 = Mooncake.prepare_derivative_cache(
+                fwd_prefix_sum, FwdPrefixSum(w491, 2); config=plain
+            )
+            @test getfield(c491, :gradient_seed) isa Mooncake.StructuredGradSeed
+            v491, g491 = Mooncake.value_and_gradient!!(
+                c491, fwd_prefix_sum, FwdPrefixSum(w491, 4)
+            )
+            @test v491 ≈ sum(w491)
+            @test g491[2].fields.w ≈ ones(4)
+
+            # A `SubArray`'s indices are non-differentiable too, and `_check_prepared_cache`
+            # cannot catch a change in them: both views have the same type and the same size.
+            p491 = collect(1.0:6.0)
+            fv491 = v -> sum(v)
+            cv491 = Mooncake.prepare_derivative_cache(fv491, view(p491, 1:3); config=plain)
+            vv491, gv491 = Mooncake.value_and_gradient!!(cv491, fv491, view(p491, 4:6))
+            @test vv491 ≈ sum(view(p491, 4:6))
+            @test gv491[2].fields.parent ≈ [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        end
+
+        @testset "refreshing non-differentiable state keeps the slot coherent and the caller's" begin
+            plain498 = Mooncake.Config(; friendly_tangents=false, kwargs...)
+            # Refuse call-time differentiable values in prepared NoDual slots before an incoherent
+            # slot reaches the dual IR; the unchanged outer struct type hides this from cache checks.
+            s498 = Mooncake.prepare_derivative_cache(
+                fwd_abstract_field, FwdAbstractField(2, [1.0, 2.0, 3.0]); config=plain498
+            )
+            @test Mooncake.value_and_gradient!!(
+                s498, fwd_abstract_field, FwdAbstractField(5, [1.0, 2.0, 3.0])
+            )[1] ≈ 30.0
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                s498, fwd_abstract_field, FwdAbstractField(3.0, [1.0, 2.0, 3.0])
+            )
+
+            # A MUTABLE non-differentiable argument must be copied into the cache's own object, not
+            # taken from the call: `f` mutates it, and taking it wrote through to the user's value.
+            c500 = FwdCounter(0)
+            w500 = collect(1.0:16.0)
+            cache500 = Mooncake.prepare_derivative_cache(
+                fwd_counting, w500, c500; config=plain498
+            )
+            v500, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
+            @test c500.n == 0                 # the caller's object is untouched
+            @test g500[2] ≈ ones(16)
+            # Two chunks expose nondifferentiable-state mutation compounding; one chunk would pass.
+            @test v500 ≈ fwd_counting(collect(1.0:16.0), FwdCounter(0))
+
+            # A `const` field: the copy into the cache's object must write it, which `setfield!`
+            # cannot do at all: it threw for every call, whether or not the field had changed.
+            cache501 = Mooncake.prepare_derivative_cache(
+                fwd_const_tag, w500, FwdConstTag(1, 0); config=plain498
+            )
+            c501 = FwdConstTag(7, 0)
+            v501, g501 = Mooncake.value_and_gradient!!(cache501, fwd_const_tag, w500, c501)
+            @test v501 ≈ fwd_const_tag(collect(1.0:16.0), FwdConstTag(7, 0))
+            @test (c501.tag, c501.n) == (7, 0)
+            @test g501[2] ≈ ones(16)
+
+            # A mutable NESTED in the argument: copying one level deep left it shared with the
+            # caller, so `f`'s in-place update wrote through and compounded across chunks.
+            o502 = FwdNestedCounter(FwdCounter(0))
+            cache502 = Mooncake.prepare_derivative_cache(
+                fwd_nested_counting, w500, FwdNestedCounter(FwdCounter(0)); config=plain498
+            )
+            v502, g502 = Mooncake.value_and_gradient!!(
+                cache502, fwd_nested_counting, w500, o502
+            )
+            @test o502.inner.n == 0
+            @test v502 ≈
+                fwd_nested_counting(collect(1.0:16.0), FwdNestedCounter(FwdCounter(0)))
+            @test g502[2] ≈ ones(16)
+
+            # A `Ptr` argument: the aliasing check must use the same tangent entry point as the
+            # shared-dimension count it is compared against, which returns the documented placeholder
+            # rather than throwing.
+            p499 = [3.0]
+            @test Mooncake.prepare_derivative_cache(
+                fwd_load_ptr, pointer(p499); config=plain498
+            ) isa Any
+        end
+
+        @testset "cache copy refuses a size it cannot hold" begin
+            # Inbounds copies must reject larger nested sources: isassigned is false out of range
+            # and cannot protect the destination from an overrun.
+            f_nest = x -> sum(sum, x)
+            c_nest = Mooncake.prepare_derivative_cache(f_nest, [collect(1.0:2.0)])
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                c_nest, f_nest, [collect(1.0:400.0)]
+            )
+            # The OUTPUT side: the input shape is unchanged, so input validation passes, and only
+            # the non-differentiable `n` moves the output length.
+            f_out = (v, n) -> fill(sum(v), n)
+            c_out = Mooncake.prepare_pullback_cache(f_out, ones(2), 2)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_pullback!!(
+                c_out, ones(400), f_out, ones(2), 400
+            )
+            # A self-referential reference-element array: the two-argument copy recursed into
+            # elements two-argument and never reached the cycle-aware family, so it overflowed the
+            # stack. Reverse mode always handled this shape.
+            f_cyc = v::Vector{Any} -> v[1]::Float64 * 2.0
+            mk_cyc = () -> (a=Any[1.0]; push!(a, a); a)
+            c_cyc = Mooncake.prepare_derivative_cache(f_cyc, mk_cyc())
+            @test Mooncake.value_and_gradient!!(c_cyc, f_cyc, mk_cyc())[1] == 2.0
         end
 
         @testset "forward cache mismatch errors" begin
@@ -1125,88 +2560,46 @@ end
             )
         end
 
-        @testset "prepare_derivative_cache nfwd opt-out" begin
+        @testset "native chunk cache" begin
+            # A multi-dimension signature builds a native width-`W` chunk frule on the cache.
             cache_supported = Mooncake.prepare_derivative_cache(
                 (a, b) -> a * b + sin(a),
                 x,
                 y;
                 config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
             )
-            cache_supported_no_nfwd = Mooncake.prepare_derivative_cache(
-                (a, b) -> a * b + sin(a),
-                x,
-                y;
-                config=Mooncake.Config(;
-                    debug_mode=false, friendly_tangents=false, enable_nfwd=false
-                ),
-            )
-            @test !isnothing(getfield(cache_supported, :chunkcache))
-            @test isnothing(getfield(cache_supported_no_nfwd, :chunkcache))
+            @test !isnothing(getfield(cache_supported, :chunk_rule))
 
-            @testset "$(label)" for (label, f, args, counter, no_nfwd_count) in (
-                ("scalar", CountedChunkScalarCall(), (x, y), CHUNK_SCALAR_EVAL_COUNT, 2),
-                ("array", CountedChunkArrayCall(), ([x, y],), CHUNK_ARRAY_EVAL_COUNT, 2),
+            # One width-2 native chunk pass covers both directions, so the primal runs once.
+            @testset "$(label)" for (label, f, args, counter) in (
+                ("scalar", CountedChunkScalarCall(), (x, y), CHUNK_SCALAR_EVAL_COUNT),
+                ("array", CountedChunkArrayCall(), ([x, y],), CHUNK_ARRAY_EVAL_COUNT),
             )
                 cache = Mooncake.prepare_derivative_cache(
                     f,
                     args...;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                cache_no_nfwd = Mooncake.prepare_derivative_cache(
-                    f,
-                    args...;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
-                    ),
-                )
-
                 counter[] = 0
                 Mooncake.value_and_gradient!!(cache, f, args...)
                 @test counter[] == 1
-
-                counter[] = 0
-                Mooncake.value_and_gradient!!(cache_no_nfwd, f, args...)
-                @test counter[] == no_nfwd_count
             end
         end
 
-        @testset "nfwd runtime NDual errors propagate raw" begin
-            let
-                _ndual_width_sensitive_sum(x, y) = x + y
-                function _ndual_width_sensitive_sum(
-                    x::Mooncake.Nfwd.NDual{T,N}, y
-                ) where {T,N}
-                    N == 1 && return x + y
-                    throw(Mooncake.Nfwd.NDualUnsupportedError(:test_width_sensitive_sum))
-                end
-
+        @testset "chunked forward through array growth" begin
+            # Growing a lifted array grows its partials block, and every lane must survive the
+            # growth — not just lane 1. On Julia 1.11+ growth is a derived rule, which the
+            # registered test cases run at width 1 only, so this is the width>1 cover.
+            grow(v) = (w=copy(v); push!(w, 2 * v[1]); pushfirst!(w, sum(v)); sum(abs2, w))
+            v = randn(StableRNG(123), 6)
+            oracle = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(grow, v), grow, v
+            )[2][2]
+            @testset "chunk_size $W" for W in (1, 2, 3, 5)
                 cache = Mooncake.prepare_derivative_cache(
-                    _ndual_width_sensitive_sum,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                    grow, v; config=Mooncake.Config(; chunk_size=W)
                 )
-                err = try
-                    Mooncake.value_and_gradient!!(cache, _ndual_width_sensitive_sum, x, y)
-                    nothing
-                catch err
-                    err
-                end
-                @test err isa Mooncake.Nfwd.NDualUnsupportedError
-
-                cache_no_nfwd = Mooncake.prepare_derivative_cache(
-                    _ndual_width_sensitive_sum,
-                    x,
-                    y;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
-                    ),
-                )
-                @test Mooncake.value_and_gradient!!(
-                    cache_no_nfwd, _ndual_width_sensitive_sum, x, y
-                ) == (
-                    _ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y))
-                )
+                @test Mooncake.value_and_gradient!!(cache, grow, v)[2][2] ≈ oracle
             end
         end
 
@@ -1232,6 +2625,38 @@ end
                     (f_jac(x_jac2), expected_jac2)
             end
 
+            @testset "returned value survives the input restore and a later call" begin
+                # Non-packable: the seed aliases the caller's `x`, so for an `f` returning its
+                # mutated argument the final restore rewrote the value already returned.
+                scale2!(v) = (v.=2 .* v; v)
+                sc = FwdInPlaceScaler([2.0, 2.0, 2.0])
+                cache_ip = Mooncake.prepare_derivative_cache(sc, [1.0, 2.0, 3.0])
+                v_ip, _ = Mooncake.value_and_jacobian!!(cache_ip, sc, [1.0, 2.0, 3.0])
+                @test v_ip == [2.0, 4.0, 6.0]
+                # The packable path returns cache-owned value/J buffers. Pin reuse behaviour so a
+                # future copy cannot silently change the documented zero-allocation contract.
+                cache_pk = Mooncake.prepare_derivative_cache(scale2!, [1.0, 2.0, 3.0])
+                v_first, _ = Mooncake.value_and_jacobian!!(
+                    cache_pk, scale2!, [1.0, 2.0, 3.0]
+                )
+                @test v_first == [2.0, 4.0, 6.0]
+                Mooncake.value_and_jacobian!!(cache_pk, scale2!, [10.0, 20.0, 30.0])
+                @test v_first == [20.0, 40.0, 60.0]
+            end
+
+            # Allocation regression: with an allocation-free primal the packable forward path
+            # reuses the cached seed and Jacobian buffer and must not allocate, matching the
+            # zero-allocation `value_and_gradient!!`. Covers width-1 and a chunked width.
+            for cs in (1, 2)
+                af_cache = Mooncake.prepare_derivative_cache(
+                    identity, x_jac; config=Mooncake.Config(; chunk_size=cs)
+                )
+                Mooncake.value_and_jacobian!!(af_cache, identity, x_jac)  # warm up / size buffer
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_jacobian!!, af_cache, identity, x_jac
+                ) == 0
+            end
+
             scalar_out_fwd_cache = Mooncake.prepare_derivative_cache(
                 sum,
                 x_jac;
@@ -1248,6 +2673,16 @@ end
             )
             @test_throws "value_and_jacobian!! only supports AbstractVector outputs" Mooncake.value_and_jacobian!!(
                 scalar_out_rev_cache, sum, x_jac
+            )
+
+            f_wrapper_out = x -> view(x .* x, 1:2)
+            wrapper_out_cache = Mooncake.prepare_derivative_cache(
+                f_wrapper_out,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws "only supports dense vector outputs" Mooncake.value_and_jacobian!!(
+                wrapper_out_cache, f_wrapper_out, x_jac
             )
 
             f_empty_jac = x -> Float64[]
@@ -1278,8 +2713,14 @@ end
                 (f_jac(x_jac), expected_jac)
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
-            @test_throws "value_and_jacobian!! only supports cache types Cache and ForwardCache" Mooncake.value_and_jacobian!!(
+            @test_throws "value_and_jacobian!! only supports cache types Cache and FCache" Mooncake.value_and_jacobian!!(
                 hvp_cache, sin, 1.0
+            )
+
+            # Multi-argument calls get a clear error, not an opaque MethodError.
+            multi_cache = Mooncake.prepare_derivative_cache(x -> [sum(x)], [1.0, 2.0])
+            @test_throws "supports only a single AbstractVector input" Mooncake.value_and_jacobian!!(
+                multi_cache, x -> [sum(x)], [1.0, 2.0], [3.0]
             )
 
             f_mut_jac = x -> (x .*= 2; x .^ 2)
@@ -1313,6 +2754,49 @@ end
             @test val_mut_jac_chunked == 4 .* x_mut_jac_chunked .^ 2
             @test jac_mut_jac_chunked ≈ Diagonal(8 .* x_mut_jac_chunked)
 
+            # Gradient and derivative calls must restore mutated inputs too; multiple chunks
+            # expose mutations compounded across sweeps.
+            x_mut0 = [1.0, 2.0, 3.0]
+            g_mut(x) = sum((x .*= 2; x .^ 2))   # true grad 8x
+            for cs in (1, 2, 3)
+                gc = Mooncake.prepare_derivative_cache(
+                    g_mut, copy(x_mut0); config=Mooncake.Config(; chunk_size=cs)
+                )
+                xg = copy(x_mut0)
+                _, (_, grad_mut) = Mooncake.value_and_gradient!!(gc, g_mut, xg)
+                @test grad_mut ≈ 8 .* x_mut0
+                @test xg == x_mut0
+            end
+            dc = Mooncake.prepare_derivative_cache(f_mut_jac, copy(x_mut0))
+            xd = copy(x_mut0)
+            Mooncake.value_and_derivative!!(
+                dc, (f_mut_jac, Mooncake.NoTangent()), (xd, [1.0, 0.0, 0.0])
+            )
+            @test xd == x_mut0
+
+            # Forward calls must restore inputs even after an exception. Reverse is excluded:
+            # restoration needs a pullback that the throwing forward pass never reaches;
+            # see `known_limitations.md`.
+            x_throw = [10.0, 2.0, 3.0]
+            f_throw(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : sum(x .^ 2))
+            for friendly in (true, false)
+                tc = Mooncake.prepare_derivative_cache(
+                    f_throw,
+                    copy(x_mut0);
+                    config=Mooncake.Config(; friendly_tangents=friendly),
+                )
+                xt = copy(x_throw)
+                @test_throws DomainError Mooncake.value_and_derivative!!(
+                    tc, (f_throw, Mooncake.NoTangent()), (xt, [1.0, 0.0, 0.0])
+                )
+                @test xt == x_throw
+            end
+            f_throw_vec(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : x .^ 2)
+            jt = Mooncake.prepare_derivative_cache(f_throw_vec, copy(x_mut0))
+            xjt = copy(x_throw)
+            @test_throws DomainError Mooncake.value_and_jacobian!!(jt, f_throw_vec, xjt)
+            @test xjt == x_throw
+
             x_jac_parent = [x, y, 0.0]
             x_jac_view = @view x_jac_parent[1:2]
             f_view_jac = x -> [x[1]^2, x[1] + x[2]]
@@ -1327,114 +2811,179 @@ end
                     view_cache_jac, f_view_jac, x_jac_view
                 )
             end
-        end
 
-        @testset "prepare_derivative_cache does not execute nfwd-eligible functions" begin
+            # A differentiable capture can make W exceed the input length on the generic Jacobian
+            # path. Check first-chunk bounds and agreement with reverse under --check-bounds=yes.
             let
-                NFWD_PREPARE_COUNTER[] = 0
-
-                cache = Mooncake.prepare_derivative_cache(
-                    _ndual_prepare_side_effect,
-                    x;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                @test NFWD_PREPARE_COUNTER[] == 0
-
-                err = try
-                    Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x)
-                    nothing
-                catch err
-                    err
+                g_cap = let w = collect(1.0:7.0)
+                    z -> [z[1] * sum(w), z[1] + z[2]]
                 end
-                @test err isa Mooncake.Nfwd.NDualUnsupportedError
-                @test NFWD_PREPARE_COUNTER[] == 0
-
-                cache_no_nfwd = Mooncake.prepare_derivative_cache(
-                    _ndual_prepare_side_effect,
-                    x;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
-                    ),
+                z = [0.5, 0.5]
+                cf = Mooncake.prepare_derivative_cache(g_cap, z)
+                @test getfield(cf, :gradient_chunk_size).width > length(z)  # W > total_dim
+                _, Jf = Mooncake.value_and_jacobian!!(cf, g_cap, z)
+                _, Jr = Mooncake.value_and_jacobian!!(
+                    Mooncake.prepare_pullback_cache(g_cap, z), g_cap, z
                 )
-                @test Mooncake.value_and_gradient!!(
-                    cache_no_nfwd, _ndual_prepare_side_effect, x
-                ) == (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
-                @test NFWD_PREPARE_COUNTER[] == 1
+                @test Jf == Jr == [28.0 0.0; 1.0 1.0]
+            end
+
+            # A captured array that is also the input must share partials, so x's basis direction
+            # reaches both occurrences through mutation.
+            let
+                w_al = [1.0, 2.0, 3.0]
+                sc_al = FwdInPlaceScaler(w_al)
+                _, Jf_al = Mooncake.value_and_jacobian!!(
+                    Mooncake.prepare_derivative_cache(sc_al, w_al), sc_al, w_al
+                )
+                @test Jf_al == [2.0 0.0 0.0; 0.0 4.0 0.0; 0.0 0.0 6.0]
+                @test w_al == [1.0, 2.0, 3.0]
             end
         end
 
-        @testset "small-vector cached seed buffer is reset between calls" begin
+        @testset "prepare_derivative_cache does not execute the function" begin
             let
-                small_vector_probe_mutation(x) = sum(x)
-                function small_vector_probe_mutation(
-                    x::Vector{Mooncake.Nfwd.NDual{T,N}}
-                ) where {T,N}
-                    @inbounds for i in eachindex(x)
-                        xi = x[i]
-                        x[i] = Mooncake.Nfwd.NDual{T,N}(
-                            xi.value, ntuple(k -> xi.partials[k] + xi.partials[k], Val(N))
-                        )
-                    end
-                    return sum(x)
-                end
-
-                x_arr = [x, y]
+                # Cache construction transforms IR but never runs the primal.
+                NFWD_PREPARE_COUNTER[] = 0
                 cache = Mooncake.prepare_derivative_cache(
-                    small_vector_probe_mutation,
-                    x_arr;
+                    _ndual_prepare_side_effect,
+                    x;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                @test !isnothing(cache.chunkcache)
-                @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
-                # Each runtime call doubles the active seed lane once; if the cached seed
-                # were not restored to identity before reuse, the second call would drift.
-                expected = (
-                    sum(x_arr),
-                    (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))),
-                )
-                @test Mooncake.value_and_gradient!!(
-                    cache, small_vector_probe_mutation, x_arr
-                ) == expected
-                @test Mooncake.value_and_gradient!!(
-                    cache, small_vector_probe_mutation, x_arr
-                ) == expected
+                @test NFWD_PREPARE_COUNTER[] == 0
+
+                # The scalar gradient then runs the primal exactly once.
+                NFWD_PREPARE_COUNTER[] = 0
+                @test Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x) ==
+                    (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
+                @test NFWD_PREPARE_COUNTER[] == 1
             end
         end
     end
 
     @testset "value_and_hvp!!" begin
         TestUtils.test_hook(Val(:allow_unstable_hvp_interface_test)) do
-            @testset "fcache dof skips undefined builtin-array slots" begin
+            @testset "fcache tangent_dim skips undefined builtin-array slots" begin
                 x = Vector{Any}(undef, 2)
                 x[1] = 1.0
-                @test Mooncake._fcache_gradient_input_dof(x) == 1
+                @test Mooncake.tangent_dim(x) == 1
             end
 
-            @testset "multi-argument HVP validates direction arity" begin
+            @testset "multi-argument HVP is rejected" begin
+                # Like `value_and_jacobian!!`, HVP supports only a single vector input;
+                # rejected eagerly at prepare and at the compute call.
                 f(x, y) = sum(x .* x) + sum(y .* y)
                 x = [1.0, 2.0]
                 y = [3.0]
-                cache = prepare_hvp_cache(f, x, y)
-                @test_throws ArgumentError value_and_hvp!!(cache, f, ([1.0, 0.0],), x, y)
+                @test_throws ArgumentError prepare_hvp_cache(f, x, y)
+                cache = prepare_hvp_cache(sum, x)
+                @test_throws ArgumentError value_and_hvp!!(
+                    cache, sum, ([1.0, 0.0], [1.0]), x, y
+                )
             end
 
-            @testset "HVP validates tangent shapes" begin
-                f(x, y) = sum(x .* x) + sum(y .* y)
+            @testset "shared storage admission" begin
+                # Rule registry rows call rules directly; this checks prepared-cache admission instead.
+                makers = (
+                    a -> (x -> x[1] * a[1] + x[2] * a[2]),
+                    a -> (x -> x[1]^2 * a[1] + x[2]^2 * a[2]),
+                )
+                for make_f in makers
+                    a = [1.0, 2.0]
+                    v = [0.3, -0.7]
+                    captures = @static VERSION >= v"1.11-rc4" ? (a, a.ref.mem) : (a,)
+                    for captured in captures
+                        f = make_f(captured)
+                        cache = prepare_hvp_cache(f, a)
+                        TestUtils._test_throws(
+                            ArgumentError, "supplied tangents do not share"
+                        ) do
+                            value_and_hvp!!(cache, f, v, a)
+                        end
+                    end
+                end
+                @static if VERSION >= v"1.11-rc4"
+                    a = [1.0, 2.0]
+                    b = [3.0, 4.0]
+                    f = let m = a.ref.mem, b = b, r = reshape(b, 2, 1)
+                        x -> x[1] * m[1] + x[2] * m[2] + sum(b) + sum(r)
+                    end
+                    cache = Mooncake.prepare_derivative_cache(f, a)
+                    TestUtils._test_throws(
+                        ArgumentError, "supplied tangents do not share"
+                    ) do
+                        Mooncake.value_and_derivative!!(
+                            cache, (f, Mooncake.zero_tangent(f)), (a, [0.3, -0.7])
+                        )
+                    end
+                    # Coherent sharing within a single input must remain usable.
+                    for (f, expected) in (
+                        (t -> t[1][1] * t[2][1] + t[1][2] * t[2][2], [0.6, -1.4]),
+                        (t -> t[1][1]^2 * t[2][1] + t[1][2]^2 * t[2][2], [1.8, -8.4]),
+                    )
+                        v = [0.3, -0.7]
+                        x, dx = (a, a.ref.mem), (v, v.ref.mem)
+                        _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, dx, x)
+                        @test hv[1] ≈ expected
+                        @test hv[2] ≈ expected
+                    end
+                end
+            end
+
+            @testset "storage admission uses first-order dimensions" begin
+                x = [FirstOrderTangent(0.0)]
+                @test Mooncake.tangent_dim(x) == 1
+                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
+                    Mooncake._check_tangent_storage!(IdDict(), (x, x), (copy(x), copy(x)))
+                end
+            end
+
+            @testset "shared wrapper with no differentiable storage" begin
+                a = [1.0, 2.0]
+                b = Ref([1, 2])
+                x = (a, b, b)
+                f = let a = a
+                    t -> sum(a) + sum(t[1]) + length(t[2][]) + length(t[3][])
+                end
+                df = Mooncake.zero_tangent(f)
+                v = first(df.fields)
+                v .= [0.3, -0.7]
+                dx = (v, Mooncake.zero_tangent(b), Mooncake.zero_tangent(b))
+                cache = Mooncake.prepare_derivative_cache(f, x)
+                y, dy = Mooncake.value_and_derivative!!(cache, (f, df), (x, dx))
+                @test y == 10.0
+                @test dy ≈ -0.8
+            end
+
+            @testset "FoR retains constant alias guards" begin
+                x = copy(HVP_ALIAS_GLOBAL)
+                v = [0.3, -0.7]
+                cache = prepare_hvp_cache(hvp_alias_global, x)
+                @test value_and_hvp!!(cache, hvp_alias_global, v, x)[3] == zeros(2)
+                TestUtils._test_throws(ArgumentError, "constant") do
+                    value_and_hvp!!(cache, hvp_alias_global, v, HVP_ALIAS_GLOBAL)
+                end
+                for width in (1, 2)
+                    cache = Mooncake.prepare_hessian_cache(
+                        hvp_alias_global, x; config=Mooncake.Config(; chunk_size=width)
+                    )
+                    TestUtils._test_throws(ArgumentError, "constant") do
+                        Mooncake.value_gradient_and_hessian!!(
+                            cache, hvp_alias_global, HVP_ALIAS_GLOBAL
+                        )
+                    end
+                end
+            end
+
+            @testset "HVP validates tangent types and shapes" begin
                 x = [1.0, 2.0]
-                y = [3.0]
                 cache1 = prepare_hvp_cache(sum, x)
                 @test_throws ArgumentError value_and_hvp!!(cache1, sum, [1.0], x)
-
-                cache2 = prepare_hvp_cache(f, x, y)
-                @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
-
-                # A struct-shaped primal has no `size`, so the check must skip it rather
-                # than throw a MethodError from `axes`.
-                g(p::SimplePair) = p.x1^2 + p.x2^2
-                p = SimplePair(3.0, 4.0)
-                v = Mooncake.Tangent((; x1=1.0, x2=0.0))
-                _, _, hvp = value_and_hvp!!(prepare_hvp_cache(g, p), g, v, p)
-                @test hvp.fields.fields == (; x1=2.0, x2=0.0)
+                @test_throws "Tangent types do not match primal types:" value_and_hvp!!(
+                    cache1, sum, Float32[3, 4], x
+                )
+                @test value_and_hvp!!(cache1, sum, [3.0, 4.0], x) ==
+                    (3.0, ones(2), zeros(2))
             end
 
             @testset "HVP cache mismatch errors" begin
@@ -1450,6 +2999,33 @@ end
                 @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_and_hvp!!(
                     cache, f, reshape([1.0, 0.0], 2, 1), reshape([1.0, 2.0], 2, 1)
                 )
+            end
+
+            # Width-1 HVPs must preserve partials through array `.ref` projection and through
+            # shared forward/reverse capture stacks. Either loss silently zeroes the HVP.
+            @testset "HVP value correctness" begin
+                # Scalar: hvp = f''(x)·v is distinct from the gradient f'(x).
+                let f = x -> x^4, x = 2.0, v = 1.0
+                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                    @test val ≈ x^4
+                    @test g ≈ 4x^3          # 32
+                    @test hv ≈ 12x^2 * v    # 48 — would be 0 if a partial were dropped
+                end
+                # Broadcast and BLAS paths both have Hessian 2I. The `dot` pullback
+                # threads tangent pointers through forward-over-reverse.
+                for f in (x -> sum(x .* x), x -> dot(x, x))
+                    let x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
+                        val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                        @test val ≈ f(x)
+                        @test g ≈ 2 .* x
+                        @test hv ≈ 2 .* v
+                    end
+                end
+                # Fused-primitive path (`sum(abs2, ·)`), same Hessian.
+                let f = x -> sum(abs2, x), x = [2.0, 3.0, 4.0], v = [0.0, 1.0, 0.0]
+                    _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                    @test hv ≈ 2 .* v
+                end
             end
         end
     end
@@ -1494,6 +3070,54 @@ end
                 @test H ≈ 2 * I
             end
 
+            @testset "BLAS quadratic form (dot)" begin
+                # `dot(x, A*x)/2` has gradient `A*x` and Hessian `A`; its reverse rule runs through
+                # BLAS on raw pointers, so forward-over-reverse threads `Ptr{NoTangent}` fdata pointers
+                # that must keep their per-lane V. Previously untested (all other cases are elementwise).
+                A = [2.0 0.5 0.0; 0.5 3.0 0.1; 0.0 0.1 4.0]  # symmetric ⇒ Hessian is exactly A
+                f(x) = dot(x, A * x) / 2
+                x = [0.5, -0.2, 0.9]
+                v, g, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
+                @test g ≈ A * x
+                @test H ≈ A
+            end
+
+            @testset "chunked Hessian == width-1 (chunk_size $W)" for W in (1, 2, 3, 5)
+                # The Hessian sweep batches W forward-over-reverse columns per pass; results must
+                # match the width-1 column loop across widths (incl. n not divisible by W), and the
+                # input must be left unchanged. value_and_hvp!! must stay width-1 regardless.
+                f(x) = sum(abs2, x) + x[1] * x[2] + 0.5 * x[2] * x[3]
+                x0 = [0.3, -0.7, 1.1, 0.5, -0.2]
+                ref = prepare_hessian_cache(
+                    f, copy(x0); config=Mooncake.Config(; chunk_size=1)
+                )
+                _, g1, H1 = value_gradient_and_hessian!!(ref, f, copy(x0))
+                xc = copy(x0)
+                c = prepare_hessian_cache(
+                    f, copy(x0); config=Mooncake.Config(; chunk_size=W)
+                )
+                _, g, H = value_gradient_and_hessian!!(c, f, xc)
+                @test H ≈ H1 rtol = 1e-10
+                @test g ≈ g1 rtol = 1e-10
+                @test xc == x0
+                # A chunk-configured cache still serves a width-1 single-direction HVP.
+                v = [1.0, 0.0, 0.0, 0.0, 0.0]
+                hc = prepare_hvp_cache(f, copy(x0); config=Mooncake.Config(; chunk_size=W))
+                _, _, hv = value_and_hvp!!(hc, f, v, copy(x0))
+                @test hv ≈ H1[:, 1] rtol = 1e-10
+            end
+
+            # The rule registry cannot check a public sweep's input restoration on failure.
+            @testset "throwing Hessian restores input" for W in (1, 2)
+                f(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : sum(abs2, x))
+                cache = prepare_hessian_cache(
+                    f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; chunk_size=W)
+                )
+                x = [10.0, 2.0, 3.0]
+                @test_throws DomainError value_gradient_and_hessian!!(cache, f, x)
+                @test x == [10.0, 2.0, 3.0]
+            end
+
             @testset "cache reuse with different x" begin
                 f(x) = sum(x .^ 2)
                 x1 = [1.0, 0.0]
@@ -1508,6 +3132,24 @@ end
                 @test g1 ≈ [2.0, 0.0]
                 @test g2 ≈ [4.0, 6.0]
                 @test H1 ≈ H2
+            end
+
+            # Both Hessian sweeps must refuse aliased captures: width 1 inherits the HVP guard,
+            # while the chunked sweep relies on the entry-point check.
+            @testset "aliased input is refused on both sweeps" begin
+                w = [1.0, 2.0, 3.0]
+                for cfg in (Mooncake.Config(), Mooncake.Config(; chunk_size=1))
+                    cache = prepare_hessian_cache(FwdAliasHolder(w), w; config=cfg)
+                    @test_throws ArgumentError value_gradient_and_hessian!!(
+                        cache, FwdAliasHolder(w), w
+                    )
+                end
+                # The same shape without sharing is unaffected.
+                u = copy(w)
+                cache = prepare_hessian_cache(FwdAliasHolder(w), u)
+                _, g, H = value_gradient_and_hessian!!(cache, FwdAliasHolder(w), u)
+                @test g ≈ w
+                @test H ≈ zeros(3, 3)
             end
 
             @testset "debug_mode=true" begin
@@ -1540,76 +3182,15 @@ end
                 @test (v2, g2, H2) == (0.0, Float64[], zeros(0, 0))
             end
 
-            @testset "multi-arg: two vectors" begin
+            @testset "multi-argument Hessian is rejected" begin
+                # Like `value_and_jacobian!!`, the Hessian supports only a single vector input;
+                # rejected eagerly at prepare and at the compute call.
                 f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
                 x = [1.0, 2.0]
                 y = [3.0, 4.0]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val ≈ f(x, y)
-                @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
-                @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
-                @test Hxx ≈ 2 * I rtol = 1e-10
-                @test Hyy ≈ 2 * I rtol = 1e-10
-                @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-                @test Hyx ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-            end
-
-            @testset "multi-arg: cache reuse" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                x1, y1 = [1.0, 0.0], [0.0, 1.0]
-                x2, y2 = [2.0, 3.0], [4.0, 5.0]
-                cache = prepare_hessian_cache(f, x1, y1)
-                v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_gradient_and_hessian!!(
-                    cache, f, x1, y1
-                )
-                # `cache` owns the returned tuples; snapshot before reusing the cache.
-                gx1, gy1, Hxx1, Hyy1 = copy(gx1), copy(gy1), copy(Hxx1), copy(Hyy1)
-                v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_gradient_and_hessian!!(
-                    cache, f, x2, y2
-                )
-                @test v1 ≈ f(x1, y1)
-                @test v2 ≈ f(x2, y2)
-                @test gx1 ≈ 2x1
-                @test gx2 ≈ 2x2
-                @test Hxx1 ≈ 2 * I
-                @test Hxx2 ≈ 2 * I
-                @test Hyy1 ≈ 2 * I
-                @test Hyy2 ≈ 2 * I
-            end
-
-            @testset "multi-arg: first arg empty" begin
-                f(x, y) = sum(y .^ 2)
-                x = Float64[]
-                y = [1.0, 2.0]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val ≈ f(x, y)
-                @test gx == Float64[]
-                @test gy ≈ 2y
-                @test Hxx == zeros(0, 0)
-                @test Hyy ≈ 2 * I
-            end
-
-            @testset "multi-arg: all args empty" begin
-                f(x, y) = 0.0
-                x = Float64[]
-                y = Float64[]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val == 0.0
-                @test gx == Float64[]
-                @test gy == Float64[]
-                @test Hxx == zeros(0, 0)
-                @test Hxy == zeros(0, 0)
-                @test Hyx == zeros(0, 0)
-                @test Hyy == zeros(0, 0)
+                @test_throws ArgumentError prepare_hessian_cache(f, x, y)
+                cache = prepare_hessian_cache(sum, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, sum, x, y)
             end
 
             @testset "reject non-vector inputs" begin
@@ -1622,13 +3203,6 @@ end
                 f(x) = sum(abs2, x)
                 x = ComplexF64[1 + 0im, 2 + 0im]
                 @test_throws ArgumentError prepare_hessian_cache(f, x)
-            end
-
-            @testset "reject mismatched element types across arguments" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                x = Float64[1.0, 2.0]
-                y = Float32[3.0, 4.0]
-                @test_throws ArgumentError prepare_hessian_cache(f, x, y)
             end
 
             @testset "reject mismatched function object" begin
@@ -1657,40 +3231,401 @@ end
                 @test H1 === H2
             end
 
-            @testset "multi-arg cache buffer reuse" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
-                x = [1.0, 2.0]
-                y = [3.0, 4.0]
-                cache = prepare_hessian_cache(f, x, y)
-                _, (gx1, gy1), ((Hxx1, Hxy1), (Hyx1, Hyy1)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
+            @testset "repeated mutable argument shares one gradient" begin
+                # Aliased arguments must share reverse fdata. Mutation makes the shared gradient
+                # [4,2,2], distinct from summing the independent-slot gradients [1,1,1] and [2,1,1].
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                xp = [1.0, 2.0, 3.0]
+                cache = prepare_gradient_cache(f, xp, xp)
+                xg = [1.0, 2.0, 3.0]
+                v, g = Mooncake.value_and_gradient!!(cache, f, xg, xg)
+                @test v == 14.0                      # the aliased primal, not 13.0
+                @test g[2] === g[3]                  # one storage, per the aliasing invariant
+                @test g[2] == [4.0, 2.0, 2.0]
+                # Distinct arguments must keep independent gradients.
+                cache2 = prepare_gradient_cache(f, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+                _, g2 = Mooncake.value_and_gradient!!(
+                    cache2, f, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]
                 )
-                _, (gx2, gy2), ((Hxx2, Hxy2), (Hyx2, Hyy2)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test gx1 === gx2 && gy1 === gy2
-                @test Hxx1 === Hxx2 && Hxy1 === Hxy2
-                @test Hyx1 === Hyx2 && Hyy1 === Hyy2
+                @test g2[2] !== g2[3]
+                @test g2[2] == [1.0, 1.0, 1.0]
+                @test g2[3] == [2.0, 1.0, 1.0]
+
+                # The rule registry seeds CoDuals itself; exercise the public seed path too.
+                rule = build_rrule(f, xp, xp)
+                for shared in (false, true), friendly in (false, true)
+                    a = [1.0, 2.0, 3.0]
+                    b = shared ? a : copy(a)
+                    _, direct = value_and_gradient!!(
+                        rule, f, a, b; friendly_tangents=friendly
+                    )
+                    @test direct[2] == (shared ? [4.0, 2.0, 2.0] : [1.0, 1.0, 1.0])
+                    @test direct[3] == (shared ? [4.0, 2.0, 2.0] : [2.0, 1.0, 1.0])
+                    @test (direct[2] === direct[3]) == shared
+                end
             end
 
-            @testset "reject mismatched cache arity" begin
-                f(x) = sum(abs2, x)
-                f(x, y) = sum(abs2, x) + sum(abs2, y)
-                # 2-arg cache, 3-arg call.
-                cache2 = prepare_hessian_cache(f, [1.0], [2.0])
-                @test_throws r"cache was prepared for 2 arguments but called with 3" value_gradient_and_hessian!!(
-                    cache2, f, [1.0], [2.0], [3.0]
+            @testset "aliasing mismatch between preparation and call" begin
+                # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
+                # mismatch, which otherwise accumulates into the wrong prepared buffers.
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                x0 = [1.0, 2.0, 3.0]
+                distinct_cache = prepare_gradient_cache(f, copy(x0), copy(x0))
+                xg = copy(x0)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    distinct_cache, f, xg, xg
                 )
-                # 2-arg cache, 1-arg call — single-arg dispatch must report arity, not
-                # the generic "not a hessian cache" error.
-                @test_throws r"cache was prepared for 2 arguments but called with 1" value_gradient_and_hessian!!(
-                    cache2, f, [1.0]
+                xp = copy(x0)
+                aliased_cache = prepare_gradient_cache(f, xp, xp)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    aliased_cache, f, copy(x0), copy(x0)
                 )
-                # 1-arg cache, 2-arg call — multi-arg dispatch, same expectation.
-                cache1 = prepare_hessian_cache(f, [1.0, 2.0])
-                @test_throws r"cache was prepared for 1 argument but called with 2" value_gradient_and_hessian!!(
-                    cache1, f, [1.0, 2.0], [3.0]
+                # Matching aliasing keeps working in both directions.
+                xg2 = copy(x0)
+                _, ga = Mooncake.value_and_gradient!!(aliased_cache, f, xg2, xg2)
+                @test ga[2] == [4.0, 2.0, 2.0]
+                _, gd = Mooncake.value_and_gradient!!(distinct_cache, f, copy(x0), copy(x0))
+                @test gd[2] == [1.0, 1.0, 1.0]
+                @test gd[3] == [2.0, 1.0, 1.0]
+
+                # Tuple-wrapped arrays need the same check: mutable tangent paths are found from
+                # types to avoid a per-call graph traversal.
+                g(t, u) = (t[1][1] += u[1][1]; sum(t[1]) + sum(u[1]))
+                nested_distinct = prepare_gradient_cache(g, (copy(x0),), (copy(x0),))
+                tg = (copy(x0),)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    nested_distinct, g, tg, tg
                 )
+                tp = (copy(x0),)
+                nested_aliased = prepare_gradient_cache(g, tp, tp)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    nested_aliased, g, (copy(x0),), (copy(x0),)
+                )
+                # Matching aliasing keeps working through the wrapper too.
+                tg2 = (copy(x0),)
+                _, gna = Mooncake.value_and_gradient!!(nested_aliased, g, tg2, tg2)
+                @test gna[2][1] == [4.0, 2.0, 2.0]
+                @test gna[2][1] === gna[3][1]
+                _, gnd = Mooncake.value_and_gradient!!(
+                    nested_distinct, g, (copy(x0),), (copy(x0),)
+                )
+                @test gnd[2][1] == [1.0, 1.0, 1.0]
+                @test gnd[3][1] == [2.0, 1.0, 1.0]
+
+                # Array/Memory pairs are distinct objects over one cotangent buffer; compare backing
+                # storage rather than object identity.
+                @static if VERSION >= v"1.11-rc4"
+                    h(a, m) = sum(a) + sum(m)
+                    mem_pair() = (v=copy(x0); (v, getfield(v, :ref).mem))
+                    unrelated = prepare_gradient_cache(
+                        h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                        unrelated, h, mem_pair()...
+                    )
+                    ap, mp = mem_pair()
+                    buffer_cache = prepare_gradient_cache(h, ap, mp)
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                        buffer_cache, h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    # Matching aliasing gives the gradient of the one buffer at both positions.
+                    _, gb = Mooncake.value_and_gradient!!(buffer_cache, h, mem_pair()...)
+                    @test gb[2] == [2.0, 2.0, 2.0]
+                    @test gb[3] == [2.0, 2.0, 2.0]
+                    # ... and `reshape`, which shares a buffer on BOTH sides, is not a mismatch.
+                    b = copy(x0)
+                    reshaped = prepare_gradient_cache(h, b, reshape(b, 3, 1))
+                    _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
+                    @test gr[2] == [2.0, 2.0, 2.0]
+
+                    # Forward must refuse this per call: a cache prepared with unrelated arguments has a
+                    # false prepare-time sharing flag, which cannot guard a newly aliased Array/Memory pair.
+                    fwd = Mooncake.prepare_derivative_cache(
+                        h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        fwd, h, mem_pair()...
+                    )
+                    # Unrelated arguments, and two EMPTY arrays (which share Julia's one global
+                    # empty `Memory`), must still go through.
+                    u, w = randn(3), randn(3)
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, u, w), h, u, w
+                    )[2][2] == [1.0, 1.0, 1.0]
+                    ee = Float64[]
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, ee, Float64[]),
+                        h,
+                        ee,
+                        Float64[],
+                    )[2][2] == Float64[]
+                end
+
+                # Compare leaves within one argument too; each prepared leaf owns one buffer.
+                one_arg(t) = sum(t[1] .* t[2])
+                a1, b1 = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
+                intra_distinct = prepare_gradient_cache(one_arg, (a1, b1))
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    intra_distinct, one_arg, (a1, a1)
+                )
+                intra_aliased = prepare_gradient_cache(one_arg, (a1, a1))
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    intra_aliased, one_arg, (a1, b1)
+                )
+                _, g_intra = Mooncake.value_and_gradient!!(intra_aliased, one_arg, (a1, a1))
+                @test g_intra[2] == (2 .* a1, 2 .* a1)
+                @test Mooncake.value_and_gradient!!(intra_distinct, one_arg, (a1, b1))[2][2] ==
+                    (b1, a1)
+
+                # Past the eighth leaf and the third level of nesting the walk used to stop, so
+                # the same mismatch beyond either bound went unchecked.
+                wide(t, y) = sum(t[10] .* y)
+                ws = ntuple(i -> Float64[i, i + 1], 10)
+                wide_cache = prepare_gradient_cache(wide, ws, [1.0, 1.0])
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    wide_cache, wide, ws, ws[10]
+                )
+                deep(t, y) = sum(t[1][1][1][1] .* y)
+                deep_cache = prepare_gradient_cache(deep, ((((a1,),),),), b1)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    deep_cache, deep, ((((a1,),),),), a1
+                )
+
+                # Wide enough that the comparisons are not unrolled (the emitted code is
+                # quadratic in the leaf count), so the same contract runs as one pass over the
+                # leaves.
+                many(t) = sum(t[1] .* t[24])
+                ms = ntuple(i -> Float64[i, i + 1], 24)
+                many_cache = prepare_gradient_cache(many, ms)
+                many_aliased = (ms[1], Base.tail(Base.front(ms))..., ms[1])
+                @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    many_cache, many, many_aliased
+                )
+                # ... and forward, which refuses only the one direction: a shared prepared buffer
+                # cannot carry the two directions a call with distinct primals supplies.
+                fwd_many = Mooncake.prepare_derivative_cache(
+                    many, many_aliased; config=Mooncake.Config(; friendly_tangents=true)
+                )
+                dms = ntuple(i -> [1.0, 0.0], 24)
+                @test Mooncake.value_and_derivative!!(
+                    fwd_many, (many, Mooncake.NoTangent()), (many_aliased, dms)
+                )[2] == 2.0
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    fwd_many, (many, Mooncake.NoTangent()), (ms, dms)
+                )
+            end
+
+            @testset "sharing a memoised node inside one argument" begin
+                # Reference-element array sharing is checked by the copy family's memoisation:
+                # restoration must not re-point the caller's graph to match the prepared snapshot.
+                nested(x) = (x[1][1][1] += 1.0; sum(sum, x[1]) + sum(sum, x[2]))
+                seed_arg(x) = (x, Mooncake.zero_tangent(x))
+                w = [[1.0, 2.0]]
+                shared_cache = Mooncake.prepare_derivative_cache(nested, [w, w])
+                u, v = [[1.0, 2.0]], [[3.0, 4.0]]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    shared_cache, (nested, Mooncake.NoTangent()), seed_arg([u, v])
+                )
+                # Refused while the inputs were being copied into the snapshot, so they are
+                # untouched.
+                @test u == [[1.0, 2.0]]
+                @test v == [[3.0, 4.0]]
+                distinct_cache = Mooncake.prepare_derivative_cache(nested, [u, v])
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    distinct_cache, (nested, Mooncake.NoTangent()), seed_arg([w, w])
+                )
+                # Matching sharing goes through, leaves the argument's identities alone, and
+                # stays usable on the next call.
+                for _ in 1:2
+                    arg = [u, v]
+                    val, _ = Mooncake.value_and_derivative!!(
+                        distinct_cache, (nested, Mooncake.NoTangent()), seed_arg(arg)
+                    )
+                    @test val == 11.0
+                    @test arg[1] === u && arg[2] === v
+                    @test u == [[1.0, 2.0]] && v == [[3.0, 4.0]]
+                end
+            end
+
+            @testset "both modes refuse an input with no concrete representation" begin
+                # Abstract-field NamedTuples lack concrete derivative representations in both modes;
+                # invariant slot wrappers must refuse them before internal annotation errors.
+                NTA = NamedTuple{(:a,),Tuple{Any}}
+                nt_field(t) = t.a * 2.0
+                @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                    nt_field, NTA((1.0,))
+                )
+                @test_throws ArgumentError Mooncake.prepare_gradient_cache(
+                    nt_field, NTA((1.0,))
+                )
+                @test_throws ArgumentError Mooncake.prepare_pullback_cache(
+                    nt_field, NTA((1.0,))
+                )
+                # `Mooncake.TestResources.Foo` has the same abstract field (`x::Real`) but keeps its
+                # declared field type, so it is supported — what the error tells the caller to use.
+                struct_field(s) = s.x * 2.0
+                foo = Mooncake.TestResources.Foo(1.0)
+                cache = Mooncake.prepare_derivative_cache(struct_field, foo)
+                v, _ = Mooncake.value_and_derivative!!(
+                    cache,
+                    (struct_field, Mooncake.NoTangent()),
+                    (foo, Mooncake.zero_tangent(foo)),
+                )
+                @test v == 2.0
+            end
+
+            @testset "gradient and shared storage agree across versions" begin
+                # Reject shared buffers on 1.10 too, where reshape tangents do not alias.
+                a_v = collect(1.0:6.0)
+                g_v = t -> sum(t[1]) + 2 * sum(t[2])
+                c_v = Mooncake.prepare_derivative_cache(g_v, (a_v, reshape(a_v, 2, 3)))
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                    c_v, g_v, (a_v, reshape(a_v, 2, 3))
+                )
+                # The mirror image: positions sharing a NON-differentiable buffer contribute no
+                # dimensions, so there is nothing to scale by a count and nothing to refuse. 1.11+ threw
+                # here, rejecting a gradient it computes correctly.
+                n_v = collect(1:6)
+                h_v = (x, m, r) -> sum(x) * (length(m) + length(r))
+                c_n = Mooncake.prepare_derivative_cache(
+                    h_v, collect(1.0:6.0), n_v, reshape(n_v, 2, 3)
+                )
+                v_n, g_n = Mooncake.value_and_gradient!!(
+                    c_n, h_v, collect(1.0:6.0), n_v, reshape(n_v, 2, 3)
+                )
+                @test v_n == sum(1.0:6.0) * 12
+                @test g_n[2] ≈ fill(12.0, 6)
+                # The 1.10 primal storage walk must also find sharing nested in structs.
+                a_s = collect(1.0:6.0)
+                g_s = p -> sum(p.u) + 2 * sum(p.v)
+                p_s = StructuredPair(a_s, reshape(a_s, 2, 3))
+                c_s = Mooncake.prepare_derivative_cache(g_s, p_s)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(c_s, g_s, p_s)
+            end
+
+            @static if VERSION >= v"1.11-"
+                @testset "forward gradient refuses inputs sharing backing storage" begin
+                    # Distinct containers over one buffer evade identity-based tangent_dim deduplication;
+                    # the forward gradient must refuse rather than overwrite their shared gradient entries.
+                    a_st = collect(1.0:6.0)
+                    g_st = t -> sum(t[1]) + 2 * sum(t[2])
+                    # An `Array` beside its own backing `Memory` is the same sharing reached a
+                    # different way: the array tangent's `Memory` IS the `Memory`'s tangent.
+                    v_st = collect(1.0:3.0)
+                    for t_st in (
+                        (a_st, reshape(a_st, 2, 3)),
+                        (reshape(a_st, 2, 3), a_st),
+                        (v_st, v_st.ref.mem),
+                    )
+                        c_st = Mooncake.prepare_derivative_cache(g_st, t_st)
+                        @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                            c_st, g_st, t_st
+                        )
+                    end
+                    # Find shared backing storage inside array elements and behind Ref's
+                    # PossiblyUninitTangent field too.
+                    g_el = t -> sum(sum, t[1]) + 2 * sum(sum, t[2])
+                    t_el = ([a_st], [reshape(a_st, 2, 3)])
+                    c_el = Mooncake.prepare_derivative_cache(g_el, t_el)
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        c_el, g_el, t_el
+                    )
+                    g_ref = t -> sum(t[1][]) + 2 * sum(t[2])
+                    t_ref = (Base.RefValue(a_st), reshape(a_st, 2, 3))
+                    c_ref = Mooncake.prepare_derivative_cache(g_ref, t_ref)
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        c_ref, g_ref, t_ref
+                    )
+                    # Distinct storage is unaffected. So are two NON-overlapping views, whose
+                    # tangents get their own parents; two EMPTY arrays, which all share Julia's one
+                    # global empty `Memory` and so would look aliased on identity alone; and the
+                    # SAME `Memory` at both positions, which the aliasing cache already handles by
+                    # giving them one tangent object.
+                    c_ok = Mooncake.prepare_derivative_cache(
+                        g_st, (collect(1.0:6.0), collect(1.0:6.0))
+                    )
+                    _, g_ok = Mooncake.value_and_gradient!!(
+                        c_ok, g_st, (collect(1.0:6.0), collect(1.0:6.0))
+                    )
+                    @test g_ok[2][1] ≈ ones(6)
+                    @test g_ok[2][2] ≈ 2 .* ones(6)
+                    m_ok = collect(1.0:3.0).ref.mem
+                    for t_ok in (
+                        (view(a_st, 1:3), view(a_st, 4:6)),
+                        (Float64[], Float64[]),
+                        (m_ok, m_ok),
+                    )
+                        @test Mooncake.prepare_derivative_cache(g_st, t_ok) isa Any
+                    end
+                end
+            end
+
+            @testset "forward gradient refuses a repeated mutable argument" begin
+                # Per-argument gradient ranges cannot represent repeated mutable storage. A derivative
+                # call can, using one caller-supplied tangent shared across positions.
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                x0 = [1.0, 2.0, 3.0]
+                xp = copy(x0)
+                cache = Mooncake.prepare_derivative_cache(f, xp, xp)
+                xg = copy(x0)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(cache, f, xg, xg)
+                # The supported route gives the aliased truth: value 14.0, all-ones direction 8.0.
+                xs = copy(x0)
+                ss = [1.0, 1.0, 1.0]
+                v, d = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (xs, ss), (xs, ss)
+                )
+                @test v == 14.0
+                @test d == 8.0
+                # Distinct arguments are unaffected, and an immutable repeated argument is fine
+                # (a scalar cannot be mutated, so there is no aliasing to represent).
+                g(a, b) = sum(a .* b)
+                cg = Mooncake.prepare_derivative_cache(g, [1.0, 2.0], [3.0, 4.0])
+                _, gg = Mooncake.value_and_gradient!!(cg, g, [1.0, 2.0], [3.0, 4.0])
+                @test gg[2] == [3.0, 4.0]
+                @test gg[3] == [1.0, 2.0]
+                h(a, b) = a * b
+                ch = Mooncake.prepare_derivative_cache(h, 2.0, 3.0)
+                @test Mooncake.value_and_gradient!!(ch, h, 4.0, 4.0)[1] == 16.0
+                # A repeated MUTABLE argument with no differentiable dimension is representable: it has
+                # no gradient to assemble, so the dimension ranges still line up with the arguments.
+                # `ismutabletype` alone refuses it, and reverse mode accepts it.
+                k(a, b, v) = (a.a + b.a) * sum(v)
+                ck = IntScaler(3)
+                cache_k = Mooncake.prepare_derivative_cache(k, ck, ck, [1.0, 2.0])
+                _, gk = Mooncake.value_and_gradient!!(cache_k, k, ck, ck, [1.0, 2.0])
+                @test gk[4] == [6.0, 6.0]
+            end
+
+            @testset "forward gradient refuses inputs sharing storage across positions" begin
+                # Prepared sharing checks must include captured arrays: the per-call top-level scan
+                # sees only mutable arguments, excluding f and its fields.
+                w = [1.0, 2.0, 3.0]
+                aliased = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), w)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                    aliased, FwdAliasHolder(w), w
+                )
+                # Derivative calls support aliased inputs, so refusal must stay out of preparation.
+                # Share ONE tangent object across the captured field and argument: equal but distinct
+                # arrays cannot certify a single direction without a value walk.
+                dw = fill(1.0, 3)
+                dh = Mooncake.Tangent((; v=dw))
+                v, d = Mooncake.value_and_derivative!!(
+                    aliased, (FwdAliasHolder(w), dh), (w, dw)
+                )
+                @test v == sum(abs2, w)
+                @test d == 2 * sum(w)                    # both occurrences move
+                # No over-refusal: distinct storage still matches reverse mode.
+                distinct = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), copy(w))
+                _, gd = Mooncake.value_and_gradient!!(distinct, FwdAliasHolder(w), copy(w))
+                @test gd[2] == w
+                # Sharing WITHIN one argument is representable (one dimension range covers both
+                # occurrences) and must keep working.
+                intra(t) = sum(t.p .* t.q)
+                ci = Mooncake.prepare_derivative_cache(intra, FwdAliasPair(w, w))
+                _, gi = Mooncake.value_and_gradient!!(ci, intra, FwdAliasPair(w, w))
+                @test gi[2].fields.p == 2 .* w
             end
 
             @testset "empty-cache reused at non-empty input" begin
@@ -1698,11 +3633,6 @@ end
                 cache = prepare_hessian_cache(f, Float64[])
                 @test_throws ArgumentError value_gradient_and_hessian!!(
                     cache, f, [1.0, 2.0]
-                )
-                g(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                cache2 = prepare_hessian_cache(g, Float64[], Float64[])
-                @test_throws ArgumentError value_gradient_and_hessian!!(
-                    cache2, g, [1.0], Float64[]
                 )
             end
 
@@ -1756,122 +3686,5 @@ end
             @test cache_grad.tangents[2] == 2x
             @test cache_grad.tangents[3] == -4y
         end
-    end
-end
-
-@testset "reverse prepared alias partitions" begin
-    @testset "aliasing mismatch between preparation and call" begin
-        # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
-        # mismatch, which otherwise accumulates into the wrong prepared buffers.
-        f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
-        x0 = [1.0, 2.0, 3.0]
-        distinct_cache = prepare_gradient_cache(f, copy(x0), copy(x0))
-        xg = copy(x0)
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            distinct_cache, f, xg, xg
-        )
-        xp = copy(x0)
-        aliased_cache = prepare_gradient_cache(f, xp, xp)
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            aliased_cache, f, copy(x0), copy(x0)
-        )
-        # Matching aliasing keeps working in both directions.
-        xg2 = copy(x0)
-        _, ga = Mooncake.value_and_gradient!!(aliased_cache, f, xg2, xg2)
-        @test ga[2] == [4.0, 2.0, 2.0]
-        _, gd = Mooncake.value_and_gradient!!(distinct_cache, f, copy(x0), copy(x0))
-        @test gd[2] == [1.0, 1.0, 1.0]
-        @test gd[3] == [2.0, 1.0, 1.0]
-
-        # Tuple-wrapped arrays need the same check: mutable tangent paths are found from
-        # types to avoid a per-call graph traversal.
-        g(t, u) = (t[1][1] += u[1][1]; sum(t[1]) + sum(u[1]))
-        nested_distinct = prepare_gradient_cache(g, (copy(x0),), (copy(x0),))
-        tg = (copy(x0),)
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            nested_distinct, g, tg, tg
-        )
-        tp = (copy(x0),)
-        nested_aliased = prepare_gradient_cache(g, tp, tp)
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            nested_aliased, g, (copy(x0),), (copy(x0),)
-        )
-        # Matching aliasing keeps working through the wrapper too.
-        tg2 = (copy(x0),)
-        _, gna = Mooncake.value_and_gradient!!(nested_aliased, g, tg2, tg2)
-        @test gna[2][1] == [4.0, 2.0, 2.0]
-        @test gna[2][1] === gna[3][1]
-        _, gnd = Mooncake.value_and_gradient!!(nested_distinct, g, (copy(x0),), (copy(x0),))
-        @test gnd[2][1] == [1.0, 1.0, 1.0]
-        @test gnd[3][1] == [2.0, 1.0, 1.0]
-
-        # Array/Memory pairs are distinct objects over one cotangent buffer; compare backing
-        # storage rather than object identity.
-        @static if VERSION >= v"1.11-rc4"
-            h(a, m) = sum(a) + sum(m)
-            mem_pair() = (v=copy(x0); (v, getfield(v, :ref).mem))
-            unrelated = prepare_gradient_cache(
-                h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
-            )
-            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-                unrelated, h, mem_pair()...
-            )
-            ap, mp = mem_pair()
-            buffer_cache = prepare_gradient_cache(h, ap, mp)
-            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-                buffer_cache, h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
-            )
-            # Matching aliasing gives the gradient of the one buffer at both positions.
-            _, gb = Mooncake.value_and_gradient!!(buffer_cache, h, mem_pair()...)
-            @test gb[2] == [2.0, 2.0, 2.0]
-            @test gb[3] == [2.0, 2.0, 2.0]
-            # ... and `reshape`, which shares a buffer on BOTH sides, is not a mismatch.
-            b = copy(x0)
-            reshaped = prepare_gradient_cache(h, b, reshape(b, 3, 1))
-            _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
-            @test gr[2] == [2.0, 2.0, 2.0]
-        end
-
-        # Compare leaves within one argument too; each prepared leaf owns one buffer.
-        one_arg(t) = sum(t[1] .* t[2])
-        a1, b1 = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
-        intra_distinct = prepare_gradient_cache(one_arg, (a1, b1))
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            intra_distinct, one_arg, (a1, a1)
-        )
-        intra_aliased = prepare_gradient_cache(one_arg, (a1, a1))
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            intra_aliased, one_arg, (a1, b1)
-        )
-        _, g_intra = Mooncake.value_and_gradient!!(intra_aliased, one_arg, (a1, a1))
-        @test g_intra[2] == (2 .* a1, 2 .* a1)
-        @test Mooncake.value_and_gradient!!(intra_distinct, one_arg, (a1, b1))[2][2] ==
-            (b1, a1)
-
-        # Past the eighth leaf and the third level of nesting the walk used to stop, so
-        # the same mismatch beyond either bound went unchecked.
-        wide(t, y) = sum(t[10] .* y)
-        ws = ntuple(i -> Float64[i, i + 1], 10)
-        wide_cache = prepare_gradient_cache(wide, ws, [1.0, 1.0])
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            wide_cache, wide, ws, ws[10]
-        )
-        deep(t, y) = sum(t[1][1][1][1] .* y)
-        deep_cache = prepare_gradient_cache(deep, ((((a1,),),),), b1)
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            deep_cache, deep, ((((a1,),),),), a1
-        )
-
-        # Wide enough that the comparisons are not unrolled (the emitted code is
-        # quadratic in the leaf count), so the same contract runs as one pass over the
-        # leaves.
-        many(t) = sum(t[1] .* t[24])
-        ms = ntuple(i -> Float64[i, i + 1], 24)
-        many_cache = prepare_gradient_cache(many, ms)
-        many_aliased = (ms[1], Base.tail(Base.front(ms))..., ms[1])
-        @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
-        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
-            many_cache, many, many_aliased
-        )
     end
 end

@@ -10,39 +10,37 @@ _sym(A) = A'A
 _pdmat(A) = PDMat(_sym(A) + 5I)
 sr(n::Int) = StableRNG(n)
 
+# `MooncakeDistributionsExt` claims some signatures in REVERSE mode only. Measured against the
+# derived forward path at chunk width 8, a forward rule bought nothing for them -- `sqmahal` was
+# 1.7x SLOWER with one, since with a ~40 ns primal the cost is per-call overhead rather than the
+# element sweeps, and a hand-written rule cannot beat `NDual` arithmetic vectorising across lanes.
+# Forward therefore takes the derived path, and only the reverse rule is asserted to be reached.
+# A DERIVED rule is reached through a `Core.OpaqueClosure`, which JET reports as a runtime
+# dispatch because there is no method to infer through, so no derived rule satisfies
+# `:stability` — which is why every derived case in this file is driven with `:allocs` or
+# `:none`. The forward half therefore keeps the allocation assertion and drops only the
+# stability one.
+function _derived_perf_flag(flag::Symbol)
+    return flag === :stability_and_allocs ? :allocs : (flag === :stability ? :none : flag)
+end
+
+function test_reverse_only_rule(rng, f, args...; perf_flag=:none, kwargs...)
+    test_rule(rng, f, args...; mode=Mooncake.ReverseMode, perf_flag, kwargs...)
+    return test_rule(
+        rng,
+        f,
+        args...;
+        mode=Mooncake.ForwardMode,
+        is_primitive=false,
+        perf_flag=_derived_perf_flag(perf_flag),
+        kwargs...,
+    )
+end
+
 const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
 const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
 
 @testset "distributions" begin
-    @testset "Student-t CDF shape derivative" begin
-        f(nu) = cdf(TDist(nu), 0.5)
-        for nu in (1.0, 2.0, 5.0)
-            test_rule(StableRNG(123), f, nu; is_primitive=false)
-        end
-    end
-
-    @testset "incomplete beta shape derivatives" begin
-        @testset "$name" for (name, f, x) in (
-            (:beta, a -> cdf(Beta(a, 2.0), 0.5), 1.0),
-            (:negative_binomial_one, r -> cdf(NegativeBinomial(r, 0.4), 3), 1.0),
-            (:negative_binomial_two, r -> cdf(NegativeBinomial(r, 0.4), 3), 2.0),
-            (:student_t, a -> cdf(TDist(a), 1.0), 2.0),
-            (:f_distribution, a -> cdf(FDist(a, 4.0), 2.0), 2.0),
-            (:truncated_beta, a -> logpdf(truncated(Beta(a, 2.0), 0.1, 0.5), 0.25), 1.0),
-        )
-            test_rule(StableRNG(123), f, x; is_primitive=false, atol=1e-10, rtol=1e-6)
-            test_rule(
-                StableRNG(123),
-                f,
-                x;
-                is_primitive=false,
-                atol=1e-10,
-                rtol=1e-6,
-                mode=Mooncake.ReverseMode,
-                rrule=Mooncake.NfwdMooncake.build_rrule(f, x; chunk_size=1),
-            )
-        end
-    end
     # A rule whose signature names a type parameter the loaded dependency does not have
     # unloads the whole extension with only a warning, taking every rule in it with it.
     @test Base.get_extension(Mooncake, :MooncakeDistributionsExt) !== nothing
@@ -73,15 +71,18 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         @test rand(rng) == expected_next
 
         rng = StableRNG(123)
+        x_slot = Mooncake.zero_lifted(Val(1), x)
+        _, x_partials = Mooncake.arrayify(x_slot)
+        fill!(x_partials[1], 2.0)
         out = Mooncake.frule!!(
-            Mooncake.zero_dual(Distributions.rand!),
-            Mooncake.zero_dual(rng),
-            Mooncake.zero_dual(sampler),
-            Mooncake.Dual(x, dx),
+            Mooncake.zero_lifted(Val(1), Distributions.rand!),
+            Mooncake.zero_lifted(Val(1), rng),
+            Mooncake.zero_lifted(Val(1), sampler),
+            x_slot,
         )
         @test Mooncake.primal(out) === x
         @test x == expected_x
-        @test all(iszero, dx)
+        @test all(iszero, x_partials[1])
         @test rand(rng) == expected_next
 
         test_rule(
@@ -305,12 +306,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
     end
 
-    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these run
-    # with `is_primitive=true`, so they also assert that AD dispatches to the rules.
+    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these assert
+    # that AD dispatches to the rules, in whichever modes the extension claims.
     @testset "logpdf(::Normal{$P}, ::$P)" for P in [Float64, Float32, Float16]
         # Float16 finite differences are too coarse to check the gradient against.
         interface_only = P === Float16
-        test_rule(
+        test_reverse_only_rule(
             sr(1),
             logpdf,
             Normal(P(0.5), P(1.2)),
@@ -331,8 +332,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         x = randn(sr(2), P, 9)
         interface_only = P === Float16
         perf_flag = interface_only ? :none : :stability
-        test_rule(sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only)
-        test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
+        test_reverse_only_rule(
+            sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only
+        )
+        test_reverse_only_rule(
+            sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only
+        )
     end
 
     # A diagonal covariance reads the sample directly rather than through `sqmahal`, and
@@ -432,7 +437,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
         d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
         primal_inferable = f === logpdf || VERSION >= v"1.11-"
-        test_rule(
+        test_reverse_only_rule(
             sr(29),
             f,
             d,
@@ -572,13 +577,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 Mooncake.zero_fcodual(d),
                 Mooncake.zero_fcodual(copy(x)),
             )
-            dual = Mooncake.frule!!(
-                Mooncake.zero_dual(logpdf),
-                Mooncake.zero_dual(d),
-                Mooncake.zero_dual(copy(x)),
+            lifted = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), logpdf),
+                Mooncake.zero_lifted(Val(1), d),
+                Mooncake.zero_lifted(Val(1), copy(x)),
             )
             @test Mooncake.primal(rule) == logpdf(d, x)
-            @test Mooncake.primal(dual) == logpdf(d, x)
+            @test Mooncake.primal(lifted) == logpdf(d, x)
         end
 
         # The `frule!!` carries its own `insupport` skip; the assertions above only reach
@@ -589,13 +594,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         for i in eachindex(rates.fields.v)
             rates.fields.v[i] = Mooncake.Tangent((λ=1.0,))
         end
-        dual = Mooncake.frule!!(
-            Mooncake.zero_dual(logpdf),
-            Mooncake.Dual(d_counting, rates),
-            Mooncake.zero_dual([1, -1]),
+        lifted = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(1), logpdf),
+            Mooncake.lift(d_counting, rates, nothing),
+            Mooncake.zero_lifted(Val(1), [1, -1]),
         )
-        @test Mooncake.primal(dual) == -Inf
-        @test Mooncake.tangent(dual) ≈ 1 / 1.5 - 1
+        @test Mooncake.primal(lifted) == -Inf
+        @test Mooncake.tangent(lifted, 1) ≈ 1 / 1.5 - 1
 
         # Both modes count rows before touching the data. The broadcast would throw a
         # `DimensionMismatch` regardless, so the message is what these assert.
@@ -606,11 +611,9 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             Mooncake.zero_fcodual(d_dense),
             Mooncake.zero_fcodual(X_wrong),
         )
-        @test_throws "x has 3 rows, expected 2" Mooncake.frule!!(
-            Mooncake.zero_dual(loglikelihood),
-            Mooncake.zero_dual(d_dense),
-            Mooncake.zero_dual(X_wrong),
-        )
+        # No forward counterpart: `loglikelihood(::CholeskyMvNormal, ::Matrix)` is a
+        # reverse-only primitive, so forward reaches the derived path and never the rule's
+        # own row check.
 
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))
@@ -621,1081 +624,302 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
-    # ── param_logpdf_cases: unified ForwardMode / ReverseMode / NfwdMooncake tests ──────────────────
-    # Tuple format: (name, f, args, chunk_size, modes, perf_flag)
-    # Each entry differentiates a logpdf lambda w.r.t. scalar (or array) constructor parameters
-    # and/or the observation.  modes is a subset of (:forward, :reverse, :nfwd):
-    #   • (:forward, :reverse, :nfwd) — test all three modes (most entries)
-    #   • (:forward, :reverse) — regular AD only (NDual not applicable; see end of list)
-    #   • (:nfwd,) — NfwdMooncake only (supported but unused by current entries)
-    # When both :forward and :reverse are present, they share a single test_rule call.
-    #
-    # Limitations / workarounds are documented inline:
-    #   • Erlang: integer shape k is non-differentiable; x-only differentiation.
-    #   • PDMat-based covariances: NDual <: AbstractFloat so PDMat(Symmetric(NDual_matrix)) works.
-    #   • product_distribution components: Distribution objects are not NDual-parameterised.
-    #   • LKJCholesky observation: pass lower-triangular L as plain Matrix, reconstruct inside lambda.
-    #   • Dirichlet with array α: NDual <: AbstractFloat so Vector{NDual} works; chunk_size=3.
-    #   • MvLogitNormal with pre-built Symmetric/PDMat S arg: modes=(:forward, :reverse).
-    #   • reshape, vec, LKJCholesky workaround: modes=(:forward, :reverse).
-
-    _NfwdMode(f, args, C) = Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=C)
-
+    # ── param_logpdf_cases: unified ForwardMode / ReverseMode tests ──────────────────
     param_logpdf_cases = Any[
 
         # ── Univariate ────────────────────────────────────────────────────────────
 
-        (
-            "Arcsine() 1",
-            x -> logpdf(Arcsine(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Arcsine(a,b) 1",
-            (a, b, x) -> logpdf(Arcsine(a, b), x),
-            (-0.3, 0.9, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Arcsine(a,b) 2",
-            (a, b, x) -> logpdf(Arcsine(a, b), x),
-            (0.5, 1.1, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Beta 1",
-            (α, β, x) -> logpdf(Beta(α, β), x),
-            (1.1, 1.1, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Beta 2",
-            (α, β, x) -> logpdf(Beta(α, β), x),
-            (1.1, 1.5, 0.9),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Beta 3",
-            (α, β, x) -> logpdf(Beta(α, β), x),
-            (1.6, 1.5, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "BetaPrime 1",
-            (α, β, x) -> logpdf(BetaPrime(α, β), x),
-            (1.1, 1.1, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "BetaPrime 2",
-            (α, β, x) -> logpdf(BetaPrime(α, β), x),
-            (1.1, 1.6, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "BetaPrime 3",
-            (α, β, x) -> logpdf(BetaPrime(α, β), x),
-            (1.6, 1.3, 0.9),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Biweight 1",
-            (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
-            (1.0, 2.0, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Biweight 2",
-            (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
-            (-0.5, 2.5, -0.45),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Biweight 3",
-            (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
-            (0.0, 1.0, 0.3),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cauchy() 1",
-            x -> logpdf(Cauchy(), x),
-            (-0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cauchy(μ) 1",
-            (μ, x) -> logpdf(Cauchy(μ), x),
-            (1.0, 0.99),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cauchy(μ,σ) 1",
-            (μ, σ, x) -> logpdf(Cauchy(μ, σ), x),
-            (1.0, 0.1, 1.01),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chi 1",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (2.5, 0.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chi 2",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (5.5, 1.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chi 3",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (0.1, 0.7),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chisq 1",
-            (ν, x) -> logpdf(Chisq(ν), x),
-            (2.5, 0.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chisq 2",
-            (ν, x) -> logpdf(Chisq(ν), x),
-            (5.5, 1.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chisq 3",
-            (ν, x) -> logpdf(Chisq(ν), x),
-            (0.1, 0.7),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cosine 1",
-            (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
-            (0.0, 1.0, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cosine 2",
-            (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
-            (-0.5, 2.0, -0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Cosine 3",
-            (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
-            (0.4, 0.5, 0.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Epanechnikov 1",
-            (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
-            (0.0, 1.0, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Arcsine() 1", x -> logpdf(Arcsine(), x), (0.5,), 1),
+        ("Arcsine(a,b) 1", (a, b, x) -> logpdf(Arcsine(a, b), x), (-0.3, 0.9, 0.5), 3),
+        ("Arcsine(a,b) 2", (a, b, x) -> logpdf(Arcsine(a, b), x), (0.5, 1.1, 1.0), 3),
+        ("Beta 1", (α, β, x) -> logpdf(Beta(α, β), x), (1.1, 1.1, 0.5), 3),
+        ("Beta 2", (α, β, x) -> logpdf(Beta(α, β), x), (1.1, 1.5, 0.9), 3),
+        ("Beta 3", (α, β, x) -> logpdf(Beta(α, β), x), (1.6, 1.5, 0.5), 3),
+        ("BetaPrime 1", (α, β, x) -> logpdf(BetaPrime(α, β), x), (1.1, 1.1, 0.5), 3),
+        ("BetaPrime 2", (α, β, x) -> logpdf(BetaPrime(α, β), x), (1.1, 1.6, 0.5), 3),
+        ("BetaPrime 3", (α, β, x) -> logpdf(BetaPrime(α, β), x), (1.6, 1.3, 0.9), 3),
+        ("Biweight 1", (μ, σ, x) -> logpdf(Biweight(μ, σ), x), (1.0, 2.0, 0.5), 3),
+        ("Biweight 2", (μ, σ, x) -> logpdf(Biweight(μ, σ), x), (-0.5, 2.5, -0.45), 3),
+        ("Biweight 3", (μ, σ, x) -> logpdf(Biweight(μ, σ), x), (0.0, 1.0, 0.3), 3),
+        ("Cauchy() 1", x -> logpdf(Cauchy(), x), (-0.5,), 1),
+        ("Cauchy(μ) 1", (μ, x) -> logpdf(Cauchy(μ), x), (1.0, 0.99), 2),
+        ("Cauchy(μ,σ) 1", (μ, σ, x) -> logpdf(Cauchy(μ, σ), x), (1.0, 0.1, 1.01), 3),
+        ("Chi 1", (ν, x) -> logpdf(Chi(ν), x), (2.5, 0.5), 2),
+        ("Chi 2", (ν, x) -> logpdf(Chi(ν), x), (5.5, 1.1), 2),
+        ("Chi 3", (ν, x) -> logpdf(Chi(ν), x), (0.1, 0.7), 2),
+        ("Chisq 1", (ν, x) -> logpdf(Chisq(ν), x), (2.5, 0.5), 2),
+        ("Chisq 2", (ν, x) -> logpdf(Chisq(ν), x), (5.5, 1.1), 2),
+        ("Chisq 3", (ν, x) -> logpdf(Chisq(ν), x), (0.1, 0.7), 2),
+        ("Cosine 1", (μ, σ, x) -> logpdf(Cosine(μ, σ), x), (0.0, 1.0, 0.5), 3),
+        ("Cosine 2", (μ, σ, x) -> logpdf(Cosine(μ, σ), x), (-0.5, 2.0, -0.1), 3),
+        ("Cosine 3", (μ, σ, x) -> logpdf(Cosine(μ, σ), x), (0.4, 0.5, 0.0), 3),
+        ("Epanechnikov 1", (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x), (0.0, 1.0, 0.5), 3),
         (
             "Epanechnikov 2",
             (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
             (-0.5, 1.2, -0.9),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Epanechnikov 3",
-            (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
-            (-0.4, 1.6, 0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Epanechnikov 3", (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x), (-0.4, 1.6, 0.1), 3),
 
         # Erlang — x-only differentiation; integer shape k is non-differentiable.
         # Erlang(k, θ) requires k ∈ ℤ₊, so NDual cannot be passed as the shape argument.
-        (
-            "Erlang() 1",
-            x -> logpdf(Erlang(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Erlang() 2",
-            x -> logpdf(Erlang(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Erlang() 3",
-            x -> logpdf(Erlang(), x),
-            (0.9,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Exponential() 1",
-            x -> logpdf(Exponential(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Exponential(θ) 1",
-            (θ, x) -> logpdf(Exponential(θ), x),
-            (0.5, 0.9),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Exponential(θ) 2",
-            (θ, x) -> logpdf(Exponential(θ), x),
-            (1.4, 0.05),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "FDist 1",
-            (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
-            (2.1, 3.5, 0.7),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "FDist 2",
-            (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
-            (1.4, 5.4, 3.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "FDist 3",
-            (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
-            (5.5, 3.3, 7.2),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Frechet() 1",
-            x -> logpdf(Frechet(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Frechet() 2",
-            x -> logpdf(Frechet(), x),
-            (1.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Frechet(α,θ) 1",
-            (α, θ, x) -> logpdf(Frechet(α, θ), x),
-            (1.5, 2.4, 0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Gamma 1",
-            (α, θ, x) -> logpdf(Gamma(α, θ), x),
-            (0.9, 1.2, 4.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Gamma 2",
-            (α, θ, x) -> logpdf(Gamma(α, θ), x),
-            (0.5, 1.9, 1.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Gamma 3",
-            (α, θ, x) -> logpdf(Gamma(α, θ), x),
-            (1.8, 3.2, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Erlang() 1", x -> logpdf(Erlang(), x), (0.5,), 1),
+        ("Erlang() 2", x -> logpdf(Erlang(), x), (0.1,), 1),
+        ("Erlang() 3", x -> logpdf(Erlang(), x), (0.9,), 1),
+        ("Exponential() 1", x -> logpdf(Exponential(), x), (0.1,), 1),
+        ("Exponential(θ) 1", (θ, x) -> logpdf(Exponential(θ), x), (0.5, 0.9), 2),
+        ("Exponential(θ) 2", (θ, x) -> logpdf(Exponential(θ), x), (1.4, 0.05), 2),
+        ("FDist 1", (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x), (2.1, 3.5, 0.7), 3),
+        ("FDist 2", (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x), (1.4, 5.4, 3.5), 3),
+        ("FDist 3", (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x), (5.5, 3.3, 7.2), 3),
+        ("Frechet() 1", x -> logpdf(Frechet(), x), (0.1,), 1),
+        ("Frechet() 2", x -> logpdf(Frechet(), x), (1.1,), 1),
+        ("Frechet(α,θ) 1", (α, θ, x) -> logpdf(Frechet(α, θ), x), (1.5, 2.4, 0.1), 3),
+        ("Gamma 1", (α, θ, x) -> logpdf(Gamma(α, θ), x), (0.9, 1.2, 4.5), 3),
+        ("Gamma 2", (α, θ, x) -> logpdf(Gamma(α, θ), x), (0.5, 1.9, 1.5), 3),
+        ("Gamma 3", (α, θ, x) -> logpdf(Gamma(α, θ), x), (1.8, 3.2, 1.0), 3),
         (
             "GeneralizedExtremeValue 1",
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (0.3, 1.3, 0.1, 2.4),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "GeneralizedExtremeValue 2",
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (-0.7, 2.2, 0.4, 1.1),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "GeneralizedExtremeValue 3",
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (0.5, 0.9, -0.5, -7.0),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "GeneralizedPareto 1",
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (0.3, 1.1, 1.1, 5.0),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "GeneralizedPareto 2",
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (-0.25, 0.9, 0.1, 0.8),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "GeneralizedPareto 3",
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (0.3, 1.1, -5.1, 0.31),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Gumbel 1",
-            (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
-            (0.1, 0.5, 0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Gumbel 2",
-            (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
-            (-0.5, 1.1, -0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Gumbel 3",
-            (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
-            (0.3, 0.1, 0.3),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Gumbel 1", (μ, σ, x) -> logpdf(Gumbel(μ, σ), x), (0.1, 0.5, 0.1), 3),
+        ("Gumbel 2", (μ, σ, x) -> logpdf(Gumbel(μ, σ), x), (-0.5, 1.1, -0.1), 3),
+        ("Gumbel 3", (μ, σ, x) -> logpdf(Gumbel(μ, σ), x), (0.3, 0.1, 0.3), 3),
         (
             "InverseGamma 1",
             (a, b, x) -> logpdf(InverseGamma(a, b), x),
             (1.5, 1.4, 0.4),
             3,
-            (:forward, :reverse, :nfwd),
-            :allocs,
+            (; perf_flag=:allocs),
         ),
         (
             "InverseGaussian 1",
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.1, 0.5, 1.1),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "InverseGaussian 2",
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.2, 1.1, 3.2),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "InverseGaussian 3",
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.1, 1.2, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "JohnsonSU 1",
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.1, 0.95, 0.1, 1.1, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "JohnsonSU 2",
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.15, 0.9, 0.12, 0.94, 0.5),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "JohnsonSU 3",
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.1, 0.95, 0.1, 1.1, -0.3),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Kolmogorov 1",
-            x -> logpdf(Kolmogorov(), x),
-            (1.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Kolmogorov 2",
-            x -> logpdf(Kolmogorov(), x),
-            (0.9,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Kolmogorov 3",
-            x -> logpdf(Kolmogorov(), x),
-            (1.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Kumaraswamy 1",
-            (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
-            (2.0, 5.0, 0.71),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Kumaraswamy 2",
-            (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
-            (0.1, 5.0, 0.2),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Kumaraswamy 3",
-            (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
-            (0.5, 4.5, 0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Laplace 1",
-            (μ, β, x) -> logpdf(Laplace(μ, β), x),
-            (0.1, 1.0, 0.2),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Laplace 2",
-            (μ, β, x) -> logpdf(Laplace(μ, β), x),
-            (-0.5, 2.1, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Laplace 3",
-            (μ, β, x) -> logpdf(Laplace(μ, β), x),
-            (-0.35, 0.4, -0.3),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Levy 1",
-            (μ, c, x) -> logpdf(Levy(μ, c), x),
-            (0.1, 0.9, 4.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Levy 2",
-            (μ, c, x) -> logpdf(Levy(μ, c), x),
-            (0.5, 0.9, 0.6),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Levy 3",
-            (μ, c, x) -> logpdf(Levy(μ, c), x),
-            (1.1, 0.5, 2.2),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Lindley 1",
-            (θ, x) -> logpdf(Lindley(θ), x),
-            (0.5, 2.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Lindley 2",
-            (θ, x) -> logpdf(Lindley(θ), x),
-            (1.1, 3.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Lindley 3",
-            (θ, x) -> logpdf(Lindley(θ), x),
-            (1.9, 3.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Logistic 1",
-            (μ, s, x) -> logpdf(Logistic(μ, s), x),
-            (0.1, 1.2, 1.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Logistic 2",
-            (μ, s, x) -> logpdf(Logistic(μ, s), x),
-            (0.5, 0.7, 0.6),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Logistic 3",
-            (μ, s, x) -> logpdf(Logistic(μ, s), x),
-            (-0.5, 0.1, -0.4),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogitNormal 1",
-            (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
-            (0.1, 1.1, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogitNormal 2",
-            (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
-            (0.5, 0.7, 0.6),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogitNormal 3",
-            (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
-            (-0.12, 1.1, 0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogNormal 1",
-            (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
-            (0.0, 1.0, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogNormal 2",
-            (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
-            (0.5, 1.0, 0.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogNormal 3",
-            (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
-            (-0.1, 1.3, 0.75),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogUniform 1",
-            (a, b, x) -> logpdf(LogUniform(a, b), x),
-            (0.1, 0.9, 0.75),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogUniform 2",
-            (a, b, x) -> logpdf(LogUniform(a, b), x),
-            (0.15, 7.8, 7.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LogUniform 3",
-            (a, b, x) -> logpdf(LogUniform(a, b), x),
-            (2.0, 3.0, 2.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Normal() 1",
-            x -> logpdf(Normal(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Normal(μ,σ) 1",
-            (μ, σ, x) -> logpdf(Normal(μ, σ), x),
-            (0.0, 1.0, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Normal(μ,σ) 2",
-            (μ, σ, x) -> logpdf(Normal(μ, σ), x),
-            (0.5, 1.0, 0.05),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Normal(μ,σ) 3",
-            (μ, σ, x) -> logpdf(Normal(μ, σ), x),
-            (0.0, 1.5, -0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Normal(μ,σ) 4",
-            (μ, σ, x) -> logpdf(Normal(μ, σ), x),
-            (-0.1, 0.9, -0.3),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Kolmogorov 1", x -> logpdf(Kolmogorov(), x), (1.1,), 1),
+        ("Kolmogorov 2", x -> logpdf(Kolmogorov(), x), (0.9,), 1),
+        ("Kolmogorov 3", x -> logpdf(Kolmogorov(), x), (1.5,), 1),
+        ("Kumaraswamy 1", (a, b, x) -> logpdf(Kumaraswamy(a, b), x), (2.0, 5.0, 0.71), 3),
+        ("Kumaraswamy 2", (a, b, x) -> logpdf(Kumaraswamy(a, b), x), (0.1, 5.0, 0.2), 3),
+        ("Kumaraswamy 3", (a, b, x) -> logpdf(Kumaraswamy(a, b), x), (0.5, 4.5, 0.1), 3),
+        ("Laplace 1", (μ, β, x) -> logpdf(Laplace(μ, β), x), (0.1, 1.0, 0.2), 3),
+        ("Laplace 2", (μ, β, x) -> logpdf(Laplace(μ, β), x), (-0.5, 2.1, 0.5), 3),
+        ("Laplace 3", (μ, β, x) -> logpdf(Laplace(μ, β), x), (-0.35, 0.4, -0.3), 3),
+        ("Levy 1", (μ, c, x) -> logpdf(Levy(μ, c), x), (0.1, 0.9, 4.1), 3),
+        ("Levy 2", (μ, c, x) -> logpdf(Levy(μ, c), x), (0.5, 0.9, 0.6), 3),
+        ("Levy 3", (μ, c, x) -> logpdf(Levy(μ, c), x), (1.1, 0.5, 2.2), 3),
+        ("Lindley 1", (θ, x) -> logpdf(Lindley(θ), x), (0.5, 2.1), 2),
+        ("Lindley 2", (θ, x) -> logpdf(Lindley(θ), x), (1.1, 3.1), 2),
+        ("Lindley 3", (θ, x) -> logpdf(Lindley(θ), x), (1.9, 3.5), 2),
+        ("Logistic 1", (μ, s, x) -> logpdf(Logistic(μ, s), x), (0.1, 1.2, 1.1), 3),
+        ("Logistic 2", (μ, s, x) -> logpdf(Logistic(μ, s), x), (0.5, 0.7, 0.6), 3),
+        ("Logistic 3", (μ, s, x) -> logpdf(Logistic(μ, s), x), (-0.5, 0.1, -0.4), 3),
+        ("LogitNormal 1", (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x), (0.1, 1.1, 0.5), 3),
+        ("LogitNormal 2", (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x), (0.5, 0.7, 0.6), 3),
+        ("LogitNormal 3", (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x), (-0.12, 1.1, 0.1), 3),
+        ("LogNormal 1", (μ, σ, x) -> logpdf(LogNormal(μ, σ), x), (0.0, 1.0, 0.5), 3),
+        ("LogNormal 2", (μ, σ, x) -> logpdf(LogNormal(μ, σ), x), (0.5, 1.0, 0.5), 3),
+        ("LogNormal 3", (μ, σ, x) -> logpdf(LogNormal(μ, σ), x), (-0.1, 1.3, 0.75), 3),
+        ("LogUniform 1", (a, b, x) -> logpdf(LogUniform(a, b), x), (0.1, 0.9, 0.75), 3),
+        ("LogUniform 2", (a, b, x) -> logpdf(LogUniform(a, b), x), (0.15, 7.8, 7.1), 3),
+        ("LogUniform 3", (a, b, x) -> logpdf(LogUniform(a, b), x), (2.0, 3.0, 2.1), 3),
+        ("Normal() 1", x -> logpdf(Normal(), x), (0.1,), 1),
+        ("Normal(μ,σ) 1", (μ, σ, x) -> logpdf(Normal(μ, σ), x), (0.0, 1.0, 1.0), 3),
+        ("Normal(μ,σ) 2", (μ, σ, x) -> logpdf(Normal(μ, σ), x), (0.5, 1.0, 0.05), 3),
+        ("Normal(μ,σ) 3", (μ, σ, x) -> logpdf(Normal(μ, σ), x), (0.0, 1.5, -0.1), 3),
+        ("Normal(μ,σ) 4", (μ, σ, x) -> logpdf(Normal(μ, σ), x), (-0.1, 0.9, -0.3), 3),
         (
             "NormalCanon 1",
             (m, s, x) -> logpdf(NormalCanon(m, s), x),
             (0.1, 1.0, -0.5),
             3,
-            (:forward, :reverse, :nfwd),
-            :allocs,
+            (; perf_flag=:allocs),
         ),
         (
             "NormalInverseGaussian 1",
             (μ, α, β, δ, x) -> logpdf(NormalInverseGaussian(μ, α, β, δ), x),
             (0.0, 1.0, 0.2, 0.1, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Pareto 1",
-            (α, θ, x) -> logpdf(Pareto(α, θ), x),
-            (1.0, 1.0, 3.5),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Pareto 2",
-            (α, θ, x) -> logpdf(Pareto(α, θ), x),
-            (1.1, 0.9, 3.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Pareto 3",
-            (α, θ, x) -> logpdf(Pareto(α, θ), x),
-            (1.0, 1.0, 1.4),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Pareto 1", (α, θ, x) -> logpdf(Pareto(α, θ), x), (1.0, 1.0, 3.5), 3),
+        ("Pareto 2", (α, θ, x) -> logpdf(Pareto(α, θ), x), (1.1, 0.9, 3.1), 3),
+        ("Pareto 3", (α, θ, x) -> logpdf(Pareto(α, θ), x), (1.0, 1.0, 1.4), 3),
         (
             "PGeneralizedGaussian 1",
             (p, x) -> logpdf(PGeneralizedGaussian(p), x),
             (0.2, 5.0),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "PGeneralizedGaussian 2",
             (μ, α, p, x) -> logpdf(PGeneralizedGaussian(μ, α, p), x),
             (0.5, 1.0, 0.3, 5.0),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "PGeneralizedGaussian 3",
             (μ, α, p, x) -> logpdf(PGeneralizedGaussian(μ, α, p), x),
             (-0.1, 11.1, 6.5, -0.3),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Rayleigh 1",
-            (σ, x) -> logpdf(Rayleigh(σ), x),
-            (0.5, 0.6),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Rayleigh 2",
-            (σ, x) -> logpdf(Rayleigh(σ), x),
-            (0.9, 1.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Rayleigh 3",
-            (σ, x) -> logpdf(Rayleigh(σ), x),
-            (0.55, 0.63),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Semicircle 1",
-            (r, x) -> logpdf(Semicircle(r), x),
-            (1.0, 0.9),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Semicircle 2",
-            (r, x) -> logpdf(Semicircle(r), x),
-            (5.1, 5.05),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Semicircle 3",
-            (r, x) -> logpdf(Semicircle(r), x),
-            (0.5, -0.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Rayleigh 1", (σ, x) -> logpdf(Rayleigh(σ), x), (0.5, 0.6), 2),
+        ("Rayleigh 2", (σ, x) -> logpdf(Rayleigh(σ), x), (0.9, 1.1), 2),
+        ("Rayleigh 3", (σ, x) -> logpdf(Rayleigh(σ), x), (0.55, 0.63), 2),
+        ("Semicircle 1", (r, x) -> logpdf(Semicircle(r), x), (1.0, 0.9), 2),
+        ("Semicircle 2", (r, x) -> logpdf(Semicircle(r), x), (5.1, 5.05), 2),
+        ("Semicircle 3", (r, x) -> logpdf(Semicircle(r), x), (0.5, -0.1), 2),
         (
             "SkewedExponentialPower 1",
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.1, 1.0, 0.97, 0.7, -2.0),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SkewedExponentialPower 2",
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.15, 1.0, 0.97, 0.7, -2.0),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SkewedExponentialPower 3",
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.1, 1.1, 0.99, 0.7, 0.5),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SkewNormal 1",
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (0.0, 1.0, -1.0, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SkewNormal 2",
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (0.5, 2.0, 1.1, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SkewNormal 3",
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (-0.5, 1.0, 0.0, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SymTriangularDist 1",
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (0.0, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SymTriangularDist 2",
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (-0.5, 2.1, -2.0),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "SymTriangularDist 3",
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (1.7, 0.3, 1.75),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "TDist 1",
-            (ν, x) -> logpdf(TDist(ν), x),
-            (1.1, 99.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "TDist 2",
-            (ν, x) -> logpdf(TDist(ν), x),
-            (10.1, 25.0),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "TDist 3",
-            (ν, x) -> logpdf(TDist(ν), x),
-            (2.1, -89.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("TDist 1", (ν, x) -> logpdf(TDist(ν), x), (1.1, 99.1), 2),
+        ("TDist 2", (ν, x) -> logpdf(TDist(ν), x), (10.1, 25.0), 2),
+        ("TDist 3", (ν, x) -> logpdf(TDist(ν), x), (2.1, -89.5), 2),
         (
             "TriangularDist 1",
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.0, 1.5, 0.5, 0.45),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "TriangularDist 2",
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.1, 1.4, 0.45, 0.12),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "TriangularDist 3",
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.0, 1.5, 0.5, 0.2),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "Triweight 1",
-            (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
-            (1.0, 1.0, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Triweight 2",
-            (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
-            (1.1, 2.1, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Triweight 3",
-            (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
-            (1.9, 10.0, -0.1),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Uniform 1",
-            (a, b, x) -> logpdf(Uniform(a, b), x),
-            (0.0, 1.0, 0.2),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Uniform 2",
-            (a, b, x) -> logpdf(Uniform(a, b), x),
-            (-0.1, 1.1, 1.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Uniform 3",
-            (a, b, x) -> logpdf(Uniform(a, b), x),
-            (99.5, 100.5, 100.0),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "VonMises 1",
-            (κ, x) -> logpdf(VonMises(κ), x),
-            (0.5, 0.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "VonMises 2",
-            (κ, x) -> logpdf(VonMises(κ), x),
-            (0.3, -0.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "VonMises 3",
-            (κ, x) -> logpdf(VonMises(κ), x),
-            (0.2, -0.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Weibull 1",
-            (α, θ, x) -> logpdf(Weibull(α, θ), x),
-            (0.5, 1.0, 0.45),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Weibull 2",
-            (α, θ, x) -> logpdf(Weibull(α, θ), x),
-            (0.3, 1.1, 0.66),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Weibull 3",
-            (α, θ, x) -> logpdf(Weibull(α, θ), x),
-            (0.75, 1.3, 0.99),
-            3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Triweight 1", (μ, σ, x) -> logpdf(Triweight(μ, σ), x), (1.0, 1.0, 1.0), 3),
+        ("Triweight 2", (μ, σ, x) -> logpdf(Triweight(μ, σ), x), (1.1, 2.1, 1.0), 3),
+        ("Triweight 3", (μ, σ, x) -> logpdf(Triweight(μ, σ), x), (1.9, 10.0, -0.1), 3),
+        ("Uniform 1", (a, b, x) -> logpdf(Uniform(a, b), x), (0.0, 1.0, 0.2), 3),
+        ("Uniform 2", (a, b, x) -> logpdf(Uniform(a, b), x), (-0.1, 1.1, 1.0), 3),
+        ("Uniform 3", (a, b, x) -> logpdf(Uniform(a, b), x), (99.5, 100.5, 100.0), 3),
+        ("VonMises 1", (κ, x) -> logpdf(VonMises(κ), x), (0.5, 0.1), 2),
+        ("VonMises 2", (κ, x) -> logpdf(VonMises(κ), x), (0.3, -0.1), 2),
+        ("VonMises 3", (κ, x) -> logpdf(VonMises(κ), x), (0.2, -0.5), 2),
+        ("Weibull 1", (α, θ, x) -> logpdf(Weibull(α, θ), x), (0.5, 1.0, 0.45), 3),
+        ("Weibull 2", (α, θ, x) -> logpdf(Weibull(α, θ), x), (0.3, 1.1, 0.66), 3),
+        ("Weibull 3", (α, θ, x) -> logpdf(Weibull(α, θ), x), (0.75, 1.3, 0.99), 3),
 
         # ── Multivariate ──────────────────────────────────────────────────────────
 
@@ -1704,48 +928,36 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(MvNormal(Diagonal(Fill(σ, 1))), [x]),
             (1.5, -0.3),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal Diagonal Fill 2",
             (σ, x1, x2) -> logpdf(MvNormal(Diagonal(Fill(σ, 2))), [x1, x2]),
             (0.5, 0.2, -0.3),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean scalar_var 1",
             (m, σ, x) -> logpdf(MvNormal([m], σ), [x]),
             (0.0, 0.9, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean scalar_var 2",
             (m1, m2, σ, x1, x2) -> logpdf(MvNormal([m1, m2], σ), [x1, x2]),
             (0.0, 0.1, 0.9, 0.1, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal Diagonal vec 1",
             (σ, x) -> logpdf(MvNormal(Diagonal([σ])), [x]),
             (0.1, 0.1),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal Diagonal vec 2",
             (σ1, σ2, x1, x2) -> logpdf(MvNormal(Diagonal([σ1, σ2])), [x1, x2]),
             (0.1, 0.2, 0.1, 0.15),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean Diagonal Fill 1",
@@ -1753,16 +965,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Diagonal(Fill(σ, 2))), [x1, x2]),
             (0.1, -0.3, 0.9, 0.1, -0.1),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean scalar_I 1",
             (m1, m2, σ, x1, x2) -> logpdf(MvNormal([m1, m2], σ * I), [x1, x2]),
             (0.1, -0.1, 0.4, -0.1, 0.15),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean Hermitian Diagonal 1",
@@ -1770,8 +978,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Hermitian(Diagonal([σ1, σ2]))), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean Symmetric Diagonal 1",
@@ -1779,8 +985,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Symmetric(Diagonal([σ1, σ2]))), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean Diagonal 1",
@@ -1788,16 +992,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Diagonal([σ1, σ2])), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal mean var_vec 1",
             (m1, m2, v1, v2, x1, x2) -> logpdf(MvNormal([m1, m2], [v1, v2]), [x1, x2]),
             (0.2, -0.3, 0.5, 0.6, 0.4, -0.3),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # PDMat-based MvNormal — NDual <: AbstractFloat so PDMat(Symmetric(NDual_matrix))
@@ -1808,16 +1008,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (s, x) -> logpdf(MvNormal([-0.15], Symmetric(reshape([s], 1, 1))), [x]),
             (1.21, -0.05),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal PDMat 1x1",
             (s, x) -> logpdf(MvNormal([-0.15], PDMat(Symmetric(reshape([s], 1, 1)))), [x]),
             (1.21, -0.05),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal Symmetric 2x2",
@@ -1825,8 +1021,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([0.2, -0.15], Symmetric([s11 s12; s12 s22])), [x1, x2]),
             (2.01, 0.63, 1.21, 0.05, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormal PDMat 2x2",
@@ -1835,8 +1029,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (2.01, 0.63, 1.21, 0.05, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvNormalCanon Symmetric 2x2",
@@ -1844,8 +1036,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormalCanon([0.1, -0.1], Symmetric([s11 s12; s12 s22])), [x1, x2]),
             (1.45, 0.9, 1.21, 0.2, -0.25),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MvLogNormal Symmetric 2x2",
@@ -1855,8 +1045,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (2.01, 0.63, 1.21, 0.5, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # product_distribution — observation-only differentiation; component distributions hardcoded.
@@ -1866,27 +1054,16 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(product_distribution([Normal()]), [x]),
             (0.3,),
             1,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "product_distribution Normal+Uniform x",
             (x1, x2) -> logpdf(product_distribution([Normal(), Uniform()]), [x1, x2]),
             (-0.4, 0.3),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # Categorical — differentiate w.r.t. probability parameter
-        (
-            "Categorical 1",
-            x -> logpdf(Categorical(x, 1 - x), 1),
-            (0.3,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Categorical 1", x -> logpdf(Categorical(x, 1 - x), 1), (0.3,), 1),
 
         # Dirichlet — full differentiation w.r.t. concentration params and observation
         (
@@ -1894,8 +1071,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α1, α2, x1, x2) -> logpdf(Dirichlet([α1, α2]), [x1, x2]),
             (1.5, 1.1, 0.4, 0.6),
             4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # MvLogitNormal — covariance via Symmetric (PDMat path also works; Symmetric used here)
@@ -1907,8 +1082,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (0.4, 0.6, 2.01, 0.63, 1.21, 0.27, 0.24),
             7,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # ── Matrix-variate ────────────────────────────────────────────────────────
@@ -1927,8 +1100,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (randn(StableRNG(4), 2, 3),),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MatrixNormal M+X",
@@ -1942,8 +1113,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (vec(randn(StableRNG(0), 2, 3)), vec(randn(StableRNG(4), 2, 3))),
             12,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # Wishart and InverseWishart are covered by the standard logpdf_test_cases above
@@ -1963,16 +1132,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (randn(StableRNG(2), 2, 3),),
             6,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MatrixBeta X",
             X -> logpdf(MatrixBeta(5, 9.0, 10.0), X),
             (rand(StableRNG(123456), MatrixBeta(5, 9.0, 10.0)),),
             25,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "MatrixFDist X",
@@ -1983,33 +1148,10 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 ),
             ),
             25,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
-        (
-            "LKJ η",
-            η -> logpdf(LKJ(5, η), LKJ_SAMPLE_RMAT),
-            (1.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LKJ R",
-            Rmat -> logpdf(LKJ(5, 1.1), Rmat),
-            (LKJ_SAMPLE_RMAT,),
-            25,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "LKJ η+R",
-            (η, Rmat) -> logpdf(LKJ(5, η), Rmat),
-            (1.1, LKJ_SAMPLE_RMAT),
-            26,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("LKJ η", η -> logpdf(LKJ(5, η), LKJ_SAMPLE_RMAT), (1.1,), 1),
+        ("LKJ R", Rmat -> logpdf(LKJ(5, 1.1), Rmat), (LKJ_SAMPLE_RMAT,), 25),
+        ("LKJ η+R", (η, Rmat) -> logpdf(LKJ(5, η), Rmat), (1.1, LKJ_SAMPLE_RMAT), 26),
 
         # ── Truncated distributions ───────────────────────────────────────────────
 
@@ -2022,38 +1164,30 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(truncated(Beta(1.1, 1.3), a, b), x),
             (0.1, 0.9, 0.4),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "truncated Beta lower 1",
             (a, x) -> logpdf(truncated(Beta(1.1, 1.3); lower=a), x),
             (0.1, 0.4),
             2,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "truncated Normal 1",
             (a, b, x) -> logpdf(truncated(Normal(), a, b), x),
             (-0.3, 0.3, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
         (
             "truncated Uniform 1",
             (a, b, α, β, x) -> logpdf(truncated(Uniform(α, β), a, b), x),
             (0.1, 0.9, -0.1, 1.1, 0.4),
             5,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # LKJCholesky — workaround: pass lower-triangular factor L as a plain Matrix.
         # Cholesky's constructor requires a numeric matrix, not NDual, so we accept Lmat::Matrix
         # as the NDual input and reconstruct Cholesky(Lmat, 'L', 0) inside the lambda.
-        # Restrict these to reverse/nfwd: forward-mode correctness uses unconstrained finite-
+        # Restrict these to reverse: forward-mode correctness uses unconstrained finite-
         # difference perturbations of Lmat, which leave the valid Cholesky manifold and produce
         # NaN primal evaluations.
         (
@@ -2061,89 +1195,61 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             Lmat -> logpdf(LKJCholesky(5, 1.1), Cholesky(Lmat, 'L', 0)),
             (LKJ_CHOLESKY_SAMPLE_LMAT,),
             25,
-            (:reverse, :nfwd),
-            :none,
+            (; mode=Mooncake.ReverseMode),
         ),
         (
             "LKJCholesky η+L",
             (η, Lmat) -> logpdf(LKJCholesky(5, η), Cholesky(Lmat, 'L', 0)),
             (1.1, LKJ_CHOLESKY_SAMPLE_LMAT),
             26,
-            (:reverse, :nfwd),
-            :none,
+            (; mode=Mooncake.ReverseMode),
         ),
 
         # Dirichlet with array concentration parameter — NDual <: AbstractFloat so
-        # Dirichlet(Vector{NDual}) works directly; chunk_size=3 (2 α elems + x).
+        # Dirichlet(Vector{NDual}) works directly.
         (
             "Dirichlet α (array)",
             (a, x) -> logpdf(Dirichlet(a), [x, 1 - x]),
             ([1.5, 1.1], 0.6),
             3,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "truncated Beta α+β",
-            (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
-            (0.1, 0.9, 1.1, 1.3, 0.4),
-            5,
-            (:forward, :reverse, :nfwd),
-            :allocs,
-        ),
-        (
-            "left-truncated Beta α+β",
-            (a, α, β, x) -> logpdf(truncated(Beta(α, β); lower=a), x),
-            (0.1, 1.1, 1.3, 0.4),
-            4,
-            (:forward, :reverse, :nfwd),
-            :none,
         ),
 
         # ── Forward+Reverse only ───────────────────────────────────────────────────
-        # NfwdMooncake not applicable for the following entries:
-        #
-        #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; NfwdMooncake.build_rrule
-        #                                does not seed structured-matrix args with NDual partials
-        #   reshape / vec              — Distribution objects baked into lambda; no float params to seed
-        #   LKJCholesky workaround     — regular-AD coverage only; NfwdMooncake covered by LKJCholesky L/η+L
 
-        # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument.
-        # NfwdMooncake.build_rrule does not seed structured-matrix args (Symmetric wrapping
-        # PDMat) with NDual partials.  The scalar-param "MvLogitNormal m+Σ+x" entry
-        # above already covers NfwdMooncake differentiation through MvLogitNormal.
+        # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument. The scalar-param
+        # "MvLogitNormal m+Σ+x" entry above already covers differentiation through MvLogitNormal.
         (
             "MvLogitNormal m+Σ (array)",
             (m, S, x) -> logpdf(MvLogitNormal(m, S), vcat(x, 1 - sum(x))),
             ([0.4, 0.6], Symmetric(_pdmat([0.9 0.4; 0.5 1.1])), [0.27, 0.24]),
             0,
-            (:forward, :reverse),
-            :none,
         ),
-        # reshape / vec — the Distribution objects (product_distribution, LKJ) are
-        # baked into the lambda as non-float values; there are no float parameters to
-        # seed as NDual.  These entries exist for regular-AD coverage of the wrapper
-        # code paths only.
+        # truncated Beta / left-truncated Beta with shape params (α, β) as differentiable args.
+        (
+            "truncated Beta α+β",
+            (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
+            (0.1, 0.9, 1.1, 1.3, 0.4),
+            0,
+            (; perf_flag=:allocs),
+        ),
+        (
+            "left-truncated Beta α+β",
+            (a, α, β, x) -> logpdf(truncated(Beta(α, β); lower=a), x),
+            (0.1, 1.1, 1.3, 0.4),
+            0,
+        ),
+        # reshape / vec — the Distribution objects (product_distribution, LKJ) are baked into the
+        # lambda as non-float values, so these entries exercise the wrapper code paths only.
         (
             "reshape",
             x -> logpdf(reshape(product_distribution([Normal(), Uniform()]), 1, 2), x),
             ([2.1 0.7],),
             0,
-            (:forward, :reverse),
-            :none,
         ),
-        (
-            "vec",
-            x -> logpdf(vec(LKJ(2, 1.1)), x),
-            ([1.0, 0.489, 0.489, 1.0],),
-            0,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("vec", x -> logpdf(vec(LKJ(2, 1.1)), x), ([1.0, 0.489, 0.489, 1.0],), 0),
         # LKJCholesky workaround (2×2): constructs Cholesky from scratch inside the lambda.
-        # NfwdMooncake equivalent is "LKJCholesky L" / "LKJCholesky η+L" above (size-5, proper
-        # Lmat approach).  This entry exercises the Cholesky-from-raw-matrix code path
-        # under regular AD only.
+        # Exercises the Cholesky-from-raw-matrix code path ("LKJCholesky L"/"η+L" above use the
+        # size-5 proper Lmat approach).
         (
             "LKJCholesky workaround",
             function (X, v)
@@ -2154,43 +1260,19 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             end,
             (randn(2, 2), 1.1),
             0,
-            (:forward, :reverse),
-            :none,
         ),
     ]
 
-    @testset "$name" for (name, f, args, C, modes, perf_flag) in param_logpdf_cases
-        if :forward in modes && :reverse in modes
-            test_rule(StableRNG(123456), f, args...; perf_flag, is_primitive=false)
-        elseif :forward in modes
-            test_rule(
-                StableRNG(123456),
-                f,
-                args...;
-                perf_flag,
-                is_primitive=false,
-                mode=Mooncake.ForwardMode,
-            )
-        elseif :reverse in modes
-            test_rule(
-                StableRNG(123456),
-                f,
-                args...;
-                perf_flag,
-                is_primitive=false,
-                mode=Mooncake.ReverseMode,
-            )
-        end
-        if :nfwd in modes
-            test_rule(
-                StableRNG(123456),
-                f,
-                args...;
-                perf_flag,
-                is_primitive=false,
-                mode=Mooncake.ReverseMode,
-                rrule=_NfwdMode(f, args, C),
-            )
-        end
+    @testset "$name" for (name, f, args, _C, options...) in param_logpdf_cases
+        # A Dirichlet observation must lie on the simplex, and `Distributions.jl` tolerates only
+        # about 1e-9 of drift off it. The harness's finite-difference grid bottoms out at 1e-8, so
+        # every step it can take leaves the simplex and evaluates `-Inf`; the derivative cannot be
+        # finite-differenced at all. Check the interface instead, as the Float16 cases below do for
+        # the same reason.
+        interface_only = name == "Dirichlet α+x"
+        opts = isempty(options) ? (;) : only(options)
+        test_rule(
+            StableRNG(123456), f, args...; is_primitive=false, interface_only, opts...
+        )
     end
 end

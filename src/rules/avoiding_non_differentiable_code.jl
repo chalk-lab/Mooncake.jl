@@ -2,15 +2,40 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+# Shift each lane pointer, including abstract-element pointers such as Ptr{Real}.
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
+) where {Nw,P<:Ptr}
+    yp = primal(y)
+    # Read the V's lane pointer, not `tangent(x, lane)`: that accessor materialises lane `lane`'s
+    # REVERSE tangent, a `VoidPtrTangent` for `Ptr{Nothing}`, not the address the lane holds.
+    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x)[lane] + yp, Val(Nw)))
 end
+# NoDual pointers (e.g. from bitcast) must match the primitive's full Ptr coverage.
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted{<:Integer}
+) where {Nw}
+    p = primal(x) + primal(y)
+    return Lifted{typeof(p),Nw}(p, NoDual())
+end
+# `@is_primitive` above claims EVERY `Ptr`, so this must shift whatever a pointer's fdata is. For a
+# `Ptr{Cvoid}` that is a `VoidPtrTangent`, which shifts its address and keeps what it erased.
+@inline _shift_ptr_fdata(dx::Ptr, n::Integer) = dx + n
+@inline _shift_ptr_fdata(dx::VoidPtrTangent, n::Integer) = VoidPtrTangent(dx.p + n, dx.elt)
+
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    return CoDual(primal(x) + primal(y), _shift_ptr_fdata(tangent(x), primal(y))),
+    NoPullback(f, x, y)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
+# These Bool-valued predicates reach utf8proc foreign calls, including through
+# LinearAlgebra wrapper-char dispatch. isdigit/isspace/iscntrl/isxdigit use ASCII fast paths.
+for f in (:isuppercase, :islowercase, :isletter, :isnumeric, :ispunct, :isprint)
+    @eval @zero_derivative MinimalCtx Tuple{typeof($f),AbstractChar}
+end
+@zero_derivative MinimalCtx Tuple{typeof(Base.Unicode.category_code),AbstractChar}
 @zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
 @zero_derivative MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
@@ -20,11 +45,9 @@ end
 # Optional rule to avoid unnecessary allocations on Julia 1.10
 @zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
 
-# Logging: String-related primitive rules
-using Base: getindex, getproperty
+# Logging: String-related primitive rules.
 using Base.Threads: Atomic
-using Mooncake: zero_fcodual, MinimalCtx, @is_primitive, NoPullback, CoDual
-using Base.CoreLogging: LogLevel, handle_message, invokelatest
+using Base.CoreLogging: LogLevel
 import Base.CoreLogging as CoreLogging
 
 # Rule for accessing an Atomic{T}-wrapped Integer with Base.getindex, since deriving a rule
@@ -268,6 +291,30 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
                 (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
                 1.0,
             ),
+
+            # Matrix wrappers exercise utf8proc-backed char dispatch. A barrier keeps direct
+            # predicate tests from constant-folding away before AD sees them.
+            map(((X, Y) -> Symmetric(X) * Y, (X, Y) -> Hermitian(X) * Y)) do f
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    f,
+                    randn(rng_ctor(123), 4, 4),
+                    randn(rng_ctor(124), 4, 3),
+                )
+            end...,
+            map((
+                isuppercase, islowercase, isletter, isnumeric, ispunct, isprint
+            )) do pred
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    x -> (pred(Base.inferencebarrier('U')::Char) ? 2.0 : 3.0) * x,
+                    1.0,
+                )
+            end...,
 
             # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, (x) -> print(x), "Testing print"),
