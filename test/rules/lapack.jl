@@ -1,7 +1,7 @@
 @testset "lapack" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:lapack))
 
-    # Transitional: pin the shared cotangent until the Lifted registry shares seeds.
+    # TEMPORARY: registry correctness checks seed aliased arguments independently.
     @static if VERSION > v"1.11-"
         @testset "lacpy! shared cotangent" for P in
                                                (Float32, Float64, ComplexF32, ComplexF64),

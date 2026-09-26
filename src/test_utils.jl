@@ -1356,7 +1356,7 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
             haskey(options, :mode) &&
             options.mode !== mode &&
             continue
-        # Transitional: execute rejection rows before the Lifted registry handles metadata.
+        # TEMPORARY: rejection metadata needs separate dispatch from numerical rule checks.
         if options isa NamedTuple && haskey(options, :throws)
             err, msg = options.throws
             test_rule_throws(rng_ctor(123), f, x...; err, msg, mode)
