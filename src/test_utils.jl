@@ -1232,8 +1232,9 @@ function test_rule(
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
 )
-    # Take a copy of `x` to ensure that we do not mutate the original.
-    x = deepcopy(x)
+    # Independent seeds require independent primal copies. Shared seeding must migrate
+    # with tuple-wide copying, including the correctness checks below.
+    x = map(_deepcopy, x)
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
