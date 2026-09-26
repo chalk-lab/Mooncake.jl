@@ -1758,3 +1758,120 @@ end
         end
     end
 end
+
+@testset "reverse prepared alias partitions" begin
+    @testset "aliasing mismatch between preparation and call" begin
+        # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
+        # mismatch, which otherwise accumulates into the wrong prepared buffers.
+        f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+        x0 = [1.0, 2.0, 3.0]
+        distinct_cache = prepare_gradient_cache(f, copy(x0), copy(x0))
+        xg = copy(x0)
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            distinct_cache, f, xg, xg
+        )
+        xp = copy(x0)
+        aliased_cache = prepare_gradient_cache(f, xp, xp)
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            aliased_cache, f, copy(x0), copy(x0)
+        )
+        # Matching aliasing keeps working in both directions.
+        xg2 = copy(x0)
+        _, ga = Mooncake.value_and_gradient!!(aliased_cache, f, xg2, xg2)
+        @test ga[2] == [4.0, 2.0, 2.0]
+        _, gd = Mooncake.value_and_gradient!!(distinct_cache, f, copy(x0), copy(x0))
+        @test gd[2] == [1.0, 1.0, 1.0]
+        @test gd[3] == [2.0, 1.0, 1.0]
+
+        # Tuple-wrapped arrays need the same check: mutable tangent paths are found from
+        # types to avoid a per-call graph traversal.
+        g(t, u) = (t[1][1] += u[1][1]; sum(t[1]) + sum(u[1]))
+        nested_distinct = prepare_gradient_cache(g, (copy(x0),), (copy(x0),))
+        tg = (copy(x0),)
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            nested_distinct, g, tg, tg
+        )
+        tp = (copy(x0),)
+        nested_aliased = prepare_gradient_cache(g, tp, tp)
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            nested_aliased, g, (copy(x0),), (copy(x0),)
+        )
+        # Matching aliasing keeps working through the wrapper too.
+        tg2 = (copy(x0),)
+        _, gna = Mooncake.value_and_gradient!!(nested_aliased, g, tg2, tg2)
+        @test gna[2][1] == [4.0, 2.0, 2.0]
+        @test gna[2][1] === gna[3][1]
+        _, gnd = Mooncake.value_and_gradient!!(nested_distinct, g, (copy(x0),), (copy(x0),))
+        @test gnd[2][1] == [1.0, 1.0, 1.0]
+        @test gnd[3][1] == [2.0, 1.0, 1.0]
+
+        # Array/Memory pairs are distinct objects over one cotangent buffer; compare backing
+        # storage rather than object identity.
+        @static if VERSION >= v"1.11-rc4"
+            h(a, m) = sum(a) + sum(m)
+            mem_pair() = (v=copy(x0); (v, getfield(v, :ref).mem))
+            unrelated = prepare_gradient_cache(
+                h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                unrelated, h, mem_pair()...
+            )
+            ap, mp = mem_pair()
+            buffer_cache = prepare_gradient_cache(h, ap, mp)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                buffer_cache, h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+            )
+            # Matching aliasing gives the gradient of the one buffer at both positions.
+            _, gb = Mooncake.value_and_gradient!!(buffer_cache, h, mem_pair()...)
+            @test gb[2] == [2.0, 2.0, 2.0]
+            @test gb[3] == [2.0, 2.0, 2.0]
+            # ... and `reshape`, which shares a buffer on BOTH sides, is not a mismatch.
+            b = copy(x0)
+            reshaped = prepare_gradient_cache(h, b, reshape(b, 3, 1))
+            _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
+            @test gr[2] == [2.0, 2.0, 2.0]
+        end
+
+        # Compare leaves within one argument too; each prepared leaf owns one buffer.
+        one_arg(t) = sum(t[1] .* t[2])
+        a1, b1 = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
+        intra_distinct = prepare_gradient_cache(one_arg, (a1, b1))
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            intra_distinct, one_arg, (a1, a1)
+        )
+        intra_aliased = prepare_gradient_cache(one_arg, (a1, a1))
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            intra_aliased, one_arg, (a1, b1)
+        )
+        _, g_intra = Mooncake.value_and_gradient!!(intra_aliased, one_arg, (a1, a1))
+        @test g_intra[2] == (2 .* a1, 2 .* a1)
+        @test Mooncake.value_and_gradient!!(intra_distinct, one_arg, (a1, b1))[2][2] ==
+            (b1, a1)
+
+        # Past the eighth leaf and the third level of nesting the walk used to stop, so
+        # the same mismatch beyond either bound went unchecked.
+        wide(t, y) = sum(t[10] .* y)
+        ws = ntuple(i -> Float64[i, i + 1], 10)
+        wide_cache = prepare_gradient_cache(wide, ws, [1.0, 1.0])
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            wide_cache, wide, ws, ws[10]
+        )
+        deep(t, y) = sum(t[1][1][1][1] .* y)
+        deep_cache = prepare_gradient_cache(deep, ((((a1,),),),), b1)
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            deep_cache, deep, ((((a1,),),),), a1
+        )
+
+        # Wide enough that the comparisons are not unrolled (the emitted code is
+        # quadratic in the leaf count), so the same contract runs as one pass over the
+        # leaves.
+        many(t) = sum(t[1] .* t[24])
+        ms = ntuple(i -> Float64[i, i + 1], 24)
+        many_cache = prepare_gradient_cache(many, ms)
+        many_aliased = (ms[1], Base.tail(Base.front(ms))..., ms[1])
+        @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
+        @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+            many_cache, many, many_aliased
+        )
+    end
+end
