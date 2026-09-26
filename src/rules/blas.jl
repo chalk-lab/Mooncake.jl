@@ -361,7 +361,7 @@ function viewify(
     x, dx = arrayify(x_dx)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         p, dp = parent(x), _fields(tangent(x_dx)).parent
-        return viewify(n, x_dx isa Dual ? Dual(p, dp) : CoDual(p, dp), incx)
+        return viewify(n, CoDual(p, dp), incx)
     end
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
