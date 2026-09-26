@@ -75,6 +75,10 @@ end
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
+# A type-valued primal need not be concrete, even when its slot is.
+@test Lifted{Type{Union{Nothing,Float64}},1}(Union{Nothing,Float64}, Mooncake.NoDual()).primal ===
+    Union{Nothing,Float64}
+
 # julia#61368 workaround: loading DispatchDoctor (above) advances the world counter by
 # defining many methods, which on Julia 1.10 would invalidate inner OC CodeInstances and
 # trigger a segfault in emit_specsig_oc_call when building an outer frule. The @eval below

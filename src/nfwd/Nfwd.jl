@@ -51,10 +51,10 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
-`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
+`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers used by the scalar
+primitive **forward** `frule!!`s in `src/rules/low_level_maths.jl` (which run the `f(::NDual)`
+overloads). The matching reverse `rrule!!`s there are direct native analytic pullbacks and do
+not use this module.
 """
 module Nfwd
 
@@ -62,35 +62,26 @@ using Base: IEEEFloat
 using LinearAlgebra
 
 export NDual,
+    NDualArray,
+    NDualEltype,
     NDualUnsupportedError,
     ndual_value,
     ndual_partial,
     ndual_partials,
-    Rule,
-    RRule,
-    rule_chunk_size,
+    primal_dim,
+    static_primal_dim,
     UnsupportedError,
     UnsupportedInputError,
     UnsupportedOutputError,
     _NFWD_PREFERRED_CHUNK_SIZE,
-    _nfwd_check_callable_sig,
     _nfwd_check_chunk_size,
-    _nfwd_check_primal,
     _nfwd_default_chunk_size,
     _nfwd_fold_slots,
-    _nfwd_infer_scalar_output,
-    _nfwd_input_dof,
     _nfwd_input_error,
     _nfwd_is_supported_primal,
     _nfwd_is_supported_scalar,
     _nfwd_output_error,
-    _nfwd_resolve_chunk_size,
-    _nfwd_rule_sig,
-    _nfwd_sig_default_chunk_size,
-    _nfwd_sig_dof,
-    _nfwd_type_dof,
-    _nfwd_unfold_slots,
-    _nfwd_validate
+    _nfwd_unfold_slots
 
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
@@ -137,7 +128,7 @@ the same idea, stripped of the tag parameter and defined entirely within Mooncak
 
 | Type                         | Tangent width | Tag parameter | Use case                        |
 |------------------------------|---------------|---------------|---------------------------------|
-| `Dual{P,T}`                  | 1             | n/a           | Standard `frule!!` dispatch     |
+| `NDual{T,1}`                 | 1             | n/a           | Standard width-1 `frule!!`      |
 | `ForwardDiff.Dual{Tag,T,N}`  | N             | yes           | ForwardDiff chunk mode          |
 | `NDual{T,N}`                 | N             | no            | GPU kernel widening (this type) |
 
@@ -146,17 +137,18 @@ Removing the tag simplifies the type signature and eliminates the ForwardDiff
 dependency from GPU AD.  The arithmetic rules are identical: each operation applies
 the chain rule to all N slots at once.
 
-## NDual vs Dual: scalar leaves and flattening
+## NDual vs the canonical Lifted V: scalar leaves and flattening
 
-`Dual{P,T}` wraps any differentiable value `P` — it threads through Mooncake's
-tangent system and handles arbitrary structs transparently.
+The canonical forward representation `Lifted{P, N, V}` wraps any differentiable value `P` —
+it threads through Mooncake's tangent system and handles arbitrary structs transparently
+(its `V` recurses structurally).
 
 `NDual{T,N}` only wraps **scalar IEEEFloat (or Complex{IEEEFloat}) leaves**.
 For a complex input type (e.g. a struct with several float fields), you must
 **flatten** it to its scalar leaves before wrapping:
 
 ```
-struct S; a::Float64; b::ComplexF64; end   # dof = 3 slots
+struct S; a::Float64; b::ComplexF64; end   # dimension = 3 slots
 
 S(a, b) → flatten → [a, re(b), im(b)]
              ↓ wrap each leaf as NDual{Float64,3}(x, eₖ)
@@ -192,145 +184,6 @@ To extend to a new scalar type S (non-IEEEFloat): define `_broadcast_elem_dof_ty
 and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 `materialize_pb!!`, and `_gpu_fill_args_rdata` in `MooncakeCUDAExt.jl`.
 
-## Chunk-mode AD via NfwdMode{N}
-
-### Background: Mooncake forward mode is width-1
-
-Mooncake's forward mode computes one JVP per pass. `DerivedFRule` is called **once**
-with all arguments seeded simultaneously:
-
-```julia
-value_and_derivative!!(cache, (f, df), (x, dx), (y, dy))
-# computes:  ḟ = ∂f/∂f·df + ∂f/∂x·dx + ∂f/∂y·dy  — one direction
-```
-
-To recover the full Jacobian of `f : ℝⁿ → ℝᵐ`, the caller must invoke the rule **n
-times**, once per basis vector `eₖ`.  There is no built-in chunk loop.  This is why
-reverse mode is preferred for many-input scalar-output functions, and why NDual's GPU
-trick — packing N directions into one kernel launch — is only worthwhile at GPU kernel
-boundaries where each pass would otherwise incur a full launch overhead.
-
-### Why standard `frule!!` cannot carry NDual tangents
-
-`Dual{P,T}` enforces `T = tangent_type(P)`.  For `P = Float64`, `tangent_type` returns
-`Float64` (width-1).  Stuffing `NDual{Float64,N}` into the tangent slot would require
-`tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
-call graph and breaking type coherence throughout.
-
-### NfwdMode{N}: NDual as the tangent type
-
-The clean solution is a new AD context that overrides `tangent_type` for scalar leaves:
-
-```julia
-struct NfwdMode{N} end
-
-# NDual is the tangent type — value field=0 by convention, partials carry N directions
-tangent_type(::NfwdMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
-tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
-
-zero_ntangent(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} =
-    NDual{T,N}(zero(T), ntuple(_ -> zero(T), Val(N)))
-seed_ntangent(::Val{N}, ::Type{T}, k::Int) where {N,T<:IEEEFloat} =
-    NDual{T,N}(zero(T), ntuple(i -> i == k ? one(T) : zero(T), Val(N)))
-```
-
-**The transform change is surgical**: `generate_dual_ir` calls `dual_type(P)` at 7
-sites to assign IR argument types.  Threading the mode through those calls is the only
-required modification — all statement rewriting (PhiNode, ReturnNode, GotoIfNot, …) is
-tangent-type-agnostic.  `is_primitive` dispatch is unchanged (it operates on primal
-signatures, not tangent types).
-
-### Scalar `frule!!`s and CPU compatibility
-
-Rules written generically in the tangent require no changes:
-
-```julia
-# Existing frule!! for sin — tangent(x)::NDual{T,N} in NfwdMode
-frule!!(::Dual{typeof(sin)}, x::Dual{T}) where {T<:IEEEFloat} =
-    Dual(sin(primal(x)), cos(primal(x)) * tangent(x))
-#                        ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
-```
-
-`cos(x) * NDual` scales the partials — already defined on NDual.  All chain rules
-composed of scalar multiplication and addition propagate the N directions automatically.
-
-**Two categories of CPU scalar rules:**
-
-1. **`@from_chainrules` rules** (`sin`, `cos`, `exp`, …) — routed through `frule_wrapper`
-   → `CRC.frule(tangents, primal...)`.  The ChainRules rule body does arithmetic like
-   `cos(x) * ẋ` where `ẋ::NDual`.  These work transparently with NDual because NDual
-   defines all the required scalar operations.
-
-2. **Hand-coded rules using `nan_tangent_guard`** (`log`, `sqrt`, `cbrt`, …) —
-   `nan_tangent_guard` is explicitly constrained to `IEEEFloat | Complex{<:IEEEFloat}`.
-   Passing an NDual tangent would produce a `MethodError`, so these functions need
-   dedicated NDual methods that preserve the same zero-mask behavior instead of calling
-   `nan_tangent_guard` directly.
-
-In practice `NfwdMode{N}` is designed for **GPU kernel boundaries** where each
-width-1 pass costs a full kernel launch.  For CPU scalar ops the overhead is negligible
-and there is no motivation to use chunk mode.
-
-### `frule!!` template in NfwdMode
-
-This pattern applies at any opaque boundary — most commonly a GPU kernel, but equally
-valid for any CPU operation that needs an explicit N-wide rule (e.g. to override a
-hand-coded rule that uses `nan_tangent_guard`, or to differentiate through an external
-library call).  The only difference between GPU and CPU versions is the array type
-(`CuArray` vs `Array`) and the absence of a kernel launch on CPU.
-
-In NfwdMode the tangent of a `CuArray{T}` arg is `CuArray{NDual{T,N}}`, so the
-NDual kernel input is built by a trivial merge — no `flatten_to_ndual` needed:
-
-```julia
-function frule!!(
-    ::Dual{typeof(my_kernel!)},
-    _out::Dual{<:CuArray{T}, <:CuArray{NDual{T,N}}},
-    _x  ::Dual{<:CuArray{T}, <:CuArray{NDual{T,N}}},
-) where {T<:IEEEFloat, N}
-    out, ∂out = primal(_out), tangent(_out)   # ∂out updated in-place
-    x,   ∂x  = primal(_x),   tangent(_x)
-
-    # Merge primal values with tangent directions into NDual kernel input.
-    # ∂x[i].value == 0 (convention); ∂x[i].partials holds the N seed directions.
-    x_nd   = map((v, t) -> NDual{T,N}(v, t.partials), x, ∂x)
-    out_nd = similar(out, NDual{T,N})
-    my_kernel!(out_nd, x_nd)   # one launch — all N directions at once
-
-    out  .= ndual_value.(out_nd)
-    ∂out .= map(d -> NDual{T,N}(zero(T), d.partials), out_nd)
-    return _out
-end
-```
-
-### Full Jacobian in one call
-
-```julia
-function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
-    N  = length(x)
-    ∂x  = CuArray([seed_ntangent(Val(N), T, i) for i in 1:N])
-    ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
-
-    rule = build_frule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
-    rule(Dual(f!, NoTangent()), Dual(out, ∂out), Dual(x, ∂x))
-
-    # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
-    J = [ndual_partial.(∂out, k) for k in 1:N]
-    return ndual_value.(out), J
-end
-```
-
-Versus N separate width-1 passes, NfwdMode{N} needs **one** pass.  NDual is the
-natural tangent type because its arithmetic is already register-friendly and no
-conversion is needed at the kernel boundary.
-
-### Open challenges
-
-- Non-float leaves (`Int`, `Bool`, …) carry zero partial and must bypass NDual wrapping.
-- Mixed-precision structs (`Float32` + `Float64` fields) require a promoted `T` or
-  separate NDual blocks per precision group.
-- `NfwdMode{N}` requires N to be chosen before compilation; adaptive chunk sizing
-  (as in ForwardDiff) would need dynamic dispatch or recompilation.
 """
 struct NDual{T<:IEEEFloat,N} <: AbstractFloat
     value::T
@@ -381,35 +234,48 @@ end
 @inline _nfwd_dual_has_partials(::Type{<:Complex{<:NDual}}) = true
 @inline _nfwd_dual_has_partials(::Type) = false
 
+# Assemble canonical scalar V from primal-typed lanes; shared by element-read frules.
+@inline _scalar_ndual(y::T, parts::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{T,N}(
+    y, parts
+)
+@inline function _scalar_ndual(
+    y::Complex{R}, parts::NTuple{N,Complex{R}}
+) where {R<:IEEEFloat,N}
+    return Complex(
+        NDual{R,N}(real(y), ntuple(k -> real(parts[k]), Val(N))),
+        NDual{R,N}(imag(y), ntuple(k -> imag(parts[k]), Val(N))),
+    )
+end
+
 # ── NTuple arithmetic helpers ─────────────────────────────────────────────────────
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
-@inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+@inline _fwd_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
 # N=1 specializations avoid closure heap-allocation on the scalar (chunk_size=1) hot path.
-@inline _pt_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
+@inline _fwd_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
 # `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
 # when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
 # multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
-# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual lanes
+# nfwd uses this in forward mode through `_fwd_guarded_scale`, which masks zero NDual lanes
 # in singular formulas such as `log`, `sqrt`, `cbrt`, and `hypot`, and in reverse mode
 # through `_nfwd_real_dot`, which masks zero upstream cotangents before contracting them
 # against nfwd output tangents. This is the same strong-zero idea used in other AD systems,
 # including ForwardDiff, to keep inactive directions from turning into NaNs.
 @inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
-@inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+@inline function _fwd_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
     return ntuple(i -> begin
         pi = p[i]
         pi * _nfwd_zero_mask(pi, s)
     end, Val(N))
 end
-@inline _pt_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
-@inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
-@inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
-@inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
-@inline _pt_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
-@inline _pt_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
-@inline _pt_neg(p::NTuple{1,T}) where {T} = (-p[1],)
-@inline _pt_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
+@inline _fwd_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
+@inline _fwd_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
+@inline _fwd_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
+@inline _fwd_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
+@inline _fwd_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
+@inline _fwd_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
+@inline _fwd_neg(p::NTuple{1,T}) where {T} = (-p[1],)
+@inline _fwd_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
 
 # These helpers define the scalar edge-case behavior used by nfwd for non-smooth
 # primitives: `^` keeps the removable-singularity cases at x == 0, while `mod` and
@@ -458,15 +324,27 @@ Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
 # partials while advancing or retreating the scalar value by one representable step.
 Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value), a.partials)
 Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.partials)
-# exponent / significand: scalar operations; return scalar value (integer / NDual).
+# exponent / significand / frexp: scalar operations; return scalar value (integer / NDual).
+# `significand` and `frexp` rescale `x` by a power of two that is CONSTANT within a binade, so the
+# derivative is that scale. Apply it directly to each partial: the scale itself may overflow
+# even when the scaled partial is finite.
 Base.exponent(a::NDual) = exponent(a.value)
+@inline function Base.significand(a::NDual{T,N}) where {T,N}
+    # At zero and non-finite values, use the same unit-scale convention as `frexp`.
+    e = (iszero(a.value) || !isfinite(a.value)) ? 0 : -exponent(a.value)
+    return NDual{T,N}(significand(a.value), map(p -> ldexp(p, e), a.partials))
+end
+@inline function Base.frexp(a::NDual{T,N}) where {T,N}
+    v, e = frexp(a.value)
+    return NDual{T,N}(v, map(p -> ldexp(p, -e), a.partials)), e
+end
 
 # ── Zero / One ────────────────────────────────────────────────────────────────────
 
-Base.zero(::NDual{T,N}) where {T,N} = NDual{T,N}(zero(T), _pt_zero(Val(N), T))
-Base.one(::NDual{T,N}) where {T,N} = NDual{T,N}(one(T), _pt_zero(Val(N), T))
-Base.zero(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(zero(T), _pt_zero(Val(N), T))
-Base.one(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(one(T), _pt_zero(Val(N), T))
+Base.zero(::NDual{T,N}) where {T,N} = NDual{T,N}(zero(T), _fwd_zero(Val(N), T))
+Base.one(::NDual{T,N}) where {T,N} = NDual{T,N}(one(T), _fwd_zero(Val(N), T))
+Base.zero(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(zero(T), _fwd_zero(Val(N), T))
+Base.one(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(one(T), _fwd_zero(Val(N), T))
 # Default oneunit(T) = T(one(T)) would call NDual{T,N}(::NDual) → Float64(::NDual) → error.
 # Override to use the scalar constructor directly.
 Base.oneunit(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(oneunit(T))
@@ -475,7 +353,7 @@ Base.oneunit(::NDual{T,N}) where {T,N} = NDual{T,N}(oneunit(T))
 # ── Promotion / Conversion ────────────────────────────────────────────────────────
 
 @inline function Base.convert(::Type{NDual{T,N}}, x::Real) where {T,N}
-    return NDual{T,N}(T(x), _pt_zero(Val(N), T))
+    return NDual{T,N}(T(x), _fwd_zero(Val(N), T))
 end
 Base.convert(::Type{NDual{T,N}}, d::NDual{T,N}) where {T,N} = d
 
@@ -487,17 +365,38 @@ Base.promote_rule(::Type{NDual{T,N}}, ::Type{NDual{T,N}}) where {T,N} = NDual{T,
 @inline function Base.promote_rule(::Type{NDual{T1,N}}, ::Type{NDual{T2,N}}) where {T1,T2,N}
     return NDual{promote_type(T1, T2),N}
 end
+# Different widths cannot nest: diagnose at promotion so max/min and containers inherit it.
+# Residue: hand-built mixed-width muladd/fma/clamp still raise TypeError when rewrapping.
+function Base.promote_rule(::Type{NDual{T1,N1}}, ::Type{NDual{T2,N2}}) where {T1,T2,N1,N2}
+    _throw_ndual_lane_mismatch(:promote_type, N1, N2)
+end
 @inline function Base.convert(::Type{NDual{T,N}}, d::NDual{S,N}) where {T,N,S<:IEEEFloat}
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
+
+# Integer conversion cannot propagate derivatives; refuse rather than silently discard them.
+@noinline _throw_ndual_to_int(::Type{I}) where {I<:Integer} = throw(
+    ArgumentError(
+        "cannot convert a forward-mode dual (NDual) to $I: an integer conversion is not " *
+        "differentiable, so the enclosing function is not forward-mode differentiable here.",
+    ),
+)
+(::Type{I})(::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
+Base.convert(::Type{I}, ::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
+# Disambiguate against `Bool(x::Real)`: the `Integer` method above is more specific in the type
+# argument but less specific in the value, so `Bool(::NDual)` would otherwise be an ambiguity.
+Base.Bool(::NDual) = _throw_ndual_to_int(Bool)
 @inline function NDual{T,N}(x::Real, r::RoundingMode) where {T<:IEEEFloat,N}
-    return NDual{T,N}(T(x, r), _pt_zero(Val(N), T))
+    return NDual{T,N}(T(x, r), _fwd_zero(Val(N), T))
 end
 
 @noinline function _throw_ndual_lane_mismatch(op::Symbol, n1::Int, n2::Int)
     throw(
         DimensionMismatch(
-            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has $n2 lanes.",
+            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has " *
+            "$n2 lanes. Duals of different widths come from two forward passes, and `NDual` " *
+            "carries no perturbation tag, so it cannot nest. Mooncake supports " *
+            "forward-over-reverse for second-order derivatives.",
         ),
     )
 end
@@ -512,12 +411,12 @@ end
 # ── Arithmetic ────────────────────────────────────────────────────────────────────
 
 @inline function Base.:+(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return NDual{T,N}(a.value + b.value, _pt_add(a.partials, b.partials))
+    return NDual{T,N}(a.value + b.value, _fwd_add(a.partials, b.partials))
 end
 @inline function Base.:-(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return NDual{T,N}(a.value - b.value, _pt_sub(a.partials, b.partials))
+    return NDual{T,N}(a.value - b.value, _fwd_sub(a.partials, b.partials))
 end
-@inline Base.:-(a::NDual{T,N}) where {T,N} = NDual{T,N}(-a.value, _pt_neg(a.partials))
+@inline Base.:-(a::NDual{T,N}) where {T,N} = NDual{T,N}(-a.value, _fwd_neg(a.partials))
 
 # Real ± NDual: skip promotion — partials are unchanged for add, negated for sub.
 # Without these, `c + x` promotes c to NDual(c, zeros) then adds zero partials,
@@ -564,7 +463,7 @@ end
 @inline function Base.:*(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         a.value * b.value,
-        _pt_add(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)),
+        _fwd_add(_fwd_scale(a.partials, b.value), _fwd_scale(b.partials, a.value)),
     )
 end
 
@@ -595,18 +494,25 @@ end
 @inline Base.:*(b::Bool, x::NDual{T,N}) where {T,N} = ifelse(b, x, copysign(zero(x), x))
 @inline Base.:*(x::NDual{T,N}, b::Bool) where {T,N} = b * x
 
-# Quotient rule: d(a/b) = (da - (a/b)*db) / b
+# Guard both quotient-rule scales: at b.value == 0, inactive lanes must not become 0*Inf.
 @inline function Base.:/(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value / b.value
     return NDual{T,N}(
-        v, _pt_scale(_pt_sub(a.partials, _pt_scale(b.partials, v)), inv(b.value))
+        v,
+        _fwd_guarded_scale(
+            _fwd_sub(a.partials, _fwd_guarded_scale(b.partials, v)), inv(b.value)
+        ),
     )
 end
 
-# NDual / Real: multiply by reciprocal — avoids promoting c to NDual.
-@inline function Base.:/(x::NDual{T,N}, c::Real) where {T,N}
-    s = inv(T(c))
-    return NDual{T,N}(x.value * s, _pt_scale(x.partials, s))
+# NDual / Real: the partials multiply by the reciprocal, avoiding promoting c to NDual.
+@inline function Base.:/(x::NDual{T,N}, c::R) where {T,N,R<:Real}
+    S = promote_type(T, R)
+    cS = S(c)
+    # The value must equal the primal's, so it divides; `x.value * inv(cS)` differs in the
+    # last ulp. The `N` partials keep the reciprocal, one division instead of `N`.
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    return NDual{S,N}(S(x.value) / cS, _fwd_guarded_scale(sp, inv(cS)))
 end
 
 # Real / NDual: d(c/b) = -(c/b²) db.  Without this, c::Real is promoted to
@@ -619,14 +525,20 @@ end
 @inline function Base.:/(c::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     vi = inv(S(x.value))
-    return NDual{S,N}(S(c) * vi, _pt_scale(x.partials, -(S(c) * vi * vi)))
+    # Promote the partials to `S` too (the value is already `S`), so the guarded scale sees
+    # matching types — mirrors the `+`/`-`/`*` Real/NDual methods.
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    # The value is the DIVISION, not `c * inv(x)`: `inv` overflows for a subnormal divisor where
+    # `c / x` is finite. The `inv` form stays in the scale, which is what it was written for.
+    v = S(c) / S(x.value)
+    return NDual{S,N}(v, _fwd_guarded_scale(sp, -(v * vi)))
 end
 
-# Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
-# promoting one(T)/a would trigger, eliminating a useless `0*x.value` fmul per slot.
+# Avoid the zero numerator partials of the quotient rule; guard inactive lanes at zero.
+# Literal x^-1 delegates here too.
 @inline function Base.inv(a::NDual{T,N}) where {T,N}
     vi = inv(a.value)
-    return NDual{T,N}(vi, _pt_scale(a.partials, -(vi * vi)))
+    return NDual{T,N}(vi, _fwd_guarded_scale(a.partials, -(vi * vi)))
 end
 
 # FMA (Fused Multiply-Add) based muladd: a single CPU instruction computes a*b+c
@@ -707,13 +619,12 @@ end
 
 # ── Integer and real power ────────────────────────────────────────────────────────
 
-# Literal-integer power: n is a compile-time Val{n}, so scalar sub-expressions use
-# Base.literal_pow (e.g. x^2 → x*x, x^3 → x*x*x) rather than a runtime dispatch.
-# This is the fast path for source-code literals like t^2 or t^3.
+# Use Base.literal_pow so literal powers retain compile-time scalar specialisation.
 @inline function Base.literal_pow(::typeof(^), a::NDual{T,N}, ::Val{n}) where {T,N,n}
     v = Base.literal_pow(^, a.value, Val(n))
     dv = ifelse(iszero(n), zero(T), T(n) * Base.literal_pow(^, a.value, Val(n - 1)))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    # Guard inactive lanes when negative powers have infinite coefficients at zero.
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 # Base defines literal_pow(^, ::AbstractFloat, ::Val{-1}) = inv(x) as a concrete
 # specialisation.  Since NDual <: AbstractFloat, this creates an ambiguity with the
@@ -725,15 +636,18 @@ end
 @inline function Base.:^(a::NDual{T,N}, n::Integer) where {T,N}
     v = a.value^n
     dv = ifelse(iszero(n), zero(T), T(n) * a.value^(n - 1))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    # Guard inactive lanes at singularities, as for real exponents.
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
 
-@inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
-    bT = T(b)
-    v = a.value^bT
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
+@inline function Base.:^(a::NDual{T,N}, b::R) where {T,N,R<:Real}
+    S = promote_type(T, R)
+    av, bS = S(a.value), S(b)
+    v = av^bS
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_x(av, bS, v)))
 end
 
 @inline function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
@@ -742,8 +656,8 @@ end
     coeff_b = _nfwd_pow_grad_p(a.value, b.value, float(v))
     return NDual{T,N}(
         v,
-        _pt_add(
-            _pt_guarded_scale(a.partials, coeff_a), _pt_guarded_scale(b.partials, coeff_b)
+        _fwd_add(
+            _fwd_guarded_scale(a.partials, coeff_a), _fwd_guarded_scale(b.partials, coeff_b)
         ),
     )
 end
@@ -752,54 +666,81 @@ end
 )...)
 
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
-@inline function Base.:^(b::Real, a::NDual{T,N}) where {T,N}
-    v = T(b)^a.value
-    return NDual{T,N}(v, _pt_scale(a.partials, v * T(log(b))))
+@inline function Base.:^(b::R, a::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    v = S(b)^S(a.value)
+    # For b<0, use v*log|b|, matching the reverse rule despite no real derivative.
+    # At b==0, positive exponents have limit 0; nonpositive ones give NaN on active lanes.
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_p(S(b), S(a.value), v)))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 
 @inline function Base.FastMath.pow_fast(a::NDual{T,N}, n::Integer) where {T,N}
     v = Base.FastMath.pow_fast(a.value, n)
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
 end
 @inline function Base.FastMath.pow_fast(a::NDual{T,N}, ::Val{p}) where {T,N,p}
     v = Base.FastMath.pow_fast(a.value, Val(p))
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
 end
 
 # ── Math functions ─────────────────────────────────────────────────────────────────
-# Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
+# Each follows: f(NDual(v,p)) = NDual(f(v), f'(v)*p)
 
 # Trig
 # Use sincos / sincosd to share the cordic/libm computation between sin and cos.
 @inline function Base.sin(a::NDual{T,N}) where {T,N}
     s, c = sincos(a.value)
-    return NDual{T,N}(s, _pt_scale(a.partials, c))
+    return NDual{T,N}(s, _fwd_scale(a.partials, c))
 end
 @inline function Base.cos(a::NDual{T,N}) where {T,N}
     s, c = sincos(a.value)
-    return NDual{T,N}(c, _pt_scale(a.partials, -s))
+    return NDual{T,N}(c, _fwd_scale(a.partials, -s))
 end
 @inline function Base.tan(a::NDual{T,N}) where {T,N}
-    s, c = sincos(a.value)
-    return NDual{T,N}(s / c, _pt_scale(a.partials, inv(c)^2))
+    v = tan(a.value)
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, one(T) + v^2))
 end
-@inline function Base.asin(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asin(a.value), _pt_scale(a.partials, inv(sqrt(one(T) - a.value^2))))
+# Coefficients can be singular even at finite primal values (e.g. asin at its boundary).
+# Guard inactive lanes, matching reverse mode.
+for (f, coefficient) in (
+    (:asin, :(inv(sqrt(one(T) - a.value^2)))),
+    (:acos, :(-inv(sqrt(one(T) - a.value^2)))),
+    (:atanh, :(inv(one(T) - a.value^2))),
+    (:asech, :(-inv(a.value * sqrt(one(T) - a.value^2)))),
+    (:acsch, :(-inv(abs(a.value) * sqrt(one(T) + a.value^2)))),
+    (:acoth, :(inv(one(T) - a.value^2))),
+    (:log, :(inv(a.value))),
+    (:log1p, :(inv(one(T) + a.value))),
+    (:log2, :(inv(a.value * T(log(2))))),
+    (:log10, :(inv(a.value * T(log(10))))),
+    (:asec, :(inv(abs(a.value) * sqrt(a.value^2 - one(T))))),
+    (:acsc, :(-inv(abs(a.value) * sqrt(a.value^2 - one(T))))),
+    (:asind, :(inv(T(deg2rad(sqrt(one(T) - a.value^2)))))),
+    (:acosd, :(-inv(T(deg2rad(sqrt(one(T) - a.value^2)))))),
+    (:asecd, :(inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T))))))),
+    (:acscd, :(-inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T))))))),
+)
+    @eval @inline function Base.$f(a::NDual{T,N}) where {T,N}
+        return NDual{T,N}($f(a.value), _fwd_guarded_scale(a.partials, $coefficient))
+    end
 end
-@inline function Base.acos(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acos(a.value), _pt_scale(a.partials, -inv(sqrt(one(T) - a.value^2))))
-end
+
 @inline function Base.atan(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atan(a.value), _pt_scale(a.partials, inv(one(T) + a.value^2)))
+    return NDual{T,N}(atan(a.value), _fwd_scale(a.partials, inv(one(T) + a.value^2)))
 end
 @inline function Base.atan(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     r2 = a.value^2 + b.value^2
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(T) : hypot(a.value, b.value)
+    c1 = regular ? b.value / r2 : (b.value / h) / h
+    c2 = regular ? -a.value / r2 : (-a.value / h) / h
+    # Scale original seeds separately: at (0, 0), x*dy-y*dx is zero even on active lanes,
+    # so guarding that intermediate would suppress the undefined derivative.
     return NDual{T,N}(
         atan(a.value, b.value),
-        _pt_scale(
-            _pt_sub(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)), inv(r2)
-        ),
+        _fwd_add(_fwd_guarded_scale(a.partials, c1), _fwd_guarded_scale(b.partials, c2)),
     )
 end
 @inline Base.atan(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = atan(
@@ -807,118 +748,110 @@ end
 )
 
 # NDual*Real atan: d/dy[atan(y,x)] = x/(y²+x²).  Without this, x::Real is promoted to
-# NDual(x, zeros), and _pt_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
+# NDual(x, zeros), and _fwd_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
 # slot (zero-partial scale), followed by a wasted subtraction of that zero from the result.
 @inline function Base.atan(y::NDual{T,N}, x::R) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y.value)^2 + S(x)^2
-    return NDual{S,N}(atan(S(y.value), S(x)), _pt_scale(y.partials, S(x) / r2))
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(S) : hypot(S(y.value), S(x))
+    c = regular ? S(x) / r2 : (S(x) / h) / h
+    sp = ntuple(i -> S(y.partials[i]), Val(N))
+    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_guarded_scale(sp, c))
 end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
-# NDual(y, zeros), and _pt_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
-# hits the same IEEE -0 canonicalization that the old Real/NDual division had.
+# NDual(y, zeros), and _fwd_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
+# hits the same IEEE -0 canonicalization that the existing Real/NDual division rule has.
 @inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2
-    return NDual{S,N}(atan(S(y), S(x.value)), _pt_scale(x.partials, -S(y) / r2))
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(S) : hypot(S(y), S(x.value))
+    c = regular ? -S(y) / r2 : (-S(y) / h) / h
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_guarded_scale(sp, c))
 end
 
 # Hyperbolic
 @inline function Base.sinh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinh(a.value), _pt_scale(a.partials, cosh(a.value)))
+    return NDual{T,N}(sinh(a.value), _fwd_scale(a.partials, cosh(a.value)))
 end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
+    return NDual{T,N}(cosh(a.value), _fwd_scale(a.partials, sinh(a.value)))
 end
 # `4u / (1 + u)^2` with `u = exp(-2|x|)`: `1 - tanh(x)^2` is exactly `0` once `tanh(x)` rounds
 # to `1.0`, while the true derivative is still normal (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
     u = exp(-2 * abs(a.value))
-    return NDual{T,N}(tanh(a.value), _pt_scale(a.partials, 4u / (one(T) + u)^2))
+    return NDual{T,N}(tanh(a.value), _fwd_scale(a.partials, 4u / (one(T) + u)^2))
 end
 @inline function Base.asinh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asinh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
+    c = if abs(a.value) > sqrt(floatmax(T))
+        inv(hypot(a.value, one(T)))
+    else
+        inv(sqrt(a.value^2 + one(T)))
+    end
+    return NDual{T,N}(asinh(a.value), _fwd_scale(a.partials, c))
 end
 @inline function Base.acosh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acosh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 - one(T)))))
-end
-@inline function Base.atanh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atanh(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
+    c = if abs(a.value) > sqrt(floatmax(T))
+        inv(abs(a.value))
+    else
+        inv(sqrt(a.value^2 - one(T)))
+    end
+    return NDual{T,N}(acosh(a.value), _fwd_guarded_scale(a.partials, c))
 end
 
 # Reciprocal hyperbolic: sech, csch, coth and their inverses.
 @inline function Base.sech(a::NDual{T,N}) where {T,N}
     sv = sech(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, -tanh(a.value) * sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, -tanh(a.value) * sv))
 end
 @inline function Base.csch(a::NDual{T,N}) where {T,N}
     cv = csch(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -coth(a.value) * cv))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -coth(a.value) * cv))
 end
 @inline function Base.coth(a::NDual{T,N}) where {T,N}
     sv = csch(a.value)
-    return NDual{T,N}(coth(a.value), _pt_scale(a.partials, -(sv^2)))
-end
-@inline function Base.asech(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asech(a.value), _pt_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2)))
-    )
-end
-@inline function Base.acsch(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acsch(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2)))
-    )
-end
-@inline function Base.acoth(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acoth(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
+    return NDual{T,N}(coth(a.value), _fwd_guarded_scale(a.partials, -(sv^2)))
 end
 
 # Exp / Log
 @inline function Base.exp(a::NDual{T,N}) where {T,N}
-    return (ev=exp(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev)))
+    return (ev=exp(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev)))
 end
 @inline function Base.exp2(a::NDual{T,N}) where {T,N}
-    return (ev=exp2(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(2)))))
+    return (ev=exp2(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(2)))))
 end
+# exp10 needs guarding: value*log(10) can overflow while the value stays finite
+# (e.g. x=308). exp/exp2 coefficients cannot overflow first.
 @inline function Base.exp10(a::NDual{T,N}) where {T,N}
-    return (ev=exp10(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(10)))))
-end
-@inline function Base.log(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(a.value), _pt_guarded_scale(a.partials, inv(a.value)))
-end
-@inline function Base.log2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log2(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(2))))
+    return (
+        ev=exp10(a.value); NDual{T,N}(ev, _fwd_guarded_scale(a.partials, ev * T(log(10))))
     )
 end
-@inline function Base.log10(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log10(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(10))))
-    )
-end
-@inline function Base.log1p(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log1p(a.value), _pt_guarded_scale(a.partials, inv(one(T) + a.value)))
-end
+
 @inline function Base.expm1(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(expm1(a.value), _pt_scale(a.partials, exp(a.value)))
+    return NDual{T,N}(expm1(a.value), _fwd_scale(a.partials, exp(a.value)))
 end
 
 # Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)),
 # d/db = -log(x) / (b * log(b)^2) = -log(b, x) / (b * log(b)).
-@inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log(b, a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(b))))
-    )
+@inline function Base.log(b::R, a::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    av = S(a.value)
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(log(S(b), av), _fwd_guarded_scale(ap, inv(av * S(log(b)))))
 end
 @inline function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
     log_b = log(b.value)
     y = log(b.value, a.value)
     return NDual{T,N}(
         y,
-        _pt_add(
-            _pt_guarded_scale(b.partials, -y / (b.value * log_b)),
-            _pt_guarded_scale(a.partials, inv(a.value * log_b)),
+        _fwd_add(
+            _fwd_guarded_scale(b.partials, -y / (b.value * log_b)),
+            _fwd_guarded_scale(a.partials, inv(a.value * log_b)),
         ),
     )
 end
@@ -927,150 +860,123 @@ end
 )
 @inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
-# ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
+# Scale each partial directly to avoid overflow or underflow of the coefficient `2^n`.
 @inline function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
-    return NDual{T,N}(ldexp(a.value, n), _pt_scale(a.partials, T(exp2(n))))
+    return NDual{T,N}(ldexp(a.value, n), map(p -> ldexp(p, n), a.partials))
 end
 
 # Roots
 @inline function Base.sqrt(a::NDual{T,N}) where {T,N}
-    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_guarded_scale(a.partials, inv(2 * sv))))
+    return (sv=sqrt(a.value); NDual{T,N}(sv, _fwd_guarded_scale(a.partials, inv(2 * sv))))
 end
 @inline function Base.cbrt(a::NDual{T,N}) where {T,N}
-    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_guarded_scale(a.partials, inv(3 * cv^2))))
+    return (cv=cbrt(a.value); NDual{T,N}(cv, _fwd_guarded_scale(a.partials, inv(3 * cv^2))))
 end
 
 # Absolute value and sign
 @inline function Base.abs(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(abs(a.value), _pt_scale(a.partials, sign(a.value)))
+    return NDual{T,N}(abs(a.value), _fwd_scale(a.partials, sign(a.value)))
 end
 @inline function Base.abs2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(abs2(a.value), _pt_scale(a.partials, 2 * a.value))
+    return NDual{T,N}(abs2(a.value), _fwd_scale(a.partials, 2 * a.value))
 end
-Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _pt_zero(Val(N), T))
+Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _fwd_zero(Val(N), T))
 
 # sincos — fused sin+cos; returns (sin(a), cos(a)) as a tuple of 
 @inline function Base.sincos(a::NDual{T,N}) where {T,N}
     sv, cv = sincos(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, cv)),
-    NDual{T,N}(cv, _pt_scale(a.partials, -sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, cv)),
+    NDual{T,N}(cv, _fwd_scale(a.partials, -sv))
 end
 
-# sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor.
+# sincospi shares the value and derivative factor, halving transcendental work.
 @inline function Base.sinpi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinpi(a.value), _pt_scale(a.partials, T(π) * cospi(a.value)))
+    sv, cv = sincospi(a.value)
+    return NDual{T,N}(sv, _fwd_scale(a.partials, T(π) * cv))
 end
 @inline function Base.cospi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cospi(a.value), _pt_scale(a.partials, -T(π) * sinpi(a.value)))
+    sv, cv = sincospi(a.value)
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -T(π) * sv))
 end
 
 # tanpi(x) = tan(π·x); derivative = π·sec²(π·x) = π·(1 + tan²(π·x)).
 @inline function Base.tanpi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     v = tanpi(a.value)
-    return NDual{T,N}(v, _pt_scale(a.partials, T(π) * (one(T) + v^2)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, T(π) * (one(T) + v^2)))
 end
 
 # sincospi — fused sin(π·x)+cos(π·x); each derivative gains a π factor.
 @inline function Base.sincospi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     sv, cv = sincospi(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, T(π) * cv)),
-    NDual{T,N}(cv, _pt_scale(a.partials, -T(π) * sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, T(π) * cv)),
+    NDual{T,N}(cv, _fwd_scale(a.partials, -T(π) * sv))
 end
 
 # Reciprocal trigonometric: sec, csc, cot and their inverses.
 @inline function Base.sec(a::NDual{T,N}) where {T,N}
     sv = sec(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, sv * tan(a.value)))
+    return NDual{T,N}(sv, _fwd_guarded_scale(a.partials, sv * tan(a.value)))
 end
 @inline function Base.csc(a::NDual{T,N}) where {T,N}
     cv = csc(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -cv * cot(a.value)))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -cv * cot(a.value)))
 end
 @inline function Base.cot(a::NDual{T,N}) where {T,N}
     cv = cot(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -(one(T) + cv^2)))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -(one(T) + cv^2)))
 end
-@inline function Base.asec(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asec(a.value), _pt_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T))))
-    )
-end
-@inline function Base.acsc(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acsc(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T))))
-    )
-end
+
 @inline function Base.acot(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acot(a.value), _pt_scale(a.partials, -inv(one(T) + a.value^2)))
+    return NDual{T,N}(acot(a.value), _fwd_scale(a.partials, -inv(one(T) + a.value^2)))
 end
 
 # Degree-based trigonometric functions — argument in degrees, derivative gains π/180.
 @inline function Base.sind(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sind(a.value), _pt_scale(a.partials, T(deg2rad(cosd(a.value)))))
+    return NDual{T,N}(sind(a.value), _fwd_scale(a.partials, T(deg2rad(cosd(a.value)))))
 end
 @inline function Base.cosd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cosd(a.value), _pt_scale(a.partials, T(-deg2rad(sind(a.value)))))
+    return NDual{T,N}(cosd(a.value), _fwd_scale(a.partials, T(-deg2rad(sind(a.value)))))
 end
 @inline function Base.tand(a::NDual{T,N}) where {T,N}
     tv = tand(a.value)
-    return NDual{T,N}(tv, _pt_scale(a.partials, T(deg2rad(one(T) + tv^2))))
+    return NDual{T,N}(tv, _fwd_guarded_scale(a.partials, T(deg2rad(one(T) + tv^2))))
 end
 @inline function Base.secd(a::NDual{T,N}) where {T,N}
     sv = secd(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
+    return NDual{T,N}(sv, _fwd_guarded_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
 end
 @inline function Base.cscd(a::NDual{T,N}) where {T,N}
     cv = cscd(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
 end
 @inline function Base.cotd(a::NDual{T,N}) where {T,N}
     cv = cotd(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
 end
-@inline function Base.asind(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asind(a.value), _pt_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
-    )
-end
-@inline function Base.acosd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acosd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
-    )
-end
+
 @inline function Base.atand(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        atand(a.value), _pt_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
+        atand(a.value), _fwd_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
     )
 end
-@inline function Base.asecd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asecd(a.value),
-        _pt_scale(a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
-    )
-end
-@inline function Base.acscd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acscd(a.value),
-        _pt_scale(a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
-    )
-end
+
 @inline function Base.acotd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acotd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
+        acotd(a.value), _fwd_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
     )
 end
 
 # Angle unit conversions — linear transforms; derivative is the constant scale factor.
 @inline function Base.deg2rad(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(deg2rad(a.value), _pt_scale(a.partials, T(deg2rad(one(T)))))
+    return NDual{T,N}(deg2rad(a.value), _fwd_scale(a.partials, T(deg2rad(one(T)))))
 end
 @inline function Base.rad2deg(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(rad2deg(a.value), _pt_scale(a.partials, T(rad2deg(one(T)))))
+    return NDual{T,N}(rad2deg(a.value), _fwd_scale(a.partials, T(rad2deg(one(T)))))
 end
 
 # sinc(x) = sin(πx)/(πx) for x≠0, 1 at x=0; derivative = cosc(x).
 @inline function Base.sinc(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinc(a.value), _pt_scale(a.partials, T(cosc(a.value))))
+    return NDual{T,N}(sinc(a.value), _fwd_scale(a.partials, T(cosc(a.value))))
 end
 
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
@@ -1079,7 +985,7 @@ end
     coeff_a = _nfwd_zero_mask(a.value, a.value / h)
     coeff_b = _nfwd_zero_mask(b.value, b.value / h)
     return NDual{T,N}(
-        h, _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b))
+        h, _fwd_add(_fwd_scale(a.partials, coeff_a), _fwd_scale(b.partials, coeff_b))
     )
 end
 @inline Base.hypot(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = hypot(
@@ -1092,25 +998,22 @@ end
     return hypot(hypot(a, b), c, xs...)
 end
 
+# True to take `a`. `isequal` against the already-computed result, never an ordering test:
+# `min(-0.0, 0.0)` is `-0.0` while `-0.0 < 0.0` is false and `-0.0 == 0.0` is true. The two differ
+# only on a tie, where `max` keeps `b` and `min` keeps `a`.
 @inline function _ndual_pick_max(a, b)
     v = max(a, b)
-    a_matches = isequal(v, a)
-    b_matches = isequal(v, b)
-    return ifelse(
-        a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, false)
-    )
+    return isequal(v, a) & !isequal(v, b)
 end
 
 @inline function _ndual_pick_min(a, b)
     v = min(a, b)
-    a_matches = isequal(v, a)
-    b_matches = isequal(v, b)
-    return ifelse(a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, true))
+    return isequal(v, a) | !isequal(v, b)
 end
 
-# min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the
-# corresponding tangent. When both operands are exactly the same scalar value, keep the
-# existing ordinary-tie convention (second arg for max, first arg for min).
+# Preserve Base's NaN/signed-zero result; ties credit b for max, a for min.
+# Selecting the whole dual is safe only because _ndual_pick_* uses isequal against
+# the primal result; a bare ordering comparison would break the inner-value invariant.
 @inline function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return ifelse(_ndual_pick_max(a.value, b.value), a, b)
 end
@@ -1118,15 +1021,62 @@ end
     return ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
-# clamp — subgradient: zero tangent at the clamped endpoints.
-# Nested ifelse keeps all branches branchless (no warp divergence on GPU).
-@inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
-    return ifelse(a.value <= lo.value, lo, ifelse(a.value >= hi.value, hi, a))
+# FastMath primitives have different tie semantics from min/max. Evaluate them directly
+# to preserve platform-dependent signed zeros, selecting only partials. Equal-value ties
+# credit b except for max_fast before Julia 1.12. NaN is outside FastMath's contract.
+@inline function Base.FastMath.min_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = Base.FastMath.min_fast(a.value, b.value)
+    pick_a = isequal(v, a.value) & !isequal(v, b.value)
+    return NDual{T,N}(v, ifelse(pick_a, a.partials, b.partials))
 end
-@inline function Base.clamp(a::NDual{T,N}, lo::Real, hi::Real) where {T,N}
-    return ifelse(
-        a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a)
-    )
+@inline function Base.FastMath.max_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = Base.FastMath.max_fast(a.value, b.value)
+    @static if VERSION >= v"1.12-"
+        pick_a = isequal(v, a.value) & !isequal(v, b.value)
+    else
+        pick_a = isequal(v, a.value) | !isequal(v, b.value)
+    end
+    return NDual{T,N}(v, ifelse(pick_a, a.partials, b.partials))
+end
+@inline function Base.FastMath.minmax_fast(
+    a::NDual{T,N}, b::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    return (Base.FastMath.min_fast(a, b), Base.FastMath.max_fast(a, b))
+end
+# rem_fast uses rem_internal on absolute values: take its primal directly (including
+# DivideError at zero divisors), and guard the rem coefficient when trunc(a/b) is infinite.
+@inline function Base.FastMath.rem_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = Base.FastMath.rem_fast(a.value, b.value)
+    c = trunc(a.value / b.value)
+    return NDual{T,N}(v, _fwd_add(a.partials, _fwd_guarded_scale(b.partials, -c)))
+end
+
+# Use Base's primal for promotion, signed zeros and crossed bounds; non-strict tangent
+# comparisons match the reverse rule at endpoints. ifelse avoids GPU warp divergence.
+@inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
+    # Test the upper bound first to match Base for crossed bounds; non-strict comparisons
+    # retain the reverse rule's endpoint convention.
+    above = a.value >= hi.value
+    below = (a.value <= lo.value) & !above
+    src = ifelse(above, hi, ifelse(below, lo, a))
+    return NDual{T,N}(clamp(a.value, lo.value, hi.value), src.partials)
+end
+# Explicit mixed bounds avoid promoting T with NDual (which would nest duals).
+# Promote the plain bound rather than narrowing it, and retain the dual bound's tangent.
+@inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::H) where {T,N,H<:Real}
+    S = promote_type(T, H)
+    return clamp(convert(NDual{S,N}, a), convert(NDual{S,N}, lo), NDual{S,N}(S(hi)))
+end
+@inline function Base.clamp(a::NDual{T,N}, lo::L, hi::NDual{T,N}) where {T,N,L<:Real}
+    S = promote_type(T, L)
+    return clamp(convert(NDual{S,N}, a), NDual{S,N}(S(lo)), convert(NDual{S,N}, hi))
+end
+@inline function Base.clamp(a::NDual{T,N}, lo::L, hi::H) where {T,N,L<:Real,H<:Real}
+    S = promote_type(T, L, H)
+    av, loS, hiS = S(a.value), S(lo), S(hi)
+    interior = (av > loS) & (av < hiS)
+    p = ntuple(i -> ifelse(interior, S(a.partials[i]), zero(S)), Val(N))
+    return NDual{S,N}(clamp(av, loS, hiS), p)
 end
 
 # flipsign / copysign — sign of result determined by primal; tangent follows.
@@ -1217,13 +1167,12 @@ Base.signbit(a::NDual) = signbit(a.value)
 # ── Utility ───────────────────────────────────────────────────────────────────────
 Base.eps(d::NDual) = eps(d.value)
 Base.eps(::Type{NDual{T,N}}) where {T,N} = eps(T)
-# Checks both the primal value and all partial slots.  In GPU kernels this evaluates
-# N partial values before short-circuiting; prefer `iszero(d.value)` inside hot kernel
-# loops where the partial check is unnecessary and could cause warp divergence.
-# This method is intended for host-side utility and correctness checks (e.g. hash, tests).
-@inline function Base.iszero(d::NDual{T,N}) where {T,N}
-    return iszero(d.value) && all(iszero, d.partials)
-end
+# Value-only, like every other predicate on an `NDual` and like `Base.iszero` on every other
+# `Number`, where it means `x == zero(x)`. Consulting the partials made it disagree both with this
+# type's own `==`/`isequal`/`hash` (all value-only) and with the primal, so a body branching on it
+# took a different branch under nfwd than the primal did: `h(t) = iszero(t) ? one(t) : sin(t)/t`
+# returned NaN at `t == 0`, where the primal is 1.0.
+@inline Base.iszero(d::NDual) = iszero(d.value)
 Base.hash(d::NDual, hsh::UInt) = hash(d.value, hsh)
 
 # ── ifelse ────────────────────────────────────────────────────────────────────────
@@ -1276,7 +1225,7 @@ end
 end
 
 # sqrt(a + bi) = sqrt((|z|+a)/2) + i·sign(b)·sqrt((|z|-a)/2)
-# Construct the NDual arguments to sqrt directly with _pt_scale to avoid an
+# Construct the NDual arguments to sqrt directly with _fwd_scale to avoid an
 # unnecessary NDual*NDual product-rule evaluation (the factor 0.5 has zero partials).
 @inline function Base.sqrt(z::Complex{NDual{T,N}}) where {T,N}
     a, b = real(z), imag(z)
@@ -1284,13 +1233,14 @@ end
     half = T(0.5)
     re = sqrt(
         NDual{T,N}(
-            (r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)
+            (r.value + a.value) * half, _fwd_scale(_fwd_add(r.partials, a.partials), half)
         ),
     )
     im =
         copysign(one(NDual{T,N}), b) * sqrt(
             NDual{T,N}(
-                (r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)
+                (r.value - a.value) * half,
+                _fwd_scale(_fwd_sub(r.partials, a.partials), half),
             ),
         )
     return Complex(re, im)
@@ -1336,9 +1286,6 @@ for _op in (:floor, :ceil, :round, :trunc)
     )
 end
 
-# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
-# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
-# enables functions like `modf` that call `rem(x, T(1))` internally.
 # Rounding ops have zero partial derivatives (piecewise constant). Define specific methods
 # so that functions like `modf` (which calls `trunc`) work through NDual on the CPU.
 for _op in (:floor, :ceil, :trunc)
@@ -1383,22 +1330,22 @@ for _op in (:div, :fld, :cld, :gcd, :lcm)
     )
 end
 
-# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
-# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
-# enables functions like `modf` that call `rem(x, T(1))` internally.
+# rem uses -trunc(x/y), not mod's -floor(x/y), and keeps the finite one-sided
+# subgradient at integer ratios for modf. Two NDual arguments also disambiguate Base.
 @inline function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     pv, yv = ndual_value(x), ndual_value(y)
-    c = floor(pv / yv)
-    return NDual{T,N}(
-        rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
-    )
+    c = trunc(pv / yv)
+    # Guard inactive lanes if pv/yv overflows while the primal remains finite.
+    return NDual{T,N}(rem(pv, yv), _fwd_add(x.partials, _fwd_guarded_scale(y.partials, -c)))
 end
 
 @inline function Base.mod(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     coeff_x, coeff_y = _nfwd_mod_grad_coeffs(x.value, y.value)
     return NDual{T,N}(
         mod(x.value, y.value),
-        _pt_add(_pt_scale(x.partials, coeff_x), _pt_scale(y.partials, coeff_y)),
+        _fwd_add(
+            _fwd_guarded_scale(x.partials, coeff_x), _fwd_guarded_scale(y.partials, coeff_y)
+        ),
     )
 end
 @inline Base.mod(x::NDual{T1,N1}, y::NDual{T2,N2}) where {T1<:IEEEFloat,T2<:IEEEFloat,N1,N2} = mod(
@@ -1414,7 +1361,7 @@ end
 
 @inline function Base.mod2pi(x::NDual{T,N}) where {T<:IEEEFloat,N}
     coeff = _nfwd_mod2pi_grad(x.value)
-    return NDual{T,N}(mod2pi(x.value), _pt_scale(x.partials, coeff))
+    return NDual{T,N}(mod2pi(x.value), _fwd_guarded_scale(x.partials, coeff))
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────
@@ -1425,11 +1372,11 @@ end
 # functions with cross-element data reuse (reductions, softmax, layer norm),
 # *tiled* kernels offer further gains:
 #
-# ── Conceptual note: tiling applied to the Dual itself ──────────────────────
+# ── Conceptual note: tiling applied to the NDual itself ─────────────────────
 # An NDual{T,N} is a tile in the partial-derivative dimension.  Just as spatial
 # tiling partitions an M-element array into ceil(M/K) tiles of width K — each
 # processed in one pass with data reuse in shared memory — slot-tiling partitions
-# the N-wide Dual into ceil(N/K) tiles of width K, each processed in one kernel
+# the N-wide NDual into ceil(N/K) tiles of width K, each processed in one kernel
 # launch:
 #
 #   Jf = [∂f/∂x₁  ∂f/∂x₂  …  ∂f/∂xₙ]          (1×N Jacobian row per element)
@@ -1444,15 +1391,15 @@ end
 #
 # ── N vs D ───────────────────────────────────────────────────────────────────
 # With D differentiable input parameters, the total slot count is
-#   N = Σᵢ dof(inputᵢ),   dof = 1 (real),  dof = 2 (complex)
-# so N ≥ D in general.  For all-real inputs dof = 1 for every input and N = D
+#   N = Σᵢ dimension(inputᵢ),   dimension = 1 (real),  dimension = 2 (complex)
+# so N ≥ D in general.  For all-real inputs dimension = 1 for every input and N = D
 # exactly — this is a consequence of the slot definition, not a separate choice.
 # The tiling logic is uniform over N regardless; the real/complex distinction
 # only affects how N is computed from D (via _broadcast_elem_dof_type).
 #
 # ── Slot-tiled execution (reduce register pressure for large N) ───────────────
 #    Background: with D differentiable inputs, the total slot count is
-#    N = Σᵢ dof(inputᵢ) where dof = 1 (real) or 2 (complex).  Currently every
+#    N = Σᵢ dimension(inputᵢ) where dimension = 1 (real) or 2 (complex).  Currently every
 #    thread carries ONE NDual{T,N} whose N partials cover ALL D inputs at once.
 #
 #    Slot-tiling partitions those N slots across ceil(N/K) kernel launches:
@@ -1488,48 +1435,15 @@ end
 #                      ceil(N/K) passes  over input data.
 
 # ── Cholesky factorization for matrices of NDuals ─────────────────────────────────
-#
-# Forward-mode Cholesky derivative.  For A = L·Lᵀ (lower Cholesky) with symmetric
-# perturbation Ȧ, the corresponding perturbation of L is
-#
-#   L̇ = L · Φ(L⁻¹ · Ȧ · L⁻ᵀ)
-#
-# where Φ zeroes the strict upper triangle and halves the diagonal:
-#
-#   Φ(S)ᵢⱼ = Sᵢⱼ    for i > j   (strict lower triangle)
-#   Φ(S)ᵢᵢ = Sᵢᵢ/2  for i = j   (diagonal halved)
-#   Φ(S)ᵢⱼ = 0      for i < j   (upper triangle)
-#
-# Equivalently: Φ(S) = LowerTriangular(S) - Diagonal(diag(S)/2).
-#
-# The rule computes the primal Cholesky once in Float64, then applies the derivative
-# formula N times (once per partial slot) using triangular solves, avoiding the need
-# to run the full Cholesky algorithm on NDual-typed elements.
-
-function _cholesky_ndual_fwd(
-    L::AbstractMatrix{T}, Ȧ::AbstractMatrix{T}
-) where {T<:IEEEFloat}
-    Lt = LinearAlgebra.LowerTriangular(L)
-    S = Lt \ (Ȧ / Lt')
-    Φ = LinearAlgebra.LowerTriangular(S) - LinearAlgebra.Diagonal(diag(S) / 2)
-    return Matrix(Lt * Φ)
-end
 
 function LinearAlgebra.cholesky(
     A::AbstractMatrix{NDual{T,N}},
     (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
     check::Bool=true,
 ) where {T<:IEEEFloat,N}
-    A₀ = map(ndual_value, A)
-    F₀ = LinearAlgebra.cholesky(LinearAlgebra.Hermitian(A₀); check)
-    L₀ = Matrix(F₀.L)                    # dense lower-triangular Matrix{T}
-    L̇s = ntuple(k -> _cholesky_ndual_fwd(L₀, map(x -> ndual_partial(x, k), A)), Val(N))
-    n = size(L₀, 1)
-    L_nd = Matrix{NDual{T,N}}(undef, n, n)
-    @inbounds for i in 1:n, j in 1:n
-        L_nd[i, j] = NDual{T,N}(L₀[i, j], ntuple(k -> L̇s[k][i, j], Val(N)))
-    end
-    return LinearAlgebra.Cholesky(L_nd, 'L', 0)
+    # Generic Cholesky on NDuals matches the analytic pushforward to machine precision
+    # and is faster for small matrices than primal factorisation plus per-lane solves.
+    return @invoke LinearAlgebra.cholesky(A::AbstractMatrix, LinearAlgebra.NoPivot(); check)
 end
 
 # Hermitian and Symmetric wrappers: materialise the symmetric view, then defer to
@@ -1636,96 +1550,9 @@ end
     return Base.mapreduce_impl(f, op, A, ifirst, ilast)
 end
 
-"""
-    Rule
-
-Callable forward-mode rule used by `nfwd`.
-
-`Rule` is built from a statically-known call signature. `buf` holds a reusable
-typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
-
-!!! warning
-    `Rule` owns mutable workspace. Reusing one instance avoids repeated wrapper
-    construction, but a single instance must not be shared across concurrent calls.
-    This is a general shared-mutable-state hazard, not something specific to `nfwd`.
-"""
-struct Rule{sig,N,Tbuf<:Base.RefValue}
-    buf::Tbuf
-end
-
-# Backward-compatible zero-arg constructor used by primitive rules in
-# rules_via_nfwd.jl.
-function Rule{sig,N}() where {sig,N}
-    Rule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
-end
-
-@inline rule_chunk_size(::Type{<:Rule{sig,N}}) where {sig,N} = N
-
-"""
-    RRule
-
-Callable reverse-mode rule used by `nfwd`.
-
-`RRule` is built from a statically-known call signature. Both direct
-[`build_rrule`](@ref) calls and primitive reverse-mode registration route through
-that signature-based construction path. `buf` holds reusable typed scratch buffers for
-cached scalar-output fast paths when that is available. `grad_buf` holds a separate
-pre-allocated gradient buffer for the single-array-input scalar-output fast paths, allowing
-the rrule to stay allocation-free at steady state without copying the computed gradient.
-
-The `scalar_out` type parameter is `true` when inference confirms at rule-build time that
-`f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
-rrule specialisation to skip the redundant primal type-check call, which otherwise costs
-one full function evaluation per gradient call.
-
-!!! warning
-    `RRule` owns mutable workspace in `buf` and `grad_buf`. Reusing one instance avoids
-    repeated wrapper construction, but a single instance must not be shared across
-    concurrent calls. This is a general shared-mutable-state hazard, not something
-    specific to `nfwd`.
-"""
-struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
-    buf::Tbuf
-    grad_buf::Tgbuf
-end
-
-# Backward-compatible zero-arg constructor used by primitive rules in
-# rules_via_nfwd.jl.
-function RRule{sig,N}() where {sig,N}
-    buf = Ref{Any}(nothing)
-    grad_buf = Ref{Any}(nothing)
-    return RRule{sig,N,typeof(buf),false,typeof(grad_buf)}(buf, grad_buf)
-end
-
-# Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
-# Used to set the `scalar_out` type parameter on `RRule`, allowing the hot-path
-# rrule to skip the redundant primal type-check call for known-scalar functions.
-#
-# Uses `Base.return_types`, which is a best-effort hint: it may return `[Any]` for
-# type-unstable functions or under some world-age conditions. In those cases this
-# function safely returns `false`, and the rrule falls through to the runtime primal
-# check (`scalar_out=false` path). There is no correctness risk from a missed inference
-# and only a missed optimisation.
-function _nfwd_infer_scalar_output(sig::Type{<:Tuple})
-    F = sig.parameters[1]
-    Base.issingletontype(F) || return false
-    argtypes = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
-    rt = Base.return_types(F.instance, argtypes)
-    return !isempty(rt) && rt[1] <: IEEEFloat
-end
-
 @inline function _nfwd_check_chunk_size(chunk_size::Integer)
     chunk_size > 0 && return Int(chunk_size)
     throw(ArgumentError("`chunk_size` must be a positive integer, got $chunk_size."))
-end
-
-# Shared preamble for frule/rrule builders: validate chunk_size, callable sig, and
-# debug_mode.
-@inline function _nfwd_validate(sig, chunk_size::Integer; debug_mode=false)
-    chunk_size = _nfwd_check_chunk_size(chunk_size)
-    _nfwd_check_callable_sig(sig)
-    debug_mode && throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
-    return chunk_size
 end
 
 # Conservative SIMD-friendly default: 8 lanes covers one AVX-512 register (8×Float64)
@@ -1734,42 +1561,28 @@ end
 const _NFWD_PREFERRED_CHUNK_SIZE = 8
 
 @inline function _nfwd_default_chunk_size(x::Tuple)
-    return max(1, min(sum(_nfwd_input_dof, x), _NFWD_PREFERRED_CHUNK_SIZE))
+    # init=0 gives zero-argument callables chunk size 1, matching primal_dim(::Tuple).
+    return max(1, min(sum(primal_dim, x; init=0), _NFWD_PREFERRED_CHUNK_SIZE))
 end
 
-# Type-level DOF: returns the number of differentiable scalar components for a
+# Type-level dimension: returns the number of differentiable scalar components for a
 # concrete type, or `nothing` when the size cannot be determined from the type
 # alone (e.g. heap-allocated Array whose length is a runtime value).
-@inline _nfwd_type_dof(::Type{<:IEEEFloat}) = 1
-@inline _nfwd_type_dof(::Type{<:Complex{<:IEEEFloat}}) = 2
-@inline _nfwd_type_dof(T::Type{<:Tuple}) = sum(_nfwd_type_dof, T.parameters; init=0)
-@inline _nfwd_type_dof(::Type{<:AbstractArray}) = nothing
-@inline _nfwd_type_dof(::Type) = 0
-
-@inline function _nfwd_sig_dof(::Type{sig}) where {sig<:Tuple}
-    params = sig.parameters
+@inline static_primal_dim(::Type{<:IEEEFloat}) = 1
+@inline static_primal_dim(::Type{<:Complex{<:IEEEFloat}}) = 2
+# Propagate `nothing` (not `0 + nothing`, which would throw) when any element's size is not
+# type-determinable — e.g. a tuple containing an Array.
+@inline function static_primal_dim(T::Type{<:Tuple})
     total = 0
-    for i in 2:length(params)
-        d = _nfwd_type_dof(params[i])
+    for P in T.parameters
+        d = static_primal_dim(P)
         d === nothing && return nothing
         total += d
     end
     return total
 end
-
-@inline function _nfwd_sig_default_chunk_size(::Type{sig}) where {sig<:Tuple}
-    dof = _nfwd_sig_dof(sig)
-    preferred = _NFWD_PREFERRED_CHUNK_SIZE
-    return dof === nothing ? preferred : max(1, min(dof, preferred))
-end
-
-@inline function _nfwd_resolve_chunk_size(chunk_size, x::Tuple)
-    return if isnothing(chunk_size)
-        _nfwd_default_chunk_size(x)
-    else
-        _nfwd_check_chunk_size(chunk_size)
-    end
-end
+@inline static_primal_dim(::Type{<:AbstractArray}) = nothing
+@inline static_primal_dim(::Type) = 0
 
 @inline _nfwd_is_supported_scalar(::Type{<:IEEEFloat}) = true
 @inline _nfwd_is_supported_scalar(::Type{<:Complex{<:IEEEFloat}}) = true
@@ -1800,18 +1613,15 @@ end
 
 # Keep diagnostics local so Nfwd can load without Mooncake.
 @inline function _nfwd_boxed_message_width(io::IO, prefix::AbstractString)
-    cols = get(io, :displaysize, displaysize(io))[2]
-    return max(20, cols - textwidth(prefix))
+    return max(20, displaysize(io)[2] - textwidth(prefix))
 end
 
 function _nfwd_wrap_boxed_line(line, width::Int)
     text = string(line)
-    isempty(text) && return (text,)
-    width < 1 && return (text,)
-    textwidth(text) <= width && return (text,)
+    (isempty(text) || width < 1 || textwidth(text) <= width) && return [text]
 
     wrapped = String[]
-    remaining = text
+    remaining = SubString(text)
     while textwidth(remaining) > width
         split_idx = nothing
         for idx in eachindex(remaining)
@@ -1830,19 +1640,21 @@ function _nfwd_wrap_boxed_line(line, width::Int)
         isempty(remaining) && break
     end
     isempty(remaining) || push!(wrapped, remaining)
-    return Tuple(wrapped)
+    return wrapped
 end
 
-function _nfwd_print_boxed_error(io::IO, lines)
+function _nfwd_print_boxed_error(
+    io::IO, lines; indent::AbstractString="  ", footer=nothing, newline::Bool=false
+)
     first_item = iterate(lines)
     isnothing(first_item) && return nothing
     line, state = first_item
-    rest_prefix = "  │ "
+    rest_prefix = indent * "│ "
     first_width = _nfwd_boxed_message_width(io, "")
     rest_width = _nfwd_boxed_message_width(io, rest_prefix)
     first_wrapped = _nfwd_wrap_boxed_line(line, first_width)
     println(io, first(first_wrapped))
-    for wrapped_line in Base.tail(first_wrapped)
+    for wrapped_line in @view first_wrapped[2:end]
         println(io, rest_prefix, wrapped_line)
     end
     while true
@@ -1853,7 +1665,10 @@ function _nfwd_print_boxed_error(io::IO, lines)
             println(io, rest_prefix, wrapped_line)
         end
     end
-    print(io, "  └")
+    print(io, indent, "└")
+    isnothing(footer) || print(io, ' ', footer)
+    newline && println(io)
+    return nothing
 end
 
 @inline function Base.showerror(
@@ -1914,30 +1729,6 @@ end
     )
 end
 
-@inline function _nfwd_check_primal(x)
-    _nfwd_is_supported_primal(x) || _nfwd_input_error(x)
-    return x
-end
-
-@inline function _nfwd_check_callable_sig(sig::Type{<:Tuple})
-    F = sig.parameters[1]
-    Base.issingletontype(F) || throw(
-        ArgumentError(
-            "nfwd only supports stateless callables for rule construction. Got $F. " *
-            "Stateless callables are required because nfwd re-evaluates the function " *
-            "multiple times with different tangent seeds; a mutable callable would " *
-            "produce incorrect gradients on the second and subsequent evaluations.",
-        ),
-    )
-    f = F.instance
-    argsig = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
-    hasmethod(f, argsig) && return sig
-    throw(ArgumentError("nfwd rule construction expected a callable signature, got $sig."))
-end
-
-@inline _nfwd_rule_sig(::Rule{sig}) where {sig} = sig
-@inline _nfwd_rule_sig(::RRule{sig}) where {sig} = sig
-
 #
 # ── Canonical slot traversal ──────────────────────────────────────────────────────
 #
@@ -1949,7 +1740,7 @@ end
 #   • Tuple of the above     → concatenation, left to right
 #
 # `_nfwd_fold_slots` and `_nfwd_unfold_slots` define this order exactly once.
-# All DOF counting, basis seeding, and gradient scatter must use these helpers so
+# All dimension counting, basis seeding, and gradient scatter must use these helpers so
 # that the slot order is guaranteed to agree everywhere.
 
 """
@@ -2016,7 +1807,7 @@ be threaded through `state` by the caller.
 
 `_nfwd_fold_slots` and `_nfwd_unfold_slots` agree on traversal order: tuples left to right,
 arrays in `eachindex` order.  Within each leaf, the number of slots consumed equals
-`_nfwd_input_dof(leaf)`.
+`primal_dim(leaf)`.
 """
 @inline function _nfwd_unfold_slots(
     f::F,
@@ -2038,12 +1829,497 @@ end
     return (head, tail...), state
 end
 
-# ── DOF counting ─────────────────────────────────────────────────────────────────
+# ── dimension counting ─────────────────────────────────────────────────────────────────
 
-@inline _nfwd_input_dof(x::IEEEFloat) = 1
-@inline _nfwd_input_dof(x::Complex{<:IEEEFloat}) = 2
-@inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
-@inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
-@inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
+@inline primal_dim(x::IEEEFloat) = 1
+@inline primal_dim(x::Complex{<:IEEEFloat}) = 2
+@inline primal_dim(x::AbstractArray{<:IEEEFloat}) = length(x)
+@inline primal_dim(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+@inline primal_dim(x::Tuple) = sum(primal_dim, x; init=0)
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualArray{Element,N,D,A,Wrapped,B}` is the canonical array V.
+# The primal aliases user storage and remains usable by BLAS/LAPACK; partials are slot-local.
+# B = _block_type(A) holds lanes in element-major shape (N, size(primal)...), so each
+# element's lanes are contiguous. Memory primals use rank-2 blocks.
+# Wrapped is NDual{T,N} for real T, Complex{NDual{T,N}} for Complex{T}; element access
+# constructs it lazily while the AbstractArray supertype preserves generic dispatch.
+# Legacy a.partials consumers receive strided lane views. Consumers needing dense arrays
+# (ccall/pointer/setfield!) must use the block. Mooncake methods live in tangents/lifted.jl.
+
+const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
+# The coherent wrapped-element type for an `NDualArray` of `Element` at width `N` — what
+# `getindex` actually returns. Used by the inner constructor to reject an incoherent `Wrapped`.
+@inline _wrapped_eltype(::Type{Element}, ::Val{N}) where {Element<:IEEEFloat,N} = NDual{
+    Element,N
+}
+@inline function _wrapped_eltype(
+    ::Type{Element}, ::Val{N}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    return Complex{NDual{T,N}}
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualBlock{T, D}` — the element-major partials block, one type on every supported Julia.
+#
+# A header over a flat Vector keeps storage resizable on Julia 1.10; Base.reshape
+# would mark it shared and make resize throw. The immutable header lets field loads
+# hoist; _derived_dims recomputes the trailing dimension from the parent length,
+# so Vector primal growth needs no mutable shape field.
+# DenseArray membership is essential for StridedArray/BLAS dispatch (otherwise
+# mul! uses the slower generic kernel). Storage is contiguous with unit first stride.
+
+struct NDualBlock{T,D} <: DenseArray{T,D}
+    parent::Vector{T}
+    dims::NTuple{D,Int}
+end
+@inline function NDualBlock{T,D}(::UndefInitializer, dims::Vararg{Int,D}) where {T,D}
+    return NDualBlock{T,D}(Vector{T}(undef, prod(dims)), dims)
+end
+
+# `dims` with the trailing entry recomputed from the parent's current length. A zero leading
+# product means an empty block, which never grows, so the stored entry stands.
+@inline function _derived_dims(dims::NTuple{D,Int}, len::Int) where {D}
+    lead = 1
+    @inbounds for i in 1:(D - 1)
+        lead *= dims[i]
+    end
+    lead == 0 && return dims
+    return (Base.front(dims)..., len ÷ lead)
+end
+
+@inline function Base.size(b::NDualBlock)
+    return _derived_dims(getfield(b, :dims), length(getfield(b, :parent)))
+end
+Base.length(b::NDualBlock) = length(getfield(b, :parent))
+Base.IndexStyle(::Type{<:NDualBlock}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(b::NDualBlock, i::Int) = getfield(b, :parent)[i]
+Base.@propagate_inbounds function Base.setindex!(b::NDualBlock, v, i::Int)
+    getfield(b, :parent)[i] = v
+    return b
+end
+Base.strides(b::NDualBlock) = Base.size_to_strides(1, size(b)...)
+Base.elsize(::Type{<:NDualBlock{T}}) where {T} = sizeof(T)
+# `cconvert` hands a `ccall` the parent `Array` rather than the block, so the argument the GC roots
+# is a real heap object and the block header itself need never be boxed.
+Base.cconvert(::Type{Ptr{T}}, b::NDualBlock{T}) where {T} = getfield(b, :parent)
+function Base.unsafe_convert(::Type{Ptr{T}}, b::NDualBlock{T}) where {T}
+    return Base.unsafe_convert(Ptr{T}, getfield(b, :parent))
+end
+Base.dataids(b::NDualBlock) = Base.dataids(getfield(b, :parent))
+Base.copy(b::NDualBlock) = NDualBlock(copy(getfield(b, :parent)), getfield(b, :dims))
+Base.fill!(b::NDualBlock, x) = (fill!(getfield(b, :parent), x); b)
+function Base.convert(::Type{NDualBlock{S,D}}, b::NDualBlock{T,D}) where {S,T,D}
+    return NDualBlock{S,D}(convert(Vector{S}, getfield(b, :parent)), getfield(b, :dims))
+end
+# Reshaping a block is a new header over the same parent, so it neither copies nor marks the
+# parent shared (which would break the resize primitives on 1.10).
+function Base.reshape(b::NDualBlock{T}, dims::NTuple{D,Int}) where {T,D}
+    return NDualBlock{T,D}(getfield(b, :parent), dims)
+end
+
+# Access the flat parent to keep hot stores on one array; the fallback serves CUDA blocks.
+@inline _block_storage(b::NDualBlock) = getfield(b, :parent)
+@inline _block_storage(b) = b
+
+# Each primal element owns N block entries; resizing the parent updates the trailing shape.
+@inline function _resize_block!(resize!!, b::NDualBlock, N::Int, d::Integer)
+    resize!!(getfield(b, :parent), N * d)
+    return b
+end
+
+@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
+    # A window into `memblock` covering the `prod(dims) ÷ N` columns starting at the backing
+    # `Memory`'s slot `off`. The block is element-major, so slot j owns flat entries
+    # `(j-1)*N+1 : j*N`; sharing that storage is what makes a lane written through an `Array`'s V
+    # visible through its backing `Memory`'s V, mirroring the primal aliasing.
+    #
+    # Growth needs nothing extra. The block's `Memory` is the primal's scaled by `N`, so the slack
+    # on each side of the window is `N` times the primal's, and `d ≤ slack` holds for the primal
+    # exactly when `N*d ≤ N*slack` holds for the block: `_growend!`/`_growbeg!` reallocate on
+    # precisely the same calls, and a reallocated primal has no lifted `Memory` left to share with.
+    # An empty window has no slot to address: offsetting to `(off-1)*N+1` would build a
+    # one-past-end ref, which `--check-bounds=yes` rejects however the call is annotated. `wrap`
+    # never dereferences it at length 0, so the parent's own ref serves.
+    @inline function _window_block(
+        memblock::NDualBlock{E,2}, ::Val{N}, off::Int, dims::NTuple{D,Int}
+    ) where {E,N,D}
+        parent_ref = getfield(getfield(memblock, :parent), :ref)
+        len = prod(dims)
+        ref = if iszero(len)
+            parent_ref
+        else
+            Core.memoryrefnew(parent_ref, (off - 1) * N + 1, false)
+        end
+        return NDualBlock{E,D}(Base.wrap(Array, ref, (len,))::Vector{E}, dims)
+    end
+end
+
+# Unknown containers must define _block_type rather than silently getting CPU storage.
+# Backends with different orientation override _lane_index, tangent_view and _lane_views.
+# Memory is one-dimensional and uses a rank-2 block.
+@inline _block_type(::Type{Array{Element,D}}) where {Element,D} = NDualBlock{Element,D + 1}
+@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
+    @inline _block_type(::Type{Memory{Element}}) where {Element} = NDualBlock{Element,2}
+end
+@inline _block_dims(N::Int, p) = (N, size(p)...)
+@inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
+
+@noinline function _throw_block_shape_error(block_size, N, primal_size)
+    return throw(
+        DimensionMismatch(
+            "NDualArray partials block has size $block_size; expected $N lanes over a " *
+            "primal of size $primal_size.",
+        ),
+    )
+end
+
+struct NDualArray{
+    Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B<:AbstractArray{Element}
+} <: AbstractArray{Wrapped,D}
+    primal::A
+    partials_block::B
+    # Enforce coherent element and block types; static checks constant-fold, shape is O(1).
+    function NDualArray{Element,N,D,A,Wrapped,B}(
+        primal::A, partials_block::B
+    ) where {
+        Element<:NDualEltype,
+        N,
+        D,
+        A<:AbstractArray{Element,D},
+        Wrapped,
+        B<:AbstractArray{Element},
+    }
+        Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
+            ArgumentError(
+                "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
+                "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
+            ),
+        )
+        B === _block_type(A) || throw(
+            ArgumentError(
+                "NDualArray block parameter $B is incoherent: expected " *
+                "$(_block_type(A)) for A=$A.",
+            ),
+        )
+        # `_block_shape_ok` encodes the block orientation per backend: element-major
+        # `(N, dims...)` on the host, and lane-major `(dims..., N)` for `CuArray` (overridden
+        # in the CUDA extension, where lanes must be contiguous). The `B === _block_type(A)`
+        # check above already pins the block type.
+        # `_throw_block_shape_error` takes the block's size, never the block: a call taking a
+        # freshly built block escapes it, and the caller's array header then survives -- one
+        # allocation per `.mem` projection, which element-wise access performs per element.
+        _block_shape_ok(partials_block, N, primal) ||
+            _throw_block_shape_error(size(partials_block), N, size(primal))
+        return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
+    end
+end
+
+# Pack per-lane same-shape arrays into a fresh element-major block: lane `k` of element
+# `j` lands at linear block index `(j - 1) * N + k` (the block's leading dim is the lane).
+@inline function _pack_block(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element,N,A<:AbstractArray{Element}}
+    block = _block_type(A)(undef, _block_dims(N, p)...)
+    @inbounds for k in 1:N
+        tk = ts[k]
+        for j in 1:length(p)
+            block[(j - 1) * N + k] = tk[j]
+        end
+    end
+    return block
+end
+
+# Tuple-accepting outer constructors pack the incoming per-lane arrays into the block, so
+# pre-existing construction sites (including `typeof(v)(p, ts)`) keep working unchanged.
+# The 4-parameter form fills in `Wrapped` via `_wrapped_eltype` (`NDual{Element,N}` for real
+# `Element`, `Complex{NDual{T,N}}` for `Element === Complex{T}`) and `B` via `_block_type`;
+# the 5-/6-parameter forms keep the caller's `Wrapped` (and `B`) so the inner constructor
+# still rejects incoherent parameters.
+@inline function NDualArray{Element,N,D,A}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, _pack_block(p, ts)
+    )
+end
+@inline function NDualArray{Element,N,D,A,Wrapped}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
+    return NDualArray{Element,N,D,A,Wrapped,_block_type(A)}(p, _pack_block(p, ts))
+end
+@inline function NDualArray{Element,N,D,A,Wrapped,B}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B}
+    return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
+end
+
+# Block-accepting outer constructor: adopt an existing element-major block AS the partials
+# storage (no copy — the caller passes a block deliberately, usually to share storage with
+# another V so mutations through either are visible through both).
+@inline function NDualArray{Element,N,D,A}(
+    p::A, block::AbstractArray{Element}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
+
+# Zero-init seed: allocate a fresh slot-local zero block matching the primal.
+@inline function NDualArray{Element,N,D,A}(
+    p::A
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    block = fill!(_block_type(A)(undef, _block_dims(N, p)...), zero(Element))
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
+
+# The canonical NDualArray V-type for a primal array type `A` at width `N` — the single source
+# of the type's parameter arity, so `dual_type`/`lifted_type` don't spell out the block param.
+@inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:NDualEltype,D,A<:AbstractArray{Element,D},N} = NDualArray{
+    Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
+}
+
+# Centralise element-major lane addressing here; CUDA overrides it for lane-major
+# (dims..., N) storage. Duplicating the formula would silently address the wrong lane.
+@inline _lane_index(::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} =
+    (elem - 1) * N + lane
+
+# Inlined seed access lets getfield hoist out of gradient/Jacobian loops.
+@inline function _zero_seed!(a::NDualArray{Element}) where {Element}
+    fill!(getfield(a, :partials_block), zero(Element))
+    return a
+end
+@inline _get_partial(a::NDualArray, elem::Int, lane::Int) = @inbounds _block_storage(
+    getfield(a, :partials_block)
+)[_lane_index(a, elem, lane)]
+@inline function _set_partial!(a::NDualArray, elem::Int, lane::Int, v)
+    @inbounds _block_storage(getfield(a, :partials_block))[_lane_index(a, elem, lane)] = v
+    return a
+end
+
+# Per-lane strided views write through to the block; tangent_view builds just one lane.
+@inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
+    block = getfield(a, :partials_block)
+    colons = ntuple(_ -> Colon(), Val(D))
+    return ntuple(k -> view(block, k, colons...), Val(N))
+end
+
+# Write-through lane view, unlike tangent(x, lane)'s dense reverse-shaped copy.
+@inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
+    getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
+)
+
+# Shape follows the primal; resize mutates primal and block together while preserving
+# the immutable wrapper's field identities.
+Base.size(a::NDualArray) = size(a.primal)
+function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
+    return IndexStyle(A)
+end
+
+# The primal's linear index for `i`, which `_lane_index` turns into a block address.
+# `LinearIndices` accepts both the linear and the cartesian index forms and bounds-checks them,
+# so the block access itself can be `@inbounds`.
+@inline _linear_elem(a::NDualArray, i::Vararg{Int}) = LinearIndices(getfield(a, :primal))[i...]
+
+# Element-wise reduction over a flat block. Reading each element's lane column as one
+# `NTuple{N,Element}` load matters twice over: `getindex` would reload the block's parent pointer
+# per element, and `N` separate scalar loads do not vectorise. Together those cost ~25% at width
+# 8. Wrapper primals and GPU blocks keep the generic `getindex` path.
+@inline function _ndual_mapreduce_impl(
+    f::F,
+    op::O,
+    A::NDualArray{Element,N,D,<:Array,W,<:NDualBlock},
+    ifirst::Integer,
+    ilast::Integer,
+) where {F,O,Element,N,D,W}
+    ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
+    i0, i1 = Int(ifirst), Int(ilast)
+    p = getfield(A, :primal)
+    cols = reinterpret(NTuple{N,Element}, getfield(getfield(A, :partials_block), :parent))
+    @inbounds acc = f(_scalar_ndual(p[i0], cols[i0]))
+    @inbounds for i in (i0 + 1):i1
+        acc = op(acc, f(_scalar_ndual(p[i], cols[i])))
+    end
+    return acc
+end
+
+# _scalar_ndual handles real/complex elements; setindex! dispatches on their distinct V types.
+@inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    return _scalar_ndual(
+        a.primal[i...], ntuple(k -> @inbounds(block[_lane_index(a, e, k)]), Val(N))
+    )
+end
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
+) where {Element<:IEEEFloat,N}
+    a.primal[i...] = x.value
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = x.partials[k]
+    end
+    return a
+end
+# Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
+# and the block hold `Complex{T}`, so split/recombine the real and imaginary parts.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.re.value, x.im.value)
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = Complex(x.re.partials[k], x.im.partials[k])
+    end
+    return a
+end
+# A real dual stored into a complex array (e.g. `copyto!(::complex, ::real)`) promotes: the
+# imaginary part of the value and of every partial is zero.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.value)
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = Complex(x.partials[k])
+    end
+    return a
+end
+# No element-type convert: it would copy the primal and sever user-storage aliasing.
+# Converting stores must rebuild V over the destination (as IdDict setindex! does),
+# or fail with MethodError. Scalar NDual conversion is safe because storage is inline.
+
+# Scan the real primal then index one dual (~10x faster than folding NDual elements).
+# max ties credit the LAST element, unlike argmax. Use isequal to distinguish signed zeros.
+function Base.maximum(nda::NDualArray{E}) where {E<:IEEEFloat}
+    p = getfield(nda, :primal)
+    @inbounds nda[findlast(isequal(maximum(p)), p)]
+end
+# min ties credit the FIRST element; findfirst's vectorised scan beats argmin/findmin.
+function Base.minimum(nda::NDualArray{E}) where {E<:IEEEFloat}
+    p = getfield(nda, :primal)
+    @inbounds nda[findfirst(isequal(minimum(p)), p)]
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualRef{P,N}` keeps partials in a separate Ref for parallel raw-pointer access.
+# Its distinct type prevents generic struct re-lifting; seeds, materialisation, field
+# access and pointer rules handle it explicitly. The primal Ref lives in Lifted.
+export NDualRef
+struct NDualRef{P<:NDualEltype,N}
+    partials::Base.RefValue{NTuple{N,P}}
+    # Suppress the implicit constructor: at N=0 its unbound P would fail Aqua.
+    function NDualRef{P,N}(partials::Base.RefValue{NTuple{N,P}}) where {P<:NDualEltype,N}
+        return new{P,N}(partials)
+    end
+end
+# Zero-init seed: fresh slot-local partials.
+@inline function NDualRef{P,N}() where {P<:NDualEltype,N}
+    return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> zero(P), Val(N))))
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualMemoryRef{Element,N,M}` covers MemoryRef, which is not an AbstractArray.
+# Keep the primal ref usable by ccall and the shared (N,ncols) partials block as a flat
+# backing ref at column 1, lane 1. col selects the element; memoryrefnew advances it by i-1.
+# Sharing with Memory/Array V preserves mutation aliasing. Column col+j pairs with primal
+# slot memoryrefoffset(primal)+j: Memory factories cover the full backing, whereas
+# Array-projected refs start at that array's first element.
+
+@static if VERSION >= v"1.11-rc4"
+    export NDualMemoryRef
+
+    # A flat MemoryRef keeps the V type rank-independent and Array.ref projection alloc-free.
+    # Reconstruct shaped blocks only for bulk operations, off the hot path.
+    struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
+        primal::MemoryRef{Element}
+        partials_ref::MemoryRef{Element}
+        ncols::Int
+        col::Int
+        function NDualMemoryRef{Element,N,M}(
+            primal::MemoryRef{Element},
+            partials_ref::MemoryRef{Element},
+            ncols::Int,
+            col::Int,
+        ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+            # Validate against seeded columns, not backing capacity: Array refs may have slack.
+            # Column ncols+1 is formable but not dereferenceable, including an empty array's ref.
+            1 <= col <= ncols + 1 || throw(
+                ArgumentError(
+                    "NDualMemoryRef column $col is past the $ncols partials columns. The " *
+                    "offset is inside the backing `Memory` but past the seeded array's " *
+                    "length, so there is no partials column for it.",
+                ),
+            )
+            return new{Element,N,M}(primal, partials_ref, ncols, col)
+        end
+    end
+
+    # Convenience for the block-shaped construction sites and the Memory-seed factory:
+    # validate the block's lane rows, then adopt its backing ref and column count.
+    @inline function NDualMemoryRef{Element,N,M}(
+        primal::MemoryRef{Element}, block::NDualBlock{Element,2}, col::Int
+    ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+        size(block, 1) == N || throw(
+            DimensionMismatch(
+                "NDualMemoryRef partials block has $(size(block, 1)) rows; " *
+                "expected the chunk width N = $N (lane-leading layout).",
+            ),
+        )
+        return NDualMemoryRef{Element,N,M}(
+            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
+        )
+    end
+
+    # Zero-init seed: a fresh zero block covering the whole backing `Memory` (column j ↔ mem
+    # slot j), so the referenced element's column is the ref's offset. Element types in
+    # `NDualEltype` are bits types, so undef iteration is not needed.
+    @inline function NDualMemoryRef{Element,N,M}(
+        p::MemoryRef{Element}
+    ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+        block = fill!(NDualBlock{Element,2}(undef, N, length(p.mem)), zero(Element))
+        return NDualMemoryRef{Element,N,M}(p, block, Core.memoryrefoffset(p))
+    end
+
+    # Column col starts at lane 1; n columns occupy n*N contiguous entries.
+    # Skip bounds checks: construction confines col to 1:ncols+1 and lanes stay in 1:N.
+    # Dereferencing the end ref is primal UB; checking every lane would tax scalar access.
+    @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
+        col == 1 && return partials_ref
+        return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, false)
+    end
+
+    # Read the `N` contiguous lanes starting at `colref` (position 1 == `colref` itself), and
+    # write them. Alloc-free (`memoryref` ops + an isbits `ntuple`), for the hot get/set frules.
+    @inline function _read_lanes(colref::MemoryRef, ::Val{N}) where {N}
+        return ntuple(
+            k -> Core.memoryrefget(Core.memoryrefnew(colref, k, false), :not_atomic, false),
+            Val(N),
+        )
+    end
+    @inline function _write_lanes!(colref::MemoryRef, vals, ::Val{N}) where {N}
+        for k in 1:N
+            Core.memoryrefset!(
+                Core.memoryrefnew(colref, k, false), vals[k], :not_atomic, false
+            )
+        end
+        return nothing
+    end
+
+    # Reconstruct the whole `(N, ncols)` block sharing the ref's backing (bulk/interface ops
+    # only — off the hot path). `partials_ref` is col-1 lane-1, so wrapping `N * ncols` entries
+    # from it reproduces the original block exactly.
+    @inline function _reconstruct_block(v::NDualMemoryRef{E,N}) where {E,N}
+        ncols = getfield(v, :ncols)
+        flat = Base.wrap(Array, getfield(v, :partials_ref), (N * ncols,))::Vector{E}
+        return NDualBlock{E,2}(flat, (N, ncols))
+    end
+end
 
 end

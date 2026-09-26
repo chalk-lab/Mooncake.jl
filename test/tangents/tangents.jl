@@ -1,4 +1,21 @@
 using DispatchDoctor: allow_unstable
+mutable struct PtrMixed
+    p::Ptr{Float64}
+    w::Float64
+end
+_ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
+
+mutable struct VoidPtrMixed
+    p::Ptr{Cvoid}
+    w::Float64
+end
+_void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
+
+@static if VERSION >= v"1.11"
+    const _SCOPED_VALUE = Base.ScopedValues.ScopedValue(2.0)
+    _read_scoped_value(x) = x * _SCOPED_VALUE[]
+end
+
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -106,10 +123,18 @@ using DispatchDoctor: allow_unstable
     # v1.11-only tests.
     if VERSION >= v"1.11"
         TestUtils.test_tangent_type(Core.Compiler.AnalysisResults, NoTangent)
+        # A `ScopedValue` read reaches `Scope`, whose `PersistentDict` holds a `HAMT`, recursive
+        # through a `Vector` eltype: the structural fallback overflowed the stack in both modes.
+        @test_throws "recursive" tangent_type(Base.ScopedValues.Scope)
+        TestUtils.test_rule(Xoshiro(123456), _read_scoped_value, 1.5; throws="recursive")
     end
 
     @testset "$(typeof(p))" for (interface_only, p, t...) in Mooncake.tangent_test_cases()
         test_tangent(Xoshiro(123456), p, t...; interface_only)
+    end
+
+    @testset "SimpleVector opts out of field-access interactions" begin
+        TestUtils.test_rule_and_type_interactions(Xoshiro(123456), svec(5.0))
     end
 
     @testset "zero_tangent throws for Ptr" begin
@@ -208,6 +233,36 @@ using DispatchDoctor: allow_unstable
             t, 1, Float32(3)
         )
         @test Mooncake.get_tangent_field(t, :a) === 3.0
+    end
+    # The registry's `primal_to_tangent!!` round trip refuses pointers, so test directly.
+    @testset "Ptr{$P} tangent is inert in tangent arithmetic" for (P, M, f) in (
+        (Float64, PtrMixed, _ptr_mixed), (Cvoid, VoidPtrMixed, _void_ptr_mixed)
+    )
+        buf = [3.0]
+        p = Ptr{P}(pointer(buf))
+        t = Mooncake.uninit_tangent(p)
+        @test Mooncake._scale(2.0, t) === t
+        @test Mooncake._dot(t, t) == 0.0
+        @test Mooncake.set_to_zero!!(t) === t
+        @test Mooncake._add_to_primal(p, t, true) === p
+        if P === Float64
+            @test Mooncake.increment!!(t, t) === t
+        else
+            @test Mooncake.randn_tangent(Xoshiro(1), p) isa Mooncake.tangent_type(typeof(p))
+            # Non-self-tangent pointee types also require correctly typed random tangents.
+            @testset "randn_tangent type for Ptr{$Q}" for Q in (Int, Float64, UInt8, Bool)
+                q = Ptr{Q}(0)
+                @test Mooncake.randn_tangent(Xoshiro(1), q) isa
+                    Mooncake.tangent_type(typeof(q))
+            end
+        end
+        # The other fields must still differentiate.
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(f, M(p, 5.0), 3.0), f, M(p, 5.0), 3.0
+        )
+        @test v == 15.0
+        @test g[2].fields.w == 3.0
+        @test g[3] == 5.0
     end
     @testset "restricted inner constructor" begin
         p = TestResources.NoDefaultCtor(5.0)

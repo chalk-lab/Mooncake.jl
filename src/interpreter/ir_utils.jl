@@ -129,7 +129,7 @@ function set_ir!(ir::IRCode, idx::SSAValue, name::Symbol, value)
 end
 
 function replace_call!(ir, idx::SSAValue, new_call)
-    set_ir!(ir, idx, :inst, new_call)
+    set_ir!(ir, idx, stmt_field_name(), new_call)
     set_ir!(ir, idx, :type, Any)
     set_ir!(ir, idx, :info, CC.NoCallInfo())
     set_ir!(ir, idx, :flag, CC.IR_FLAG_REFINED)
@@ -252,6 +252,30 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
         rt = CC._ir_abstract_constant_propagation(interp, irsv)
     end
     return ir
+end
+
+# Julia 1.10 reprocess_instruction! lacks Upsilon/PhiC handling and can replace refined
+# Upsilons with QuoteNodes, failing PhiC verification. Leave both untouched, as in 1.11,
+# where PhiC refinement is not modeled and Upsilon refinements never reach a use.
+@static if VERSION < v"1.11"
+    function CC.reprocess_instruction!(
+        interp::BugPatchInterpreter,
+        idx::Int,
+        bb::Union{Int,Nothing},
+        @nospecialize(inst),
+        @nospecialize(typ),
+        irsv::CC.IRInterpretationState,
+    )
+        inst isa Union{Core.UpsilonNode,Core.PhiCNode} && return false
+        return @invoke CC.reprocess_instruction!(
+            interp::CC.AbstractInterpreter,
+            idx::Int,
+            bb::Union{Int,Nothing},
+            inst::Any,
+            typ::Any,
+            irsv::CC.IRInterpretationState,
+        )
+    end
 end
 
 # In automatically generated code, it is meaningless to include code coverage effects.

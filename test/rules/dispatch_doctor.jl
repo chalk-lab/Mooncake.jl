@@ -39,4 +39,10 @@ using StableRNGs: StableRNG
             end
         end
     end
+
+    # The primitive declaration requires live methods on Mooncake's rule functions.
+    @testset "rules registered on Mooncake.frule!!/rrule!!" begin
+        @test Mooncake.DispatchDoctorRules.frule!! === Mooncake.frule!!
+        @test Mooncake.DispatchDoctorRules.rrule!! === Mooncake.rrule!!
+    end
 end
