@@ -769,6 +769,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
+    _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -883,6 +884,7 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
+    _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2859,4 +2861,147 @@ end
 @inline function _zero_tangents(fx::Tuple)
     c = _friendly_cache(fx)
     return tuple_map(x -> zero_tangent_internal(x, c), fx)
+end
+
+struct PreparedCacheError <: Exception
+    msg::String
+end
+
+function Base.showerror(io::IO, err::PreparedCacheError)
+    _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
+end
+
+function _throw_prepared_cache_aliasing_error(li::String, lj::String, aliased_now::Bool)
+    # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
+    # `===` yet are one storage, and that pair is exactly what `_shares_storage` added.
+    what = if aliased_now
+        "share one storage now but were separate"
+    else
+        "are separate now but shared one storage"
+    end
+    throw(
+        PreparedCacheError(
+            "Cached autodiff call has an aliasing mismatch: $li and $lj $what when the cache " *
+            "was prepared.\nA prepared cache holds one tangent buffer per argument, so the " *
+            "aliasing among arguments is part of the shape it was prepared for: reusing it with " *
+            "different aliasing writes into the wrong buffers and silently returns the wrong " *
+            "answer. Prepare a separate cache for this argument aliasing.",
+        ),
+    )
+end
+"""
+    _mutable_tangent_paths(T::Type)
+
+Field paths from a tangent of type `T` to the mutable objects reachable through immutable
+fixed-arity containers, as tuples of field indices (`()` when `T` is itself mutable). Only `Tuple`
+and `NamedTuple` are walked, because their tangents mirror the primal element-wise, so one path
+indexes both. The walk is complete: a truncated one silently accepts calls whose aliasing differs
+from the prepared shape past the cut, which is a wrong gradient rather than a missed diagnostic.
+"""
+function _mutable_tangent_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
+    if Base.ismutabletype(T)
+        push!(out, path)
+    elseif (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
+        for (k, FT) in enumerate(fieldtypes(T))
+            _mutable_tangent_paths(FT, (path..., k), out)
+        end
+    end
+    return out
+end
+
+# `tangents[i][p1][p2]...` as an expression, and the same position as a label for the error.
+_path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
+function _alias_label(i::Int, path)
+    return (i == 1 ? "`f" : "`x$(i - 1)") * prod(k -> "[$k]", path; init="") * "`"
+end
+
+# Use the same storage identity for primals and tangents: an Array and its backing
+# Memory are distinct objects but share accumulation storage, as do reshaped arrays.
+@inline _storage_id(@nospecialize(x)) = x
+@static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
+    @inline _storage_id(x::Array) = getfield(x, :ref).mem
+    @inline _storage_id(x::Memory) = x
+end
+@inline _shares_storage(@nospecialize(x), @nospecialize(y)) =
+    _storage_id(x) === _storage_id(y)
+
+# The positions both aliasing emitters compare, as `(argument index, path)`. `leafwise` walks into
+# immutable containers for the tangent check; the primal check takes top-level mutables only.
+# Shared so the two cannot drift apart in what they enumerate.
+function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
+    leaves = Tuple{Int,Any}[]
+    for (i, P) in enumerate(T.parameters)
+        if leafwise
+            for path in _mutable_tangent_paths(P)
+                push!(leaves, (i, path))
+            end
+        elseif Base.ismutabletype(P)
+            push!(leaves, (i, ()))
+        end
+    end
+    return leaves
+end
+
+# Compare mutable tangent leaves only: immutable `===` is value equality, not aliasing.
+# Find nested Tuple/NamedTuple leaves from their types to avoid a per-call graph walk.
+# Variable-arity containers and struct fields remain unchecked; see `known_limitations.md`.
+# `bidirectional` requires both partitions to agree (reverse); forward only refuses
+# shared tangent storage for distinct primals.
+function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
+    # Compare leaves across the whole signature, including two leaves of one argument.
+    leaves = _aliasable_positions(tangents, true)
+    n = length(leaves)
+    # Limit quadratic codegen to 256 pairs; larger signatures use a linear runtime pass.
+    # The runtime pass allocates two IdDicts, so small signatures retain the unrolled path.
+    if n * (n - 1) ÷ 2 > 256
+        ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
+        fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
+        labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
+        return :(_check_alias_partition($ts, $fs, $labels, $bidirectional))
+    end
+    bad = bidirectional ? :(same_primal != same_tangent) : :(same_tangent && !same_primal)
+    checks = Expr(:block)
+    for a in 1:n, b in (a + 1):n
+        (i, pi), (j, pj) = leaves[a], leaves[b]
+        ti, tj = _path_expr(:tangents, i, pi), _path_expr(:tangents, j, pj)
+        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
+        li, lj = _alias_label(i, pi), _alias_label(j, pj)
+        push!(
+            checks.args,
+            quote
+                let same_primal = _shares_storage($fi, $fj),
+                    same_tangent = _shares_storage($ti, $tj)
+
+                    $bad && _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
+                end
+            end,
+        )
+    end
+    return checks
+end
+
+# Runtime form of the same pairwise contract for signatures too wide to unroll. Each
+# repeated tangent must still name its first primal; reverse mode also checks the inverse.
+@noinline function _check_alias_partition(
+    tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
+)
+    first_tangent = IdDict{Any,Int}()
+    first_primal = IdDict{Any,Int}()
+    for k in eachindex(tangents)
+        t = get!(first_tangent, _storage_id(tangents[k]), k)
+        _shares_storage(primals[t], primals[k]) ||
+            _throw_prepared_cache_aliasing_error(labels[t], labels[k], false)
+        if bidirectional
+            f = get!(first_primal, _storage_id(primals[k]), k)
+            _shares_storage(tangents[f], tangents[k]) ||
+                _throw_prepared_cache_aliasing_error(labels[f], labels[k], true)
+        end
+    end
+    return nothing
+end
+
+# Reverse requires the prepared tangent partition to match the call's primal partition;
+# types and sizes alone cannot establish this.
+@generated function _check_tangent_aliasing(tangents::Tuple, fx::Tuple)
+    return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
