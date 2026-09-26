@@ -52,6 +52,19 @@ function Mooncake.tangent(t::TangentNode, ::Mooncake.NoRData)
     return t
 end
 
+# Self-referential nodes need a custom forward representation, as TangentNode provides
+# for reverse. Refuse here to avoid dual_type stack overflow wherever a tree is reached.
+# Widening a field to Any still leaves a concrete struct and bypasses representability checks.
+function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N,P<:AbstractExpressionNode}
+    throw(
+        ArgumentError(
+            "Forward-mode AD does not support `$P`: an expression tree is self-referential, and " *
+            "Mooncake has no forward derivative representation for one. Use reverse mode " *
+            "(`prepare_gradient_cache` or `prepare_pullback_cache`).",
+        ),
+    )
+end
+
 _unwrap_nullable(c::NoTangent) = c
 _unwrap_nullable(c::NamedTuple{(:null, :x)}) = c.x
 _wrap_nullable(c::NoTangent) = c
