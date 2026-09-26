@@ -2240,29 +2240,37 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
 end
 
+# Differentiate the guarded product itself: differentiating its branch would discard
+# a live perturbation at a zero multiplier under forward-over-reverse.
+_rvs_mul(x::T, y::T) where {T<:BlasFloat} = iszero(y) ? zero(T) : x * y
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_mul),T,T} where {T<:BlasFloat}
+function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:BlasFloat}
+    a, da = extract(x)
+    b, db = extract(y)
+    return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
+end
+
 # Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
 # In particular, BLAS permits undefined input y wherever β == 0 discards it.
 @inline function _rvs_guarded_dot(y, dy)
     s = zero(promote_type(eltype(y), eltype(dy)))
     @inbounds for i in eachindex(y, dy)
         d = dy[i]
-        iszero(d) || (s += y[i]' * d)
+        s += _rvs_mul(y[i]', d)
     end
     return s
 end
 
-# Strong-zero dot(dy, B, x)': skip unused rows before reading potentially NaN
-# factors, accumulating the row product without materialising B*x.
+# Strong-zero dot(dy, B, x)', without materialising B*x.
 @inline function _rvs_guarded_dot3(dy, B, x)
     s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
     @inbounds for i in eachindex(dy)
         d = dy[i]
-        iszero(d) && continue
         r = zero(s)
         for j in eachindex(x)
             r += B[i, j] * x[j]
         end
-        s += d * r'
+        s += _rvs_mul(r', d)
     end
     return s
 end
