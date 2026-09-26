@@ -349,6 +349,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :new,
     ]) do s
         test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
+        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
@@ -359,6 +360,7 @@ end
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
         test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
+        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
