@@ -9,6 +9,22 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## Overlapping BLAS and LAPACK Operands
+
+Mutating BLAS matrix products and triangular operations, and LAPACK solves, require
+an output that does not overlap a separate input operand. Mooncake checks this in
+both modes and throws `ArgumentError` before modifying the operands. Copy the input
+when calling these operations with overlapping views or with the same array in
+both positions. The usual in-place right-hand side of a triangular operation is
+supported when it is disjoint from the coefficient matrix.
+
+`axpby!(a, x, b, x)` and `LAPACK.lacpy!(A, A, uplo)` support identical source and
+destination objects. Real `axpy!` also supports identical source and destination
+memory walks. Other overlapping source/destination patterns are refused; complex
+`axpy!` refuses even identical walks because its BLAS kernel can overwrite a
+component before reading it. These checks do not change the general boundary for
+aliasing established only through raw pointers.
+
 ## Numerical Workarounds and Singularities
 
 Numerical workarounds can preserve function values while producing incorrect derivatives under automatic differentiation.
@@ -30,7 +46,8 @@ Custom differentiation rules may be needed; see [Defining Rules](@ref).
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
 in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
-with a message explaining the cause. Forward mode does support these constructs.
+with a message explaining the cause. Forward mode supports `try`/`catch`, `try`/`finally` and
+`rethrow()`, except that binding the exception (`catch e`) is refused.
 
 **The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
 For example:
@@ -91,6 +108,99 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takeaway: do not attempt to differentiate functions which modify global state. Reading a global is fine, with one exception: the same object must not also be an argument.
 
+### Passing a global as an argument
+
+Reading a global is fine only while that object is not *also* an argument. The global's derivative
+storage is built once when the rule is built, so it shares nothing with the argument's, and the
+contribution through the global is written somewhere the caller never sees:
+
+```julia
+const G = [1.0, 2.0]
+f(x) = sum(x .* G)
+value_and_gradient!!(build_rrule(f, G), f, G)   # gradient [1.0, 2.0]; the truth is [2.0, 4.0]
+```
+
+The value returned is correct, which makes this easy to miss. Both modes refuse such a call with an
+`ArgumentError` rather than returning the wrong derivative. Pass a copy, or read the value through
+an argument instead of a global.
+
+The check is by object identity, so it covers what can actually be shared: arrays, mutable structs,
+and aggregates containing them. A differentiable *immutable* constant that is also passed as an
+argument — `const C = ("a", 1.0)` — is not caught, and neither is a global read behind a call whose
+own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
+compares a rule's constants against that rule's own arguments.
+
+Aliasing between *arguments* is a different matter and is supported: two arguments over one array
+share derivative storage, so both positions report the one accumulated gradient.
+
+### Conflicting forward tangents for one shared storage
+
+Positions that share one storage share one tangent, so supplying different tangents for them is
+ill-posed: only one direction can be carried. `value_and_derivative!!` refuses it with an
+`ArgumentError` — through a prepared cache under either `friendly_tangents` setting, and against a
+bare rule. Pass the same tangent object at every position the shared storage occupies.
+
+The refusal is by object identity, so it does not see sharing that identity cannot express: a
+`reshape` or a `view` of an argument, or an `Array` beside its backing `Memory`. Those still answer
+silently, carrying whichever tangent the lift reached first. `f(a, b) = sum(a) + sum(b)` run at
+`(a, da)` and `(reshape(a, 3, 1), db)` reports `sum(da)` twice rather than `sum(da) + sum(db)`.
+
+### Forward gradients of arguments that share one storage
+
+Forward mode gives each argument its own tangent storage, so two arguments over one array are two
+independent directions rather than one shared derivative, and `value_and_gradient!!` — whose
+gradient is assembled from one standard-basis dimension range per input — cannot represent that. It
+refuses with an `ArgumentError` rather than returning a gradient scaled by the number of positions
+the storage occupies. Repeated leaves *within* one argument are supported and agree with reverse
+mode: `f(t) = sum(t[1]) + sum(t[2])` at `t = (a, a)` gives `([2, 2, 2], [2, 2, 2])` in both modes,
+because one `lift` threads a single aliasing cache through the argument's leaves. Sharing that is
+not object identity — a `reshape`, a `view`, an `Array` beside its backing `Memory` — is refused
+wherever it appears, including within one argument.
+
+Reverse mode has no such restriction: aliased arguments share one cotangent buffer, so every
+position reports the one accumulated gradient. The forward Jacobian is also unaffected — it
+differentiates a single argument with `f` held fixed, so one dimension range covers every position, and
+an aliased capture (`f = x -> x .* sum(q)` called at `x === q`) gives the full Jacobian.
+
+### Reusing a prepared cache with different aliasing
+
+`prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
+mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
+both object identity relationships and shared backing storage. On Julia 1.11 and later,
+array offsets within backing `Memory` must also match. A mismatch raises
+`Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
+New objects with the same relationships are allowed; prepare a separate cache when
+those relationships change.
+
+Callers must preserve types, shapes, and aliasing throughout the inputs, including
+parts the guard does not inspect. The guard does not traverse struct fields (including
+closures and array wrappers), array elements, or other variable-length containers such
+as dictionaries. It does not establish overlap introduced through raw pointers or
+`unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
+Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
+when their relationships change.
+
+Forward caches also reject incompatible sharing between prepared tangent buffers and
+call-time inputs. Structured forward gradients additionally check the array leaves reached
+through their structured seeds, including struct fields, before refreshing cached values.
+Their input snapshots can detect some mismatched sharing inside structs and reference-element
+arrays while copying inputs into cache storage.
+
+## Restoration of arguments a rule mutated
+
+Forward input snapshots retain the original mutable objects as well as their contents.
+If `f` rebinds a field of a mutable argument (`s.v = 2 .* s.v` rather than `s.v .= 2 .* s.v`),
+restoration puts the original object back in the field and restores its contents.
+
+The forward entry points (`value_and_derivative!!`, `value_and_jacobian!!` and the forward
+`value_and_gradient!!`) snapshot the arguments and restore them afterwards, including when the rule
+raises. RNG state is deliberately excluded from restoration: random draws leave the RNG advanced,
+including on failure. Random operations execute afresh in each gradient or Jacobian chunk.
+Reverse mode restores mutations on the pullback instead, so an exception during the forward
+sweep leaves them in place: the
+arguments of a `value_and_pullback!!` or `value_and_gradient!!` call that threw are whatever the
+rule left behind. Copy them if you intend to retry.
+
 ## Mutable aliases involving `NoTangent` parents or globals
 
 Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
@@ -138,7 +248,11 @@ ERROR: ArgumentError: An argument is the same object as a constant or global rea
 ```
 
 `X` and `x` are the same vector, and their derivative storage is separate, so the contribution
-through `X` would be dropped. Mooncake raises an `ArgumentError` instead of returning an incorrect derivative.
+through `X` would be dropped. Mooncake used to return `[1.0]` silently; it now raises. See
+[Passing a global as an argument](@ref) for the guard.
+
+Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
+`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
 
 ## Passing Differentiable Data as a Type
 
@@ -252,6 +366,19 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
+Not every array operation on a `CuArray` has a rule yet. `maximum`, `minimum`, `diff` and `sort` do
+not, in either their plain or their `f`-mapped form, and the higher-order reductions carry a rule
+only for the operators they were written for — `reduce` for `+` and `*`, `mapreduce` for `+`, and
+`accumulate` for `+`. Anything outside those sets is registered as a primitive whose rule raises an
+`ArgumentError` naming the operation, so you get a clear failure at the call rather than a wrong
+derivative or an obscure error from inside a kernel. Reductions over an array whose element type is
+non-differentiable are unaffected: those correctly give a zero derivative.
+
+Forward mode over `NNlib.gather` on a GPU array refuses for a related reason: the traced kernel
+launch takes the process down with no catchable exception, so the rule raises instead. The
+limitation is specific to that combination. Reverse mode over the same signature works, and so
+does forward mode on a CPU array.
+
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
 ## Differentiating SIMD Code
@@ -355,25 +482,55 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+### Raw pointers into a nested array, at chunk width above one
+
+Forward mode stores an array's `N` lane partials in one element-major block, so a single lane is a
+strided view rather than a dense buffer. That is fine for a flat array — `pointer` and
+`unsafe_copyto!` on a `Vector{Float64}` work at any chunk width — but an array *of arrays* has no
+dense per-lane buffer for a raw pointer to address:
+
+```julia
+f(x, y, n) = (unsafe_copyto!(pointer(x), pointer(y), n); sum(sum, x))
+x = [randn(3) for _ in 1:5]
+y = [randn(4) for _ in 1:6]
+# chunk width 1: fine. Above 1: ArgumentError naming the width.
+```
+
+The rule refuses rather than dropping the derivative. Differentiate that call at chunk width 1, or
+use reverse mode, which is unaffected.
+
+Wrapping a pointer-to-pointer buffer with `unsafe_wrap` preserves its shadow pointer storage at
+chunk width one. Wider chunks raise `ArgumentError`: the wrapped array interleaves its shadow
+pointers by element, whereas each raw pointer lane addresses a dense buffer. Supporting both
+layouts requires a pointer representation that carries the tangent stride; use chunk width one
+or reverse mode.
+
+### Re-typing a pointer through `Ptr{Cvoid}`
+
+A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
+sound: re-typing `Ptr{Float32}` to `Ptr{Float64}` is refused, because a load or store through the
+result would address eight bytes per element in a buffer laid out in four-byte ones.
+
+Erasing the element type loses the information that check needs, because Mooncake gives an erased
+pointer and a pointer with no tangent storage at all the same representation — both are
+`Ptr{Nothing}`, and `fdata_type` pins a pointer field's fdata to `Ptr`.
+
+The erasure itself is allowed. What is refused is re-typing to an element type the underlying
+tangent storage cannot hold, and that is checked when the pointer is widened back:
+
+```julia
+f(b::Vector{Float32}, x) = x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))   # ArgumentError
+```
+
+Erasing and re-typing back to the *same* element type is fine, which is the common direction:
+`pointer(::Array)` passes through a `Ptr{Cvoid}` intermediate and re-types back to the element type
+a foreigncall needs.
+
+The `Ptr{Cvoid}` round trip is not itself the problem. Going straight from `Ptr{Float32}` to
+`Ptr{Float64}` is refused identically — a `Float64` load would straddle two `Float32` tangent
+elements either way. The round trip only matters in that it hides the source type until the
+widening, which is why the error for that path suggests re-typing directly instead.
+
 ```@meta
 DocTestSetup = nothing
 ```
-
-## Reusing prepared reverse caches
-
-`prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
-mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
-both object identity relationships and shared backing storage. On Julia 1.11 and later,
-array offsets within backing `Memory` must also match. A mismatch raises
-`Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
-New objects with the same relationships are allowed; prepare a separate cache when
-those relationships change. Forward caches using structured gradient seeds also check
-the sharing of differentiable array leaves inside struct fields before refreshing their buffers.
-
-Callers must preserve types, shapes, and aliasing throughout the inputs, including
-parts the guard does not inspect. The guard does not traverse struct fields (including
-closures and array wrappers), array elements, or other variable-length containers such
-as dictionaries. It does not establish overlap introduced through raw pointers or
-`unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
-Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
-when their relationships change.
