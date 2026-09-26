@@ -10,7 +10,6 @@ module TestResources
 using ..Mooncake
 using ..Mooncake:
     CoDual,
-    Dual,
     Tangent,
     MutableTangent,
     NoTangent,
@@ -47,6 +46,12 @@ struct StructFoo
 end
 
 Base.:(==)(a::StructFoo, b::StructFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
+
+# Immutable struct with two `Float64` fields; used to test `reshape` of an array of struct elements.
+struct FloatPair
+    a::Float64
+    b::Float64
+end
 
 mutable struct MutableFoo
     a::Float64
@@ -245,6 +250,40 @@ function make_circular_reference_array()
     return a
 end
 
+@static if VERSION >= v"1.11"
+    struct ArrayAndItsBuffer
+        short::Vector{Float64}
+        long::Vector{Float64}
+        m::Memory{Float64}
+        r::MemoryRef{Float64}
+    end
+
+    """
+        make_array_and_its_buffer()
+
+    Two `Array`s of different lengths, a `MemoryRef` at an interior offset, and the `Memory`
+    backing all three, as four differentiable positions over one buffer. Operations that
+    accumulate into shared storage (`increment_internal!!`, `_dot_internal`) key on an extent, so
+    the views overlap without matching and the shared prefix used to be counted once per view.
+
+    THREE arrays rather than two on purpose. With only an array and its buffer the array is always
+    reached first, so the partial walk always falls to the `Memory` method; a second array of a
+    different length is what makes an ARRAY take it, and that path had a separate bug of its own.
+    The `MemoryRef` is the other container whose tangent reverse derives from the `Memory`'s, so
+    forward's lane traversal has to mirror it there too.
+    """
+    function make_array_and_its_buffer()
+        base = Float64[1.0, 2.0, 3.0, 4.0, 5.0]
+        mem = getfield(base, :ref).mem
+        return ArrayAndItsBuffer(
+            Base.wrap(Array, memoryref(mem), (2,)),
+            Base.wrap(Array, memoryref(mem), (4,)),
+            mem,
+            memoryref(mem, 3),
+        )
+    end
+end
+
 function make_indirect_circular_reference_array()
     a = Any[1.0, 2.0, 3.0]
     b = Any[a, 4.0]
@@ -382,6 +421,64 @@ end
 function pi_node_tester(y::Ref{Any})
     x = y[]
     return isa(x, Int) ? sin(x) : x
+end
+
+# try/catch shapes, forward mode only (reverse refuses the construct). `try_finally_tester`
+# keeps a throwing statement in the try block so the optimiser cannot elide the construct
+# before Mooncake sees it.
+function try_catch_arg_tester(x)
+    y = 0.0
+    try
+        x > 0 && error("")
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
+function try_catch_computed_tester(x)
+    y = x
+    try
+        x > 0 && error("")
+        y = y * 2
+    catch
+        y = y * 3
+    end
+    return y
+end
+
+function try_finally_tester(x, v)
+    y = x
+    try
+        y = y * v[1]
+    finally
+        y = y + 1
+    end
+    return y
+end
+
+function try_catch_rethrow_tester(x, v)
+    y = x
+    try
+        y = y * v[1]
+    catch
+        y = y * 3
+        y < 0 && rethrow()
+    end
+    return y
+end
+
+# `y` may be unassigned at the catch, so the block's entry carries an undefined `UpsilonNode`.
+function try_catch_undef_tester(x, b)
+    local y
+    try
+        b && (y = x * 2)
+        x > 0 && error("")
+    catch
+        y = (@isdefined y) ? y * 3 : 0.0
+    end
+    return y
 end
 
 Base.@nospecializeinfer arg_in_pi_node(@nospecialize(x)) = x isa Bool ? x : false
@@ -546,6 +643,27 @@ test_struct_partial_init(a::Float64) = StructFoo(a).a
 
 test_mutable_partial_init(a::Float64) = MutableFoo(a).a
 
+# An element-wise dual element is wider than its primal (32 bytes over 16 here), so re-typing the
+# tangent pointer through `Ptr{Cvoid}` would send the copy through the dual buffer at the primal's
+# stride and move only part of it. The round trip is what `unsafe_convert(Ptr{Cvoid}, ::Array)` does
+# at a ccall boundary.
+function test_elementwise_dual_pointer_copy(
+    dst::Vector{Tuple{Float64,Float64}}, src::Vector{Tuple{Float64,Float64}}
+)
+    pd = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(dst)))
+    ps = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(src)))
+    GC.@preserve dst src unsafe_copyto!(pd, ps, length(dst))
+    return dst[1][1] + dst[2][2]
+end
+
+# Returns the array itself, so the forward boundary unlifts an element-wise array of mutable
+# structs — the shape whose per-element lane accessor is a write proxy, not a reverse tangent.
+function test_mutable_struct_array(a::Float64)
+    return [
+        TypeStableMutableStruct{Float64}(a, 2a), TypeStableMutableStruct{Float64}(3a, 4a)
+    ]
+end
+
 function test_naive_mat_mul!(C::Matrix{T}, A::Matrix{T}, B::Matrix{T}) where {T<:Real}
     for p in 1:size(C, 1)
         for q in 1:size(C, 2)
@@ -600,8 +718,14 @@ end
 @noinline edge_case_tester(x::Int) = 10
 @noinline edge_case_tester(x::String) = "hi"
 @is_primitive MinimalCtx Tuple{typeof(edge_case_tester),Float64}
-function Mooncake.frule!!(::Dual{typeof(edge_case_tester)}, x::Dual{Float64})
-    return Dual(5 * primal(x), 5 * tangent(x))
+function Mooncake.frule!!(
+    ::Mooncake.Lifted{typeof(edge_case_tester),Nw},
+    x::Mooncake.Lifted{Float64,Nw,Mooncake.Nfwd.NDual{Float64,Nw}},
+) where {Nw}
+    px = Mooncake.primal(x)
+    y = 5 * px
+    dy_lanes = ntuple(k -> 5 * Mooncake.tangent(x, k), Val(Nw))
+    return Mooncake.Lifted{Float64,Nw}(y, Mooncake.Nfwd.NDual{Float64,Nw}(y, dy_lanes))
 end
 function Mooncake.rrule!!(::CoDual{typeof(edge_case_tester)}, x::CoDual{Float64})
     edge_case_tester_pb!!(dy) = Mooncake.NoRData(), 5 * dy
@@ -719,12 +843,18 @@ function regression_319(θ)
     return d
 end
 
+# A branch on `iszero` of the differentiated value: the nfwd-native path runs the primal on dual
+# numbers, so a predicate that consults the partials sends it down the other branch. At `t == 0`
+# this returned NaN for both value and derivative, where the primal is 1.0 and the derivative 0.
+removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
+
 function generate_test_functions()
     return Any[
         (false, :allocs, nothing, const_tester),
         (false, :allocs, nothing, const_tester_non_differentiable),
         (false, :allocs, nothing, identity, 5.0),
         (false, :allocs, nothing, foo, 5.0),
+        (false, :none, nothing, removable_singularity_tester, 0.0),
         (false, :allocs, nothing, non_differentiable_foo, 5),
         (false, :allocs, nothing, bar, 5.0, 4.0),
         (false, :allocs, nothing, unused_expression, 5.0, 1),
@@ -766,6 +896,38 @@ function generate_test_functions()
         (false, :allocs, nothing, phi_const_bool_tester, -5.0),
         (false, :allocs, nothing, phi_node_with_undefined_value, true, 4.0),
         (false, :allocs, nothing, phi_node_with_undefined_value, false, 4.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, 5.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, -5.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, 1.5),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, -1.5),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_finally_tester, 1.5, [2.0]),
+        (
+            false,
+            :none,
+            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+            try_finally_tester,
+            1.5,
+            Float64[],
+        ),
+        (
+            false,
+            :none,
+            (mode=Mooncake.ForwardMode,),
+            try_catch_rethrow_tester,
+            1.5,
+            Float64[],
+        ),
+        (
+            false,
+            :none,
+            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+            try_catch_rethrow_tester,
+            -1.5,
+            Float64[],
+        ),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, true),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, false),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, -1.5, true),
         (false, :allocs, nothing, test_multiple_phinode_block, 3.0, 3),
         (
             false,
@@ -874,6 +1036,17 @@ function generate_test_functions()
         (false, :none, (lb=1e-3, ub=500), test_mutable_struct, 5.0),
         (false, :none, nothing, test_struct_partial_init, 3.5),
         (false, :none, nothing, test_mutable_partial_init, 3.3),
+        (false, :none, nothing, test_mutable_struct_array, 3.1),
+        # `skip_chunked`: takes a raw pointer to an element-wise dual array, which the
+        # `jl_array_ptr` frule supports at chunk width 1 only.
+        (
+            false,
+            :none,
+            (skip_chunked=true,),
+            test_elementwise_dual_pointer_copy,
+            [(0.0, 0.0), (0.0, 0.0)],
+            [(1.0, 2.0), (3.0, 4.0)],
+        ),
         (
             false,
             :allocs,
@@ -946,7 +1119,16 @@ function generate_test_functions()
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
         (false, :none, nothing, sig_argcount_mismatch, ones(4)),
-        (false, :allocs, (lb=2, ub=1500), large_tuple_inference, Tuple(zeros(1_000))),
+        # `skip_chunked`: at width `N` the argument is an `NTuple{1000,NDual{Float64,N}}`, which
+        # reaches Julia's own tuple-recursion stack limit ("recursion over very long tuples").
+        # Width 1 is what this case exists to stress.
+        (
+            false,
+            :allocs,
+            (lb=2, ub=1500, skip_chunked=true),
+            large_tuple_inference,
+            Tuple(zeros(1_000)),
+        ),
         (false, :none, nothing, regression_319, randn(3)),
     ]
 end

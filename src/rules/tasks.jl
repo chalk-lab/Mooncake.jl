@@ -9,6 +9,10 @@ mutable struct TaskTangent end
 
 tangent_type(::Type{Task}) = TaskTangent
 
+# A `TaskTangent` has no fields, so there is no inner value for the chunked invariant to compare
+# against the `Task`.
+TestUtils._chunked_v_invariant(::Task, ::TaskTangent, ::IdDict) = true
+
 function zero_tangent_internal(p::Task, dict::MaybeCache)
     if haskey(dict, p)
         return dict[p]::TaskTangent
@@ -44,22 +48,15 @@ _scale_internal(::MaybeCache, ::Float64, t::TaskTangent) = t
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::Task, ::TaskTangent) = m
 
+# A `TaskTangent` has no fields, so no field of a `Task` has a tangent counterpart.
+TestUtils.supports_field_access_interactions(::Type{Task}) = false
+
 fdata_type(::Type{TaskTangent}) = TaskTangent
 
 rdata_type(::Type{TaskTangent}) = NoRData
 
 tangent(t::TaskTangent, ::NoRData) = t
 
-@inline function _get_tangent_field(t::TaskTangent, f)
-    f === :rngState0 && return NoTangent()
-    f === :rngState1 && return NoTangent()
-    f === :rngState2 && return NoTangent()
-    f === :rngState3 && return NoTangent()
-    f === :rngState4 && return NoTangent()
-    # All other Task fields (:storage, :code, :donenotify, :result, :logstate, :next,
-    # :queue, :sticky, etc.) are non-differentiable runtime infrastructure.
-    return NoTangent()
-end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
@@ -82,11 +79,30 @@ function get_tangent_field(t::TaskTangent, f)
     return NoTangent()
 end
 
-const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
-function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
-    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+# Task support is limited to RNG-state queries. Its fieldless V is width-independent.
+@foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
+
+# Both cached and cache-free factories must bypass structural lifting: Task fields have
+# no counterparts in TaskTangent.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval @inline $f(::Val{N}, ::Task, ::MaybeCache) where {N} = TaskTangent()
+end
+@inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
+for f in (:zero_dual, :uninit_dual)
+    @eval @inline $f(::Val{N}, ::Task) where {N} = TaskTangent()
+end
+@inline randn_dual(::Val{N}, ::AbstractRNG, ::Task) where {N} = TaskTangent()
+@inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
+@inline lift(x::Task, ẋ::TaskTangent) = Lifted{Task,1}(x, ẋ)
+
+function frule!!(
+    ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
+) where {N,f}
+    # Supported RNG-state fields carry no forward derivative.
+    y = getfield(primal(x), f)
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
@@ -98,15 +114,25 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
-function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
-    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
+function frule!!(
+    ::Lifted{typeof(getfield),N}, x::Lifted{Task,N,TaskTangent}, f::Lifted
+) where {N}
+    y = getfield(primal(x), primal(f))
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
-function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
-    return lsetfield_frule(task, name, val)
+function frule!!(
+    ::Lifted{typeof(lsetfield!),N},
+    task::Lifted{Task,N,TaskTangent},
+    ::Lifted{Val{name},N},
+    val::Lifted,
+) where {N,name}
+    # Task field tangents are unchanged because set_tangent_field! is a no-op.
+    setfield!(primal(task), name, primal(val))
+    return val
 end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)

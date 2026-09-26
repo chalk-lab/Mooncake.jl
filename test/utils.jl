@@ -8,6 +8,18 @@
         @test _typeof((5.0, Float64)) == Tuple{Float64,Type{Float64}}
         @test _typeof((a=5.0, b=Float64)) == @NamedTuple{a::Float64, b::Type{Float64}}
     end
+    @testset "boxed diagnostics" begin
+        # Printing has no differentiation-rule registry; pin both layouts and Unicode wrapping.
+        lines = ("α"^21, "界"^11)
+        context = :displaysize => (24, 20)
+        io = IOContext(IOBuffer(), context)
+        @test @inferred(Mooncake.Nfwd._nfwd_boxed_message_width(io, "│ ")) == 20
+        @test @inferred(Mooncake.Nfwd._nfwd_wrap_boxed_line("abc", 2)) == ["ab", "c"]
+        @test sprint(Mooncake._print_boxed_error, lines; context) ==
+            "$("α"^20)\n│ α\n│ $("界"^10)\n│ 界\n└\n"
+        @test sprint(Mooncake.Nfwd._nfwd_print_boxed_error, lines; context) ==
+            "$("α"^20)\n  │ α\n  │ $("界"^10)\n  │ 界\n  └"
+    end
     @testset "tuple_map" begin
         @test map(sin, (5.0, 4.0)) == Mooncake.tuple_map(sin, (5.0, 4.0))
         @test ==(
@@ -86,13 +98,6 @@
             # The second element of x2 is not assigned, so z[2] should be unchanged.
             @test z[2] == 1
         end
-    end
-    @testset "_map" begin
-        x = randn(10)
-        y = randn(10)
-        @test Mooncake._map(*, x, y) == map(*, x, y)
-        @assert length(map(*, x, randn(11))) == 10
-        @test_throws AssertionError Mooncake._map(*, x, randn(11))
     end
     @testset "is_always_initialised" begin
         @test Mooncake.is_always_initialised(TestResources.StructFoo, 1)

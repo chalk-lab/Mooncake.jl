@@ -332,6 +332,30 @@ tangent_type(::Type{<:TypeVar}) = NoTangent
 
 @unstable @foldable tangent_type(::Type{Ptr{P}}) where {P} = Ptr{tangent_type(P)}
 
+"""
+    VoidPtrTangent
+
+Tangent of a `Ptr{Cvoid}`, whose pointee type is erased. Such pointers can come from
+`unsafe_convert(Ptr{Cvoid}, p)` (including `unsafe_copyto!` and `pointer(::Array)`) or
+from storage with no tangent; the primal type alone cannot distinguish them.
+
+`elt` records the tangent element type for `_tangent_retyping_verdict`. Size alone is
+insufficient: a heap reference and `Float64` can occupy the same space, but overwriting
+one with the other corrupts the GC's view of the heap.
+
+Two marker element types have special meanings:
+- `NoTangent`: no differentiable storage; refuse differentiable widening. Also the
+  actual tangent element type for non-differentiable buffers.
+- `Nothing`: a tangent object address from `pointer_from_objref`, whose rule checks
+  that the tangent shares the primal's layout, rather than a uniform element buffer.
+"""
+struct VoidPtrTangent
+    p::Ptr{Nothing}
+    elt::Any
+end
+
+tangent_type(::Type{Ptr{Nothing}}) = VoidPtrTangent
+
 tangent_type(::Type{<:Ptr}) = NoTangent
 
 tangent_type(::Type{Bool}) = NoTangent
@@ -404,6 +428,21 @@ tangent_type(::Type{Core.Compiler.InferenceResult}) = NoTangent
 
 @static if VERSION >= v"1.11"
     tangent_type(::Type{Core.Compiler.AnalysisResults}) = NoTangent
+end
+
+@static if isdefined(Base, :HAMT)
+    # `HAMT{K,V}` is recursive through `data::Vector{Union{Leaf{K,V},HAMT{K,V}}}`, so the
+    # structural fallback never terminates on it, nor on `PersistentDict` or `ScopedValues.Scope`
+    # (reached by any `ScopedValue` read), which hold one. `dual_type` asks `tangent_type` first,
+    # so this one method covers forward mode too.
+    function tangent_type(::Type{P}) where {P<:Base.HAMT.HAMT}
+        msg =
+            "Mooncake.jl cannot derive a tangent type for `$P`: `Base.HAMT.HAMT` is recursive " *
+            "through its `data::Vector{Union{Leaf,HAMT}}` field. `Base.PersistentDict` and " *
+            "`Base.ScopedValues.Scope` are built on it, so reading a `ScopedValue` inside " *
+            "differentiated code is not supported either."
+        return error(msg)
+    end
 end
 
 function split_union_tuple_type(tangent_types)
@@ -482,9 +521,11 @@ end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
 
-    # This method can only handle struct types. Something has gone wrong if P is primitive.
+    # Defer errors to runtime: generator-time throws survive in callers' `@foldable`
+    # cached IR even after a more-specific extension overload is added.
     if isprimitivetype(P)
-        return error("$P is a primitive type. Implement a method of `tangent_type` for it.")
+        msg = "$P is a primitive type. Implement a method of `tangent_type` for it."
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -577,6 +618,12 @@ end
 function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
     return bitcast(Ptr{tangent_type(P)}, x)
 end
+# An erased pointer reached as a FIELD has no tangent buffer of its own to point at, so it takes the
+# placeholder with no storage recorded, and a later widening to a differentiable element is refused.
+function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
+    return VoidPtrTangent(x, NoTangent)
+end
+# Cache the `SimpleVector` itself to preserve aliasing, before filling to break cycles.
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::Vector{Any}
     t = Vector{Any}(undef, length(x))
@@ -662,6 +709,7 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
+@inline uninit_tangent(x::Ptr{Nothing}) = VoidPtrTangent(x, NoTangent)
 
 """
     randn_tangent(rng::AbstractRNG, x::P) where {P}
@@ -757,7 +805,7 @@ circular references or aliasing. Returns `Val{true}()` if caching is required (t
 or `Val{false}()` if tangents of type [`tangent_type(P)`](@ref) are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
-This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()`
+This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()` 
 can improve performance by avoiding cache overhead, but is only safe when the memory layout
 of the tangent type is provably tree-like. 
 
@@ -924,7 +972,11 @@ counting". If `c` is a `NoCache`, assume no aliasing or circular referencing.
 """
 increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
-function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
+function increment_internal!!(::IncCache, x::Ptr, y::Ptr)
+    return x === y ? x : throw(error("Incrementing pointers is not supported!"))
+end
+# Same rule for an erased tangent pointer: two tangents for one primal must be one address.
+function increment_internal!!(::IncCache, x::VoidPtrTangent, y::VoidPtrTangent)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 @generated function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Tuple}
@@ -1035,7 +1087,7 @@ end
 struct FieldUndefined end
 
 """
-    _dot(t::T, s::T)::Float64 where {T}
+    _dot(t, s)::Float64
 
 Required for testing.
 Should be defined for all standard tangent types.
@@ -1043,16 +1095,20 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(t, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 
 """
-    _dot_internal(c::MaybeCache, t::T, s::T) where {T}
+    _dot_internal(c::MaybeCache, t, s)
 
 Implementation for [`_dot`](@ref). Use `c` to handle circular references and aliasing.
 If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular references
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
+# Cross-type dots occur when forward/reverse representations differ, e.g. an Array's
+# forward `MemoryRef` tangent versus reverse `NoTangent` rdata. NoTangent contributes zero.
+_dot_internal(::MaybeCache, ::NoTangent, ::Any) = 0.0
+_dot_internal(::MaybeCache, ::Any, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
@@ -1107,6 +1163,21 @@ aliasing correctly. If `c` is a `NoCache`, assume there is no circular reference
 aliasing in either `x` or `t`.
 """
 _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
+
+# Pointer placeholders carry no derivative of the address and are inert in arithmetic.
+# `increment!!` additionally requires identical tangents for one primal. Forward rules
+# must refuse derivative reads through placeholders, including through `unsafe_wrap`.
+# `uninit_tangent` gives the correct tangent type, including `VoidPtrTangent` for Cvoid;
+# returning the primal pointer is only type-correct when `tangent_type(P) === P`.
+randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = uninit_tangent(x)
+set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
+_scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
+_dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
+set_to_zero_internal!!(::SetToZeroCache, t::VoidPtrTangent) = t
+_scale_internal(::MaybeCache, ::Float64, t::VoidPtrTangent) = t
+_dot_internal(::MaybeCache, ::VoidPtrTangent, ::VoidPtrTangent) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr{Nothing}, ::VoidPtrTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool
@@ -2081,6 +2152,15 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     circular_vector = Any[5.0]
     circular_vector[1] = circular_vector
 
+    # A cycle that closes through an IMMUTABLE aggregate rather than array-to-array, which the
+    # element-wise traversals' own visited sets already cover.
+    tuple_cycle_vector = Any[]
+    push!(tuple_cycle_vector, (tuple_cycle_vector,))
+
+    # One array in two positions. Every traversal must keep the two on one storage; equality of
+    # values holds either way, so only the storage counts in `test_lifted` can tell.
+    aliased_array = randn(5)
+
     rel_test_cases = Any[
         TestResources.StructFoo(6.0, [1.0, 2.0]),
         TestResources.StructFoo(6.0),
@@ -2089,6 +2169,13 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.StructNoFwds(5.0),
         TestResources.StructNoRvs([5.0]),
         TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0),
+        # An ARRAY of mutable structs: the element's lane read has to compose inside the array's
+        # reverse storage, which a write-through proxy cannot be stored in.
+        [TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0)],
+        # Complex scalar + array: a differentiable element type otherwise absent from this list,
+        # so it is driven through both test_lifted (forward) and test_tangent (reverse).
+        1.0 + 2.0im,
+        ComplexF64[1.0 + 2.0im, -3.0 + 0.5im, 0.0 - 1.0im],
         LowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitLowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
@@ -2106,6 +2193,9 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (a=randn(10), b=randn(10)),
         (Base.TOML.ErrorType(1), NoTangent()), # Enum
         circular_vector,
+        tuple_cycle_vector,
+        (aliased_array, aliased_array),
+        svec(aliased_array, aliased_array),
         TestResources.make_circular_reference_struct(),
         TestResources.make_indirect_circular_reference_array(),
         # Regression tests to catch type inference failures, see https://github.com/chalk-lab/Mooncake.jl/pull/422
@@ -2113,8 +2203,17 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (((((((((randn(33)...,),),),),), randn(5)...),),),),
         Base.OneTo{Int},
         TestResources.build_big_isbits_struct(),
+        # A `Dict`'s key store is sparsely occupied while its tangent is an isbits store
+        # reporting every slot assigned, so primal and tangent disagree over which slots are
+        # readable.
+        Dict(:a => 5.0, :b => 4.0),
     ]
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
+    VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
+    # A complex `MemoryRef`: the `Memory` and `MemoryRef` lifts have to agree on which eltypes
+    # take the block-backed representation, and only the float half of that pair was covered.
+    VERSION >= v"1.11" &&
+        push!(rel_test_cases, memoryref(fill!(Memory{ComplexF64}(undef, 3), 1.0 + 2.0im)))
     return vcat(
         map(x -> (false, x...), abs_test_cases),
         map(x -> (false, x), rel_test_cases),
