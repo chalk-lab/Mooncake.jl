@@ -880,6 +880,48 @@ function rrule!!(
     return CoDual(y, dy_out), getindex_pb!!
 end
 
+const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(getindex),
+        CuMaybeComplexArray,
+        _CuSliceIndex,
+        _CuSliceIndex,
+        Vararg{_CuSliceIndex},
+    },
+)
+function frule!!(
+    ::Dual{typeof(getindex)},
+    x::Dual{<:CuMaybeComplexArray},
+    i::Dual{<:_CuSliceIndex},
+    j::Dual{<:_CuSliceIndex},
+    inds::Vararg{Dual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    return Dual(px[I...], dx[I...])
+end
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuMaybeComplexArray},
+    i::CoDual{<:_CuSliceIndex},
+    j::CoDual{<:_CuSliceIndex},
+    inds::Vararg{CoDual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    y = px[I...]
+    dy = zero(y)
+    function getindex_slice_pb!!(::NoRData)
+        view(dx, I...) .+= dy
+        return ntuple(_ -> NoRData(), length(I) + 2)
+    end
+    return CoDual(y, dy), getindex_slice_pb!!
+end
+
 # norm: d(norm(x)) = Re(dot(x, dx)) / norm(x)  (valid for both real and complex x)
 #       pullback:  dx += (dy / norm(x)) * x
 #
