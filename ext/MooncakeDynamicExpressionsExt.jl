@@ -809,8 +809,26 @@ function Mooncake.TestUtils.has_equal_data_internal(
     x::N, y::N, equndef::Bool, d::IdDict{Any,Bool}
 ) where {T,N<:AbstractExpressionNode{T}}
     idp = (x, y)
-    # Just use regular `AbstractExpressionNode` Base.:(==)
-    return get!(() -> x == y, d, idp)
+    haskey(d, idp) && return d[idp]
+    if DE.preserve_sharing(N)
+        haskey(d, (x, :left)) == haskey(d, (y, :right)) || return false
+        d[(x, :left)] = d[(y, :right)] = true
+    end
+    d[idp] = true
+    x.degree == y.degree || return false
+    if x.degree == 0
+        x.constant == y.constant || return false
+        return if x.constant
+            Mooncake.TestUtils.has_equal_data_internal(x.val, y.val, equndef, d)
+        else
+            x.feature == y.feature
+        end
+    end
+    return x.op == y.op && all(1:x.degree) do i
+        Mooncake.TestUtils.has_equal_data_internal(
+            DE.get_child(x, i), DE.get_child(y, i), equndef, d
+        )
+    end
 end
 
 function Mooncake.TestUtils.has_equal_data_internal(
