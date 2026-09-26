@@ -194,6 +194,15 @@ end
 end
 
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "BLAS zero cotangents with live perturbations" begin
+        fscal(a) = (BLAS.scal!(1, a, [2.0], 1)[1] - 2.0)^2
+        fgemv(a) = (BLAS.gemv!('N', a, ones(1, 1), ones(1), 0.0, zeros(1))[1] - 1.0)^2
+        for (f, h) in ((fscal, 8.0), (fgemv, 2.0))
+            cache = prepare_hvp_cache(f, 1.0)
+            @test value_and_hvp!!(cache, f, 1.0, 1.0) == (0.0, 0.0, h)
+        end
+    end
+
     @testset "TwicePrecision cotangent accumulation (#1328)" begin
         f(x) = abs2(typeof(x)(TwicePrecision(x)))
         for x in (0.5f0, 0.5)
