@@ -65,10 +65,41 @@ function TestUtils.has_equal_data_internal(
     return all(equality)
 end
 
+# Only differing extents reach this allocating path; callers handle first/full coverage inline.
+function _increment_todo!(
+    c::IdDict{Any,Any},
+    buf,
+    want::UnitRange{Int},
+    prev::Union{UnitRange{Int},Vector{UnitRange{Int}}},
+)
+    covered = prev isa UnitRange{Int} ? [prev] : prev
+    todo = _uncovered(covered, want)
+    push!(covered, want)
+    c[buf] = covered
+    return todo
+end
+
 function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
-    return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    x === y && return x
+    # Keyed on the BUFFER, so an `Array` and the `Memory` backing it agree however they are spelt.
+    # A `Memory` always spans itself, so it claims the whole buffer.
+    full() = _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    c isa NoCache && return full()
+    prev = get(c, x, nothing)
+    prev === true && return x
+    if prev === nothing
+        c[x] = true
+        return full()
+    end
+    todo = _increment_todo!(
+        c, x, 1:length(x), prev::Union{UnitRange{Int},Vector{UnitRange{Int}}}
+    )
+    for piece in todo, i in piece
+        if isbitstype(P) || (isassigned(x, i) && isassigned(y, i))
+            x[i] = increment_internal!!(c, x[i], y[i])
+        end
+    end
+    return x
 end
 
 function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
@@ -176,9 +207,32 @@ function randn_tangent_internal(rng::AbstractRNG, x::Array, dict::MaybeCache)
 end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
-    _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    x === y && return x
+    # Key on target storage so reshapes accumulate once. Including the source would double
+    # contributions when a shared target receives independently stored forward gradients.
+    full() = (_map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y); x)
+    c isa NoCache && return full()
+    xr = getfield(x, :ref)
+    buf = xr.mem
+    prev = get(c, buf, nothing)
+    prev === true && return x
+    off = Core.memoryrefoffset(xr)
+    want = off:(off + length(x) - 1)
+    if prev === nothing
+        # Full buffers use an interned sentinel; partial extents leave a complement to fill.
+        c[buf] = _spans_memory(x, xr) ? true : want
+        return full()
+    end
+    todo = _increment_todo!(
+        c, buf, want, prev::Union{UnitRange{Int},Vector{UnitRange{Int}}}
+    )
+    # Buffer position `p` is array index `p - off + 1`.
+    for piece in todo, p in piece
+        i = p - off + 1
+        if isbitstype(eltype(T)) || (isassigned(x, i) && isassigned(y, i))
+            x[i] = increment_internal!!(c, x[i], y[i])
+        end
+    end
     return x
 end
 
@@ -189,22 +243,82 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
+    # Preserve backing-storage sharing before finite differences call `_add_to_primal`.
+    tr = getfield(t, :ref)
+    if _spans_memory(t, tr)
+        t′ = Base.wrap(Array, construct_ref(tr, _scale_internal(c, a, tr.mem)), size(t))::T
+        c[t] = t′
+        return t′
+    end
     t′ = T(undef, size(t)...)
     c[t] = t′
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
+# Deduplicate backing storage shared by distinct arrays (e.g. reshapes). The cache must use
+# identity: equality would conflate unrelated zeroed buffers and undercount dimensions.
+@inline function _dot_storage(x::Array)
+    r = getfield(x, :ref)
+    return (r.mem, Core.memoryrefoffset(r), length(x))
+end
+@inline _dot_storage(x::Memory) = (x, 1, length(x))
+
+# Record covered positions per buffer pair to deduplicate overlapping extents. Positions share
+# an index space only at equal offsets; differing offsets must retain their element pairing.
+function _uncovered(covered::Vector{UnitRange{Int}}, r::UnitRange{Int})
+    pieces = [r]
+    for cr in covered
+        isempty(pieces) && break
+        next = UnitRange{Int}[]
+        for p in pieces
+            lo, hi = max(first(p), first(cr)), min(last(p), last(cr))
+            if lo > hi
+                push!(next, p)                       # disjoint
+            else
+                first(p) < lo && push!(next, first(p):(lo - 1))
+                hi < last(p) && push!(next, (hi + 1):last(p))
+            end
+        end
+        pieces = next
+    end
+    return pieces
+end
+
 for A in (Array, Memory)
     @eval function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:$A}
-        key = (t, s)
-        haskey(c, key) && return c[key]::Float64
-        c[key] = 0.0
         bitstype = Val(isbitstype(eltype(T)))
-        return sum(eachindex(t, s); init=0.0) do i
-            if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
-                _dot_internal(c, t[i], s[i])::Float64
-            else
-                0.0
+        tb, to, tl = _dot_storage(t)
+        sb, so, _ = _dot_storage(s)
+        full() =
+            sum(eachindex(t, s); init=0.0) do i
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
+            end
+        # Different offsets have no shared index space for coverage.
+        (c isa NoCache || to != so) && return full()
+        k = (:dot_positions, tb, sb)
+        prev = get(c, k, nothing)
+        want = to:(to + tl - 1)
+        # Store a bare range on first sight; allocate a vector only for repeated buffer pairs.
+        if prev === nothing
+            c[k] = want
+            return full()
+        end
+        covered = prev isa UnitRange{Int} ? [prev] : prev::Vector{UnitRange{Int}}
+        pieces = _uncovered(covered, want)
+        push!(covered, want)
+        c[k] = covered
+        return sum(pieces; init=0.0) do piece
+            sum(piece; init=0.0) do pos
+                i = eachindex(t, s)[pos - to + 1]
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
             end
         end
     end
@@ -215,9 +329,25 @@ function _add_to_primal_internal(
 ) where {P,N}
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::Array{P,N}
+    # Reuse perturbed backing Memory to preserve sharing between arrays in finite differences.
+    # Both arrays must span their buffers: spare capacity may differ between primal and tangent.
+    # The fallback handles spare capacity but does not preserve sharing.
+    xr, tr = getfield(x, :ref), getfield(t, :ref)
+    if _spans_memory(x, xr) && _spans_memory(t, tr)
+        mem = _add_to_primal_internal(c, xr.mem, tr.mem, unsafe)
+        x′ = Base.wrap(Array, construct_ref(xr, mem), size(x))::Array{P,N}
+        c[key] = x′
+        return x′
+    end
     x′ = Array{P,N}(undef, size(x)...)
     c[key] = x′
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
+end
+
+# Both callers recurse before caching the new array; reference eltypes could form cycles.
+@inline function _spans_memory(x::Array, r::MemoryRef)
+    isbitstype(eltype(x)) || return false
+    return Core.memoryrefoffset(r) == 1 && length(r.mem) == length(x)
 end
 
 function tangent_to_primal_internal!!(
