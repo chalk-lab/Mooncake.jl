@@ -57,6 +57,7 @@ include("front_matter.jl")
         include("developer_tools.jl")
         include("skill_utils.jl")
         include("test_utils.jl")
+        include(joinpath("ext", "pin_develop_or_skip_tests.jl"))
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
         include(joinpath("nfwd", "nfwdmooncake.jl"))

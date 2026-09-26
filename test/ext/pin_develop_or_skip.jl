@@ -12,9 +12,10 @@ targets:
     pin_develop_or_skip(@__DIR__, "OrdinaryDiffEq", "SciMLSensitivity")  # several targets
 
 Pinning stops the resolver from silently downgrading a target to accommodate an incompatible
-Mooncake. If a pinned target cannot coexist with the checked-out Mooncake, the resulting
-`Pkg.Resolve.ResolverError` is caught, a warning is logged, and the process exits successfully
-(`exit(0)`) so the suite is skipped instead of failing CI; any other error is re-raised.
+Mooncake. A develop-time `Pkg.Resolve.ResolverError` is skipped only when a pinned target's
+declared Mooncake compat excludes the checked-out version. A warning is logged and the process
+exits successfully (`exit(0)`). Update and pin failures, and conflicts without this evidence
+(including transitive conflicts), fail loudly.
 
 !!! warning "A skipped suite is indistinguishable from a passing one"
     `exit(0)` means a skip shows up as green. That is deliberate — a downstream package that has
@@ -29,15 +30,28 @@ Mooncake. If a pinned target cannot coexist with the checked-out Mooncake, the r
 """
 function pin_develop_or_skip(dir::AbstractString, targets::AbstractString...)
     Pkg.activate(dir)
+    # Update before pinning so a cached manifest cannot lock in an old target version.
+    Pkg.update()
+    Pkg.pin(collect(targets))
+    pinned_targets = filter(
+        p -> p.name in targets && p.is_pinned, collect(values(Pkg.dependencies()))
+    )
+    mooncake_path = joinpath(@__DIR__, "..", "..")
+    mooncake = Pkg.Types.read_project(joinpath(mooncake_path, "Project.toml"))
     try
-        # `update` (not just `resolve`) so the pin locks the target's *current* version: a stale
-        # manifest left by a cached CI environment could otherwise pin a pre-downgraded target and
-        # hide the incompatibility. It also populates the manifest so the pin can find the target.
-        Pkg.update()
-        Pkg.pin(collect(targets))
-        Pkg.develop(; path=joinpath(@__DIR__, "..", ".."))
+        Pkg.develop(; path=mooncake_path)
     catch err
         err isa Pkg.Resolve.ResolverError || rethrow()
+        incompatible = any(pinned_targets) do target
+            project = Pkg.Types.read_project(joinpath(target.source, "Project.toml"))
+            depends =
+                get(project.deps, "Mooncake", nothing) == mooncake.uuid ||
+                get(project.weakdeps, "Mooncake", nothing) == mooncake.uuid
+            return depends &&
+                   haskey(project.compat, "Mooncake") &&
+                   !(mooncake.version in project.compat["Mooncake"].val)
+        end
+        incompatible || rethrow()
         name = basename(dir)
         @warn "$name skipped: incompatible with Mooncake"
         if haskey(ENV, "GITHUB_STEP_SUMMARY")
