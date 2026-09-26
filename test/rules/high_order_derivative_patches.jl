@@ -489,9 +489,13 @@ end
         ds = real(only(BLAS.gemv('N', a, A, b)))
         return [project(da), project(dA), project(db), ds]
     end
-    expected = last(Mooncake.unlift(
-        build_frule(reference_gradient, x)(zero_dual(reference_gradient), Mooncake.lift(x, v))
-    ))
+    expected = last(
+        Mooncake.unlift(
+            build_frule(reference_gradient, x)(
+                zero_dual(reference_gradient), Mooncake.lift(x, v)
+            ),
+        ),
+    )
     @test isequal(h, expected)
 end
 # Memory-owner results need canonical V so lane reads agree with the reverse oracle.
