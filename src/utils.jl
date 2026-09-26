@@ -199,20 +199,24 @@ function _map_if_assigned!(f::F, y::DenseArray, x::DenseArray{P}) where {F,P}
 end
 
 """
-    _map_if_assigned!(f::F, y::DenseArray, x1::DenseArray{P}, x2::DenseArray)
+    _map_if_assigned!(f::F, y::DenseArray, x1::DenseArray{P1}, x2::DenseArray{P2})
 
-Similar to the other method of `_map_if_assigned!` -- for all `n`, if `x1[n]` is assigned,
-writes `f(x1[n], x2[n])` to `y[n]`, otherwise leaves `y[n]` unchanged.
+Similar to the other method of `_map_if_assigned!` -- for all `n`, if `x1[n]` and `x2[n]` are
+both assigned, writes `f(x1[n], x2[n])` to `y[n]`, otherwise leaves `y[n]` unchanged.
+
+Both operands must be guarded: a primal and its tangent need not agree on which slots are
+occupied. `tangent_type(Symbol) === NoTangent`, so a sparse `Memory{Symbol}` (a `Dict`'s
+`keys`) pairs with an isbits `Memory{NoTangent}` whose every slot reports assigned.
 
 Requires that `y`, `x1`, and `x2` have the same size.
 """
 function _map_if_assigned!(
-    f::F, y::DenseArray, x1::DenseArray{P}, x2::DenseArray
-) where {F,P}
+    f::F, y::DenseArray, x1::DenseArray{P1}, x2::DenseArray{P2}
+) where {F,P1,P2}
     @assert size(y) == size(x1)
     @assert size(y) == size(x2)
     @inbounds for n in eachindex(y)
-        if isbitstype(P) || isassigned(x1, n)
+        if (isbitstype(P1) || isassigned(x1, n)) && (isbitstype(P2) || isassigned(x2, n))
             y[n] = f(x1[n], x2[n])
         end
     end

@@ -216,7 +216,7 @@ end
 
 function __create_coduals(args)
     try
-        return tuple_map(zero_codual, args)
+        return tuple_map(CoDual, args, _zero_tangents(args))
     catch e
         if e isa StackOverflowError
             error(
@@ -671,7 +671,7 @@ and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
     rule = build_rrule(
         interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
     )
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
     # Run reverse-pass in order to reset stacks + state.
@@ -831,7 +831,7 @@ and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
 @unstable function prepare_gradient_cache(fx...; config=Config())
     config.empty_cache && empty_mooncake_caches!()
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
@@ -2911,6 +2911,13 @@ end
 function value_and_derivative!!(cache::ForwardCache)
     _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
+end
+
+# Share one seeding cache across arguments to preserve reverse fdata aliasing and count
+# repeated storage once in `tangent_dim`. `_to_friendly` shares the conversion cache too.
+@inline function _zero_tangents(fx::Tuple)
+    c = _friendly_cache(fx)
+    return tuple_map(x -> zero_tangent_internal(x, c), fx)
 end
 
 struct PreparedCacheError <: Exception
