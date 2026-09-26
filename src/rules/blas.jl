@@ -2,13 +2,6 @@ function blas_name(name::Symbol)
     return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
-function _trans(flag, mat)
-    flag === 'T' && return transpose(mat)
-    flag === 'C' && return adjoint(mat)
-    flag === 'N' && return mat
-    throw(error("Unrecognised flag $flag"))
-end
-
 function tri!(A, u::Char, d::Char)
     return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
 end
@@ -44,7 +37,7 @@ helper should extract the backing store (see `_accum_sym_logdet!`).
 convention.
 """
 function arrayify(
-    x::Union{Dual{A},CoDual{A}}
+    x::CoDual{A}
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
     return arrayify(primal(x), tangent(x))
 end
@@ -121,6 +114,69 @@ function arrayify(x::A, dx::DA) where {A,DA}
         "Array type: $A\n\nTangent/FData type: $DA."
     return error(msg)
 end
+
+# Return aliased lane views in the primal's wrapper type, so writes reach its partials.
+function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
+    A = primal(x)
+    return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
+end
+# Recurse through the wrapper's ImmutableDual and reconstruct the primal wrapper.
+# Val(false) keeps stride-N lane views for block operations; Val(true) copies dense
+# leaves so dotc/dotu's raw-memory fallback reads partials in the primal's layout.
+# The static Val lets the dense leaf choice constant-fold.
+@inline _arrayify_lane(x, V, lane::Integer) = _arrayify_lane(x, V, lane, Val(false))
+@inline _dense_lane_partial(x::Lifted, k::Integer) = _arrayify_lane(
+    primal(x), tangent(x), k, Val(true)
+)
+@inline _arrayify_lane(
+    ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
+) where {dense} = dense ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
+@inline function _arrayify_lane(x::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N}
+    # Reject the uninit_* placeholder (the primal address) before BLAS can mutate it.
+    dx = V[lane]
+    IntrinsicsWrappers._check_tangent_ptr(x, dx)
+    return dx
+end
+@inline function _arrayify_lane(x::SubArray, V::ImmutableDual, lane::Integer, d::Val)
+    pp = _arrayify_lane(x.parent, V.fields.parent, lane, d)
+    # Flatten nested lane views so strided inputs retain BLAS dispatch.
+    return view(pp, x.indices...)
+end
+@inline function _arrayify_lane(
+    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer, d::Val
+) where {P,B,C,D}
+    pp = _arrayify_lane(x.parent, V.fields.parent, lane, d)
+    return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
+end
+@inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer, d::Val) = adjoint(
+    _arrayify_lane(x.parent, V.fields.parent, lane, d)
+)
+@inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer, d::Val) = transpose(
+    _arrayify_lane(x.parent, V.fields.parent, lane, d)
+)
+@inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer, d::Val) = Diagonal(
+    _arrayify_lane(x.diag, V.fields.diag, lane, d)
+)
+@inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
+    _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
+)
+# Hermitian(dA) is the JVP for real and complex eltypes: conjugate the mirrored
+# triangle and read the diagonal as real.
+@inline _arrayify_lane(x::Hermitian, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
+    _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
+)
+# Infer storage type: the primal's concrete parent type can copy or reject a lane.
+# Unit triangulars read 1 on the diagonal, whose derivative is zero. Preserve the
+# aliased wrapper for block scatter; consumers mask its diagonal on reads
+# (_mask_unit_diagonal forward, increment_densified_tangent!! reverse).
+for W in (UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular)
+    @eval @inline _arrayify_lane(x::$W, V::ImmutableDual, lane::Integer, d::Val) = $W(
+        _arrayify_lane(x.data, V.fields.data, lane, d)
+    )
+end
+@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
+    T, _arrayify_lane(x.parent, V.fields.parent, lane, d)
+)
 
 """
     densify_tangent(dx)
@@ -207,8 +263,7 @@ function increment_densified_tangent!!(dx::Union{Symmetric,Hermitian}, dense)
 end
 
 """
-    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
-                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+    matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})
 
 Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
 
@@ -216,20 +271,16 @@ If the primal value is a vector, it is reshaped into a column matrix of size `(l
 and the associated tangent is reshaped in the same way. If the primal value is already a
 matrix, both the primal and tangent are returned unchanged.
 """
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
     x, dx = arrayify(x_dx)
     return reshape(x, :, 1), reshape(dx, :, 1)
 end
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
     return arrayify(x_dx)
 end
 
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
     # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
@@ -263,7 +314,7 @@ end
     )
 end
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
     step = _blas_walk_step(x, incx, n)
@@ -282,23 +333,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
-# These rules require an output disjoint from their read-only operands. BLAS
-# may overwrite a later read, and shared partials/cotangents have the same hazard.
-# Supporting overlap would require snapshot semantics in both the primal and AD;
-# reject it at the boundary until the underlying operation guarantees those semantics.
-@inline function _check_blas_output_alias(f, output, inputs...)
-    any(input -> Base.mightalias(output, input), inputs) && _throw_blas_output_alias(f)
-    return nothing
-end
-@noinline function _throw_blas_output_alias(f)
-    throw(
-        ArgumentError(
-            "Mooncake cannot differentiate $(nameof(f)) with overlapping input and output operands. " *
-            "Pass a copy of the input or use an elementwise Julia update.",
-        ),
-    )
-end
-
 #
 # LEVEL 1
 #
@@ -313,49 +347,37 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    @eval @inline function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(blas_name(fname))}},
-        ::Dual, # return type
-        ::Dual, # argument types
-        ::Dual, # nreq
-        ::Dual, # calling convention
-        _n::Dual{BLAS.BlasInt},
-        _DX::Dual{Ptr{$elty}},
-        _incx::Dual{BLAS.BlasInt},
-        _DY::Dual{Ptr{$elty}},
-        _incy::Dual{BLAS.BlasInt},
-        # For complex numbers the result is stored in an extra pointer
-        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
-        args::Vararg{Any,N},
-    ) where {N}
-        GC.@preserve args begin
-            # Load in values from pointers.
-            n, incx, incy = map(primal, (_n, _incx, _incy))
-            DX, _dDX = arrayify(_DX)
-            DY, _dDY = arrayify(_DY)
-
-            result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            _dresult =
-                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
-                BLAS.$jlfname(n, DX, incx, _dDY, incy)
-
-            # For complex numbers the result must be stored in the pointer
-            $(
-                if isreal
-                    quote
-                        Dual(result, _dresult)
-                    end
-                else
-                    quote
-                        presult, _dpresult = arrayify(_presult)
-                        Base.unsafe_store!(presult, result)
-                        Base.unsafe_store!(_dpresult, _dresult)
-
-                        Dual(nothing, NoTangent())
-                    end
+    # Real cblas dot returns by value. Complex dotc/dotu write a Ref and need
+    # forward primitives at the BLAS wrapper instead; reverse handles all here.
+    if isreal
+        @eval @inline function frule!!(
+            ::Lifted{typeof(_foreigncall_),Nw},
+            ::Lifted{Val{$(blas_name(fname))}},
+            ::Lifted, # return type
+            ::Lifted, # argument types
+            ::Lifted, # nreq
+            ::Lifted, # calling convention
+            _n::Lifted{BLAS.BlasInt},
+            _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incx::Lifted{BLAS.BlasInt},
+            _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incy::Lifted{BLAS.BlasInt},
+            args::Vararg{Any,M},
+        ) where {Nw,M}
+            GC.@preserve args begin
+                n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+                DX = primal(_DX)
+                DY = primal(_DY)
+                result = BLAS.$jlfname(n, DX, incx, DY, incy)
+                # _blas_lane_partial checks for the uninit_* primal-address placeholder.
+                dresult_lanes = ntuple(Val(Nw)) do lane
+                    dDX = _blas_lane_partial(_DX, lane)
+                    dDY = _blas_lane_partial(_DY, lane)
+                    return BLAS.$jlfname(n, dDX, incx, DY, incy) +
+                           BLAS.$jlfname(n, DX, incx, dDY, incy)
                 end
-            )
+                return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
+            end
         end
     end
     @eval @inline function rrule!!(
@@ -439,30 +461,544 @@ _lsame_flag(c::Char) = uppercase(c)
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.nrm2),Int,X,Int
+        typeof(BLAS.nrm2),Integer,X,Integer
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
+# At length >= 32, norm2 inlines nrm2(x) and its ccall past the three-argument
+# boundary. Keep a one-argument primitive so the raw pointer stays out of the transform.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}}
+)
+
 function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    incx::Dual{<:Integer},
-) where {T<:BlasFloat}
-    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(primal(n), X_dX, primal(incx))
-    # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, though the JVP it
-    # divides down to is representable. Scaling X by the power of two nearest y is exact,
-    # so in-range results are unchanged; a subnormal y has no representable reciprocal,
-    # and with every X[i] subnormal too it needs none.
-    r = isfinite(y) && !iszero(y) ? ldexp(one(y), -exponent(y)) : one(y)
-    isfinite(r) || (r = one(y))
-    dy = zero(y)
-    @inbounds for i in eachindex(X)
-        xi = X[i] * r
-        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
-    end
-    return Dual(y, dy / 2(y * r))
+    f::Lifted{typeof(BLAS.nrm2),Nw}, X_dX::Lifted{<:AbstractArray{T}}
+) where {Nw,T<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    return frule!!(f, n, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
 end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.nrm2)}, X_dX::CoDual{<:AbstractArray{T}}
+) where {T<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(f, zero_fcodual(length(x)), X_dX, zero_fcodual(stride(x, 1)))
+    # The three-argument pullback accumulates into `X_dX`'s fdata and returns rdata for its four
+    # arguments; this form has two, so drop the length and stride slots.
+    nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
+    return y, nrm2_len_pb!!
+end
+# These rules require an output disjoint from their read-only operands. BLAS
+# may overwrite a later read, and shared partials/cotangents have the same hazard.
+# Supporting overlap would require snapshot semantics in both the primal and AD;
+# reject it at the boundary until the underlying operation guarantees those semantics.
+@inline function _check_blas_output_alias(f, output, inputs...)
+    any(input -> Base.mightalias(output, input), inputs) && _throw_blas_output_alias(f)
+    return nothing
+end
+@noinline function _throw_blas_output_alias(f)
+    throw(
+        ArgumentError(
+            "Mooncake cannot differentiate $(nameof(f)) with overlapping input and output operands. " *
+            "Pass a copy of the input or use an elementwise Julia update.",
+        ),
+    )
+end
+
+# Guard scalar cotangent contractions against NaN in unused entries, as in gemv!.
+# Complex OpenBLAS kernels can read an overwritten real component when X and Y alias.
+# Compare raw walks, including views and pointers; disjoint strided walks remain valid.
+@inline function _axpy_overlaps(x, y, n::Integer, incx::Integer, incy::Integer)
+    n <= 0 && return false
+    px = UInt(x isa Ptr ? x : pointer(x))
+    py = UInt(y isa Ptr ? y : pointer(y))
+    px == py && return true
+    sx, sy = abs(incx) * sizeof(eltype(x)), abs(incy) * sizeof(eltype(y))
+    hx, hy = px + (n - 1) * sx, py + (n - 1) * sy
+    (hx < py || hy < px) && return false
+    sx == sy && return iszero((max(px, py) - min(px, py)) % sx)
+    for i in 0:(n - 1)
+        p = px + i * sx
+        py <= p <= hy && (iszero(sy) || iszero((p - py) % sy)) && return true
+    end
+    return false
+end
+@noinline function _throw_axpy_overlap()
+    throw(
+        ArgumentError(
+            "Mooncake cannot differentiate BLAS.axpy! with overlapping complex source and " *
+            "destination operands: OpenBLAS can overwrite a component before reading it. " *
+            "Pass a copy of the source or use an elementwise Julia update.",
+        ),
+    )
+end
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
+    } where {
+        P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}},Y<:Union{Ptr{P},AbstractArray{P}}
+    },
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.axpy!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::Lifted,
+    Y_dY::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::Lifted,
+) where {Nw,P<:BlasFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
+    if _axpy_overlaps(x, y, n, incx, incy)
+        P <: Complex && _throw_axpy_overlap()
+        ((x isa Ptr ? x : pointer(x)) == (y isa Ptr ? y : pointer(y)) && incx == incy) ||
+            _throw_blas_output_alias(BLAS.axpy!)
+    end
+    # `dy := a*dx + da*x + dy`, then the primal ONCE, after every lane has read the original `x`.
+    # Broadcast rather than `BLAS.axpy!` on the lane partial: above width 1 a lane is a stride-`Nw`
+    # view, which the pointer-based wrapper misreads -- it silently dropped the last element.
+    lbl = "Forward-mode `BLAS.axpy!`"
+    step_x = _checked_walk_step(lbl, n, x, incx)
+    step_y = _checked_walk_step(lbl, n, y, incy)
+    xv = _viewify_one(n, x, step_x)
+    for k in 1:Nw
+        dy_k = _viewify_one(n, _blas_lane_partial(Y_dY, k), step_y)
+        dx_k = _viewify_one(n, _blas_lane_partial(X_dX, k), step_x)
+        dy_k .= a .* dx_k .+ tangent(a_da, k) .* xv .+ dy_k
+    end
+    BLAS.axpy!(n, a, x, incx, y, incy)
+    return Y_dY
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpy!)},
+    _n::CoDual,
+    a_da::CoDual{P},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::CoDual,
+    Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::CoDual,
+) where {P<:BlasFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    a = primal(a_da)
+    xp, yp = primal(X_dX), primal(Y_dY)
+    if _axpy_overlaps(xp, yp, n, incx, incy)
+        P <: Complex && _throw_axpy_overlap()
+        (
+            (xp isa Ptr ? xp : pointer(xp)) == (yp isa Ptr ? yp : pointer(yp)) &&
+            incx == incy
+        ) || _throw_blas_output_alias(BLAS.axpy!)
+    end
+    x, dx = viewify(n, X_dX, incx)
+    y, dy = viewify(n, Y_dY, incy)
+    # Restore from a copy, not `y .-= a .* x`: the supported real X === Y case updates
+    # `x` too, so the subtraction would not recover the old value.
+    y_copy = copy(y)
+    BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
+    function axpy!_pb!!(::NoRData)
+        y .= y_copy
+        ∇a = _rvs_guarded_dot(x, dy)
+        dx .+= a' .* dy                    # `y` keeps its own cotangent: d y_new / d y_old is I
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return Y_dY, axpy!_pb!!
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Number,X,Y
+    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+# Short forms accept any Number and convert with P(alpha); narrower rules miss
+# calls such as axpy!(2, x, y). Convert lane partials too, or zero for NoDual.
+# Unsupported tangents (e.g. BigFloat, TwicePrecision) still raise MethodError.
+function _fwd_blas_alpha(::Type{P}, a::Lifted{<:Number,Nw,NoDual}) where {P<:BlasFloat,Nw}
+    v = P(primal(a))
+    return Lifted{P,Nw}(v, zero_dual(Val(Nw), v))
+end
+function _fwd_blas_alpha(::Type{P}, a::Lifted{<:Number,Nw}) where {P<:BlasFloat,Nw}
+    v = P(primal(a))
+    return Lifted{P,Nw}(v, dual_type(Val(Nw), P)(tangent(a)))
+end
+
+# Reverse needs no matching conversion on the way in -- a scalar carries no fdata, so the converted
+# operand is just `zero_fcodual(P(alpha))` -- only the returned rdata converting back.
+function _rvs_blas_alpha(::CoDual{A}, ∇::Number) where {A<:Number}
+    R = rdata_type(tangent_type(A))
+    R === NoRData && return NoRData()
+    # A real scalar scaling a complex array moves only along the real axis, so its cotangent is the
+    # real part of `dot(x, dy)`; `convert` alone raises `InexactError` on the imaginary component.
+    return R <: Real ? convert(R, real(∇)) : convert(R, ∇)
+end
+
+function frule!!(
+    f::Lifted{typeof(BLAS.axpy!),Nw},
+    a_da::Lifted{<:Number,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    ix = Lifted{Int,Nw}(stride(x, 1), NoDual())
+    iy = Lifted{Int,Nw}(stride(primal(Y_dY), 1), NoDual())
+    return frule!!(f, n, _fwd_blas_alpha(P, a_da), X_dX, ix, Y_dY, iy)
+end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.axpy!)},
+    a_da::CoDual{<:Number},
+    X_dX::CoDual{<:AbstractArray{P}},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(
+        f,
+        zero_fcodual(length(x)),
+        zero_fcodual(P(primal(a_da))),
+        X_dX,
+        zero_fcodual(stride(x, 1)),
+        Y_dY,
+        zero_fcodual(stride(primal(Y_dY), 1)),
+    )
+    # Seven slots `(f, n, a, X, incx, Y, incy)` down to four `(f, a, X, Y)`.
+    function axpy!_short_pb!!(dy)
+        r = pb(dy)
+        return NoRData(), _rvs_blas_alpha(a_da, r[3]), r[4], r[6]
+    end
+    return y, axpy!_short_pb!!
+end
+
+# `axpby!(a, x, b, y)`: `y := a*x + b*y`. `y` is NOT recoverable by inverting when `b == 0`, so the
+# pullback works from a copy, as the `gemm!` family does.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpby!),Number,X,Number,Y
+    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.axpby!),Nw},
+    _a::Lifted{<:Number,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    _b::Lifted{<:Number,Nw},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasFloat}
+    x, y = primal(X_dX), primal(Y_dY)
+    x === y || _check_blas_output_alias(BLAS.axpby!, y, x)
+    a_da, b_db = _fwd_blas_alpha(P, _a), _fwd_blas_alpha(P, _b)
+    a, b = primal(a_da), primal(b_db)
+    for k in 1:Nw
+        dx_k = _blas_lane_partial(X_dX, k)
+        dy_k = _blas_lane_partial(Y_dY, k)
+        da, db = tangent(a_da, k), tangent(b_db, k)
+        # `dy := a*dx + da*x + b*dy + db*y`, every term read before the primal overwrites `y`.
+        # Both `β` terms carry the strong zero the other `β`-taking rules use: BLAS discards `y`
+        # entirely at `β == 0`, so it may hold undefined values there and `0 * NaN` is `NaN`.
+        # Unguarded, `axpby!(a, [2.0], 0.0, [NaN])` gave a JVP of `NaN` on a primal of 2.0.
+        @inbounds for i in eachindex(dy_k, dx_k, x, y)
+            t = a * dx_k[i] + da * x[i]
+            iszero(b) || (t += b * dy_k[i])
+            if !iszero(db)
+                yi = y[i]
+                isnan(yi) || (t += db * yi)
+            end
+            dy_k[i] = t
+        end
+    end
+    BLAS.axpby!(a, x, b, y)
+    return Y_dY
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpby!)},
+    a_da::CoDual{<:Number},
+    X_dX::CoDual{<:AbstractArray{P}},
+    b_db::CoDual{<:Number},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasFloat}
+    a, b = P(primal(a_da)), P(primal(b_db))
+    x, dx = arrayify(X_dX)
+    y, dy = arrayify(Y_dY)
+    x === y || _check_blas_output_alias(BLAS.axpby!, y, x)
+    y_copy = copy(y)
+    BLAS.axpby!(a, x, b, y)
+    function axpby!_pb!!(::NoRData)
+        copyto!(y, y_copy)
+        ∇a = _rvs_blas_alpha(a_da, _rvs_guarded_dot(x, dy))
+        ∇b = _rvs_blas_alpha(b_db, _rvs_guarded_dot(y_copy, dy))
+        if x === y
+            # Read the shared cotangent before writing it. Sum first for cancellation,
+            # but scale first if the coefficient sum overflows.
+            c = (a + b)'
+            if isfinite(c)
+                dy .*= c
+            else
+                dy .= a' .* dy .+ b' .* dy
+            end
+        else
+            dx .+= a' .* dy
+            dy .*= b'
+        end
+        return NoRData(), ∇a, NoRData(), ∇b, NoRData()
+    end
+    return Y_dY, axpby!_pb!!
+end
+
+# Keep the convenience forms primitive: Julia otherwise inlines through their ccall
+# into raw pointers, unsupported above width 1. Both use the array's own stride.
+@is_primitive MinimalCtx Tuple{
+    typeof(BLAS.scal!),P,X
+} where {P<:BlasFloat,X<:AbstractArray{P}}
+
+function frule!!(
+    f::Lifted{typeof(BLAS.scal!),Nw}, a_da::Lifted{P,Nw}, X_dX::Lifted{<:AbstractArray{P}}
+) where {Nw,P<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    return frule!!(f, n, a_da, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
+end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.scal!)}, a_da::CoDual{P}, X_dX::CoDual{<:AbstractArray{P}}
+) where {P<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(f, zero_fcodual(length(x)), a_da, X_dX, zero_fcodual(stride(x, 1)))
+    # The four-argument pullback returns rdata for `(f, n, a, X, incx)`; this form has
+    # `(f, a, X)`, so keep the scaling and array slots and drop the length and stride.
+    function scal!_short_pb!!(dy)
+        r = pb(dy)
+        return NoRData(), r[3], r[4]
+    end
+    return y, scal!_short_pb!!
+end
+
+# The five-argument BLAS.dot has only a raw-pointer rule, so handle arrays here.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.dot),X,Y
+    } where {P<:BlasRealFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.dot),Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasRealFloat}
+    x, dxs = arrayify(X_dX)
+    y, dys = arrayify(Y_dY)
+    v = BLAS.dot(x, y)
+    lanes = ntuple(k -> BLAS.dot(dxs[k], y) + BLAS.dot(x, dys[k]), Val(Nw))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, lanes))
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.dot)},
+    X_dX::CoDual{<:AbstractArray{P}},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasRealFloat}
+    x, dx = arrayify(X_dX)
+    y, dy = arrayify(Y_dY)
+    function blas_dot_pb!!(dv::P)
+        dx .+= y .* dv
+        dy .+= x .* dv
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(BLAS.dot(x, y)), blas_dot_pb!!
+end
+
+# Wrapper-aware lane extraction for arrays and pointers.
+@inline _blas_lane_partial(x::Lifted, lane::Integer) = _arrayify_lane(
+    primal(x), tangent(x), lane
+)
+
+# ── Lane-leading partials blocks for BLAS/LAPACK forward rules ──────────────────
+
+# Return (block, copied) with shape (N, size(primal(x))...), contiguous lanes per
+# element. Dense slots alias their NDualArray block; wrapper slots gather into a
+# copy, requiring _write_back_partials! after mutation. Lane views have stride N,
+# but the block has unit first-dimension stride for BLAS/LAPACK: right-multiplying
+# its (N, len) matrix by a lane-invariant map's transpose processes all lanes.
+@inline function _partials_block(
+    x::Lifted{P,N,<:NDualArray}
+) where {T,D,P<:AbstractArray{T,D},N}
+    return getfield(tangent(x), :partials_block), false
+end
+# Unit triangulars read a structural 1 on the diagonal, whose derivative is zero.
+# Mask on reads (_partials_block and kron), not in _arrayify_lane: block scatter
+# must write through the aliased wrapper to the slot's storage.
+@inline _mask_unit_diagonal(z) = z
+@inline _mask_unit_diagonal(z::UnitUpperTriangular) = triu(parent(z), 1)
+@inline _mask_unit_diagonal(z::UnitLowerTriangular) = tril(parent(z), -1)
+
+@inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
+    p = primal(x)
+    blk = Array{T,D + 1}(undef, (N, size(p)...))
+    colons = ntuple(_ -> Colon(), Val(D))
+    for k in 1:N
+        copyto!(view(blk, k, colons...), _mask_unit_diagonal(_blas_lane_partial(x, k)))
+    end
+    return blk, true
+end
+@inline function _write_back_partials!(
+    x::Lifted{P,N}, blk::AbstractArray
+) where {T,D,P<:AbstractArray{T,D},N}
+    colons = ntuple(_ -> Colon(), Val(D))
+    for k in 1:N
+        copyto!(_blas_lane_partial(x, k), view(blk, k, colons...))
+    end
+    return nothing
+end
+
+# Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
+# In particular, BLAS permits undefined input y wherever β == 0 discards it.
+@inline function _rvs_guarded_dot(y, dy)
+    s = zero(promote_type(eltype(y), eltype(dy)))
+    @inbounds for i in eachindex(y, dy)
+        d = dy[i]
+        iszero(d) || (s += y[i]' * d)
+    end
+    return s
+end
+
+# Strong-zero dot(dy, B, x)': skip unused rows before reading potentially NaN
+# factors, accumulating the row product without materialising B*x.
+@inline function _rvs_guarded_dot3(dy, B, x)
+    s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
+    @inbounds for i in eachindex(dy)
+        d = dy[i]
+        iszero(d) && continue
+        r = zero(s)
+        for j in eachindex(x)
+            r += B[i, j] * x[j]
+        end
+        s += d * r'
+    end
+    return s
+end
+
+# BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
+# A zero contracted dimension quick-returns without applying β (e.g. gemv!).
+@inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
+    iszero(β) ? fill!(B, zero(T)) : (B .*= β)
+    return nothing
+end
+@inline function _scale_or_zero!(B::AbstractArray, β, contracted::Integer)
+    contracted == 0 && return nothing
+    return _scale_or_zero!(B, β)
+end
+
+# `X[i]*dX[i]` overflows once `norm(X)*norm(dX)` leaves `T`'s range, though the JVP it divides down
+# to is representable. Scaling `X` by the power of two nearest `y` is exact, so in-range results are
+# unchanged; a subnormal `y` has no representable reciprocal, and with every `X[i]` subnormal too it
+# needs none. Both lane paths scale by this `r` and divide by `2(y*r)`.
+@inline function _nrm2_scale_factor(y)
+    r = isfinite(y) && !iszero(y) ? ldexp(one(y), -exponent(y)) : one(y)
+    return isfinite(r) ? r : one(y)
+end
+
+# Per-lane nrm2 JVP: `dy_k = Σᵢ real(conj(Xᵢ)·dXₖᵢ)/y` with a removable-singularity guard. Fallback
+# for the Ptr slot and strided (incx≠1) inputs, where the contiguous-block fast path does not apply.
+@inline function _nrm2_lanes_perlane(
+    _n, X_dX, step, Xv, y, ::Type{R}, ::Val{Nw}
+) where {R,Nw}
+    r = _nrm2_scale_factor(y)
+    return ntuple(Val(Nw)) do lane
+        dX_lane = _blas_lane_partial(X_dX, lane)
+        dXv = _viewify_one(_n, dX_lane, step)
+        s = zero(R)
+        @inbounds for i in eachindex(Xv)
+            # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
+            s += 2 * real((Xv[i] * r)' * dXv[i])
+        end
+        iszero(s) ? zero(R) : s / (2 * (y * r))
+    end
+end
+
+# Contiguous NTuple columns let lane updates vectorise (~4×). Zero sums map to
+# zero at the removable singularity. Pass acc by value: capturing a reassigned
+# accumulator boxes it to Any. Bind only Nw; NTuple{0,R} leaves R unbound (Aqua).
+@inline _nrm2_accum(acc::NTuple{Nw}, xi, col) where {Nw} = ntuple(
+    k -> acc[k] + 2 * real(xi' * col[k]), Val(Nw)
+)
+@inline _nrm2_scale(acc::NTuple{Nw}, yr) where {Nw} = ntuple(
+    k -> iszero(acc[k]) ? acc[k] : acc[k] / (2 * yr), Val(Nw)
+)
+@inline function _nrm2_lanes_block(blk, Xv, y, ::Type{R}, ::Val{Nw}) where {R,Nw}
+    cols = reinterpret(reshape, NTuple{Nw,eltype(blk)}, blk)
+    acc = ntuple(_ -> zero(R), Val(Nw))
+    r = _nrm2_scale_factor(y)
+    @inbounds for i in eachindex(Xv)
+        acc = _nrm2_accum(acc, Xv[i] * r, cols[i])
+    end
+    return _nrm2_scale(acc, y * r)
+end
+
+# Dispatch separates array block access from Ptr lanes to keep the frule type-stable.
+# Only logical step 1 permits the block fast path; pointers always use per-lane accumulation.
+@inline function _nrm2_lanes(
+    X_dX::Lifted{P,Nw}, _n, step, Xv, y, ::Type{R}
+) where {T,P<:AbstractArray{T},Nw,R}
+    if step == 1
+        blk, _ = _partials_block(X_dX)
+        return _nrm2_lanes_block(blk, Xv, y, R, Val(Nw))
+    end
+    return _nrm2_lanes_perlane(_n, X_dX, step, Xv, y, R, Val(Nw))
+end
+@inline function _nrm2_lanes(
+    X_dX::Lifted{P,Nw}, _n, step, Xv, y, ::Type{R}
+) where {T,P<:Ptr{T},Nw,R}
+    return _nrm2_lanes_perlane(_n, X_dX, step, Xv, y, R, Val(Nw))
+end
+
+# nrm2 — output is real (real or complex T); per-lane dy is real.
+function frule!!(
+    ::Lifted{typeof(BLAS.nrm2),Nw},
+    n::Lifted,
+    X_dX::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
+    incx::Lifted,
+) where {Nw,T<:BlasFloat}
+    _n = primal(n)
+    _inc = primal(incx)
+    Xp = primal(X_dX)
+    # Lane paths use logical indices, so refuse a raw walk over other elements.
+    # Unlike dotc/dotu, nrm2 has no per-lane BLAS fallback.
+    step = _blas_walk_step(Xp, _inc, _n)
+    if step === nothing
+        _throw_no_walk_step("Forward-mode `BLAS.nrm2`", Xp, _inc)
+    end
+    y = BLAS.nrm2(_n, Xp, _inc)
+    Xv = _viewify_one(_n, Xp, step)  # `viewify`-equivalent on the primal side.
+    R = typeof(y)  # nrm2 returns the real-valued norm.
+    return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, _n, step, Xv, y, R)))
+end
+# Reuse the primal's logical step for its partial: their index spaces match,
+# but their strides can differ.
+@inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
+    x, 1:step:(1 + (n - 1) * step)
+)
+@inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
+    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
+)
+
+# Pair walk validation with computation so invalid layouts get the diagnostic,
+# rather than passing nothing to _viewify_one.
+@inline function _checked_walk_step(label, n::Integer, x, inc::Integer)
+    step = _blas_walk_step(x, inc, n)
+    step === nothing && _throw_no_walk_step(label, x, inc)
+    return step
+end
+
+# A rule that skipped `_checked_walk_step`, not a user error.
+@inline _viewify_one(::Integer, @nospecialize(x), ::Nothing) = error(
+    "internal: `_viewify_one` needs a checked walk step; obtain one from `_checked_walk_step`",
+)
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -481,6 +1017,242 @@ function rrule!!(
     return CoDual(y, NoFData()), nrm2_pb!!
 end
 
+# Intercept concrete real vectors before Julia inlines dot into its raw-pointer
+# ccall. Forward-over-reverse cannot address dense lanes in the element-major block;
+# array-level access preserves HVP/Hessian at every width. Concrete Vector also
+# keeps this disjoint from CUDA's dot rule; strided wrappers retain the pointer guard.
+@is_primitive(MinimalCtx, Tuple{typeof(dot),Vector{P},Vector{P}} where {P<:BlasRealFloat})
+function frule!!(
+    ::Lifted{typeof(dot),Nw}, x_dx::Lifted{Vector{P}}, y_dy::Lifted{Vector{P}}
+) where {Nw,P<:BlasRealFloat}
+    x, y = primal(x_dx), primal(y_dy)
+    result = dot(x, y)
+    # Two wide gemv! calls contract contiguous blocks (~3.5× faster than lane dots).
+    # The length-Nw output allocation is permitted here (no :allocs guard).
+    Xb = getfield(tangent(x_dx), :partials_block)
+    Yb = getfield(tangent(y_dy), :partials_block)
+    # Empty gemv skips even β scaling, so empty dot needs explicitly zeroed lanes.
+    out = zeros(P, Nw)
+    BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
+    BLAS.gemv!('N', one(P), Yb, x, one(P), out)
+    dresult_lanes = ntuple(k -> out[k], Val(Nw))
+    return Lifted{P,Nw}(result, _scalar_ndual(result, dresult_lanes))
+end
+function rrule!!(
+    ::CoDual{typeof(dot)}, x_dx::CoDual{Vector{P}}, y_dy::CoDual{Vector{P}}
+) where {P<:BlasRealFloat}
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    result = dot(x, y)
+    function dot_pb!!(dv)
+        dx .+= y .* dv
+        dy .+= x .* dv
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(result, NoFData()), dot_pb!!
+end
+
+# Forward complex dotc/dotu need an array-level primitive: cblas writes a Ref whose
+# Complex{NDual} dual is incompatible with contiguous per-lane scalar cells. Reverse
+# still uses the foreigncall rule. Dense operands with positive increments use the
+# block loop; other layouts rebuild each lane over contiguous memory and call BLAS,
+# preserving its raw pointer walk at the cost of O(Nw) calls and materialisations.
+# Unit first-dimension stride alone does not imply density (e.g. a matrix subview).
+# Negative increments start at (-n+1)*inc + 1 and also require the fallback.
+# _blas_walk_step maps a raw increment to logical indices: dense arrays step by inc,
+# strided vectors by inc ÷ stride. If stride does not divide inc, BLAS reads elements
+# outside the operand; above one dimension only dense layouts admit a logical step.
+@inline function _blas_walk_step(x, inc::Integer, n::Integer)
+    inc > 0 || return nothing
+    x isa Ptr && return inc
+    step = if x isa AbstractVector
+        st = stride(x, 1)
+        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
+    else
+        strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
+    end
+    step === nothing && return nothing
+    return 1 + (n - 1) * step <= length(x) ? step : nothing
+end
+
+# Raised where the walk runs off the end of the operand, as distinct from following it in a
+# different order -- the two need different messages because the fixes differ.
+@noinline function _throw_walk_past_operand(label, x, inc, n)
+    throw(
+        ArgumentError(
+            LazyString(
+                label,
+                " reads ",
+                n,
+                " elements from `pointer(X)` with `incx = ",
+                inc,
+                "`, which runs past the ",
+                length(x),
+                " elements of `",
+                typeof(x),
+                "`. The primal may still be defined, since the walk can stay inside a larger " *
+                "parent array, but those elements belong to no argument and have no derivative. " *
+                "Pass an operand at least `1 + (n-1)*incx` long.",
+            ),
+        ),
+    )
+end
+
+# Both dot paths need this span: the fallback rebuilds only length(x) elements.
+# Negative increments walk the same span backwards and are valid in the fallback.
+@inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
+    1 + (n - 1) * abs(inc) <= length(x)
+
+# Return the primal span, its partials slot, and the partials' leading offset.
+# A raw BLAS walk can leave a vector view while staying in its dense parent. Widen
+# from the view's first element (same pointer) to include those parent partials,
+# matching the reverse pointer rule. Other operands must contain their own walk.
+@inline function _dot_walk_widen(label, slot::Lifted, inc::Integer, n::Integer)
+    x = primal(slot)
+    _blas_walk_inbounds(x, inc, n) || _throw_walk_past_operand(label, x, inc, n)
+    return x, slot, 0
+end
+@inline function _dot_walk_widen(
+    label,
+    slot::Lifted{<:SubArray{T,1,Vector{T},<:Tuple{AbstractRange}},Nw},
+    inc::Integer,
+    n::Integer,
+) where {T,Nw}
+    x = primal(slot)
+    p = parent(x)
+    a = first(parentindices(x)[1])
+    a + (n - 1) * abs(inc) <= length(p) || _throw_walk_past_operand(label, x, inc, n)
+    return view(p, a:length(p)), Lifted{typeof(p),Nw}(p, tangent(slot).fields.parent), a - 1
+end
+
+@inline _dot_lane_span(a, drop::Integer) = view(a, (firstindex(a) + drop):lastindex(a))
+
+# Cold path for a walk that runs past an operand. Per-lane BLAS calls, as the non-contiguous branch
+# does: the widened operand is rare and does not need the block fast path.
+@noinline function _dot_widened_acc(
+    f::F, ::Val{Nw}, ::Type{E}, label, _DX, _DY, n, incx, incy
+) where {F,Nw,E}
+    pX, sX, aX = _dot_walk_widen(label, _DX, incx, n)
+    pY, sY, aY = _dot_walk_widen(label, _DY, incy, n)
+    return ntuple(Val(Nw)) do k
+        dX = _dot_lane_span(_dense_lane_partial(sX, k), aX)
+        dY = _dot_lane_span(_dense_lane_partial(sY, k), aY)
+        f(n, dX, incx, pY, incy) + f(n, pX, incx, dY, incy)
+    end::NTuple{Nw,E}
+end
+
+@inline function _blas_raw_walk_matches(x, inc::Integer)
+    inc > 0 || return false
+    x isa Ptr && return true
+    return strides(x) === Base.size_to_strides(1, size(x)...)
+end
+
+# Pass acc by value to avoid boxing a reassigned closure capture (see _nrm2_accum).
+# Share by conjugation, independent of eltype; bind only Nw for the empty tuple (Aqua).
+@inline _dotc_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
+    k -> acc[k] + conj(xc[k]) * y + conj(x) * yc[k], Val(Nw)
+)
+@inline _dotu_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
+    k -> acc[k] + xc[k] * y + x * yc[k], Val(Nw)
+)
+
+for (jlfname, elty) in
+    ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
+    # Independent X/Y allow mixed array wrappers, matching the frule's coverage.
+    @eval @is_primitive(
+        MinimalCtx,
+        ForwardMode,
+        Tuple{
+            typeof(BLAS.$jlfname),Integer,X,Integer,Y,Integer
+        } where {
+            X<:Union{Ptr{$elty},AbstractArray{$elty}},
+            Y<:Union{Ptr{$elty},AbstractArray{$elty}},
+        }
+    )
+    # `dotc` conjugates its first argument, `dotu` neither; the JVP is linear either way:
+    # d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩.
+    accum = jlfname == :dotc ? :_dotc_accum : :_dotu_accum
+    @eval @inline function frule!!(
+        ::Lifted{typeof(BLAS.$jlfname),Nw},
+        _n::Lifted{<:Integer},
+        _DX::Lifted{<:AbstractArray{$elty}},
+        _incx::Lifted{<:Integer},
+        _DY::Lifted{<:AbstractArray{$elty}},
+        _incy::Lifted{<:Integer},
+    ) where {Nw}
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        DX, DY = primal(_DX), primal(_DY)
+        result = BLAS.$jlfname(n, DX, incx, DY, incy)
+        acc = if !(_blas_walk_inbounds(DX, incx, n) && _blas_walk_inbounds(DY, incy, n))
+            # Widen to the parent partials before either path can read past the view.
+            _dot_widened_acc(
+                BLAS.$jlfname,
+                Val(Nw),
+                $elty,
+                "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`",
+                _DX,
+                _DY,
+                n,
+                incx,
+                incy,
+            )
+        elseif _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
+            # Contiguous operands: logical indexing == BLAS's raw walk, so accumulate all lanes
+            # in one pass over the element-major block columns.
+            Xb, _ = _partials_block(_DX)
+            Yb, _ = _partials_block(_DY)
+            Xc = reinterpret(reshape, NTuple{Nw,$elty}, Xb)
+            Yc = reinterpret(reshape, NTuple{Nw,$elty}, Yb)
+            a = ntuple(_ -> zero($elty), Val(Nw))
+            @inbounds for t in 1:n
+                ix, iy = 1 + (t - 1) * incx, 1 + (t - 1) * incy
+                a = $accum(a, Xc[ix], Yc[iy], DX[ix], DY[iy])
+            end
+            a
+        else
+            # Dense lane rebuilds preserve BLAS's raw walk for non-contiguous operands.
+            ntuple(Val(Nw)) do k
+                dX = _dense_lane_partial(_DX, k)
+                dY = _dense_lane_partial(_DY, k)
+                BLAS.$jlfname(n, dX, incx, DY, incy) + BLAS.$jlfname(n, DX, incx, dY, incy)
+            end
+        end
+        return Lifted{$elty,Nw}(result, _scalar_ndual(result, acc))
+    end
+    # Ptr lanes are dense by protocol; array lanes are stride-Nw, so mixed calls
+    # require width 1. All-array calls use the block method above.
+    @eval @inline function frule!!(
+        ::Lifted{typeof(BLAS.$jlfname),Nw},
+        _n::Lifted{<:Integer},
+        _DX::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incx::Lifted{<:Integer},
+        _DY::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incy::Lifted{<:Integer},
+    ) where {Nw}
+        if Nw > 1 && !(primal(_DX) isa Ptr && primal(_DY) isa Ptr)
+            throw(
+                ArgumentError(
+                    "`BLAS.$($(QuoteNode(jlfname)))` with mixed raw-pointer and array " *
+                    "arguments is unsupported at chunk width $Nw > 1: an array slot's " *
+                    "per-lane partials are lane-strided block views that the " *
+                    "pointer-based BLAS wrapper cannot read. Differentiate at chunk " *
+                    "width 1 (or pass both arguments the same way).",
+                ),
+            )
+        end
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        DX, DY = primal(_DX), primal(_DY)
+        result = BLAS.$jlfname(n, DX, incx, DY, incy)
+        dresult_lanes = ntuple(Val(Nw)) do lane
+            dX = _blas_lane_partial(_DX, lane)
+            dY = _blas_lane_partial(_DY, lane)
+            return BLAS.$jlfname(n, dX, incx, DY, incy) +
+                   BLAS.$jlfname(n, DX, incx, dY, incy)
+        end
+        return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
+    end
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -488,24 +1260,58 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Dual{P},
-    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incx::Dual{<:Integer},
-) where {P<:BlasFloat}
-
-    # Extract params.
+    ::Lifted{typeof(BLAS.scal!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    _incx::Lifted,
+) where {Nw,P<:BlasFloat}
     n = primal(_n)
     incx = primal(_incx)
-    a, da = extract(a_da)
-    X, dX = arrayify(X_dX)
-
-    # Compute Fréchet derivative.
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-
-    # Perform primal computation.
+    a = primal(a_da)
+    X = primal(X_dX)
+    # Partial blocks follow logical indices, whereas BLAS walks raw memory. Unlike
+    # dotc/dotu, this mutating rule cannot use a copied dense-lane fallback.
+    step = _blas_walk_step(X, incx, n)
+    if step === nothing
+        _throw_no_walk_step("Forward-mode `BLAS.scal!`", X, incx)
+    end
+    das = ntuple(k -> tangent(a_da, k), Val(Nw))
+    Xb, copied = _partials_block(X_dX)
+    Xbm = reshape(Xb, Nw, :)
+    # Per-lane Frechet dX_k := a·dX_k + da_k·X, all lanes in one pass: each touched
+    # element's lanes are one contiguous block column.
+    @inbounds for t in 1:n
+        i = 1 + (t - 1) * step
+        xi = X[i]
+        for k in 1:Nw
+            Xbm[k, i] = a * Xbm[k, i] + das[k] * xi
+        end
+    end
+    copied && _write_back_partials!(X_dX, Xb)
+    BLAS.scal!(n, a, X, incx)
+    return X_dX
+end
+# Raw-pointer path: per-lane tangent pointers are dense buffers by the `Ptr` dual
+# protocol, so the per-lane BLAS calls read them correctly at any width.
+function frule!!(
+    ::Lifted{typeof(BLAS.scal!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{Ptr{P},Nw},
+    _incx::Lifted,
+) where {Nw,P<:BlasFloat}
+    n = primal(_n)
+    incx = primal(_incx)
+    a = primal(a_da)
+    X = primal(X_dX)
+    # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
+    for lane in 1:Nw
+        dX_lane = _blas_lane_partial(X_dX, lane)
+        da_lane = tangent(a_da, lane)
+        BLAS.scal!(n, a, dX_lane, incx)
+        BLAS.axpy!(n, da_lane, X, incx, dX_lane, incx)
+    end
     BLAS.scal!(n, a, X, incx)
     return X_dX
 end
@@ -545,88 +1351,6 @@ function rrule!!(
     return X_dX, scal_adjoint
 end
 
-# `BLAS.axpy!` ends at a BLAS foreign call with no Mooncake derivative rule in either mode;
-# this wrapper supplies both, since forward-over-reverse HVP paths invoke `axpy!` directly
-# (e.g. GaussAdjoint's HVP forward-differentiating its own reverse pass, SciMLSensitivity.jl#1648).
-@is_primitive(
-    MinimalCtx,
-    Tuple{
-        typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
-    } where {
-        P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}},Y<:Union{Ptr{P},AbstractArray{P}}
-    }
-)
-function frule!!(
-    ::Dual{typeof(BLAS.axpy!)},
-    _n::Dual{<:Integer},
-    a_da::Dual{P},
-    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incx::Dual{<:Integer},
-    Y_dY::Dual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incy::Dual{<:Integer},
-) where {P<:BlasFloat}
-
-    # Extract params.
-    n = primal(_n)
-    incx = primal(_incx)
-    incy = primal(_incy)
-    a, da = extract(a_da)
-    X, dX = arrayify(X_dX)
-    Y, dY = arrayify(Y_dY)
-
-    # `axpy!(n, a, x, incx, x, incy)` is a legal call with `X === Y`, in which case
-    # Mooncake's aliasing invariant guarantees `dX === dY`. Accumulating `da*X` into `dY`
-    # first would then corrupt the value the second call below reads as `dX`, so copy the
-    # source tangent first whenever that's the case.
-    dX_source = X === Y ? copy(dX) : dX
-
-    # Fréchet derivative of Y_new = a*X + Y: dY_new = da*X + a*dX + dY.
-    BLAS.axpy!(n, da, X, incx, dY, incy)
-    BLAS.axpy!(n, a, dX_source, incx, dY, incy)
-
-    # Perform primal computation.
-    BLAS.axpy!(n, a, X, incx, Y, incy)
-    return Y_dY
-end
-function rrule!!(
-    ::CoDual{typeof(BLAS.axpy!)},
-    _n::CoDual{<:Integer},
-    a_da::CoDual{P},
-    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incx::CoDual{<:Integer},
-    Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incy::CoDual{<:Integer},
-) where {P<:BlasFloat}
-
-    # Extract params.
-    n = primal(_n)
-    incx = primal(_incx)
-    incy = primal(_incy)
-    a = primal(a_da)
-    X, dX = viewify(n, X_dX, incx)
-    Y, dY = viewify(n, Y_dY, incy)
-
-    # Take a copy of previous state in order to recover it on the reverse pass.
-    Y_copy = copy(Y)
-
-    # Run primal computation.
-    BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
-
-    function axpy_adjoint(::NoRData)
-
-        # Set primal to previous state.
-        Y .= Y_copy
-
-        # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
-        # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
-        ∇a = dot(X, dY)
-        dX .+= a' .* dY
-
-        return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
-    end
-    return Y_dY, axpy_adjoint
-end
-
 #
 # LEVEL 2
 #
@@ -638,56 +1362,102 @@ end
     } where {P<:BlasFloat},
 )
 
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractVecOrMat{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
+# Present a vector operand to the level-3 BLAS kernels as a single-column matrix (used by the
+# gemv!/gemm! Lifted frules for both the primal arrays and the per-lane partials).
+@inline _as_col(v) = v isa AbstractVector ? reshape(v, :, 1) : v
+
+function frule!!(
+    ::Lifted{typeof(BLAS.gemv!),Nw},
+    tA::Lifted{Char},
+    alpha::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractVecOrMat{P}},
+    x_dx::Lifted{<:AbstractVector{P}},
+    beta::Lifted{P,Nw},
+    y_dy::Lifted{<:AbstractVector{P}},
+) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.gemv!, primal(y_dy), primal(A_dA), primal(x_dx))
-    A, dA = matrixify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-
-    return y_dy
-end
-
-@inline function _gemv!_frule_core!(
-    tA::Char,
-    α::P,
-    dα::P,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    x::AbstractVector{P},
-    dx::AbstractVector{P},
-    β::P,
-    dβ::P,
-    y::AbstractVector{P},
-    dy::AbstractVector{P},
-) where {P<:BlasFloat}
-    # Derivative computation.
-    BLAS.gemv!(tA, dα, A, x, β, dy)
-    BLAS.gemv!(tA, α, dA, x, one(P), dy)
-    BLAS.gemv!(tA, α, A, dx, one(P), dy)
-
-    # Strong zero is essential here, in case `y` has undefined element values.
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+    _tA = _lsame_flag(primal(tA))
+    α = primal(alpha)
+    β = primal(beta)
+    A = _as_col(primal(A_dA))
+    x = primal(x_dx)
+    y = primal(y_dy)
+    dαs = ntuple(k -> tangent(alpha, k), Val(Nw))
+    dβs = ntuple(k -> tangent(beta, k), Val(Nw))
+    Ab, _ = _partials_block(A_dA)
+    Xb, _ = _partials_block(x_dx)
+    Yb, ycopied = _partials_block(y_dy)
+    M, K = length(y), length(x)
+    Xbm, Ybm = reshape(Xb, Nw, K), reshape(Yb, Nw, M)
+    # 1) β·dy + α·op(A)·dx: lane `k` is row `k` of the lane matrices, so per-lane
+    #    `op(A)·dx_k` is `Xbm·op(A)ᵀ` — one wide gemm over the block, β folded in (applied
+    #    exactly once, first; all later terms accumulate). An all-zero `Xbm` means `x` is
+    #    constant data — the product term vanishes, leaving the β scaling.
+    if !iszero(Xbm)
+        if _tA == 'N'
+            BLAS.gemm!('N', 'T', α, Xbm, A, β, Ybm)
+        elseif _tA == 'T' || P <: BlasRealFloat
+            BLAS.gemm!('N', 'N', α, Xbm, A, β, Ybm)
+        else
+            # Complex 'C': op(A)ᵀ = conj(A), which gemm cannot express on its right
+            # operand; the vector-arg wrappers read strided lanes natively, so run the
+            # adjoint per lane instead of materialising conj(A).
+            _scale_or_zero!(Ybm, β, K)
+            for k in 1:Nw
+                BLAS.gemv!('C', α, A, view(Xbm, k, :), one(P), view(Ybm, k, :))
+            end
+        end
+    else
+        _scale_or_zero!(Ybm, β, K)
+    end
+    # 2) α·op(dA)·x — skipped when `A` is constant data (all-zero block).
+    if !iszero(Ab)
+        Abm = reshape(Ab, Nw, size(A)...)
+        if _tA == 'N'
+            # Contract dA's last axis with x: the (Nw·M, K) flat view of dA's block times
+            # x lands lane-major — exactly the flat view of Yb. One wide gemv.
+            BLAS.gemv!('N', α, reshape(Abm, Nw * M, K), x, one(P), reshape(Ybm, Nw * M))
+        elseif _tA == 'T' || P <: BlasRealFloat
+            # Column slab i of dA's block is a contiguous (Nw, K) matrix; `op(dA)·x`
+            # lands in Yb's contiguous block column i.
+            for i in 1:M
+                BLAS.gemv!('N', α, view(Abm,:,:,i), x, one(P), view(Ybm, :, i))
+            end
+        else
+            # Complex 'C': Σⱼ conj(dA[k,j,i])·x[j] = conj(slab_i · conj(x)).
+            xc = conj(x)
+            # Zeroed for the same reason as in the `dot` frule above: with an empty inner
+            # dimension `gemv` skips the write, and the stale buffer would be accumulated.
+            wN = zeros(P, Nw)
+            for i in 1:M
+                BLAS.gemv!('N', one(P), view(Abm,:,:,i), xc, zero(P), wN)
+                view(Ybm, :, i) .+= α .* conj.(wN)
+            end
         end
     end
-
-    # Primal computation.
-    BLAS.gemv!(tA, α, A, x, β, y)
-    return nothing
+    # 3) dα·op(A)·x per seeded lane, gemv straight into the strided lane row (the
+    #    vector-arg wrappers pass strides through); usually 0 or 1 such lane.
+    for k in 1:Nw
+        iszero(dαs[k]) || BLAS.gemv!(_tA, dαs[k], A, x, one(P), view(Ybm, k, :))
+    end
+    # 4) dβ·y over the original `y`. Strong zero on NaN `y` entries, as in reverse mode:
+    #    `y` may hold undefined values wherever `β == 0` discards them. Skipped along with the
+    #    `β·dy` term above when the contracted dimension is zero: BLAS quick-returns there without
+    #    applying `β`, so the primal does not depend on `β` at all and neither may the tangent.
+    if K != 0 && !all(iszero, dβs)
+        @inbounds for i in 1:M
+            yi = y[i]
+            isnan(yi) && continue
+            for k in 1:Nw
+                Ybm[k, i] += dβs[k] * yi
+            end
+        end
+    end
+    ycopied && _write_back_partials!(y_dy, Yb)
+    # 5) Primal update AFTER all tangent terms, so every lane's `dβ·y` read the original
+    #    `y` and the wide product used the original operands.
+    BLAS.gemv!(_tA, α, A, x, β, y)
+    return y_dy
 end
 
 @inline function rrule!!(
@@ -792,37 +1562,77 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     )
 
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        x_dx::Dual{<:AbstractVector{T}},
-        beta::Dual{T},
-        y_dy::Dual{<:AbstractVector{T}},
-    ) where {T<:$elty}
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        x_dx::Lifted{<:AbstractVector{T}},
+        beta::Lifted{T,Nw},
+        y_dy::Lifted{<:AbstractVector{T}},
+    ) where {Nw,T<:$elty}
         _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
-        # Extract primals.
-        ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        x, dx = arrayify(x_dx)
-        y, dy = arrayify(y_dy)
-
-        # Compute Fréchet derivative.
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(T), dy)
-        BLAS.$fname(ul, α, A, dx, one(T), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        ul = _lsame_flag(primal(uplo))
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        x = primal(x_dx)
+        y = primal(y_dy)
+        dαs = ntuple(k -> tangent(alpha, k), Val(Nw))
+        dβs = ntuple(k -> tangent(beta, k), Val(Nw))
+        Ab, _ = _partials_block(A_dA)
+        Xb, _ = _partials_block(x_dx)
+        Yb, ycopied = _partials_block(y_dy)
+        n = length(x)
+        Xbm, Ybm = reshape(Xb, Nw, n), reshape(Yb, Nw, n)
+        # 1) β·dy + α·A·dx, β folded in (applied exactly once, first). For the symmetric
+        #    case Aᵀ = A, so per-lane `A·dx_k` is one wide side-'R' symm over the lane
+        #    matrix (reading only the `ul` triangle, like the primal). The hermitian
+        #    Aᵀ = conj(A) has no wide form on the right; the vector-arg wrapper reads
+        #    strided lanes natively, so run hemv per lane (β folded per lane).
+        if !iszero(Xbm)
+            $(
+                if isherm
+                    quote
+                        for k in 1:Nw
+                            BLAS.hemv!(ul, α, A, view(Xbm, k, :), β, view(Ybm, k, :))
+                        end
+                    end
+                else
+                    :(BLAS.symm!('R', ul, α, A, Xbm, β, Ybm))
+                end
+            )
+        else
+            _scale_or_zero!(Ybm, β)
+        end
+        # 2) α·dA·x — skipped when `A` is constant data. dA is symmetric/hermitian with
+        #    only the `ul` triangle significant, exactly like `A`; gather each lane into a
+        #    dense scratch and apply the same kernel into the strided lane row.
+        if !iszero(Ab)
+            Abm = reshape(Ab, Nw, n, n)
+            Ascr = Matrix{T}(undef, n, n)
+            for k in 1:Nw
+                copyto!(Ascr, view(Abm,k,:,:))
+                BLAS.$fname(ul, α, Ascr, x, one(T), view(Ybm, k, :))
             end
         end
-
-        # Run primal computation.
+        # 3) dα·A·x per seeded lane, into the strided lane row.
+        for k in 1:Nw
+            iszero(dαs[k]) || BLAS.$fname(ul, dαs[k], A, x, one(T), view(Ybm, k, :))
+        end
+        # 4) dβ·y over the original `y`; strong zero on NaN entries (see gemv!).
+        if !all(iszero, dβs)
+            @inbounds for i in 1:n
+                yi = y[i]
+                isnan(yi) && continue
+                for k in 1:Nw
+                    Ybm[k, i] += dβs[k] * yi
+                end
+            end
+        end
+        ycopied && _write_back_partials!(y_dy, Yb)
+        # Primal hoisted after all tangent terms so every lane's `dβ·y` reads the
+        # original `y`.
         BLAS.$fname(ul, α, A, x, β, y)
-
         return y_dy
     end
 
@@ -910,36 +1720,54 @@ end
 )
 
 function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
+    ::Lifted{typeof(BLAS.trmv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
-    # Extract primals.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Fréchet derivative computation.
-    BLAS.trmv!(uplo, trans, diag, A, dx)
-    tmp = copy(x)
-    BLAS.trmv!(uplo, trans, diag, dA, tmp)
-    dx .+= tmp
-    if diag === 'U'
-        dx .-= x
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
+    A = primal(A_dA)
+    x = primal(x_dx)
+    Ab, _ = _partials_block(A_dA)
+    Xb, xcopied = _partials_block(x_dx)
+    n = length(x)
+    Xbm = reshape(Xb, Nw, n)
+    # Frechet: dx_k := op(A)·dx_k + op(dA_k)·x (+ unit-diag adjustment).
+    # 1) op(A)·dx_k for all lanes: right-multiply the lane matrix by op(A)ᵀ — one wide
+    #    trmm over the block. Complex 'C' (op(A)ᵀ = conj(A), inexpressible on the right)
+    #    runs trmv per lane instead: the vector-arg wrapper reads strided lanes natively.
+    if trans == 'N'
+        BLAS.trmm!('R', uplo, 'T', diag, one(T), A, Xbm)
+    elseif trans == 'T' || T <: BlasRealFloat
+        BLAS.trmm!('R', uplo, 'N', diag, one(T), A, Xbm)
+    else
+        for k in 1:Nw
+            BLAS.trmv!(uplo, 'C', diag, A, view(Xbm, k, :))
+        end
     end
-
-    # Primal computation.
+    # 2) op(dA_k)·x — skipped when `A` is constant data. trmv masks dA's triangle (and
+    #    implicit unit diagonal, whose derivative the `diag == 'U'` correction removes).
+    if !iszero(Ab)
+        Abm = reshape(Ab, Nw, n, n)
+        Ascr = Matrix{T}(undef, n, n)
+        tmp = similar(x, n)
+        for k in 1:Nw
+            copyto!(Ascr, view(Abm,k,:,:))
+            copyto!(tmp, x)
+            BLAS.trmv!(uplo, trans, diag, Ascr, tmp)
+            diag === 'U' && (tmp .-= x)
+            view(Xbm, k, :) .+= tmp
+        end
+    end
+    xcopied && _write_back_partials!(x_dx, Xb)
     BLAS.trmv!(uplo, trans, diag, A, x)
-
     return x_dx
 end
-
 function rrule!!(
     ::CoDual{typeof(BLAS.trmv!)},
     _uplo::CoDual{Char},
@@ -1022,31 +1850,52 @@ end
     } where {T<:BlasFloat},
 )
 function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
+    ::Lifted{typeof(BLAS.trsv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Primal
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
+    A = primal(A_dA)
+    x = primal(x_dx)
+    # Primal first — subsequent lane work needs the solved `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
-
-    BLAS.trsv!(uplo, trans, diag, A, dx)
-    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if diag == 'U'
-        tmp .-= x
+    Ab, _ = _partials_block(A_dA)
+    Xb, xcopied = _partials_block(x_dx)
+    n = length(x)
+    Xbm = reshape(Xb, Nw, n)
+    # d(op(A)⁻¹·x) = op(A)⁻¹·(dx − op(dA)·x). op(A)⁻¹ is linear, so the tangent takes one
+    # solve of that combined RHS, not separate solves of `dx` and `op(dA)·x`.
+    # 1) dx_k −= op(dA_k)·x — skipped when `A` is constant data.
+    if !iszero(Ab)
+        Abm = reshape(Ab, Nw, n, n)
+        Ascr = Matrix{T}(undef, n, n)
+        tmp = similar(x, n)
+        for k in 1:Nw
+            copyto!(Ascr, view(Abm,k,:,:))
+            copyto!(tmp, x)
+            BLAS.trmv!(uplo, trans, diag, Ascr, tmp)
+            diag === 'U' && (tmp .-= x)
+            view(Xbm, k, :) .-= tmp
+        end
     end
-    BLAS.trsv!(uplo, trans, diag, A, tmp)
-    dx .-= tmp
-
+    # 2) op(A)⁻¹ applied to every lane: right-divide the lane matrix by op(A)ᵀ — one wide
+    #    trsm over the block. Complex 'C' runs trsv per lane on the strided lane vectors.
+    if trans == 'N'
+        BLAS.trsm!('R', uplo, 'T', diag, one(T), A, Xbm)
+    elseif trans == 'T' || T <: BlasRealFloat
+        BLAS.trsm!('R', uplo, 'N', diag, one(T), A, Xbm)
+    else
+        for k in 1:Nw
+            BLAS.trsv!(uplo, 'C', diag, A, view(Xbm, k, :))
+        end
+    end
+    xcopied && _write_back_partials!(x_dx, Xb)
     return x_dx
 end
 function rrule!!(
@@ -1109,6 +1958,8 @@ end
 # LEVEL 3
 #
 
+# Keep primitive coverage in lockstep with both rules: A/B allow vectors, C does
+# not. Declaring vector C primitive would prevent fallback and raise MethodError.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -1119,55 +1970,129 @@ end
         AbstractVecOrMat{T},
         AbstractVecOrMat{T},
         T,
-        AbstractVecOrMat{T},
+        AbstractMatrix{T},
     } where {T<:BlasFloat},
 )
 
-# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
-    return isnan(cond) * left + !isnan(cond) * right
-end
-
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVecOrMat{T}},
-    B_dB::Dual{<:AbstractVecOrMat{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasFloat}
+function frule!!(
+    ::Lifted{typeof(BLAS.gemm!),Nw},
+    transA::Lifted{Char},
+    transB::Lifted{Char},
+    alpha::Lifted{T,Nw},
+    A_dA::Lifted{<:AbstractVecOrMat{T}},
+    B_dB::Lifted{<:AbstractVecOrMat{T}},
+    beta::Lifted{T,Nw},
+    C_dC::Lifted{<:AbstractMatrix{T}},
+) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.gemm!, primal(C_dC), primal(A_dA), primal(B_dB))
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-    A, dA = matrixify(A_dA)
-    B, dB = matrixify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    # Tangents (product rule)
-    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
+    tA = _lsame_flag(primal(transA))
+    tB = _lsame_flag(primal(transB))
+    α = primal(alpha)
+    β = primal(beta)
+    A = _as_col(primal(A_dA))
+    B = _as_col(primal(B_dB))
+    C = primal(C_dC)
+    dαs = ntuple(k -> tangent(alpha, k), Val(Nw))
+    dβs = ntuple(k -> tangent(beta, k), Val(Nw))
+    Ab_, _ = _partials_block(A_dA)
+    Bb_, _ = _partials_block(B_dB)
+    Cb, ccopied = _partials_block(C_dC)
+    m, n = size(C)
+    p = tA == 'N' ? size(A, 2) : size(A, 1)
+    Ab = reshape(Ab_, Nw, size(A)...)
+    Bb = reshape(Bb_, Nw, size(B)...)
+    # Product rule: dC_k = β·dC_k + α·op(dA_k)·op(B) + α·op(A)·op(dB_k) + dα_k·op(A)·op(B)
+    # + dβ_k·C. The two matrix-partial terms batch all lanes into wide BLAS calls over the
+    # lane-leading blocks; terms whose operand is constant data (all-zero block) vanish.
+    # 1) β·dC + α·op(A)·op(dB), β folded in (applied exactly once, first; every later
+    #    term accumulates).
+    if !iszero(Bb)
+        if tB == 'C' && T <: BlasComplexFloat
+            # α·op(A)·dB^H: the conj is lane-varying, so per output column j build the
+            # conjugated product in a hoisted (Nw, m) scratch and conj-add:
+            # t[k,i,j] = conj(conj(α)·Σ_l conj(op(A)[i,l])·dB[k,j,l]).
+            fA, Ae = tA == 'N' ? ('C', A) : (tA == 'T' ? ('N', conj(A)) : ('N', A))
+            W = Matrix{T}(undef, Nw, m)
+            for j in 1:n
+                BLAS.gemm!('N', fA, conj(α), view(Bb,:,j,:), Ae, zero(T), W)
+                Cslab = view(Cb,:,:,j)
+                if iszero(β)
+                    Cslab .= conj.(W)
+                else
+                    Cslab .= β .* Cslab .+ conj.(W)
+                end
+            end
+        else
+            # Per output column j: dC slab j (Nw, m) := α·(dB slice j)·op(A)ᵀ + β·(slab j).
+            # Slabs are contiguous and slices unit-stride in the lane axis, so both are
+            # valid BLAS matrices.
+            fA, Ae = if tA == 'N'
+                ('T', A)
+            elseif tA == 'T' || T <: BlasRealFloat
+                ('N', A)
+            else
+                ('N', conj(A))
+            end
+            for j in 1:n
+                Bslice = tB == 'N' ? view(Bb,:,:,j) : view(Bb,:,j,:)
+                BLAS.gemm!('N', fA, α, Bslice, Ae, β, view(Cb,:,:,j))
+            end
+        end
+    else
+        _scale_or_zero!(Cb, β)
     end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+    # 2) α·op(dA)·op(B).
+    if !iszero(Ab)
+        if tA == 'N'
+            # One flat gemm: contracting dA's last axis with op(B), the (Nw·m, p) flat
+            # view of dA's block times op(B) lands lane-major — the flat view of dC's
+            # block. gemm applies tB (including 'C') to its right operand natively.
+            BLAS.gemm!(
+                'N', tB, α, reshape(Ab, Nw * m, p), B, one(T), reshape(Cb, Nw * m, n)
+            )
+        elseif tA == 'T' || T <: BlasRealFloat
+            # Slab i of dA's block (contiguous (Nw, p) — column i of A, i.e. row i of
+            # op(A)) times op(B) lands in dC's lane-unit-stride row slice i.
+            for i in 1:m
+                BLAS.gemm!('N', tB, α, view(Ab,:,:,i), B, one(T), view(Cb,:,i,:))
+            end
+        else
+            # Complex 'C': t[k,i,j] = conj(conj(α)·Σ_l dA[k,l,i]·conj(op(B)[l,j])), and
+            # conj(op(B)) re-expresses through gemm flags for tB ∈ {'T','C'}; only
+            # tB == 'N' materialises conj(B).
+            fB, Be = tB == 'N' ? ('N', conj(B)) : (tB == 'T' ? ('C', B) : ('T', B))
+            W = Matrix{T}(undef, Nw, n)
+            for i in 1:m
+                BLAS.gemm!('N', fB, conj(α), view(Ab,:,:,i), Be, zero(T), W)
+                view(Cb,:,i,:) .+= conj.(W)
+            end
         end
     end
-
-    # Primal
+    # 3) dα·op(A)·op(B): the product is lane-invariant — hoist it once when any lane
+    #    seeds α, then accumulate per seeded lane.
+    if !all(iszero, dαs)
+        AB = BLAS.gemm(tA, tB, one(T), A, B)
+        for k in 1:Nw
+            iszero(dαs[k]) || (view(Cb,k,:,:) .+= dαs[k] .* AB)
+        end
+    end
+    # 4) dβ·C over the original `C`; strong zero on NaN entries (`C` may hold undefined
+    #    values wherever `β == 0` discards them).
+    if !all(iszero, dβs)
+        Cbm = reshape(Cb, Nw, m * n)
+        @inbounds for li in 1:(m * n)
+            ci = C[li]
+            isnan(ci) && continue
+            for k in 1:Nw
+                Cbm[k, li] += dβs[k] * ci
+            end
+        end
+    end
+    ccopied && _write_back_partials!(C_dC, Cb)
+    # 5) Primal update after all tangent terms (they read the original operands).
     BLAS.gemm!(tA, tB, α, A, B, β, C)
-
     return C_dC
 end
-
 @inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},
@@ -1284,39 +2209,83 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         } where {T<:$elty},
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        side::Dual{Char},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        B_dB::Dual{<:AbstractMatrix{T}},
-        beta::Dual{T},
-        C_dC::Dual{<:AbstractMatrix{T}},
-    ) where {T<:$elty}
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        side::Lifted{Char},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        B_dB::Lifted{<:AbstractMatrix{T}},
+        beta::Lifted{T,Nw},
+        C_dC::Lifted{<:AbstractMatrix{T}},
+    ) where {Nw,T<:$elty}
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
-
-        # Extract primals.
-        s = primal(side)
-        ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        B, dB = arrayify(B_dB)
-        C, dC = arrayify(C_dC)
-
-        # Compute Fréchet derivative.
-        BLAS.$fname(s, ul, α, A, dB, β, dC)
-        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
-        if !iszero(dα)
-            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
+        s = _lsame_flag(primal(side))
+        ul = _lsame_flag(primal(uplo))
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        B = primal(B_dB)
+        C = primal(C_dC)
+        dαs = ntuple(k -> tangent(alpha, k), Val(Nw))
+        dβs = ntuple(k -> tangent(beta, k), Val(Nw))
+        Ab, _ = _partials_block(A_dA)
+        Bb, _ = _partials_block(B_dB)
+        Cb, ccopied = _partials_block(C_dC)
+        m, n = size(C)
+        # 1) β·dC + α·(A⊛dB) (side-dependent product), β folded in (applied exactly once,
+        #    first). Side 'R' contracts dB's last axis with A — one flat wide $fname on
+        #    the (Nw·m, n) view. Side 'L' right-multiplies each dC slab by Aᵀ: symmetric
+        #    Aᵀ = A directly; hermitian Aᵀ = conj(A), which is hermitian with the same
+        #    triangle significant, so a hoisted conj(A) feeds the same kernel.
+        if !iszero(Bb)
+            if s == 'R'
+                BLAS.$fname(
+                    'R', ul, α, A, reshape(Bb, Nw * m, n), β, reshape(Cb, Nw * m, n)
+                )
+            else
+                Ae = $(isherm ? :(conj(A)) : :A)
+                for j in 1:n
+                    BLAS.$fname('R', ul, α, Ae, view(Bb,:,:,j), β, view(Cb,:,:,j))
+                end
+            end
+        else
+            _scale_or_zero!(Cb, β)
         end
-        if !iszero(dβ)
-            @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        # 2) α·(dA⊛B) — skipped when `A` is constant data. dA is symmetric/hermitian with
+        #    only the `ul` triangle significant, like `A`: gather each lane into a dense
+        #    scratch, apply the same kernel into a hoisted dense product, and accumulate
+        #    into the lane's (strided) slice of the block.
+        if !iszero(Ab)
+            R = size(A, 1)
+            Ascr = Matrix{T}(undef, R, R)
+            Cscr = Matrix{T}(undef, m, n)
+            Abm = reshape(Ab, Nw, R, R)
+            for k in 1:Nw
+                copyto!(Ascr, view(Abm,k,:,:))
+                BLAS.$fname(s, ul, α, Ascr, B, zero(T), Cscr)
+                view(Cb,k,:,:) .+= Cscr
             end
         end
-
-        # Run primal computation.
+        # 3) dα·(A⊛B): lane-invariant product, hoisted once when any lane seeds α.
+        if !all(iszero, dαs)
+            AB = Matrix{T}(undef, m, n)
+            BLAS.$fname(s, ul, one(T), A, B, zero(T), AB)
+            for k in 1:Nw
+                iszero(dαs[k]) || (view(Cb,k,:,:) .+= dαs[k] .* AB)
+            end
+        end
+        # 4) dβ·C over the original `C`; strong zero on NaN entries.
+        if !all(iszero, dβs)
+            Cbm = reshape(Cb, Nw, m * n)
+            @inbounds for li in 1:(m * n)
+                ci = C[li]
+                isnan(ci) && continue
+                for k in 1:Nw
+                    Cbm[k, li] += dβs[k] * ci
+                end
+            end
+        end
+        ccopied && _write_back_partials!(C_dC, Cb)
         BLAS.$fname(s, ul, α, A, B, β, C)
         return C_dC
     end
@@ -1407,6 +2376,7 @@ for (fname, elty, relty) in (
     (:(herk!), ComplexF64, Float64),
 )
     isherm = fname == :(herk!)
+    nonbang = Symbol(chop(string(fname)))  # syrk!/herk! -> syrk/herk (non-mutating product)
 
     @eval @is_primitive(
         MinimalCtx,
@@ -1421,37 +2391,96 @@ for (fname, elty, relty) in (
         }
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _uplo::Dual{Char},
-        _t::Dual{Char},
-        α_dα::Dual{$relty},
-        A_dA::Dual{<:AbstractVecOrMat{$elty}},
-        β_dβ::Dual{$relty},
-        C_dC::Dual{<:AbstractMatrix{$elty}},
-    )
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        _uplo::Lifted{Char},
+        _t::Lifted{Char},
+        α_dα::Lifted{$relty,Nw},
+        A_dA::Lifted{<:AbstractVecOrMat{$elty}},
+        β_dβ::Lifted{$relty,Nw},
+        C_dC::Lifted{<:AbstractMatrix{$elty}},
+    ) where {Nw}
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
-
-        # Extract values from pairs.
-        uplo = primal(_uplo)
-        t = primal(_t)
-        α, dα = extract(α_dα)
-        A, dA = matrixify(A_dA)
-        β, dβ = extract(β_dβ)
-        C, dC = arrayify(C_dC)
-
-        # Compute Fréchet derivative.
-        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
-        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
-        if !iszero(dβ)
-            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        uplo = _lsame_flag(primal(_uplo))
+        t = _lsame_flag(primal(_t))
+        α = primal(α_dα)
+        A = primal(A_dA)
+        β = primal(β_dβ)
+        C = primal(C_dC)
+        dαs = ntuple(k -> tangent(α_dα, k), Val(Nw))
+        dβs = ntuple(k -> tangent(β_dβ, k), Val(Nw))
+        Ab, _ = _partials_block(A_dA)
+        Cb, ccopied = _partials_block(C_dC)
+        nC = size(C, 1)
+        Cbm = reshape(Cb, Nw, nC, nC)
+        # 1) β·dC + α·(op(dA)·op(A)' + op(A)·op(dA)') on the `uplo` triangle. The rank-2k
+        #    update mixes the lane-varying dA into both factors, so it stays per lane:
+        #    gather dA's lane and dC's `uplo` triangle into dense scratches, run the same
+        #    syr2k!/her2k! the width-1 rule uses, and scatter the triangle back. The
+        #    non-`uplo` triangle of dC is never touched, exactly like the primal.
+        if !iszero(Ab)
+            # `A` may be a vector or a matrix; gather lanes through flat views so the
+            # scratch matches either shape.
+            Abf = reshape(Ab, Nw, :)
+            Cbf = reshape(Cb, Nw, :)
+            Ascr = Array{$elty}(undef, size(A))
+            Cscr = Matrix{$elty}(undef, nC, nC)
+            for k in 1:Nw
+                copyto!(Ascr, view(Abf, k, :))
+                copyto!(Cscr, view(Cbf, k, :))
+                BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, Ascr, β, Cscr)
+                if uplo == 'U'
+                    @inbounds for j in 1:nC, i in 1:j
+                        Cbm[k, i, j] = Cscr[i, j]
+                    end
+                else
+                    @inbounds for j in 1:nC, i in j:nC
+                        Cbm[k, i, j] = Cscr[i, j]
+                    end
+                end
+            end
+        else
+            # `A` is constant data: only the β scaling remains, on the `uplo` triangle.
+            if uplo == 'U'
+                @inbounds for j in 1:nC, i in 1:j, k in 1:Nw
+                    Cbm[k, i, j] = iszero(β) ? zero($elty) : β * Cbm[k, i, j]
+                end
+            else
+                @inbounds for j in 1:nC, i in j:nC, k in 1:Nw
+                    Cbm[k, i, j] = iszero(β) ? zero($elty) : β * Cbm[k, i, j]
+                end
+            end
         end
-        # BLAS will zero out the imaginary parts on the diagonal of C,
-        # do the same on the tangent
-        $(isherm ? :(real_diag!(dC)) : :())
-
-        # Run primal computation.
+        # 2) dα·(op(A)·op(A)') — lane-invariant rank-k product, hoisted once when any lane
+        #    seeds α, masked to the `uplo` triangle.
+        if !all(iszero, dαs)
+            AAt = BLAS.$nonbang(uplo, t, one($relty), A)
+            uplo == 'U' ? triu!(AAt) : tril!(AAt)
+            for k in 1:Nw
+                iszero(dαs[k]) || (view(Cbm,k,:,:) .+= dαs[k] .* AAt)
+            end
+        end
+        # 3) dβ·C over the original `C`'s `uplo` triangle; strong zero on NaN entries
+        #    (the β==0 convention lets the caller pass an uninitialised/NaN C).
+        if !all(iszero, dβs)
+            @inbounds for j in 1:nC
+                irange = uplo == 'U' ? (1:j) : (j:nC)
+                for i in irange
+                    ci = C[i, j]
+                    isnan(ci) && continue
+                    for k in 1:Nw
+                        Cbm[k, i, j] += dβs[k] * ci
+                    end
+                end
+            end
+        end
+        # herk!'s output diagonal is real; its tangent diagonal must be too.
+        $(isherm ? quote
+            @inbounds for i in 1:nC, k in 1:Nw
+                Cbm[k, i, i] = real(Cbm[k, i, i])
+            end
+        end : :())
+        ccopied && _write_back_partials!(C_dC, Cb)
         BLAS.$fname(uplo, t, α, A, β, C)
-
         return C_dC
     end
     @eval function rrule!!(
@@ -1522,37 +2551,75 @@ end
     } where {P<:BlasFloat}
 )
 function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
+    ::Lifted{typeof(BLAS.trmm!),Nw},
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _ta::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
+) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
-
-    # Extract data.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Fréchet derivative.
-    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
-        dB .-= α .* B
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    ta = _lsame_flag(primal(_ta))
+    diag = _lsame_flag(primal(_diag))
+    α = primal(α_dα)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    dαs = ntuple(k -> tangent(α_dα, k), Val(Nw))
+    Ab, _ = _partials_block(A_dA)
+    Bb, bcopied = _partials_block(B_dB)
+    m, n = size(B)
+    # dB_k := α·(op(A)⊛dB_k) + α·(op(dA_k)⊛B) + dα_k·(op(A)⊛B), the products on `side`.
+    # 1) α·(op(A)⊛dB_k) for all lanes, applied first (it overwrites; later terms add).
+    #    Side 'R' contracts dB's last axis with op(A) — one flat wide trmm, flags native.
+    #    Side 'L' right-multiplies each dC slab by op(A)ᵀ (flag flip; complex 'C' needs a
+    #    hoisted conj(A), whose triangle mirrors A's).
+    if !iszero(Bb)
+        if side == 'R'
+            BLAS.trmm!('R', uplo, ta, diag, α, A, reshape(Bb, Nw * m, n))
+        else
+            fA, Ae = if ta == 'N'
+                ('T', A)
+            elseif ta == 'T' || P <: BlasRealFloat
+                ('N', A)
+            else
+                ('N', conj(A))
+            end
+            for j in 1:n
+                BLAS.trmm!('R', uplo, fA, diag, α, Ae, view(Bb,:,:,j))
+            end
+        end
     end
-    if !iszero(dα)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+    # 2) α·(op(dA_k)⊛B) — skipped when `A` is constant data. trmm masks dA's triangle
+    #    (and implicit unit diagonal, whose derivative the `diag == 'U'` correction
+    #    removes: the stored diagonal never enters the primal, so its partial must not
+    #    enter the tangent).
+    if !iszero(Ab)
+        R = size(A, 1)
+        Abm = reshape(Ab, Nw, R, R)
+        Ascr = Matrix{P}(undef, R, R)
+        Bscr = Matrix{P}(undef, m, n)
+        for k in 1:Nw
+            copyto!(Ascr, view(Abm,k,:,:))
+            copyto!(Bscr, B)
+            BLAS.trmm!(side, uplo, ta, diag, α, Ascr, Bscr)
+            diag === 'U' && (Bscr .-= α .* B)
+            view(Bb,k,:,:) .+= Bscr
+        end
     end
-
-    # Compute primal.
+    # 3) dα·(op(A)⊛B): lane-invariant product, hoisted once when any lane seeds α.
+    if !all(iszero, dαs)
+        AopB = Matrix{P}(undef, m, n)
+        copyto!(AopB, B)
+        BLAS.trmm!(side, uplo, ta, diag, one(P), A, AopB)
+        for k in 1:Nw
+            iszero(dαs[k]) || (view(Bb,k,:,:) .+= dαs[k] .* AopB)
+        end
+    end
+    bcopied && _write_back_partials!(B_dB, Bb)
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
     return B_dB
 end
@@ -1641,42 +2708,82 @@ end
 )
 
 function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
+    ::Lifted{typeof(BLAS.trsm!),Nw},
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _t::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
+) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
-
-    # Extract parameters.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Fréchet derivative.
-    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
-    tmp = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
-    dB .+= dα .* tmp
-
-    tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
-    if diag == 'U'
-        tmp .-= α .* tmp2
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_t))
+    diag = _lsame_flag(primal(_diag))
+    α = primal(α_dα)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    dαs = ntuple(k -> tangent(α_dα, k), Val(Nw))
+    Bb, bcopied = _partials_block(B_dB)
+    # BLAS's `α == 0` quick return sets `B := 0` without ever referencing `A`, so `A` may
+    # legally hold garbage. The JVP is `dα·op(A)⁻¹⊛B`, needing the solve only when some
+    # lane seeds α; with none, result and derivative are both identically zero and the
+    # solve below would otherwise propagate a legal NaN in `A` into the result.
+    if iszero(α)
+        fill!(Bb, zero(P))
+        if !all(iszero, dαs)
+            BLAS.trsm!(side, uplo, trans, diag, one(P), A, B)
+            for k in 1:Nw
+                iszero(dαs[k]) || (view(Bb,k,:,:) .= dαs[k] .* B)
+            end
+        end
+        fill!(B, zero(P))
+        bcopied && _write_back_partials!(B_dB, Bb)
+        return B_dB
     end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
-    dB .-= tmp
-
-    # Run primal computation.
+    Ab, _ = _partials_block(A_dA)
+    m, n = size(B)
+    # Form α·dB + dα·B before the primal overwrites B. With Y = α·op(A)⁻¹⊛B,
+    # dY = op(A)⁻¹⊛(α·dB + dα·B − op(dA)⊛Y): no unscaled primal solve is needed.
+    @inbounds for j in 1:n, i in 1:m, k in 1:Nw
+        db = α * Bb[k, i, j]
+        Bb[k, i, j] = iszero(dαs[k]) ? db : db + dαs[k] * B[i, j]
+    end
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    # trmm masks dA's triangle; remove the implicit unit diagonal's contribution.
+    if !iszero(Ab)
+        R = size(A, 1)
+        Abm = reshape(Ab, Nw, R, R)
+        Ascr = Matrix{P}(undef, R, R)
+        tmp = Matrix{P}(undef, m, n)
+        for k in 1:Nw
+            copyto!(Ascr, view(Abm,k,:,:))
+            copyto!(tmp, B)
+            BLAS.trmm!(side, uplo, trans, diag, one(P), Ascr, tmp)
+            diag == 'U' && (tmp .-= B)
+            view(Bb,k,:,:) .-= tmp
+        end
+    end
+    # Apply op(A)⁻¹ to every lane. Side 'R' solves the (Nw·m, n) flat view in one wide
+    # trsm, flags native; side 'L' right-divides each slab by op(A)ᵀ (flag flip; complex
+    # 'C' needs a hoisted conj(A)).
+    if side == 'R'
+        BLAS.trsm!('R', uplo, trans, diag, one(P), A, reshape(Bb, Nw * m, n))
+    else
+        fA, Ae = if trans == 'N'
+            ('T', A)
+        elseif trans == 'T' || P <: BlasRealFloat
+            ('N', A)
+        else
+            ('N', conj(A))
+        end
+        for j in 1:n
+            BLAS.trsm!('R', uplo, fA, diag, one(P), Ae, view(Bb,:,:,j))
+        end
+    end
+    bcopied && _write_back_partials!(B_dB, Bb)
     return B_dB
 end
 
@@ -1821,6 +2928,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     rng = rng_ctor(123456)
+    # A float scalar of a DIFFERENT precision from `P`, for the short-form `axpy!` rows below.
+    Q = real(P) === Float64 ? Float32 : Float64
+    plain = (false, :none, nothing)
 
     test_cases = vcat(
 
@@ -1834,10 +2944,123 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
+
+        # Dense/strided long and short forms; width > 1 catches lane-stride misreads.
+        Any[
+            (plain..., BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, 5, P(2), randn(rng, P, 5), 1, randn(rng, P, 5), 1),
+            (
+                plain...,
+                BLAS.axpy!,
+                P(2),
+                view(randn(rng, P, 10), 1:2:10),
+                view(randn(rng, P, 10), 1:2:10),
+            ),
+            (plain..., BLAS.axpby!, P(2), randn(rng, P, 5), P(3), randn(rng, P, 5)),
+            (
+                plain...,
+                BLAS.axpby!,
+                P(2),
+                view(randn(rng, P, 10), 1:2:10),
+                P(3),
+                view(randn(rng, P, 10), 1:2:10),
+            ),
+            # Number scalars: NoTangent Int and mixed-precision floating tangents.
+            (plain..., BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
+        ]...,
+
+        # Convenience forms need their own boundary above width 1; cover strides too.
+        Any[
+            (plain..., BLAS.scal!, P(2), randn(rng, P, 5)),
+            (plain..., BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
+        ]...,
+        (
+            if P <: Real
+                Any[
+                    (plain..., BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                    (
+                        plain...,
+                        BLAS.dot,
+                        view(randn(rng, P, 10), 1:2:10),
+                        view(randn(rng, P, 10), 1:2:10),
+                    ),
+                ]
+            else
+                Any[]
+            end
+        )...,
+
+        # Strided operands whose stride divides `incx`, which BLAS's raw walk maps onto the
+        # operand's own elements one step at a time. `norm(view(A, 1, :))` is the ordinary form of
+        # this: the one-argument `nrm2` passes `incx = stride`, giving a step of 1.
+        Any[
+            (false, :none, nothing, BLAS.nrm2, 5, view(randn(rng, P, 12), 1:2:12), 2),
+            (false, :none, nothing, BLAS.nrm2, 4, view(randn(rng, P, 12), 1:3:12), 3),
+            (false, :none, nothing, BLAS.nrm2, view(randn(rng, P, 12), 1:2:12)),
+            (false, :none, nothing, BLAS.nrm2, 6, view(randn(rng, P, 6, 6), 1, :), 6),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.scal!,
+                5,
+                P(2),
+                view(randn(rng, P, 12), 1:2:12),
+                2,
+            ),
+        ]...,
+
+        # Length 40 exceeds norm2's threshold (32) for the inlined nrm2(x) boundary.
+        map([randn(rng, P, 40)]) do x
+            (false, :stability, nothing, BLAS.nrm2, x)
+        end...,
+
+        # Empty dot exercises gemv's quick return without β scaling.
+        (
+            if P <: BlasRealFloat
+                map([0, 3, 5]) do n
+                    return (
+                        false, :stability, nothing, dot, randn(rng, P, n), randn(rng, P, n)
+                    )
+                end
+            else
+                []
+            end
+        )...,
         map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
+
+        # Forward primitives; derived rows cover reverse. Keep the direct chunk-width
+        # sweep and stability checks for boxed block accumulators; and the strided operand exercises the per-lane fallback.
+        (
+            if P <: BlasRealFloat
+                []
+            else
+                map([BLAS.dotc, BLAS.dotu]) do f
+                    flags = (false, :stability, (; skip_reverse=true))
+                    return [
+                        (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
+                        # Negative increments: BLAS walks the same elements backwards from
+                        # `(-n+1)*inc + 1`, so the value matches `inc = +1`, but the block loop's
+                        # `1 + (t-1)*inc` would run off the front. Takes the per-lane fallback.
+                        (flags..., f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1),
+                        (
+                            flags...,
+                            f,
+                            3,
+                            randn(rng, P, 3),
+                            1,
+                            view(randn(rng, P, 12), 1:2:12),
+                            2,
+                        ),
+                    ]
+                end
+            end
+        )...,
 
         # axpy!(n, a, x, incx, y, incy)
         map_prod([1, 3, 11], [1, 2], [1, 2]) do (n, incx, incy)
@@ -1869,10 +3092,28 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
         # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
         map_prod([1, 3, 11], [1, 2]) do (n, incx)
-            flags = (false, :stability, nothing)
+            opts =
+                P <: Complex ? (throws=(ArgumentError, "overlapping complex"),) : nothing
+            flags = (false, :stability, opts)
             x = randn(rng, P, n * incx)
             return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
         end,
+        (
+            if P <: Complex
+                x = randn(rng, P, 4)
+                [(
+                    false,
+                    :none,
+                    (throws=(ArgumentError, "overlapping complex"),),
+                    BLAS.axpy!,
+                    P(2),
+                    view(x, 1:3),
+                    view(x, 2:4),
+                )]
+            else
+                []
+            end
+        )...,
 
         #
         # BLAS LEVEL 2
@@ -1892,6 +3133,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
+        end...,
+
+        # Zero-length x quick-returns without β scaling; the size sweep above is nonempty.
+        map(βs) do β
+            P <: BlasRealFloat && imag(β) != 0 && return []
+            return [(
+                false,
+                :none,
+                nothing,
+                BLAS.gemv!,
+                'N',
+                P(1),
+                randn(rng, P, 3, 0),
+                P[],
+                P(β),
+                randn(rng, P, 3),
+            )]
         end...,
 
         # symv!, hemv!
@@ -1934,8 +3192,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     # BLAS LEVEL 3
     #
 
+    # Pair scalar seeds rather than crossing them: preserve α==1 && β==0, α==0,
+    # and β zero/nonzero branches, plus every dα/dβ zero combination. Nonzero
+    # imaginary parts catch missing conjugation in complex rules.
+    αβs = if P <: BlasComplexFloat
+        [(1.0, 0.0), (0.0, 0.33), (0.46 + 0.32im, 0.0), (0.46 + 0.32im, 0.39 + 0.27im)]
+    else
+        [(1.0, 0.0), (0.0, 0.33), (-0.25, 0.0), (-0.25, 0.33)]
+    end
+    dαβs = if P <: BlasComplexFloat
+        [(0.0, 0.0), (0.44, 0.0), (0.0, -0.11), (-0.20 + 0.38im, 0.86 + 0.44im)]
+    else
+        [(0.0, 0.0), (0.44, 0.0), (0.0, -0.11), (0.44, -0.11)]
+    end
     dαs = [0.0, 0.44, -0.20 + 0.38im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
 
     # 1.10 fails to infer part of a matmat product in the pullback
     perf_flag = VERSION < v"1.11-" ? :none : :stability
@@ -1948,10 +3218,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(t_flags, t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
+            map_prod(t_flags, t_flags, αβs, dαβs) do (tA, tB, (α, β), (dα, dβ))
                 As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
                 Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
                 Cs = blas_matrices(rng, P, 3, 5)
@@ -1970,9 +3237,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123457)
-            map_prod(t_flags, αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(t_flags, αβs, dαβs) do (tA, (α, β), (dα, dβ))
                 P <: BlasRealFloat && tA == 'C' && return []
 
                 As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
@@ -1995,9 +3260,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123458)
-            map_prod(['T', 'C'], t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(['T', 'C'], t_flags, αβs, dαβs) do (tA, tB, (α, β), (dα, dβ))
                 P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
@@ -2018,9 +3281,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123459)
-            map_prod(['T', 'C'], αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(['T', 'C'], αβs, dαβs) do (tA, (α, β), (dα, dβ))
                 P <: BlasRealFloat && tA == 'C' && return []
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
@@ -2045,9 +3306,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123460)
-            map_prod(uplos, syrk_herk_trans, αs, βs, dαs, dβs) do (ul, t, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(uplos, syrk_herk_trans, αβs, dαβs) do (ul, t, (α, β), (dα, dβ))
                 f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
                 # herk! requires real-valued α, β (relty = real(P) for complex P)
                 ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
@@ -2071,9 +3330,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123461)
-            map_prod(uplos, αs, βs, dαs, dβs) do (ul, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(uplos, αβs, dαβs) do (ul, (α, β), (dα, dβ))
                 f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
                 ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
                 rb = P <: BlasComplexFloat ? real(P)(real(β)) : P(β)
@@ -2100,14 +3357,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ) do (side, ul, tA, dA, M, N, dα)
                 P <: BlasRealFloat && imag(dα) != 0 && return []
 
-                t = tA == 'N'
                 R = side == 'L' ? M : N
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
                     α_dα = CoDual(randn(rng, P), P(dα))
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (
                         false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
                     )
@@ -2115,6 +3369,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
     )
+
+    # Lowercase flags must select the same derivative branches as their uppercase forms.
+    # Keep uplo uppercase: Julia's wrapper validates it before calling BLAS.
+    let
+        rng = rng_ctor(123456)
+        A = blas_matrices(rng, P, 3, 3)[1]
+        B = blas_matrices(rng, P, 3, 2)[1]
+        push!(
+            test_cases,
+            (
+                false,
+                perf_flag,
+                nothing,
+                BLAS.trmm!,
+                'L',
+                'U',
+                'n',
+                'u',
+                randn(rng, P),
+                A,
+                B,
+            ),
+        )
+    end
 
     # trsm!
     test_cases = append!(
@@ -2124,7 +3402,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2]
             ) do (side, ul, tA, dA, M, N)
-                t = tA == 'N'
                 R = side == 'L' ? M : N
                 a = randn(rng, P)
                 As = map(blas_matrices(rng, P, R, R)) do A
@@ -2133,16 +3410,135 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 end
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (false, perf_flag, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
                 end
             end
         end...,
     )
 
+    # The unscaled solve overflows, but the scaled primal and JVP are finite. Pin dα=0
+    # so finite differences can perturb A and B without overflowing the scaled result.
+    let
+        α = P(real(P) === Float32 ? 1e-30 : 1e-300)
+        A = fill(P(0.25), 1, 1)
+        B = fill(P(real(P) === Float32 ? 1e38 : 1e308), 1, 1)
+        opts = (mode=ForwardMode,)
+        push!(
+            test_cases,
+            (false, :none, opts, BLAS.trsm!, 'L', 'U', 'N', 'N', CoDual(α, zero(P)), A, B),
+        )
+    end
+
+    # trmm!/trsm! reverse ∇α at α=0: the pullback's `dot(B,dB)/α'` is 0/0 there (the primal zeroed
+    # B), so it recomputes the finite gradient from the saved input. One α=0 case per op suffices
+    # (the rule is linear in α; α≠0 is covered by the random-α cases above).
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123456)
+            A = randn(rng, P, 2, 2)
+            Ainv = copy(A)
+            Ainv[diagind(Ainv)] .+= 1
+            B = randn(rng, P, 2, 2)
+            [
+                (false, :none, nothing, f, 'L', 'U', 'N', 'N', zero(P), M, copy(B)) for
+                (f, M) in ((BLAS.trmm!, A), (BLAS.trsm!, Ainv))
+            ]
+        end,
+    )
+
+    # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
+    # α·B·A + β·C for side='R' (A is N×N); A is symmetric (symm!) / Hermitian (hemm!), read through
+    # the `uplo` triangle.
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123462)
+            fs = P <: BlasComplexFloat ? (BLAS.symm!, BLAS.hemm!) : (BLAS.symm!,)
+            map_prod(
+                fs, ['L', 'R'], uplos, [1, 3], [1, 2], dαs
+            ) do (f, side, ul, M, N, dα)
+                P <: BlasRealFloat && imag(dα) != 0 && return []
+                R = side == 'L' ? M : N
+                As = blas_matrices(rng, P, R, R)
+                Bs = blas_matrices(rng, P, M, N)
+                Cs = blas_matrices(rng, P, M, N)
+                return map(As, Bs, Cs) do A, B, C
+                    α_dα = CoDual(randn(rng, P), P(dα))
+                    β_dβ = CoDual(randn(rng, P), randn(rng, P))
+                    (false, perf_flag, nothing, f, side, ul, α_dα, A, B, β_dβ, C)
+                end
+            end
+        end...,
+    )
+
+    # Square operands also satisfy Julia's case-sensitive dimension checks for lowercase flags.
+    let
+        rng = rng_ctor(123463)
+        A = randn(rng, P, 3, 3)
+        B = randn(rng, P, 3, 3)
+        C = randn(rng, P, 3, 3)
+        x, y = randn(rng, P, 3), randn(rng, P, 3)
+        for t in ('n', 't', 'c')
+            push!(
+                test_cases,
+                (
+                    false,
+                    :stability,
+                    nothing,
+                    BLAS.gemv!,
+                    t,
+                    P(0.7),
+                    copy(A),
+                    copy(x),
+                    P(0.3),
+                    copy(y),
+                ),
+            )
+        end
+        fs = P <: BlasComplexFloat ? (BLAS.symm!, BLAS.hemm!) : (BLAS.symm!,)
+        for f in fs, side in ('l', 'r')
+            push!(
+                test_cases,
+                (
+                    false,
+                    perf_flag,
+                    nothing,
+                    f,
+                    side,
+                    'U',
+                    P(0.7),
+                    copy(A),
+                    copy(B),
+                    P(0.3),
+                    copy(C),
+                ),
+            )
+        end
+        f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
+        for t in ('n', P <: BlasComplexFloat ? 'c' : 't')
+            push!(
+                test_cases,
+                (
+                    false,
+                    perf_flag,
+                    nothing,
+                    f,
+                    'U',
+                    t,
+                    real(P)(0.7),
+                    copy(A),
+                    real(P)(0.3),
+                    copy(C),
+                ),
+            )
+        end
+    end
+
+    throwing_rows, throwing_memory = _blas_throwing_rows(P)
+    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
     append!(test_cases, _blas_alias_test_cases(P))
-    memory = Any[]
+    memory = throwing_memory
     return test_cases, memory
 end
 
@@ -2158,13 +3554,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # dot (real types only)
     if P <: BlasRealFloat
         flags = (false, :none, nothing)
+        dot_flags = (false, :none, (skip_chunked=true,))
         append!(
             test_cases,
             [
-                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                # `skip_chunked`: the strided `dot` walks both arguments through raw pointers,
+                # which the element-major partials block cannot serve at width > 1 (stride N per
+                # lane). The sibling rows below take the same shape but pass, so they are left on.
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
             ],
         )
     end
@@ -2180,6 +3580,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                     (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
                     (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
                     (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                    # Differently-typed pair (dense Vector + strided SubArray): the @is_primitive
+                    # binds the two array args to independent type vars, so the pair stays a forward
+                    # primitive. A strided operand is read out of view order by the block loop, so
+                    # this hits the per-lane BLAS fallback (correct at all widths, less efficient).
+                    (flags..., f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
+                    # Walk running past the view into its parent: BLAS reads raw memory, so the
+                    # elements beyond the view belong to the parent and carry partials.
+                    # `_dot_walk_widen` re-expresses the operand over that parent.
+                    (
+                        flags...,
+                        f,
+                        30,
+                        view(randn(rng, P, 40), 1:4),
+                        1,
+                        view(randn(rng, P, 40), 1:4),
+                        1,
+                    ),
                 ],
             )
         end
@@ -2209,13 +3626,47 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         end...,
     )
 
+    # Build the view inside the call: the direct numerical harness copies immutable
+    # view arguments separately, losing their shared primal storage.
+    self_axpby! = (a, x, b) -> begin
+        v = view(x, 1:2:length(x))
+        BLAS.axpby!(a, v, b, v)
+        return x
+    end
+    for b in (0, 3)
+        push!(test_cases, (false, :none, nothing, self_axpby!, P(2), P[1, 2, 3, 4], P(b)))
+    end
+
+    # Summing the coefficients first overflows, although each scaled cotangent is finite.
+    scaled_self_axpby = x -> begin
+        R = real(eltype(x))
+        a = eltype(x)(R(0.75) * floatmax(R))
+        y = copy(x)
+        BLAS.axpby!(a, y, a, y)
+        return real(first(y)) / real(a)
+    end
+    push!(test_cases, (false, :none, (mode=ReverseMode,), scaled_self_axpby, zeros(P, 2)))
+    cancelled_self_axpby = x -> begin
+        R = real(eltype(x))
+        a = eltype(x)(2)
+        y = copy(x)
+        BLAS.axpby!(a, y, -a, y)
+        return (R(0.75) * floatmax(R)) * real(first(y))
+    end
+    push!(
+        test_cases,
+        (false, :none, (output_tangent=one(real(P)),), cancelled_self_axpby, zeros(P, 2)),
+    )
+
     memory = Any[]
     return test_cases, memory
 end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    return Any[], Any[]
+    # Removable singularity at the zero vector: the nrm2 frule (`s/(2y)`) and reverse pullback
+    # (`X*(dy/y)`) are both 0/0 there, so every lane's partial and the gradient must be 0, not NaN.
+    return Any[(false, :none, nothing, BLAS.nrm2, 3, zeros(3), 1)], Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     test_cases = Any[
@@ -2226,6 +3677,58 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
         (false, :none, nothing, x -> sum(complex(x) * x), rand(rng_ctor(123), 5, 5)),
     ]
     return test_cases, Any[]
+end
+
+function _blas_throwing_rows(P::Type{<:BlasFloat})
+    # Nondivisible stride: BLAS walks elements outside the view. Divisible strides
+    # and nrm2's one-argument form are covered as working cases.
+    x = view(P[i for i in 1:10], 1:2:10)
+    # Unit first-dimension stride but non-dense: logical index 4 is raw offset 6.
+    m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
+    # Widening cannot support a walk that also leaves the parent.
+    short = view(P[i for i in 1:40], 36:39)
+    cases = Any[
+        ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.nrm2, (6, m, 1), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.nrm2, (5, x, 1), (;)),
+    ]
+    # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
+    # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
+    # Real `BLAS.dot` has a reverse pointer rule but no forward one; `dotc`/`dotu` have both.
+    xs = P[i for i in 1:3]
+    ys = P[i for i in 4:6]
+    placeholder = (ArgumentError, "tangent is the placeholder")
+    two_operand = if P <: Real
+        ((BLAS.dot, (; mode=ReverseMode)),)
+    else
+        ((BLAS.dotc, (;)), (BLAS.dotu, (;)))
+    end
+    append!(
+        cases,
+        Any[
+            (placeholder, BLAS.nrm2, (3, pointer(xs), 1), (;)),
+            (placeholder, BLAS.scal!, (3, P(2), pointer(xs), 1), (;)),
+            (placeholder, BLAS.axpy!, (3, P(2), pointer(xs), 1, pointer(ys), 1), (;)),
+            ((placeholder, f, (3, pointer(xs), 1, pointer(ys), 1), opts) for
+             (f, opts) in two_operand)...,
+        ],
+    )
+    # Complex forward dot must reject walks past the parent. Real dot takes a
+    # different path; reverse uses tangent pointers with no operand length to check.
+    P <: Complex && append!(
+        cases,
+        Any[
+            (
+                (ArgumentError, "runs past the"),
+                f,
+                (30, short, 1, short, 1),
+                (; mode=ForwardMode),
+            ) for f in (BLAS.dotc, BLAS.dotu)
+        ],
+    )
+
+    return cases, Any[x, m, xs, ys, short]
 end
 
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
@@ -2240,65 +3743,18 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
 end
 
-# Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
-# In particular, BLAS permits undefined input y wherever β == 0 discards it.
-@inline function _rvs_guarded_dot(y, dy)
-    s = zero(promote_type(eltype(y), eltype(dy)))
-    @inbounds for i in eachindex(y, dy)
-        d = dy[i]
-        iszero(d) || (s += y[i]' * d)
-    end
-    return s
-end
-
-# Strong-zero dot(dy, B, x)': skip unused rows before reading potentially NaN
-# factors, accumulating the row product without materialising B*x.
-@inline function _rvs_guarded_dot3(dy, B, x)
-    s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
-    @inbounds for i in eachindex(dy)
-        d = dy[i]
-        iszero(d) && continue
-        r = zero(s)
-        for j in eachindex(x)
-            r += B[i, j] * x[j]
-        end
-        s += d * r'
-    end
-    return s
-end
-
-# BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
-@inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
-    iszero(β) ? fill!(B, zero(T)) : (B .*= β)
-    return nothing
-end
-
-# Reuse the primal's logical step for its partial: their index spaces match,
-# but their strides can differ.
-@inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
-    x, 1:step:(1 + (n - 1) * step)
-)
-@inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
-    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
-)
-
-@inline function _blas_walk_step(x, inc::Integer, n::Integer)
-    inc > 0 || return nothing
-    x isa Ptr && return inc
-    step = if x isa AbstractVector
-        st = stride(x, 1)
-        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
-    else
-        strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
-    end
-    step === nothing && return nothing
-    return 1 + (n - 1) * step <= length(x) ? step : nothing
-end
-
 # Aliases are intentional: the registry seeds and copies them with shared caches.
 function _blas_alias_test_cases(P)
     rows = Any[]
+    for b in (0, 3)
+        x = P[1, 2, 3, 4]
+        a = P <: Complex ? P(2 + im) : P(2)
+        push!(rows, (false, :stability, nothing, BLAS.axpby!, a, x, P(b), x))
+    end
     flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
+    x = P[1, 2, 3]
+    P <: Real && push!(rows, (flags..., BLAS.axpy!, P(2), view(x, 1:2), view(x, 2:3)))
+    push!(rows, (flags..., BLAS.axpby!, P(2), view(x, 1:2), P(3), view(x, 2:3)))
     A = P[2 1; 1 3]
     v = P[1, 2]
     for f in (BLAS.gemv!, BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
