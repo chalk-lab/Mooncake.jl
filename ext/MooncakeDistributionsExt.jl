@@ -13,19 +13,24 @@ import Mooncake:
     CoDual,
     ContiguousSubVector,
     DefaultCtx,
-    Dual,
+    Lifted,
     MinimalCtx,
+    Nfwd,
     NoFData,
     NoRData,
     RData,
+    ReverseMode,
     Tangent,
+    _arrayify_lane,
     _fields,
+    _scalar_ndual,
     arrayify,
     frule!!,
     increment!!,
     primal,
     rrule!!,
     tangent,
+    zero_dual,
     zero_fcodual,
     zero_rdata
 
@@ -38,13 +43,16 @@ const DenseFloatArray = DenseArray{<:IEEEFloat}
     typeof(rand!),AbstractRNG,<:ArrayLikeSampleable,<:DenseFloatArray
 }
 function frule!!(
-    ::Dual{typeof(rand!)},
-    rng::Dual{<:AbstractRNG},
-    sampler::Dual{<:ArrayLikeSampleable},
-    x::Dual{P,P},
-) where {P<:DenseFloatArray}
-    rand!(primal(rng), primal(sampler), primal(x))
-    fill!(tangent(x), zero(eltype(P)))
+    ::Lifted{typeof(rand!),Nw},
+    rng::Lifted{<:AbstractRNG,Nw},
+    sampler::Lifted{<:ArrayLikeSampleable,Nw},
+    x::Lifted{P,Nw},
+) where {P<:DenseFloatArray,Nw}
+    px, dx = arrayify(x)
+    rand!(primal(rng), primal(sampler), px)
+    for lane in 1:Nw
+        fill!(dx[lane], zero(eltype(P)))
+    end
     return x
 end
 function rrule!!(
@@ -77,16 +85,7 @@ end
 # (`σ < 1e-20` in `Float32`). Dividing by `σ` rather than scaling by `inv(σ)` matters for
 # the same reason: `inv(σ)` overflows once `σ < 1 / floatmax(P)`, where `(x - μ) / σ` and
 # the derivative are both still finite.
-@is_primitive DefaultCtx Tuple{typeof(logpdf),Normal{P},P} where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{Normal{P}}, x::Dual{P}
-) where {P<:IEEEFloat}
-    dp = primal(d)
-    ḋ = _fields(tangent(d))
-    z = (primal(x) - dp.μ) / dp.σ
-    ẏ = ((abs2(z) - one(P)) * ḋ.σ - z * (tangent(x) - ḋ.μ)) / dp.σ
-    return Dual(logpdf(dp, primal(x)), ẏ)
-end
+@is_primitive DefaultCtx ReverseMode Tuple{typeof(logpdf),Normal{P},P} where {P<:IEEEFloat}
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{Normal{P}}, x::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -206,6 +205,22 @@ end
 _mean_tangent(μ̇::Tangent, ::Int) = _fields(μ̇).value
 _mean_tangent(μ̇::Vector, i::Int) = @inbounds μ̇[i]
 
+# Forward analogues, hoisted out of the element loop: lane `k` of the mean's tangent, as
+# something indexable by element. A `Fill` mean shares one value, so its lane is a scalar
+# wrapped to answer any index.
+struct _ConstLane{P}
+    value::P
+end
+Base.@propagate_inbounds Base.getindex(c::_ConstLane, ::Int) = c.value
+_mean_lane(μ̇::Nfwd.NDualArray, k::Int) = Nfwd.tangent_view(μ̇, k)
+_mean_lane(μ̇, k::Int) = _ConstLane(μ̇.fields.value.partials[k])
+
+# `arrayify` is restricted to `BlasFloat`, but these rules are claimed for every `IEEEFloat`,
+# `Float16` included. `_arrayify_lane` is generic over the dual eltypes, so the lanes come from it.
+function _lanes(x, ::Val{N}) where {N}
+    return ntuple(k -> _arrayify_lane(primal(x), tangent(x), k), Val(N))
+end
+
 # A `Vector` mean carries its gradient in fdata; a `Fill` mean carries it in rdata, which
 # leaves the distribution with no fdata at all.
 _mean_fdata(::CoDual{<:ScalMvNormal,NoFData}) = NoFData()
@@ -232,28 +247,9 @@ function _accum_sqmahal!(dx, dμ::Vector{P}, px, μ, scale::P) where {P}
     return NoRData()
 end
 
-@is_primitive DefaultCtx Tuple{
+@is_primitive DefaultCtx ReverseMode Tuple{
     typeof(sqmahal),ScalMvNormal{P},DenseVec{P}
 } where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(sqmahal)}, d::Dual{<:ScalMvNormal{P}}, x::Dual{<:DenseVec{P}}
-) where {P<:IEEEFloat}
-    dp = primal(d)
-    ḋ = _fields(tangent(d))
-    px, ẋ = arrayify(x)
-    _check_dims(dp, px)
-    μ = dp.μ
-    variance = dp.Σ.value
-    y = zero(P)
-    ẏ = zero(P)
-    @inbounds @simd for i in eachindex(px, ẋ)
-        residual = px[i] - μ[i]
-        y += abs2(residual)
-        ẏ += residual * (ẋ[i] - _mean_tangent(ḋ.μ, i))
-    end
-    y /= variance
-    return Dual(y, (2 * ẏ - y * _fields(ḋ.Σ).value) / variance)
-end
 function rrule!!(
     ::CoDual{typeof(sqmahal)}, d::CoDual{<:ScalMvNormal{P}}, x::CoDual{<:DenseVec{P}}
 ) where {P<:IEEEFloat}
@@ -291,24 +287,32 @@ const DiagMvNormal{P} = MvNormal{P,<:PDiagMat{P,Vector{P}},<:Vector{P}}
     typeof(logpdf),DiagMvNormal{P},DenseVec{P}
 } where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{<:DenseVec{P}}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(logpdf),N}, d::Lifted{<:DiagMvNormal{P},N}, x::Lifted{<:DenseVec{P},N}
+) where {N,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(N))
     _check_dims(dp, px)
-    ḋ = _fields(tangent(d))
-    μ̇ = ḋ.μ
-    v̇ = _fields(ḋ.Σ).diag
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     y = zero(P)
-    ẏ = zero(P)
-    @inbounds @simd for i in eachindex(px, dp.μ, variance, μ̇, v̇)
+    @inbounds @simd for i in eachindex(px, dp.μ, variance)
         residual = px[i] - dp.μ[i]
-        scaled_residual = residual / variance[i]
-        y += log(variance[i]) + residual * scaled_residual
-        ẏ += _coordinate_derivative(residual, variance[i], ẋ[i] - μ̇[i], v̇[i])
+        y += log(variance[i]) + residual * (residual / variance[i])
     end
-    return Dual(-P(0.5) * (length(px) * log(P(2π)) + y), -P(0.5) * ẏ)
+    y = -P(0.5) * (length(px) * log(P(2π)) + y)
+    lanes = ntuple(Val(N)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
+        acc = zero(P)
+        @inbounds @simd for i in eachindex(px, dp.μ, variance)
+            residual = px[i] - dp.μ[i]
+            acc += _coordinate_derivative(residual, variance[i], ẋ[i] - μ̇[i], v̇[i])
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{<:DenseVec{P}}
@@ -345,32 +349,45 @@ const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P}
 
 _dists(d::Distributions.ProductDistribution) = d.dists
 _dists(::Distributions.ProductDistribution, dd) = _fields(dd).dists
+_fwd_dists(::Distributions.ProductDistribution, dd) = dd.fields.dists
 
 @is_primitive DefaultCtx Tuple{
     typeof(logpdf),NormalProduct{P,N},Array{P,N}
 } where {P<:IEEEFloat,N}
 function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{<:NormalProduct{P,N}}, x::Dual{Array{P,N}}
-) where {P<:IEEEFloat,N}
+    ::Lifted{typeof(logpdf),Nw},
+    d::Lifted{<:NormalProduct{P,N},Nw},
+    x::Lifted{Array{P,N},Nw},
+) where {Nw,P<:IEEEFloat,N}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     dists = _dists(dp)
-    ḋists = _dists(dp, tangent(d))
+    ḋists = _fwd_dists(dp, tangent(d))
     y = zero(P)
-    ẏ = zero(P)
-    @inbounds for i in eachindex(px, dists, ḋists)
+    @inbounds for i in eachindex(px, dists)
         dist = dists[i]
-        ḋ = _fields(ḋists[i])
-        z = (px[i] - dist.μ) / dist.σ
-        y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
-        ẏ += ((abs2(z) - one(P)) * ḋ.σ - z * (ẋ[i] - ḋ.μ)) / dist.σ
+        y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2((px[i] - dist.μ) / dist.σ)
     end
     # A `σ == 0` component makes the fused sum `Inf - Inf`, where the primal's `iszero(σ)`
-    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop
-    # above vectorisable; the derivative agrees with the derived rule either way.
+    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop above
+    # vectorisable; the derivative agrees with the derived rule either way.
     isnan(y) && (y = logpdf(dp, px))
-    return Dual(y, ẏ)
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        acc = zero(P)
+        @inbounds for i in eachindex(px, dists, ḋists)
+            dist = dists[i]
+            ḋ = ḋists[i].fields
+            z = (px[i] - dist.μ) / dist.σ
+            acc +=
+                ((abs2(z) - one(P)) * ḋ.σ.partials[k] - z * (ẋ[i] - ḋ.μ.partials[k])) /
+                dist.σ
+        end
+        acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:NormalProduct{P,N}}, x::CoDual{Array{P,N}}
@@ -416,6 +433,7 @@ const CountingProduct{P} = Union{
 
 _dists(d::Distributions.Product) = d.v
 _dists(::Distributions.Product, dd) = _fields(dd).v
+_fwd_dists(::Distributions.Product, dd) = dd.fields.v
 
 # One observation's contribution to its distribution's cotangent. Add a method here to
 # cover another counting distribution.
@@ -441,21 +459,27 @@ _param_tangent(ṫ) = only(values(_fields(ṫ)))
     typeof(logpdf),CountingProduct{P},AbstractVector{<:Integer}
 } where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(logpdf)},
-    d::Dual{<:CountingProduct{P}},
-    x::Dual{<:AbstractVector{<:Integer}},
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(logpdf),N},
+    d::Lifted{<:CountingProduct{P},N},
+    x::Lifted{<:AbstractVector{<:Integer},N},
+) where {N,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
     _check_dims(dp, px)
     dists = _dists(dp)
-    ḋists = _dists(dp, tangent(d))
-    ẏ = zero(P)
-    @inbounds for i in eachindex(px, dists, ḋists)
-        insupport(dists[i], px[i]) || continue
-        ẏ += _param_derivative(dists[i], px[i]) * _param_tangent(ḋists[i])
+    ḋists = _fwd_dists(dp, tangent(d))
+    y = _sum_logpdf(dists, px, P)
+    lanes = ntuple(Val(N)) do k
+        acc = zero(P)
+        @inbounds for i in eachindex(px, dists, ḋists)
+            insupport(dists[i], px[i]) || continue
+            acc +=
+                _param_derivative(dists[i], px[i]) *
+                only(values(ḋists[i].fields)).partials[k]
+        end
+        acc
     end
-    return Dual(_sum_logpdf(dists, px, P), ẏ)
+    return Lifted{P,N}(y, _scalar_ndual(y, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)},
@@ -486,33 +510,43 @@ end
     typeof(logpdf),DiagMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:DiagMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
+) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = _fields(tangent(d))
-    μ̇ = ḋ.μ
-    v̇ = _fields(ḋ.Σ).diag
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     constant = -P(0.5) * (length(dp) * log(P(2π)) + sum(log, variance))
     y = Vector{P}(undef, size(px, 2))
-    ẏ = Vector{P}(undef, size(px, 2))
     @inbounds for j in axes(px, 2)
         mahalanobis = zero(P)
-        derivative = zero(P)
-        @simd for i in eachindex(dp.μ, variance, μ̇, v̇)
+        @simd for i in eachindex(dp.μ, variance)
             residual = px[i, j] - dp.μ[i]
-            scaled_residual = residual / variance[i]
-            mahalanobis += residual * scaled_residual
-            derivative += _coordinate_derivative(
-                residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i]
-            )
+            mahalanobis += residual * (residual / variance[i])
         end
         y[j] = constant - P(0.5) * mahalanobis
-        ẏ[j] = -P(0.5) * derivative
     end
-    return Dual(y, ẏ)
+    V = zero_dual(Val(Nw), y)
+    blk = getfield(V, :partials_block)
+    for k in 1:Nw
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
+        lane = view(blk, k, :)
+        @inbounds for j in axes(px, 2)
+            derivative = zero(P)
+            @simd for i in eachindex(dp.μ, variance)
+                residual = px[i, j] - dp.μ[i]
+                derivative += _coordinate_derivative(
+                    residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i]
+                )
+            end
+            lane[j] = -P(0.5) * derivative
+        end
+    end
+    return Lifted{Vector{P},Nw}(y, V)
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
@@ -560,27 +594,38 @@ end
     typeof(loglikelihood),DiagMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(loglikelihood)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(loglikelihood),Nw},
+    d::Lifted{<:DiagMvNormal{P},Nw},
+    x::Lifted{Matrix{P},Nw},
+) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = _fields(tangent(d))
-    μ̇ = ḋ.μ
-    v̇ = _fields(ḋ.Σ).diag
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     mahalanobis = zero(P)
-    ẏ = zero(P)
     @inbounds for j in axes(px, 2)
-        @simd for i in eachindex(dp.μ, variance, μ̇, v̇)
+        @simd for i in eachindex(dp.μ, variance)
             residual = px[i, j] - dp.μ[i]
-            scaled_residual = residual / variance[i]
-            mahalanobis += residual * scaled_residual
-            ẏ += _coordinate_derivative(residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i])
+            mahalanobis += residual * (residual / variance[i])
         end
     end
     y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * sum(log, variance) + mahalanobis)
-    return Dual(y, -P(0.5) * ẏ)
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
+        acc = zero(P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(dp.μ, variance)
+                residual = px[i, j] - dp.μ[i]
+                acc += _coordinate_derivative(residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i])
+            end
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
@@ -622,32 +667,44 @@ const IsoMvNormal{P} = MvNormal{P,<:ScalMat{P},Vector{P}}
 
 @is_primitive DefaultCtx Tuple{typeof(logpdf),IsoMvNormal{P},Matrix{P}} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{<:IsoMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:IsoMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
+) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = _fields(tangent(d))
-    μ̇ = ḋ.μ
-    v̇ = _fields(ḋ.Σ).value
+    ḋ = tangent(d).fields
     μ = dp.μ
     variance = dp.Σ.value
     constant = -P(0.5) * length(μ) * (log(P(2π)) + log(variance))
     y = Vector{P}(undef, size(px, 2))
-    ẏ = Vector{P}(undef, size(px, 2))
     @inbounds for j in axes(px, 2)
         mahalanobis = zero(P)
-        derivative = zero(P)
-        @simd for i in eachindex(μ, μ̇)
+        @simd for i in eachindex(μ)
             residual = px[i, j] - μ[i]
-            scaled_residual = residual / variance
-            mahalanobis += residual * scaled_residual
-            derivative += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
+            mahalanobis += residual * (residual / variance)
         end
         y[j] = constant - P(0.5) * mahalanobis
-        ẏ[j] = -P(0.5) * derivative
     end
-    return Dual(y, ẏ)
+    V = zero_dual(Val(Nw), y)
+    blk = getfield(V, :partials_block)
+    for k in 1:Nw
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = ḋ.Σ.fields.value.partials[k]
+        lane = view(blk, k, :)
+        @inbounds for j in axes(px, 2)
+            derivative = zero(P)
+            @simd for i in eachindex(μ)
+                residual = px[i, j] - μ[i]
+                derivative += _coordinate_derivative(
+                    residual, variance, ẋ[i, j] - μ̇[i], v̇
+                )
+            end
+            lane[j] = -P(0.5) * derivative
+        end
+    end
+    return Lifted{Vector{P},Nw}(y, V)
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
@@ -696,28 +753,39 @@ end
     typeof(loglikelihood),IsoMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(loglikelihood)}, d::Dual{<:IsoMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(loglikelihood),Nw},
+    d::Lifted{<:IsoMvNormal{P},Nw},
+    x::Lifted{Matrix{P},Nw},
+) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋ = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = _fields(tangent(d))
-    μ̇ = ḋ.μ
-    v̇ = _fields(ḋ.Σ).value
+    ḋ = tangent(d).fields
     μ = dp.μ
     variance = dp.Σ.value
     mahalanobis = zero(P)
-    ẏ = zero(P)
     @inbounds for j in axes(px, 2)
-        @simd for i in eachindex(μ, μ̇)
+        @simd for i in eachindex(μ)
             residual = px[i, j] - μ[i]
-            scaled_residual = residual / variance
-            mahalanobis += residual * scaled_residual
-            ẏ += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
+            mahalanobis += residual * (residual / variance)
         end
     end
     y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
-    return Dual(y, -P(0.5) * ẏ)
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = ḋ.Σ.fields.value.partials[k]
+        acc = zero(P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(μ)
+                residual = px[i, j] - μ[i]
+                acc += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
+            end
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
@@ -768,31 +836,9 @@ end
 # factorisation raises a `MethodError` rather than being silently mishandled.
 const CholeskyMvNormal{P} = MvNormal{P,<:PDMat{P,<:Matrix{P}},<:Vector{P}}
 
-@is_primitive DefaultCtx Tuple{
+@is_primitive DefaultCtx ReverseMode Tuple{
     typeof(logpdf),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(logpdf)}, d::Dual{<:CholeskyMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
-    dp = primal(d)
-    px, ẋ = arrayify(x)
-    _check_dims(dp, px)
-    L = dp.Σ.chol.L
-    ḋ = _fields(tangent(d))
-    L̇ = _factor_tangent(dp.Σ.chol, _fields(_fields(ḋ.Σ).chol).factors)
-    standardized = L \ (px .- dp.μ)
-    perturbed = L \ ((ẋ .- ḋ.μ) - L̇ * standardized)
-    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdet(dp.Σ.chol))
-    logdet_derivative = _logdet_derivative(L, L̇)
-    y = Vector{P}(undef, size(px, 2))
-    ẏ = Vector{P}(undef, size(px, 2))
-    @inbounds for j in axes(px, 2)
-        column = view(standardized, :, j)
-        y[j] = constant - P(0.5) * sum(abs2, column)
-        ẏ[j] = -logdet_derivative - dot(column, view(perturbed, :, j))
-    end
-    return Dual(y, ẏ)
-end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
@@ -825,29 +871,9 @@ function rrule!!(
     return out, chol_logpdf_matrix_pb!!
 end
 
-@is_primitive DefaultCtx Tuple{
+@is_primitive DefaultCtx ReverseMode Tuple{
     typeof(loglikelihood),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(loglikelihood)}, d::Dual{<:CholeskyMvNormal{P}}, x::Dual{Matrix{P}}
-) where {P<:IEEEFloat}
-    dp = primal(d)
-    px, ẋ = arrayify(x)
-    _check_dims(dp, px)
-    L = dp.Σ.chol.L
-    ḋ = _fields(tangent(d))
-    L̇ = _factor_tangent(dp.Σ.chol, _fields(_fields(ḋ.Σ).chol).factors)
-    standardized = L \ (px .- dp.μ)
-    n = size(px, 2)
-    y =
-        -P(0.5) *
-        (length(px) * log(P(2π)) + n * logdet(dp.Σ.chol) + sum(abs2, standardized))
-    ẏ = -(
-        n * _logdet_derivative(L, L̇) +
-        dot(standardized, L \ ((ẋ .- ḋ.μ) - L̇ * standardized))
-    )
-    return Dual(y, ẏ)
-end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
