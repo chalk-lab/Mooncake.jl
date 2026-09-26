@@ -987,6 +987,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     for P in complexPs
         append!(test_cases, _lapack_alias_test_cases(P))
     end
+    @static if VERSION > v"1.11-"
+        for P in complexPs
+            push!(
+                test_cases,
+                (
+                    false,
+                    :stability,
+                    nothing,
+                    LAPACK.lacpy!,
+                    zeros(P, 2, 2),
+                    P[1 2; 3 4],
+                    'u',
+                ),
+            )
+        end
+    end
     memory = Any[]
     return test_cases, memory
 end

@@ -1637,6 +1637,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
         end
     end
+    flags = (
+        false,
+        :none,
+        (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
+    )
+    append!(
+        test_cases,
+        [
+            (flags..., IntrinsicsWrappers.pointerref, p, 1, 1),
+            (flags..., IntrinsicsWrappers.pointerset, p, 2.0, 1, 1),
+            (flags..., unsafe_wrap, Array, p, (5,)),
+        ],
+    )
     return test_cases, memory
 end
 
@@ -1753,5 +1766,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
     ]
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+            x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,)),
+            zeros(UInt8, 8),
+        ),
+    )
     return test_cases, Any[]
 end

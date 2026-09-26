@@ -14,6 +14,13 @@ end
     generate_mem()
     @test TestUtils.count_allocs(generate_mem) <= 2
 
+    @static if VERSION >= v"1.12-"
+        y, _ = rrule!!(
+            zero_fcodual(Core.memorynew), zero_fcodual(Memory{Float64}), zero_fcodual(1000)
+        )
+        @test all(iszero, tangent(y))
+    end
+
     # Check that zero_tangent and randn_tangent yield consistent results.
     @testset "$f" for f in [zero_tangent, Base.Fix1(randn_tangent, Xoshiro(123))]
         arr = randn(2)
