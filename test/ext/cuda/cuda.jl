@@ -292,6 +292,7 @@ end
         _gather_mask_bits(x) = sum(x[BitVector([true, false, true, false])])
         _gather_mask_cx(x) = real(sum(x[CuArray(Bool[true, false, true, false])]))
         _gather_mask_none(x) = sum(x[CuArray(falses(4))]) + sum(x)
+        _slice_gram(m) = (a = m[:, 1:2]; b = m[3:end, :]; sum(a * a') + sum(b' * b))
         # A view carries an offset into its parent's allocation, while its tangent starts at
         # the beginning of a buffer of its own; deriving the tangent from the primal's offset
         # shifts every gradient by that many elements.  The weighted case pins which element
@@ -1024,6 +1025,15 @@ end
                 _rand(rng, 4, 4),
                 CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
             ),
+            # Multidimensional slicing with integers, ranges and colons.
+            (false, :none, true, getindex, _rand(rng, 4, 5), :, 2:3),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 2:3, :),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 1:2:4, 5:-2:1),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 2, :),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 3:2, :),
+            (false, :none, true, getindex, _rand(rng, Float32, 3, 4, 2), :, 2:3, 2),
+            (false, :none, true, getindex, _rand(rng, ComplexF64, 4, 5), 2:4, 1:2),
+            (false, :none, false, _slice_gram, _rand(rng, 5, 4)),
             # Non-differentiable device arrays: copy, fill and reductions had no rule.
             (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
             (false, :none, false, _nodiff_fill, _rand(rng, 8)),
@@ -2088,6 +2098,13 @@ end
                 ),
                 # Scalar indexing would silently run a one-element GPU op per index.
                 (209, "scalar getindex", z -> z[1], (x32,), (; msg=r"scalar indexing")),
+                (
+                    282,
+                    "multidimensional scalar getindex",
+                    z -> z[1, 2],
+                    (M32,),
+                    (; msg=r"scalar indexing"),
+                ),
                 (
                     210,
                     "scalar setindex!",
