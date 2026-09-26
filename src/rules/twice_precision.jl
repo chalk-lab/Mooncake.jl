@@ -21,8 +21,14 @@ function randn_tangent_internal(rng::AbstractRNG, p::TWP{F}, ::MaybeCache) where
 end
 
 import .TestUtils: has_equal_data_internal
-function has_equal_data_internal(p::P, q::P, ::Bool, ::IdDict{Any,Bool}) where {P<:TWP}
-    return Float64(p) ≈ Float64(q)
+function has_equal_data_internal(
+    p::P, q::P, equal_undefs::Bool, d::IdDict{Any,Bool}
+) where {P<:TWP}
+    if haskey(d, TestUtils.ExactFloats())
+        return has_equal_data_internal(p.hi, q.hi, equal_undefs, d) &&
+               has_equal_data_internal(p.lo, q.lo, equal_undefs, d)
+    end
+    return has_equal_data_internal(Float64(p), Float64(q), equal_undefs, d)
 end
 
 increment_internal!!(::IncCache, t::T, s::T) where {T<:TWP} = t + s
