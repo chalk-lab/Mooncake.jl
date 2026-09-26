@@ -196,11 +196,121 @@ using DispatchDoctor: allow_unstable
             end
         end
     end
+    @testset "set_tangent_field! does not convert implicitly" begin
+        # Like `setfield!` and forward lane writes, reject implicit precision conversion.
+        t = MutableTangent((a=5.0, b=NoTangent()))
+        @test Mooncake.set_tangent_field!(t, :a, 3.0) === 3.0
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+        # Non-differentiable fields accept their own tangent type.
+        @test Mooncake.set_tangent_field!(t, :b, NoTangent()) === NoTangent()
+        @test_throws ArgumentError Mooncake.set_tangent_field!(t, :a, Float32(3))
+        @test_throws "Cannot write a `Float32`" Mooncake.set_tangent_field!(
+            t, 1, Float32(3)
+        )
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+    end
     @testset "restricted inner constructor" begin
         p = TestResources.NoDefaultCtor(5.0)
         t = Mooncake.Tangent((x=5.0,))
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
+    end
+    @static if VERSION >= v"1.11-"
+        @testset "_dot counts one buffer once across two positions" begin
+            # Distinct arrays over one Memory must be counted once. This checks a relationship
+            # between tangent positions directly, outside the single-value registry.
+            a = collect(1.0:4.0)
+            dt = Mooncake._zero_tangents((identity, (a, reshape(a, 2, 2))))[2]
+            dt[1] .= 1.0
+            @test Mooncake._dot(dt, dt) == 4.0
+            # Distinct storage must still count twice, or the fix trades a double-count for an
+            # under-count that nothing downstream refuses.
+            d2 = Mooncake._zero_tangents((identity, (collect(1.0:4.0), collect(1.0:4.0))))[2]
+            d2[1] .= 1.0
+            d2[2] .= 1.0
+            @test Mooncake._dot(d2, d2) == 8.0
+            # An `Array` beside its own backing `Memory`: the same buffer reached another way.
+            v = collect(1.0:3.0)
+            d3 = Mooncake._zero_tangents((identity, (v, getfield(v, :ref).mem)))[2]
+            d3[1] .= 1.0
+            @test Mooncake._dot(d3, d3) == 3.0
+        end
+    end
+    @static if VERSION < v"1.11-"
+        @testset "1.10 keys array tangents on their storage" begin
+            # Julia 1.10 has no Memory; array tangents must share via the backing buffer.
+            a = collect(1.0:4.0)
+            b = reshape(a, 2, 2)
+            t = Mooncake._zero_tangents((identity, a, b))
+            @test pointer(t[2]) == pointer(t[3])
+            f(x, y) = sum(x) + sum(y)
+            _, g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2] == fill(2.0, 4)
+            @test g[3] == fill(2.0, 2, 2)
+            # Distinct arrays must still not deduplicate.
+            c = collect(1.0:4.0)
+            td = Mooncake._zero_tangents((identity, a, c))
+            @test pointer(td[2]) != pointer(td[3])
+            # A cache entry is stored as a `vec`, so the shapes callers get back must still be
+            # their own.
+            @test size(Mooncake.zero_tangent(zeros(2, 3, 4))) == (2, 3, 4)
+            @test ndims(Mooncake.zero_tangent(fill(1.0))) == 0
+        end
+    end
+    @static if VERSION >= v"1.11-"
+        @testset "_add_to_primal keeps two positions over one buffer" begin
+            # Finite differences must preserve sharing to perturb the original function.
+            a = collect(1.0:4.0)
+            t = (a, reshape(a, 2, 2))
+            dt = Mooncake._zero_tangents((identity, t))[2]
+            dt[1] .= 1.0
+            p = Mooncake._add_to_primal(t, dt, true)
+            @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+            @test p[1] == a .+ 1.0
+            @test vec(p[2]) == a .+ 1.0
+            # Distinct storage must stay distinct, or the perturbations of two independent
+            # arguments would land on top of each other.
+            b, d = collect(1.0:3.0), collect(1.0:3.0)
+            q = Mooncake._add_to_primal(
+                (b, d), Mooncake._zero_tangents((identity, (b, d)))[2], true
+            )
+            @test getfield(q[1], :ref).mem !== getfield(q[2], :ref).mem
+            # Primal and tangent Memory capacities can differ. Use `sizehint!`: Julia 1.12's
+            # `append!` allocates exactly. Assert spare capacity so the case stays exercised.
+            w = Float64[]
+            sizehint!(w, 16)
+            append!(w, [1.0, 2.0, 3.0])
+            @test length(getfield(w, :ref).mem) > length(w)
+            @test Mooncake._add_to_primal(w, Mooncake.zero_tangent(w) .+ 0.5, true) ==
+                [1.5, 2.5, 3.5]
+        end
+        @static if VERSION >= v"1.11-"
+            @testset "_scale and increment!! respect one shared buffer" begin
+                a = collect(1.0:4.0)
+                ts = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                t1, t2 = ts[2], ts[3]
+                t1 .= 1.0
+                # Scaling must preserve sharing through the finite-difference perturbation chain.
+                s = Mooncake.TestUtils._scale(0.5, (t1, t2))
+                @test getfield(s[1], :ref).mem === getfield(s[2], :ref).mem
+                p = Mooncake.TestUtils._add_to_primal((a, reshape(a, 2, 2)), s, true)
+                @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+                # Increment the shared buffer once despite distinct array containers.
+                u1, u2 = ts[2], ts[3]
+                y = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                y[2] .= 1.0
+                @test Mooncake.increment!!((u1, u2), (y[2], y[3]))[1] == fill(2.0, 4)
+                # Arrays and their backing Memory must use the same increment cache key.
+                m1 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m1[2] .= 1.0
+                m2 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m2[2] .= 1.0
+                @test Mooncake.increment!!((m1[2], m1[3]), (m2[2], m2[3]))[1] ==
+                    fill(2.0, 4)
+            end
+        end
     end
     @testset "require_tangent_cache($P)" for (P, expected_result) in [
         (Float64, false),
