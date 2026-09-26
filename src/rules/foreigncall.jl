@@ -317,8 +317,7 @@ function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     y = deepcopy(x)
     fdy = tangent(y)
     function deepcopy_pb!!(dy)
-        # Only fdata hold buffers, and `fdy` shares them as `fdx` does: add each once.
-        increment_internal!!(MemoryIncCache(), fdx, fdy)
+        increment!!(fdx, fdy)
         return NoRData(), increment!!(dx, dy)
     end
     return y, deepcopy_pb!!
