@@ -294,7 +294,11 @@ function rrule!!(
 ) where {T,V}
     y = CoDual(
         ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a)),
-        ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a)),
+        if IntrinsicsWrappers._elements_occupy_storage(V)
+            ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
+        else
+            Ptr{V}(0)
+        end,
     )
     return y, NoPullback(ntuple(_ -> NoRData(), 7))
 end
