@@ -275,7 +275,7 @@ end
 #   prepared forward cache can use packed NDual execution.
 # All eight parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA<:Tuple}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
@@ -2976,18 +2976,27 @@ end
     ids = Expr(
         :tuple,
         (
-            :((
-                get!(objects, primals[$k], $k),
-                get!(storage, _storage_id(primals[$k]), $k),
-                _storage_offset(primals[$k]),
-            )) for k in eachindex(leaves)
+            :(
+                let object = get!(objects, primals[$k], $k)
+                    (
+                        object,
+                        _alias_storage_index!(storage, primals[$k], object),
+                        _storage_offset(primals[$k]),
+                    )
+                end
+            ) for k in eachindex(leaves)
         )...,
     )
+    workspace =
+        length(leaves) * (length(leaves) - 1) ÷ 2 > 256 ? :((objects, storage)) : :(nothing)
     return quote
         primals = $fs
         objects = IdDict{Any,Int}()
-        storage = IdDict{Any,Int}()
-        $ids
+        storage = VERSION >= v"1.11-rc4" ? IdDict{Any,Int}() : Dict{UInt,Int}()
+        partition = $ids
+        _empty_alias_map!(objects)
+        _empty_alias_map!(storage)
+        (partition=partition, workspace=($workspace))
     end
 end
 
@@ -2999,7 +3008,7 @@ function _alias_checks(@nospecialize(tangents::Type))
     if n * (n - 1) ÷ 2 > 256
         fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
         labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
-        return :(_check_alias_partition(aliases, $fs, $labels))
+        return :(_check_alias_partition(aliases, $fs, $labels, workspace))
     end
     checks = Expr(:block)
     for a in 1:n
@@ -3037,24 +3046,55 @@ end
     return nothing
 end
 
-@noinline function _check_alias_partition(aliases::Tuple, primals::Tuple, labels::Tuple)
-    objects = IdDict{Any,Int}()
-    storage = IdDict{Any,Int}()
-    for k in eachindex(primals)
-        _check_alias_offset(aliases[k][3], primals[k], labels[k])
-        for (first, id, expected, relation) in (
-            (objects, primals[k], aliases[k][1], "object"),
-            (storage, _storage_id(primals[k]), aliases[k][2], "storage"),
-        )
-            f = get!(first, id, k)
-            f == expected || _throw_prepared_cache_aliasing_error(
-                labels[min(f, expected)], labels[k], f < expected, relation
-            )
+# `empty!(::IdDict)` discards its table capacity (and allocates on Julia 1.11+).
+# Clear references in place so successful and rejected checks both reuse the table.
+function _empty_alias_map!(d::IdDict)
+    for i in eachindex(d.ht)
+        @inbounds Base._unsetindex!(d.ht, i)
+    end
+    d.count = d.ndel = 0
+    return d
+end
+_empty_alias_map!(d::Dict) = empty!(d)
+
+# A typed address map avoids boxing legacy data pointers on the wide-signature path.
+@inline _alias_storage_index!(storage::IdDict, x, object::Int) = get!(
+    storage, _storage_id(x), object
+)
+@inline _alias_storage_index!(::Dict{UInt,Int}, x, object::Int) = object
+@inline _alias_storage_index!(storage::Dict{UInt,Int}, x::Array, object::Int) = get!(
+    storage, only(Base.dataids(x)), object
+)
+
+@noinline function _check_alias_partition(
+    aliases::Tuple, primals::Tuple, labels::Tuple, workspace
+)
+    objects, storage = workspace
+    try
+        for k in eachindex(primals)
+            _check_alias_offset(aliases[k][3], primals[k], labels[k])
+            object = get!(objects, primals[k], k)
+            buffer = _alias_storage_index!(storage, primals[k], object)
+            for (f, expected, relation) in
+                ((object, aliases[k][1], "object"), (buffer, aliases[k][2], "storage"))
+                f == expected || _throw_prepared_cache_aliasing_error(
+                    labels[min(f, expected)], labels[k], f < expected, relation
+                )
+            end
         end
+    finally
+        _empty_alias_map!(objects)
+        _empty_alias_map!(storage)
     end
     return nothing
 end
 
-@generated function _check_tangent_aliasing(aliases::Tuple, tangents::Tuple, fx::Tuple)
-    return Expr(:block, _alias_checks(tangents), :(return nothing))
+@generated function _check_tangent_aliasing(state::NamedTuple, tangents::Tuple, fx::Tuple)
+    return Expr(
+        :block,
+        :(aliases = state.partition),
+        :(workspace = state.workspace),
+        _alias_checks(tangents),
+        :(return nothing),
+    )
 end
