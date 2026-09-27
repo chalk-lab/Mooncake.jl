@@ -24,14 +24,14 @@ z = f(x, y)
 ```
 where `f` itself may contain data / state which is modified by executing `f`.
 `rule_for_f` is _some_ callable which claims to be a forwards-rule for `f`.
-For `rule_for_f` to be a valid forwards-rule for `f`, it must be applicable to `Dual`s as follows:
+For `rule_for_f` to be a valid forwards-rule for `f`, it must be applicable to `Lifted`s as follows:
 ```julia
-z_dz = rule_for_f(Dual(f, df), Dual(x, dx), Dual(y, dy))::Dual
+z_dz = rule_for_f(lift(f, df), lift(x, dx), lift(y, dy))::Lifted
 ```
 where:
 1. `rule_for_f` is a callable. It might be written by-hand, or derived algorithmically.
 1. `df`, `dx`, and `dy` are tangents for `f`, `x`, and `y` respectively. Before executing `rule_for_f`, they are inputs to the derivative of `(f, x, y)`. After executing they are outputs of this derivative.
-1. `z_dz` is a `Dual` containing the primal and the component of the derivative of `(f, x, y)` to `(df, dx, dy)` associated to `z`.
+1. `z_dz` is a `Lifted` containing the primal and the component of the derivative of `(f, x, y)` to `(df, dx, dy)` associated to `z`.
 1. running `rule_for_f` leaves `f`, `x`, and `y` in the same state that running `f` does.
 
 We refer readers to [Algorithmic Differentiation](@ref) to explain what we mean when we talk about the "derivative" above.
@@ -42,17 +42,14 @@ In [Hand-Written Rules](@ref) and [Derived Rules](@ref) below, we introduce two 
 
 ### Tangent Types
 
-We will use the type system documented in [Representing Gradients](@ref).
-This means that every primal type has a unique tangent type.
-Moreover, if a `Dual` is defined as follows:
-```julia
-struct Dual{P, T}
-    primal::P
-    tangent::T
-end
-```
-it must always hold that `T = tangent_type(P)`.
-
+Forward rules use `Lifted{P,N,V}`: `P` is the primal type, `N` the number of tangent
+lanes, and `V = Mooncake.dual_type(Val(N), P)` the forward representation.
+`primal(x)` returns the primal, `tangent(x)` returns the full representation, and
+`tangent(x, k)` reads lane `k`. For an IEEE float the representation is an `NDual`
+containing the primal and all partials; it is not the reverse-mode `tangent_type(P)`.
+At width one, `lift(p, dp)` and `unlift(x)` convert to and from a primal and an
+ordinary Mooncake tangent. For arrays, `arrayify(x)` returns the primal and a tuple
+of writable lane views.
 
 ### Testing
 
@@ -68,7 +65,7 @@ Hand-written rules are implemented by writing methods of two functions: `is_prim
 
 ### `is_primitive`
 
-`is_primitive(::Type{<:Union{MinimalForwardsCtx, DefaultForwardsCtx}}, signature::Type{<:Tuple}, world)` must return `true` if AD must attempt to differentiate a call by passing the arguments to `frule!!`, and `false` otherwise.
+`is_primitive(ctx, ForwardMode, signature, world)` must return `true` if AD must attempt to differentiate a call by passing the arguments to `frule!!`, and `false` otherwise.
 The [`Mooncake.@is_primitive`](@ref) macro must be used to extend to create new primitives.
 
 ### `frule!!`
@@ -83,8 +80,10 @@ For example, the `frule!!` for signature `Tuple{typeof(sin), Float64}` is the ru
 Recall that for ``y = \sin(x)`` we have that ``\dot{y} = \cos(x) \dot{x}``.
 So the `frule!!` for signature `Tuple{typeof(sin), Float64}` is:
 ```julia
-function frule!!(::Dual{typeof(sin)}, x::Dual{Float64})
-    return Dual(sin(x.primal), cos(x.primal) * x.tangent)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(sin),Float64}
+function frule!!(::Lifted{typeof(sin),N}, x::Lifted{Float64,N}) where {N}
+    v = sin(tangent(x))
+    return Lifted{Float64,N}(v.value, v)
 end
 ```
 
@@ -93,18 +92,18 @@ end
 Recall that for ``Z = X Y`` we have that ``\dot{Z} = X \dot{Y} + \dot{X} Y``.
 So the `frule!!` for signature `Tuple{typeof(mul!), Matrix{Float64}, Matrix{Float64}, Matrix{Float64}}` is:
 ```julia
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(mul!),Matrix{Float64},Matrix{Float64},Matrix{Float64}}
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.mul!)}, Z::Dual{P}, X::Dual{P}, Y::Dual{P}
-) where {P<:Matrix{Float64}}
-
-    # Primal computation.
-    mul!(Z.primal, X.primal, Y.primal)
-
-    # Overwrite tangent of `z` to contain propagated tangent.
-    mul!(Z.tangent, X.primal, Y.tangent)
-
-    # Add the result of x.tangent * y.primal to `z.tangent`.
-    mul!(Z.tangent, X.tangent, Y.primal, 0.0, 1.0) 
+    ::Lifted{typeof(mul!),N}, Z::Lifted{P,N}, X::Lifted{P,N}, Y::Lifted{P,N}
+) where {P<:Matrix{Float64},N}
+    z, dz = arrayify(Z)
+    x, dx = arrayify(X)
+    y, dy = arrayify(Y)
+    mul!(z, x, y)
+    for k in 1:N
+        mul!(dz[k], x, dy[k])
+        mul!(dz[k], dx[k], y, 1.0, 1.0)
+    end
     return Z
 end
 ```
@@ -131,15 +130,15 @@ end
 ```
 should be something of the form
 ```julia
-function rule_for_f(::Dual{typeof(f)}, x::Dual)
-    y = rule_for_g(zero_dual(g), x)
-    z = rule_for_h(zero_dual(h), x, y)
+function rule_for_f(::Lifted{typeof(f),N}, x::Lifted{<:Any,N}) where {N}
+    y = rule_for_g(zero_lifted(Val(N), g), x)
+    z = rule_for_h(zero_lifted(Val(N), h), x, y)
     return z
 end
 ```
 Observe that the transformation is simply
-1. replace all variables with `Dual` variables,
-1. replace all constants (e.g. `g` and `h`) with constant `Dual`s,
+1. replace all variables with `Lifted` variables,
+1. replace all constants (e.g. `g` and `h`) with constant `Lifted`s,
 1. replace all calls with calls to rules.
 
 In general, all control flow should be identical between primal and rule.
@@ -158,20 +157,15 @@ julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})
 ```
 Recall that `_2` is the second argument, in this case a `Float64`, and `%1` and `%2` are `SSAValue`s.
 Roughly speaking, the forwards-mode IR for the (ficiticious) function `rule_for_f` should look something like:
-```julia
-julia> Base.code_ircode_by_type(Tuple{typeof(rule_for_f), Dual{typeof(f), NoTangent}, Dual{Float64, Float64}})
-1-element Vector{Any}:
-2 1 ─ %1 = invoke rule_for_g($(Dual(Main.g, NoTangent())), _3::Dual{Float64, Float64})::Dual{Float64, Float64}
-3 │   %2 = invoke rule_for_h($(Dual(Main.h, NoTangent())), _3::Dual{Float64, Float64}, %1::Dual{Float64, Float64})::Dual{Float64, Float64}
-4 └──      return %2
-   => Dual{Float64, Float64}
-```
+The exact printed IR depends on Julia and Mooncake versions. Inspect a derived rule
+with the [developer tools](developer_tools.md) rather than relying on an old concrete wrapper layout.
+
 Observe that:
 1. All `Argument`s have been incremented by `1`. i.e. `_2` has been replaced with `_3`. This corresponds to the fact that the arguments to the rule have all been shuffled along by one, and the rule itself is now the first argument.
-1. Everything has been turned into a `Dual`.
-1. Constants such as `Dual(Main.g, NoTangent())` appear directly in the code (here as `QuoteNode`s).
+1. Everything has been turned into a `Lifted`.
+1. Constants such as `zero_lifted(Val(N), g)` appear directly in the code (here as `QuoteNode`s).
 
-(In practice it might be that we actually construct the `Dual`ed constants on the lines immediately preceding a call and rely on the compiler to optimise them back into the call directly).
+(In practice it might be that we actually construct the `Lifted`ed constants on the lines immediately preceding a call and rely on the compiler to optimise them back into the call directly).
 
 Here, as before, we have not specified exactly what `rule_for_f`, `rule_for_g`, and `rule_for_h` are.
 This is intentional -- they are just callables satisfying the [Forwards-Rule Interface](@ref).
@@ -211,13 +205,13 @@ They can all be found in `ir_normalisation.jl`:
 1. [`Mooncake.splatnew_to_call`](@ref): convert `Expr(:splatnew, ...)` expressions to `Expr(:call, Mooncake._splat_new_...)` expressions.
 1. [`Mooncake.intrinsic_to_function`](@ref): convert `Expr(:call, ::IntrinsicFunction, ...)` to calls to the corresponding function in [Mooncake.IntrinsicsWrappers](@ref).
 
-The purpose of converting `Expr(:foreigncall...)`, `Expr(:new, ...)` and `Expr(:splatnew, ...)` into `Expr(:call, ...)`s is to enable us to differentiate such expressions by adding methods to `frule!!(::Dual{typeof(Mooncake._foreigncall_)})`, `frule!!(::Dual{typeof(Mooncake._new_)})`, and `frule!!(::Dual{typeof(Mooncake._splat_new_)})`, in exactly the same way that we would for any other regular Julia function.
+The purpose of converting `Expr(:foreigncall...)`, `Expr(:new, ...)` and `Expr(:splatnew, ...)` into `Expr(:call, ...)`s is to enable us to differentiate such expressions by adding methods to `frule!!(::Lifted{typeof(Mooncake._foreigncall_)})`, `frule!!(::Lifted{typeof(Mooncake._new_)})`, and `frule!!(::Lifted{typeof(Mooncake._splat_new_)})`, in exactly the same way that we would for any other regular Julia function.
 
 The purpose of translating `Expr(:call, ::IntrinsicFunction, ...)` is to do with type stability -- see the docstring for the [Mooncake.IntrinsicsWrappers](@ref) module for more info.
 
 Native `gc_preserve_begin` / `gc_preserve_end` scopes are retained in forwards-mode AD.
-The preserved owners are mapped to `Dual` values, keeping both primal and tangent storage alive throughout the scope.
-The end expression still consumes the native begin token, not a `Dual`.
+The preserved owners are mapped to `Lifted` values, keeping both primal and tangent storage alive throughout the scope.
+The end expression still consumes the native begin token, not a `Lifted`.
 Preserving raw pointers alone does not keep their owning Julia objects alive.
 
 #### Statement Transformation
@@ -278,7 +272,7 @@ These remain entirely unchanged.
 
 These require minor modification.
 Suppose that a `Core.GotoIfNot` of the form `Core.GotoIfNot(%5, 4)` is encountered in the primal.
-Since `%5` will be a `Dual` in the derived rule, we must pull out the `primal` field, and pass that to the conditional instead.
+Since `%5` will be a `Lifted` in the derived rule, we must pull out the `primal` field, and pass that to the conditional instead.
 Therefore, these statments get lowered to two lines in the derived rule.
 For example, `Core.GotoIfNot(%5, 4)` would be translated to:
 ```julia
@@ -327,11 +321,10 @@ _This_ is the "rule" that users get.
 
 ## Batch Mode
 
-So far, we have assumed that we would only apply forwards-mode to a single tangent vector at a time.
-However, in practice, it is typically best to pass a collection of tangents through at a time.
-
-In order to do this, all of the transformation code listed above can remain the same, we will just need to devise a system of "batched tangents".
-Then, instead of propagating a "primal-tangent" pairs via `Dual`s, we propagate primal-tangent_batch pairs (perhaps also via `Dual`s).
+`Lifted{P,N}` carries `N` directions through one execution of the primal. Prepared
+forward caches choose a chunk width (or use `Config(chunk_size=N)`) and seed successive
+batches of basis directions. Primitive rules should propagate every lane; array rules
+can use the lane views returned by `arrayify`.
 
 ## Forwards vs Reverse Implementation
 
