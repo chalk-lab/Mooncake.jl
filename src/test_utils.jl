@@ -2061,8 +2061,10 @@ pair a `chunk_size > 1` with `mode=ForwardMode`.
 # An argument is either a primal value, seeded here, or a ready-made `Lifted` slot for a guard whose
 # trigger seeding cannot express: a raw `Ptr` (no seed exists) or a deliberately incoherent per-lane
 # V. `test_rule` takes explicit tangents the same way, via `CoDual`.
-_throws_slot(rng::AbstractRNG, ::Val{N}, x::Lifted) where {N} = x
-_throws_slot(rng::AbstractRNG, ::Val{N}, x) where {N} = randn_lifted(Val(N), rng, x)
+_throws_slot(rng::AbstractRNG, ::Val{N}, x::Lifted, ::IdDict) where {N} = x
+function _throws_slot(rng::AbstractRNG, w::Val{N}, x::P, c::IdDict) where {N,P}
+    return Lifted{P,N}(x, Mooncake._randn_dual_internal(w, rng, x, c))
+end
 _throws_primal(x::Lifted) = primal(x)
 _throws_primal(x) = x
 
@@ -2101,7 +2103,8 @@ function _test_rule_throws(
         end
     end
     if mode in [nothing, ForwardMode] && _filter in [nothing, ForwardMode]
-        slots = map(v -> _throws_slot(rng, Val(chunk_size), v), (f, x...))
+        c = IdDict{Any,Any}()
+        slots = map(v -> _throws_slot(rng, Val(chunk_size), v, c), (f, x...))
         pf, px = _throws_primal(f), map(_throws_primal, x)
         _test_throws(err, msg) do
             Mooncake.value_and_derivative!!(build_frule(pf, px...; chunk_size), slots...)
