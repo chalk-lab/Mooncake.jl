@@ -1142,8 +1142,9 @@ primal and matching axes (or length for sized collections without axes).
 
 The arguments in `x` are returned to their original state, whether the rule returns or
 raises: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the
-inputs are not mutated. `f` itself is not snapshotted — a callable that mutates its own
-fields is not restored.
+inputs are not mutated. RNG state is deliberately excluded from restoration, including
+RNGs nested inside arguments: random draws leave the RNG advanced. `f` itself is not
+snapshotted — a callable that mutates its own fields is not restored.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
@@ -2218,10 +2219,10 @@ the same gradient reverse mode does — but sharing that is not object identity 
 lift keys on the object. For those, use [`value_and_derivative!!`](@ref) with one tangent
 covering every position the storage occupies, or reverse mode, which accumulates into it.
 
-The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers
+The arguments in `x`, except RNG state, are left unchanged: an in-place `f` mutates only cache-owned buffers
 (the zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is
 restored (the generic path). `f` itself is not snapshotted — a callable that mutates its own
-fields is not restored.
+fields is not restored. Random draws leave RNGs advanced, once per executed chunk.
 
 !!! warning
     `cache` owns any mutable state returned by this function: mutable components of the
@@ -3430,6 +3431,12 @@ function _restore_inputs!!(dst::Tuple, src::Tuple, contexts::Tuple)
         empty!(c.seen)
         _copy_to_output!!(d, s, c.seen, c)
     end
+end
+
+# Random draws are stateful zero-derivative operations. Restore the original RNG binding
+# if a field was rebound, but never copy its saved state back, even when nested in an input.
+function _copy_to_output!!(dst::P, src::P, c, r::_RestoreContext) where {P<:AbstractRNG}
+    return get(r.originals, src, dst)::P
 end
 
 # Source and destination graphs must share nodes at the same positions, or restoration
