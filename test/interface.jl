@@ -1760,6 +1760,15 @@ end
 end
 
 @testset "reverse prepared alias partitions" begin
+    @testset "constant alias metadata" for n in (2, 24)
+        fx = (identity, ntuple(i -> [Float64(i)], n))
+        ts = map(zero_tangent, fx)
+        aliases = Mooncake._prepare_aliases(ts, fx)
+        TestUtils.test_rule(Random.Xoshiro(123), Mooncake._prepare_aliases, ts, fx)
+        TestUtils.test_rule(
+            Random.Xoshiro(123), Mooncake._check_tangent_aliasing, aliases, ts, fx
+        )
+    end
     @testset "unchanged repeated arrays" for a in (ones(2, 2), fill(1.0), ones(2))
         f(x, y) = sum(x) + sum(y)
         g = prepare_gradient_cache(f, a, a)
