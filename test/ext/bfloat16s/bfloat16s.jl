@@ -24,6 +24,9 @@ end
     @testset "tangent interface" begin
         rng = sr(123)
         test_tangent_interface(rng, P(1.5))
+        # Mapped seeding and scaling must keep BFloat16 conversions scalar on LLVM 16.
+        test_tangent_interface(rng, (P(1.5), P(2.0)))
+        test_tangent_interface(rng, P[1.5, 2.0])
         test_tangent_splitting(rng, P(1.5))
     end
 
@@ -78,6 +81,12 @@ end
         # Chunked forward checks must not change the reverse finite-difference directions.
         for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
             test_rule(sr(123), f, xs...; is_primitive=true, mode, rule_options...)
+        end
+        if f === hypot
+            # Scalar arithmetic barriers must not box tuple indexing in chunked rules.
+            args = map(x -> Mooncake.zero_lifted(Val(8), x), (f, xs...))
+            Mooncake.frule!!(args...)
+            @test Mooncake.TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
         end
     end
 
