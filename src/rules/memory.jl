@@ -263,8 +263,8 @@ end
 end
 @inline _dot_storage(x::Memory) = (x, 1, length(x))
 
-# Record covered positions per buffer pair to deduplicate overlapping extents. Positions share
-# an index space only at equal offsets; differing offsets must retain their element pairing.
+# Record covered target positions per buffer pair and relative offset so overlapping extents
+# deduplicate only when they retain the same element pairing.
 function _uncovered(covered::Vector{UnitRange{Int}}, r::UnitRange{Int})
     pieces = [r]
     for cr in covered
@@ -297,9 +297,8 @@ for A in (Array, Memory)
                     0.0
                 end
             end
-        # Different offsets have no shared index space for coverage.
-        (c isa NoCache || to != so) && return full()
-        k = (:dot_positions, tb, sb)
+        c isa NoCache && return full()
+        k = (:dot_positions, tb, sb, to - so)
         prev = get(c, k, nothing)
         want = to:(to + tl - 1)
         # Store a bare range on first sight; allocate a vector only for repeated buffer pairs.

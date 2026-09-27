@@ -248,6 +248,16 @@ using DispatchDoctor: allow_unstable
             d3 = Mooncake._zero_tangents((identity, (v, getfield(v, :ref).mem)))[2]
             d3[1] .= 1.0
             @test Mooncake._dot(d3, d3) == 3.0
+            # Scaling compacts an offset array; repeated pairs must still count once.
+            a = ones(4)
+            popfirst!(a)
+            @test _dot((a, a), _scale(1.0, (a, a))) == 3.0
+            b = copy(a)
+            aa = Base.wrap(Array, memoryref(a.ref, 2), (2,))
+            bb = Base.wrap(Array, memoryref(b.ref, 2), (2,))
+            bc = Base.wrap(Array, b.ref, (2,))
+            @test _dot((a, aa), (b, bb)) == 3.0
+            @test _dot((a, aa), (b, bc)) == 5.0
         end
     end
     @static if VERSION < v"1.11-"
