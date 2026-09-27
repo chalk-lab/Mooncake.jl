@@ -23,6 +23,18 @@ That gives Mooncake one source of truth for:
 - strong-zero behavior, and
 - awkward points such as discontinuities or removable singularities.
 
+## Guarded operations under forward-over-reverse
+
+A zero cotangent or seed can carry a nonzero outer perturbation. Differentiating a
+branch such as `iszero(seed) ? zero(seed) : seed * coefficient` loses that perturbation.
+The guarded scales have explicit `Lifted` forward rules that apply the product rule,
+guarding each term independently. Guarded division does the same for intrinsic square
+roots and `hypot` coefficients. Their inner dual values retain the guarded primal result.
+
+At a removable singularity, the coefficient expression must also retain its derivative:
+for example, the zero-base power coefficient uses `p * x^(p - 1)` for finite `p > 1`,
+so `x^2.0` has second derivative two at zero. A literal zero coefficient would lose it.
+
 ## Concrete MWE
 
 Here is the full pattern for a simple scalar primitive such as `cospi(x)`.
