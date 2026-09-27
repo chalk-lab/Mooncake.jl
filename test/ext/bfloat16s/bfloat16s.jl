@@ -73,11 +73,12 @@ end
     # and is captured, but snaps to one grid step (0.000977), giving ~24% relative error
     # → rtol=0.4. Two functions (acos, exp10) also suffer output-side absorption at some
     # inputs, yielding |LHS-RHS|≈0.16 even when ẏ_fd≠0 → atol=0.2.
-    # BFloat16 is not an `IEEEFloat`, so it has no `NDual` forward-dual representation — forward
-    # mode is unsupported for it. Exercise these BFloat16 rules in reverse mode only.
-    rule_options = (; atol=0.2, rtol=0.4, mode=Mooncake.ReverseMode)
+    rule_options = (; atol=0.2, rtol=0.4)
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
-        test_rule(sr(123), f, xs...; is_primitive=true, rule_options...)
+        # Chunked forward checks must not change the reverse finite-difference directions.
+        for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+            test_rule(sr(123), f, xs...; is_primitive=true, mode, rule_options...)
+        end
     end
 
     # Right at zero for BFloat16 but not the IEEEFloat types: this repo's `abs` rules branch
@@ -90,8 +91,8 @@ end
         _, pb = rule(Mooncake.zero_fcodual(sigmoid_shaped), Mooncake.zero_fcodual(P(0)))
         @test Float64(pb(one(P))[2]) ≈ 0.25 rtol = 1e-2
         # `test_rule`'s value, interface and caching checks survive that blind spot.
-        for x in (P(0), P(0.5))
-            test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, rule_options...)
+        for x in (P(0), P(0.5)), mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+            test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, mode, rule_options...)
         end
     end
 

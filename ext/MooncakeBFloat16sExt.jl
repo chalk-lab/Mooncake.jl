@@ -90,6 +90,36 @@ end
     x::Mooncake.Lifted{P,1,Tuple{P}}, lane::Integer, ::IdDict
 ) = Mooncake.tangent(x, lane)
 
+# These scalar slots contain partials only, with no duplicate primal value to check.
+Mooncake.TestUtils._chunked_v_invariant(::P, v::NTuple{N,P}, ::IdDict) where {N} = all(isfinite, v)
+Mooncake.TestUtils._chunk_lane_checkable(::NTuple{N,P}) where {N} = true
+
+const neg_float = Mooncake.IntrinsicsWrappers.neg_float
+Mooncake.@is_primitive MinimalCtx Tuple{typeof(neg_float),P}
+function Mooncake.frule!!(
+    ::Lifted{typeof(neg_float),N}, x::Lifted{P,N,NTuple{N,P}}
+) where {N}
+    return Lifted{P,N}(neg_float(primal(x)), map(-, tangent(x)))
+end
+
+for (op, derivative) in (
+    (Mooncake.IntrinsicsWrappers.add_float, :(dx + dy)),
+    (Mooncake.IntrinsicsWrappers.div_float,
+     :(nan_tangent_guard(dx, dx / py) - nan_tangent_guard(dy, (z / py) * dy))),
+)
+    @eval Mooncake.@is_primitive MinimalCtx Tuple{typeof($op),P,P}
+    @eval function Mooncake.frule!!(
+        ::Lifted{typeof($op),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{P,N,NTuple{N,P}}
+    ) where {N}
+        px, py = primal(x), primal(y)
+        z = $op(px, py)
+        dz = map(tangent(x), tangent(y)) do dx, dy
+            $derivative
+        end
+        return Lifted{P,N}(z, dz)
+    end
+end
+
 # Count one dimension, not zero fields; nested basis walks need this scalar terminal too.
 @inline Mooncake.tangent_dim(::P, ::IdDict{Any,Any}) = 1
 @inline function Mooncake._basis_seed_isbits(
