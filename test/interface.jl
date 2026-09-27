@@ -1884,8 +1884,7 @@ end
         @test Mooncake.value_and_gradient!!(intra_distinct, one_arg, (a1, b1))[2][2] ==
             (b1, a1)
 
-        # Past the eighth leaf and the third level of nesting the walk used to stop, so
-        # the same mismatch beyond either bound went unchecked.
+        # Check every tuple leaf, including wide tuples and deeply nested containers.
         wide(t, y) = sum(t[10] .* y)
         ws = ntuple(i -> Float64[i, i + 1], 10)
         wide_cache = prepare_gradient_cache(wide, ws, [1.0, 1.0])
