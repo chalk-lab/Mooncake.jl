@@ -85,7 +85,19 @@ end
 # (`σ < 1e-20` in `Float32`). Dividing by `σ` rather than scaling by `inv(σ)` matters for
 # the same reason: `inv(σ)` overflows once `σ < 1 / floatmax(P)`, where `(x - μ) / σ` and
 # the derivative are both still finite.
-@is_primitive DefaultCtx ReverseMode Tuple{typeof(logpdf),Normal{P},P} where {P<:IEEEFloat}
+@is_primitive DefaultCtx Tuple{typeof(logpdf),Normal{P},P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),N}, d::Lifted{Normal{P},N}, x::Lifted{P,N}
+) where {P<:IEEEFloat,N}
+    dp = primal(d)
+    dd = tangent(d).fields
+    z = (primal(x) - dp.μ) / dp.σ
+    y = logpdf(dp, primal(x))
+    dy = ntuple(Val(N)) do k
+        ((abs2(z) - one(P)) * dd.σ.partials[k] - z * (tangent(x, k) - dd.μ.partials[k])) / dp.σ
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, dy))
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{Normal{P}}, x::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -247,9 +259,33 @@ function _accum_sqmahal!(dx, dμ::Vector{P}, px, μ, scale::P) where {P}
     return NoRData()
 end
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(sqmahal),ScalMvNormal{P},DenseVec{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(sqmahal),N}, d::Lifted{<:ScalMvNormal{P},N}, x::Lifted{<:DenseVec{P},N}
+) where {P<:IEEEFloat,N}
+    dp, px = primal(d), primal(x)
+    _check_dims(dp, px)
+    dx = _lanes(x, Val(N))
+    dd = tangent(d).fields
+    variance = dp.Σ.value
+    y = let total = zero(P)
+        @inbounds @simd for i in eachindex(px)
+            total += abs2(px[i] - dp.μ[i])
+        end
+        total / variance
+    end
+    dy = ntuple(Val(N)) do k
+        dm = _mean_lane(dd.μ, k)
+        acc = zero(P)
+        @inbounds @simd for i in eachindex(px)
+            acc += (px[i] - dp.μ[i]) * (dx[k][i] - dm[i])
+        end
+        (2 * acc - y * dd.Σ.fields.value.partials[k]) / variance
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, dy))
+end
 function rrule!!(
     ::CoDual{typeof(sqmahal)}, d::CoDual{<:ScalMvNormal{P}}, x::CoDual{<:DenseVec{P}}
 ) where {P<:IEEEFloat}
@@ -836,9 +872,38 @@ end
 # factorisation raises a `MethodError` rather than being silently mishandled.
 const CholeskyMvNormal{P} = MvNormal{P,<:PDMat{P,<:Matrix{P}},<:Vector{P}}
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),N}, d::Lifted{<:CholeskyMvNormal{P},N}, x::Lifted{Matrix{P},N}
+) where {P<:IEEEFloat,N}
+    dp, px = primal(d), primal(x)
+    _check_dims(dp, px)
+    dx = _lanes(x, Val(N))
+    dd = tangent(d).fields
+    L = dp.Σ.chol.L
+    standardized = L \ (px .- dp.μ)
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdet(dp.Σ.chol))
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        y[j] = constant - P(0.5) * sum(abs2, view(standardized, :, j))
+    end
+    out = Mooncake.zero_lifted(Val(N), y)
+    dy = _lanes(out, Val(N))
+    for k in 1:N
+        dL = _factor_tangent(
+            dp.Σ.chol, Matrix(Nfwd.tangent_view(dd.Σ.fields.chol.fields.factors, k))
+        )
+        perturbed = L \ ((dx[k] .- _mean_lane(dd.μ, k)) - dL * standardized)
+        logdet_derivative = _logdet_derivative(L, dL)
+        @inbounds for j in axes(px, 2)
+            dy[k][j] =
+                -logdet_derivative - dot(view(standardized, :, j), view(perturbed, :, j))
+        end
+    end
+    return out
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
@@ -871,9 +936,35 @@ function rrule!!(
     return out, chol_logpdf_matrix_pb!!
 end
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(loglikelihood),N},
+    d::Lifted{<:CholeskyMvNormal{P},N},
+    x::Lifted{Matrix{P},N},
+) where {P<:IEEEFloat,N}
+    dp, px = primal(d), primal(x)
+    _check_dims(dp, px)
+    dx = _lanes(x, Val(N))
+    dd = tangent(d).fields
+    L = dp.Σ.chol.L
+    standardized = L \ (px .- dp.μ)
+    n = size(px, 2)
+    y =
+        -P(0.5) *
+        (length(px) * log(P(2π)) + n * logdet(dp.Σ.chol) + sum(abs2, standardized))
+    dy = ntuple(Val(N)) do k
+        dL = _factor_tangent(
+            dp.Σ.chol, Matrix(Nfwd.tangent_view(dd.Σ.fields.chol.fields.factors, k))
+        )
+        -(
+            n * _logdet_derivative(L, dL) +
+            dot(standardized, L \ ((dx[k] .- _mean_lane(dd.μ, k)) - dL * standardized))
+        )
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, dy))
+end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
