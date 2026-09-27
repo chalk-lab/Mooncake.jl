@@ -4,19 +4,20 @@ Breaking release: the forward-mode AD representation was rewritten.
 
 - Removed the public `Mooncake.Dual{P,T}` type. Forward-mode values are now carried by the
   `Mooncake.Lifted{P,N,V}` slot (now `@public`), whose forward value `V === dual_type(Val(N), P)`
-  is built from the parallel-arrays representation (`NDual` for scalars, `NDualArray` for arrays,
-  etc.) rather than a single interleaved tangent. `N` is the chunk width.
-- `value_and_derivative!!` now takes `(f, df)` / `(x, dx)` tuples (or `Lifted` slots) and returns a
-  plain `(value, derivative)` tuple, instead of consuming and returning `Dual`s. Hand-written
-  `frule!!`s now dispatch on `Lifted` rather than `Dual`.
+  is built from the parallel-arrays representation (`NDual` for IEEE floats, `NDualArray` for arrays
+  of IEEE floats or their complex counterparts, etc.) rather than a single interleaved tangent.
+  `N` is the chunk width.
+- `value_and_derivative!!` now takes `(f, df)` / `(x, dx)` tuples and returns a plain
+  `(value, derivative)` tuple, or takes `Lifted` slots and returns a `Lifted`, instead of
+  consuming and returning `Dual`s. Hand-written `frule!!`s now dispatch on `Lifted` rather than `Dual`.
 - Forward mode is now batched ("chunked"): a width-`N` rule propagates `N` directional derivatives
   per pass (`chunk_size`), powering forward-mode gradients (`value_and_gradient!!` over a forward
   cache), Jacobians (`value_and_jacobian!!`), and forward-over-reverse Hessians
   (`value_gradient_and_hessian!!`, which sweeps `N` Hessian columns per pass, `N` auto-capped at the
   input dimension). Single HVPs (`value_and_hvp!!`) run at width 1 by design (one directional
-  derivative); 1-DOF Hessians also remain width-1. Like `value_and_jacobian!!`, HVPs and Hessians
-  now accept only a single vector input — concatenate the inputs of a multi-argument function into
-  one vector.
+  derivative); 1-DOF Hessians also remain width-1. HVPs accept a single input, including scalars
+  (`sin` at `x = v = 1.0` works). Hessians and `value_and_jacobian!!` require a single vector input.
+  Concatenate the inputs of a multi-argument function into one vector.
 - An argument that is the same object as a global or constant the function reads is now refused
   with an `ArgumentError` instead of a silently wrong gradient:
   `const G = [1.0, 2.0]; f(x) = sum(x .* G)` called at `x === G` gave `[1.0, 2.0]`, not
