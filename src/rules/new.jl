@@ -36,6 +36,7 @@ function rrule!!(
             NoPullback(f, p, x...)
         else
             function _new_pullback_for_immutable!!(dy::T) where {T}
+                T === NoRData && return ntuple(_ -> NoRData(), Val(N + 2))
                 data = Tuple(T <: NamedTuple ? dy : dy.data)[1:N]
                 return NoRData(), NoRData(), map(val, data)...
             end
@@ -60,6 +61,11 @@ end
 @inline function build_output_tangent(::Type{P}, ::Tuple, ::Tuple) where {P<:IdDict}
     return tangent_type(P)()   # see the IdDict `rrule!!` above
 end
+# Abstract NamedTuple fields can make tangent_type(P) return Any. Construct the
+# tangent from the supplied field tangents instead of calling that abstract type.
+@inline function build_output_tangent(::Type{P}, ::Tuple, t::Tuple) where {P<:NamedTuple}
+    return NamedTuple{fieldnames(P)}(t)
+end
 @generated function _build_output_tangent_cartesian(
     ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
 ) where {P,nfield,names,Tt<:Tuple}
@@ -71,7 +77,7 @@ end
             $nfield, n -> let
                 F = tangent_field_types(P)[n]
                 if n <= $N
-                    data = __get_data(P, x, t, n)
+                    data = getfield(t, n)
                     F <: PossiblyUninitTangent ? F(data) : data
                 else
                     F()
@@ -114,7 +120,7 @@ end
 end
 
 @inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P<:NamedTuple}
-    return fdata_type(tangent_type(P))(fdata)
+    return fdata isa Tuple{Vararg{NoFData}} ? NoFData() : NamedTuple{fieldnames(P)}(fdata)
 end
 
 """

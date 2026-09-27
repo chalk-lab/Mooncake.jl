@@ -51,7 +51,11 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
         end
     end
 
-    return isconcretetype(P) ? Dual{P,tangent_type(P)} : Dual
+    # A concrete primal can still have an abstract tangent type, as with NamedTuples
+    # containing Any fields. Allow the concrete tangent supplied at runtime.
+    isconcretetype(P) || return Dual
+    T = tangent_type(P)
+    return isconcretetype(T) ? Dual{P,T} : Dual{P,<:T}
 end
 
 function dual_type(p::Type{Type{P}}) where {P}
