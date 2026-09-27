@@ -227,20 +227,25 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Benchmark AD via Mooncake.
-            @info "Mooncake (Forward)"
-            rule = Mooncake.build_frule(args...)
-            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-            to_benchmark(rule, copy_coduals(duals...)...)
-            include_other_frameworks && GC.gc(true)
-            suite["mooncake_fwd"] = Chairmarks.benchmark(
-                () -> (rule, duals),
-                ((rule, duals),) -> (rule, copy_coduals(duals...)),
-                a -> to_benchmark(a[1], a[2]...),
-                _ -> GC.gc(false);
-                evals=1,
-                seconds=seconds,
+            if !(
+                ranges[n] isa NamedTuple &&
+                get(ranges[n], :mode, nothing) === Mooncake.ReverseMode
             )
+                # Benchmark AD via Mooncake.
+                @info "Mooncake (Forward)"
+                rule = Mooncake.build_frule(args...)
+                duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
+                to_benchmark(rule, copy_coduals(duals...)...)
+                include_other_frameworks && GC.gc(true)
+                suite["mooncake_fwd"] = Chairmarks.benchmark(
+                    () -> (rule, duals),
+                    ((rule, duals),) -> (rule, copy_coduals(duals...)),
+                    a -> to_benchmark(a[1], a[2]...),
+                    _ -> GC.gc(false);
+                    evals=1,
+                    seconds=seconds,
+                )
+            end
 
             if include_other_frameworks
                 if should_run_benchmark(Val(:zygote), args...)
@@ -313,7 +318,7 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = median(d["primal"]).time
     mooncake_time = median(d["mooncake"]).time
-    mooncake_fwd_time = median(d["mooncake_fwd"]).time
+    mooncake_fwd_time = haskey(d, "mooncake_fwd") ? median(d["mooncake_fwd"]).time : missing
     zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
@@ -331,7 +336,7 @@ function combine_results(result, tag, _range, default_range)
         ReverseDiff=rd_time / primal_time,
         enzyme_time=ez_time,
         Enzyme=ez_time / primal_time,
-        range=_range === nothing ? default_range : _range,
+        range=_range === nothing || !haskey(_range, :lb) ? default_range : _range,
     )
 end
 
