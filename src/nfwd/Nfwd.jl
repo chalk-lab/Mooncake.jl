@@ -270,6 +270,7 @@ end
         pi * _nfwd_zero_mask(pi, s)
     end, Val(N))
 end
+@inline _nfwd_guarded_div(x::T, y::T) where {T<:IEEEFloat} = iszero(x) ? zero(T) : x / y
 @inline _fwd_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
 @inline _fwd_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
 @inline _fwd_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
@@ -987,8 +988,8 @@ end
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
 @inline function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     h = hypot(a.value, b.value)
-    coeff_a = _nfwd_zero_mask(a.value, a.value / h)
-    coeff_b = _nfwd_zero_mask(b.value, b.value / h)
+    coeff_a = _nfwd_guarded_div(a.value, h)
+    coeff_b = _nfwd_guarded_div(b.value, h)
     return NDual{T,N}(
         h, _fwd_add(_fwd_scale(a.partials, coeff_a), _fwd_scale(b.partials, coeff_b))
     )
