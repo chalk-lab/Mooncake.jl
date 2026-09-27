@@ -47,13 +47,7 @@ function Config(;
     friendly_tangents::Bool=false,
     chunk_size::Union{Nothing,Int}=nothing,
     empty_cache::Bool=false,
-    enable_nfwd=nothing,
 )
-    enable_nfwd === nothing || Base.depwarn(
-        "The `enable_nfwd` keyword to `Mooncake.Config` is deprecated and has no effect; " *
-        "forward-mode caches always use the native chunk `frule!!`.",
-        :Config,
-    )
     return Config(
         debug_mode, silence_debug_messages, friendly_tangents, chunk_size, empty_cache
     )
