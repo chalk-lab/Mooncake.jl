@@ -566,7 +566,7 @@ for (name, P) in
         y = Base.FastMath.pow_fast(_x, _n)
         function llvm_powi_pb!!(dy::$P)
             # Zero cotangents must stay zero at infinite local gradients.
-            dx = nan_tangent_guard(dy, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy)
+            dx = _rvs_guarded_scale(dy, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)))
             return (
                 NoRData(),
                 NoRData(),

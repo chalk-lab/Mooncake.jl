@@ -32,6 +32,58 @@
 # Like `_fwd_guarded_scale`, keep inactive cotangents zero even at infinite derivatives.
 @inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
 
+# Differentiate the operation, not the zero branch: a zero cotangent can have a
+# live outer perturbation. Guard each product-rule term independently.
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(_rvs_guarded_scale),P,P
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(_rvs_guarded_scale),N}, x::Lifted{P,N}, y::Lifted{P,N}
+) where {P<:IEEEFloat,N}
+    a, b = primal(x), primal(y)
+    v = _rvs_guarded_scale(a, b)
+    parts = ntuple(
+        k -> _rvs_guarded_scale(tangent(x, k), b) + _rvs_guarded_scale(a, tangent(y, k)),
+        Val(N),
+    )
+    return Lifted{P,N}(v, NDual{P,N}(v, parts))
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(_fwd_guarded_scale),NTuple{M,P},P
+} where {M,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+function frule!!(
+    ::Lifted{typeof(_fwd_guarded_scale),N}, x::Lifted{NTuple{M,P},N}, y::Lifted{P,N}
+) where {M,P<:Union{IEEEFloat,Complex{<:IEEEFloat}},N}
+    a, b = primal(x), primal(y)
+    v = _fwd_guarded_scale(a, b)
+    parts = ntuple(
+        k -> Nfwd._fwd_add(
+            _fwd_guarded_scale(tangent(x, k), b), _fwd_guarded_scale(a, tangent(y, k))
+        ),
+        Val(N),
+    )
+    duals = ntuple(i -> _scalar_ndual(v[i], ntuple(k -> parts[k][i], Val(N))), Val(M))
+    return Lifted{typeof(v),N}(v, duals)
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(Nfwd._nfwd_guarded_div),P,P
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(Nfwd._nfwd_guarded_div),N}, x::Lifted{P,N}, y::Lifted{P,N}
+) where {P<:IEEEFloat,N}
+    a, b = primal(x), primal(y)
+    v = Nfwd._nfwd_guarded_div(a, b)
+    parts = ntuple(
+        k ->
+            Nfwd._nfwd_guarded_div(tangent(x, k), b) -
+            _rvs_guarded_scale(v, Nfwd._nfwd_guarded_div(tangent(y, k), b)),
+        Val(N),
+    )
+    return Lifted{P,N}(v, NDual{P,N}(v, parts))
+end
+
 # Horner on dual coefficients preserves their partials and avoids transform overhead.
 # Reverse and integer coefficients (which lift to `NoDual`) keep the derived path.
 @is_primitive MinimalCtx ForwardMode Tuple{
@@ -489,11 +541,7 @@ function rrule!!(::CoDual{typeof(^)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:IE
     p = primal(x2)
     y = x^p
     # d/dx = p·y/x for x≠0; else the exponent-dependent removable limit (0/1/Inf).
-    gx = ifelse(
-        !iszero(x) || p < zero(P),
-        p * y / x,
-        ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
-    )
+    gx = Nfwd._nfwd_pow_grad_x(x, p, y)
     # d/dp = y·log(x) for x≠0; else 0 (p>0) or NaN (p≤0, genuinely undefined). The log must go
     # through `complex`: bare `log(x)` is a DomainError for negative `x`, where the real part is
     # the correct coefficient.
@@ -559,13 +607,7 @@ function rrule!!(
     p = P(primal(n))
     y = Base.FastMath.pow_fast(_x, primal(n))
     fy = float(y)
-    gx = ifelse(
-        !iszero(_x) || p < zero(P),
-        p * fy / _x,
-        ifelse(
-            isone(p), one(fy), ifelse(iszero(p) || p > one(P), zero(fy), oftype(fy, Inf))
-        ),
-    )
+    gx = Nfwd._nfwd_pow_grad_x(_x, p, fy)
     pow_fast_pb(dy::P) = (NoRData(), _rvs_guarded_scale(dy, gx), NoRData())
     return zero_fcodual(y), pow_fast_pb
 end
@@ -730,7 +772,7 @@ function rrule!!(
 ) where {P<:IEEEFloat,M}
     xvals = (primal(x), tuple_map(primal, xs)...)
     h = hypot(xvals...)
-    coeffs = map(xi -> iszero(xi) ? zero(P) : xi / h, xvals)
+    coeffs = map(xi -> Nfwd._nfwd_guarded_div(xi, h), xvals)
     hypot_pb(ȳ::P) = (NoRData(), map(c -> _rvs_guarded_scale(ȳ, c), coeffs)...)
     return zero_fcodual(h), hypot_pb
 end
@@ -844,6 +886,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 )
             end,
         ),
+        map([Float32, Float64]) do P
+            cases = [
+                (_rvs_guarded_scale, P(0), P(3)),
+                (Nfwd._nfwd_guarded_div, P(0), P(3)),
+                (_fwd_guarded_scale, (P(0), P(1)), P(3)),
+                (_fwd_guarded_scale, (complex(P(0)), complex(P(1))), complex(P(3))),
+            ]
+            return map(
+                c -> (false, :stability_and_allocs, (mode=ForwardMode,), c...), cases
+            )
+        end...,
         # Forward-only primitive; seed coefficients too, at short and longer Horner folds.
         map([Float32, Float64]) do P
             return [

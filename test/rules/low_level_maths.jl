@@ -1,5 +1,35 @@
 @testset "low_level_maths" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:low_level_maths))
+    @testset "forward helpers retain live zero-seed perturbations" begin
+        for (f, x, p, dx, dp, expected) in (
+            (log, 1.0, 0.0, 0.0, 2.0, 2.0),
+            (x -> hypot(x, one(x)), 0.0, 1.0, 1.0, 0.0, 1.0),
+            (x -> x^2.0, 0.0, 1.0, 1.0, 0.0, 2.0),
+        )
+            g(x, p) = f(Mooncake.Nfwd.NDual{Float64,1}(x, (p,))).partials[1]
+            rule = build_frule(g, x, p)
+            result = rule(zero_dual(g), Mooncake.lift(x, dx), Mooncake.lift(p, dp))
+            @test tangent(result, 1) == expected
+        end
+    end
+
+    @testset "guarded scale lanes" begin
+        for N in (1, 8), T in (Float32, Float64, ComplexF32, ComplexF64)
+            f = Mooncake._fwd_guarded_scale
+            p = (zero(T), one(T))
+            parts = ntuple(k -> T(k), N)
+            x = Lifted{typeof(p),N}(p, map(v -> Mooncake._scalar_ndual(v, parts), p))
+            y = Lifted{T,N}(T(3), Mooncake._scalar_ndual(T(3), parts))
+            args = (Mooncake.zero_lifted(Val(N), f), x, y)
+            result = @inferred Mooncake.frule!!(args...)
+            @test TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
+            @test map(Mooncake.Nfwd._nfwd_dual_value, tangent(result)) === primal(result)
+            for k in 1:N
+                @test tangent(result, k) == (T(3k), T(4k))
+            end
+        end
+    end
+
     @testset "NaN handling in rrules" begin
         test_cases = vcat(
             map([Float16, Float32, Float64]) do T

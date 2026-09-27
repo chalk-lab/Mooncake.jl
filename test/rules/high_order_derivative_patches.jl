@@ -206,6 +206,34 @@ end
 end
 
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "scalar zero cotangents and removable coefficients" begin
+        for (f, x, h) in (
+            (x -> (exp(x) - 1)^2, 0.0, 2.0),
+            (x -> sin(x)^2, 0.0, 2.0),
+            (x -> expm1(x)^2, 0.0, 2.0),
+            (x -> first(sincos(x))^2, 0.0, 2.0),
+            (x -> abs2(exp(complex(x)) - 1), 0.0, 2.0),
+            (x -> (sqrt(x) - 1)^2, 1.0, 0.5),
+            (x -> (IntrinsicsWrappers.sqrt_llvm(x) - 1)^2, 1.0, 0.5),
+            (x -> (Base.FastMath.sqrt_fast(x) - 1)^2, 1.0, 0.5),
+            (x -> hypot(x, 1.0), 0.0, 1.0),
+            (x -> x^2.0, 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, 2), 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, Val(2)), 0.0, 2.0),
+            (x -> (Base.FastMath.pow_fast(x, Val(2)) - 1)^2, 1.0, 8.0),
+        )
+            cache = prepare_hvp_cache(f, x)
+            @test last(value_and_hvp!!(cache, f, 1.0, x)) ≈ h
+        end
+        f(x) = sum(abs2, exp.(x) .- 1)
+        x = zeros(8)
+        for width in (1, 8)
+            config = Mooncake.Config(; chunk_size=width)
+            cache = prepare_hessian_cache(f, x; config)
+            @test last(value_gradient_and_hessian!!(cache, f, x)) ≈ 2I
+        end
+    end
+
     @testset "BLAS zero cotangents with live perturbations" begin
         fscal(a) = (BLAS.scal!(1, a, [2.0], 1)[1] - 2.0)^2
         fgemv(a) = (BLAS.gemv!('N', a, ones(1, 1), ones(1), 0.0, zeros(1))[1] - 1.0)^2
