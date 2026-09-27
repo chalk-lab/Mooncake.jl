@@ -3032,7 +3032,6 @@ function _alias_checks(@nospecialize(tangents::Type))
     for a in 1:n
         i, pi = leaves[a]
         fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi)
-        push!(checks.args, :(_check_alias_offset(aliases[$a][3], $fi, $li)))
         for b in (a + 1):n
             j, pj = leaves[b]
             fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj)
@@ -3047,6 +3046,9 @@ function _alias_checks(@nospecialize(tangents::Type))
                     same_storage = _shares_storage($fi, $fj)
                     same_storage == (aliases[$a][2] == aliases[$b][2]) ||
                         _throw_prepared_cache_aliasing_error($li, $lj, same_storage)
+                    same_storage && _check_alias_offset(
+                        aliases[$a][3] - aliases[$b][3], $fi, $fj, $li, $lj
+                    )
                 end,
             )
         end
@@ -3054,11 +3056,12 @@ function _alias_checks(@nospecialize(tangents::Type))
     return checks
 end
 
-@inline function _check_alias_offset(offset::Int, primal, label::String)
-    offset == _storage_offset(primal) || throw(
+# Only relative offsets within a shared storage group constrain cache reuse.
+@inline function _check_alias_offset(offset::Int, a, b, la::String, lb::String)
+    offset == _storage_offset(a) - _storage_offset(b) || throw(
         PreparedCacheError(
-            "Cached autodiff call has a storage offset mismatch at $label. " *
-            "Prepare a separate cache for this array offset.",
+            "Cached autodiff call has a relative storage offset mismatch between $la and $lb. " *
+            "Prepare a separate cache for these array offsets.",
         ),
     )
     return nothing
@@ -3090,7 +3093,6 @@ _empty_alias_map!(d::Dict) = empty!(d)
     objects, storage = workspace
     try
         for k in eachindex(primals)
-            _check_alias_offset(aliases[k][3], primals[k], labels[k])
             object = get!(objects, primals[k], k)
             buffer = _alias_storage_index!(storage, primals[k], object)
             for (f, expected, relation) in
@@ -3099,6 +3101,13 @@ _empty_alias_map!(d::Dict) = empty!(d)
                     labels[min(f, expected)], labels[k], f < expected, relation
                 )
             end
+            buffer == k || _check_alias_offset(
+                aliases[k][3] - aliases[buffer][3],
+                primals[k],
+                primals[buffer],
+                labels[k],
+                labels[buffer],
+            )
         end
     finally
         _empty_alias_map!(objects)
