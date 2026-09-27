@@ -1,4 +1,4 @@
-using Pkg, TOML
+using Pkg
 
 @testset "pin_develop_or_skip" begin
     @testset "$failure" for failure in (
@@ -49,7 +49,7 @@ using Pkg, TOML
                     project["compat"] = Dict("Dependency" => "999")
                 end
                 open(joinpath(dir, "Project.toml"), "w") do io
-                    TOML.print(io, project)
+                    Pkg.TOML.print(io, project)
                 end
             end
             cp(
@@ -76,7 +76,7 @@ using Pkg, TOML
                 prefix *
                 " └─restricted by compatibility requirements with Mooncake [da2b9cff] to versions: uninstalled — no versions left\n"
             script = """
-                using Pkg, TOML
+                using Pkg
                 Pkg.offline(true)
                 Pkg.activate($(repr(suite)))
                 Pkg.develop([
@@ -85,10 +85,10 @@ using Pkg, TOML
                     PackageSpec(path=$(repr(joinpath(root, "target")))),
                 ])
                 if $(failure == :update)
-                    p = TOML.parsefile(Base.active_project())
+                    p = Pkg.TOML.parsefile(Base.active_project())
                     p["compat"] = Dict("Dependency" => "999")
                     open(Base.active_project(), "w") do io
-                        TOML.print(io, p)
+                        Pkg.TOML.print(io, p)
                     end
                 end
                 if $(failure in (:transitive_reverse, :nested_with_cap))
