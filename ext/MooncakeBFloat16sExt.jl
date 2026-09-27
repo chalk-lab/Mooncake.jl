@@ -104,23 +104,29 @@ end
 end
 
 # Constructing BFloat16 zeros requires the arithmetic supplied by BFloat16s.jl.
+# LLVM 16 x86 BFloat16 select-failure workaround: these calls must stay scalar.
+# Inlining across tuple lanes or array elements forms unsupported vector fptrunc/fpext
+# instructions and aborts Julia 1.11. Arithmetic has the same lowering, so mapped
+# Lifted rule bodies and tangent addition below must also keep their scalar barriers.
+@noinline _scalar_bfloat16(x::Union{Float32,Float64}) = P(x)
+@noinline _scalar_float32(x::P) = Float32(x)
 @noinline _scalar_float64(x::Union{P,Float32}) = Float64(x)
 
 zero_tangent_internal(::P, ::MaybeCache) = zero(P)
 
-randn_tangent_internal(rng::AbstractRNG, ::P, ::MaybeCache) = P(randn(rng, Float32))
+randn_tangent_internal(rng::AbstractRNG, ::P, ::MaybeCache) = _scalar_bfloat16(randn(rng, Float32))
 
-increment_internal!!(::IncCache, x::P, y::P) = x + y
+@noinline increment_internal!!(::IncCache, x::P, y::P) = x + y
 
 set_to_zero_internal!!(::SetToZeroCache, ::P) = zero(P)
 
-_scale_internal(::MaybeCache, a::Float64, t::P) = P(a * _scalar_float64(t))
+_scale_internal(::MaybeCache, a::Float64, t::P) = _scalar_bfloat16(a * _scalar_float64(t))
 
 # Julia 1.11 on x86_64: LLVM 16 may abort if tuple tangent maths vectorises this widening.
 # Must return Float64: _dot_internal is always accumulated into a Float64 scalar.
 @noinline _dot_internal(::MaybeCache, t::P, s::P) = Float64(t) * Float64(s)
 
-_add_to_primal_internal(::MaybeCache, x::P, t::P, ::Bool) = x + t
+@noinline _add_to_primal_internal(::MaybeCache, x::P, t::P, ::Bool) = x + t
 
 tangent_to_primal_internal!!(::P, tx, ::MaybeCache) = tx
 
@@ -175,6 +181,7 @@ for (op, derivative) in (
         px, py = primal(x), primal(y)
         z = $op(px, py)
         dz = map(tangent(x), tangent(y)) do dx, dy
+            @noinline
             $derivative
         end
         return Lifted{P,N}(z, dz)
@@ -214,26 +221,26 @@ Mooncake.increment_and_get_rdata!(f, r::P, ::CRC.NotImplemented) = P(NaN)
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
 function Mooncake.rrule!!(::CoDual{Type{Float32}}, x::CoDual{P})
-    pb(dy::Float32) = NoRData(), P(dy)
-    return zero_fcodual(Float32(primal(x))), pb
+    pb(dy::Float32) = NoRData(), _scalar_bfloat16(dy)
+    return zero_fcodual(_scalar_float32(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
 function Mooncake.rrule!!(::CoDual{Type{Float64}}, x::CoDual{P})
-    pb(dy::Float64) = NoRData(), P(Float32(dy))
-    return zero_fcodual(Float64(primal(x))), pb
+    pb(dy::Float64) = NoRData(), _scalar_bfloat16(Float32(dy))
+    return zero_fcodual(_scalar_float64(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float32})
-    pb(dy::P) = NoRData(), Float32(dy)
-    return zero_fcodual(P(primal(x))), pb
+    pb(dy::P) = NoRData(), _scalar_float32(dy)
+    return zero_fcodual(_scalar_bfloat16(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float64}
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
-    pb(dy::P) = NoRData(), Float64(Float32(dy))
-    return zero_fcodual(P(Float32(primal(x)))), pb
+    pb(dy::P) = NoRData(), Float64(_scalar_float32(dy))
+    return zero_fcodual(_scalar_bfloat16(Float32(primal(x)))), pb
 end
 
 # Math rules
@@ -476,30 +483,30 @@ const _PNT{N} = NTuple{N,P}
 using Mooncake: NDual
 
 # Conversions
-for F in (Float32, Float64)
+for (F, convert_scalar) in ((Float32, :_scalar_float32), (Float64, :_scalar_float64))
     @eval function Mooncake.frule!!(
         ::Lifted{Type{$F},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
     ) where {Nw}
-        y = $F(primal(x))
+        y = $convert_scalar(primal(x))
         parts = tangent(x)
-        dy = ntuple(k -> $F(parts[k]), Val(Nw))
+        dy = ntuple(k -> $convert_scalar(parts[k]), Val(Nw))
         return Lifted{$F,Nw}(y, NDual{$F,Nw}(y, dy))
     end
 end
 function Mooncake.frule!!(
     ::Lifted{Type{P},Nw}, x::Lifted{Float32,Nw,NDual{Float32,Nw}}
 ) where {Nw}
-    y = P(primal(x))
+    y = _scalar_bfloat16(primal(x))
     parts = tangent(x).partials
-    dy = ntuple(k -> P(parts[k]), Val(Nw))
+    dy = ntuple(k -> _scalar_bfloat16(parts[k]), Val(Nw))
     return Lifted{P,Nw}(y, dy)
 end
 function Mooncake.frule!!(
     ::Lifted{Type{P},Nw}, x::Lifted{Float64,Nw,NDual{Float64,Nw}}
 ) where {Nw}
-    y = P(Float32(primal(x)))
+    y = _scalar_bfloat16(Float32(primal(x)))
     parts = tangent(x).partials
-    dy = ntuple(k -> P(Float32(parts[k])), Val(Nw))
+    dy = ntuple(k -> _scalar_bfloat16(Float32(parts[k])), Val(Nw))
     return Lifted{P,Nw}(y, dy)
 end
 
@@ -533,6 +540,7 @@ for (op, deriv_expr, guarded) in (
         y = $op(_x)
         parts = tangent(x)
         dy = ntuple(Val(Nw)) do k
+            @noinline
             dx = parts[k]
             $lane_expr
         end
@@ -549,7 +557,10 @@ for (op, value, partial) in ((:sin, :s, :(parts[k] * c)), (:cos, :c, :(-parts[k]
         s = sin(_x)
         c = cos(_x)
         parts = tangent(x)
-        dy = ntuple(k -> $partial, Val(Nw))
+        dy = ntuple(Val(Nw)) do k
+            @noinline
+            $partial
+        end
         return Lifted{P,Nw}($value, dy)
     end
 end
@@ -565,9 +576,11 @@ function Mooncake.frule!!(
     x_parts = tangent(x)
     y_parts = tangent(y)
     dh = ntuple(Val(Nw)) do k
+        @noinline
+        dx, dy = x_parts[k], y_parts[k]
         (
-            nan_tangent_guard(x_parts[k], _x * x_parts[k]) +
-            nan_tangent_guard(y_parts[k], _y * y_parts[k])
+            nan_tangent_guard(dx, (@noinline _x * dx)) +
+            nan_tangent_guard(dy, (@noinline _y * dy))
         ) / h
     end
     return Lifted{P,Nw}(h, dh)
@@ -583,6 +596,7 @@ function Mooncake.frule!!(
     x_parts = tangent(x)
     y_parts = tangent(y)
     dz = ntuple(Val(Nw)) do k
+        @noinline
         nan_tangent_guard(x_parts[k], _y * _x^(_y - one(P)) * x_parts[k]) +
             nan_tangent_guard(z, z * log(_x) * y_parts[k])
     end
