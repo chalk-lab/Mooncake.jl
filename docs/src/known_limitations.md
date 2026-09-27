@@ -356,3 +356,21 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 ```@meta
 DocTestSetup = nothing
 ```
+
+## Reusing prepared reverse caches
+
+`prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
+mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
+both object identity relationships and shared backing storage. On Julia 1.11 and later,
+array offsets within backing `Memory` must also match. A mismatch raises
+`Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
+New objects with the same relationships are allowed; prepare a separate cache when
+those relationships change.
+
+Callers must preserve types, shapes, and aliasing throughout the inputs, including
+parts the guard does not inspect. The guard does not traverse struct fields (including
+closures and array wrappers), array elements, or other variable-length containers such
+as dictionaries. It does not establish overlap introduced through raw pointers or
+`unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
+Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
+when their relationships change.

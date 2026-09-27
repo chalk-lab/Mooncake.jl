@@ -648,6 +648,13 @@ Returns a cache used with [`value_and_pullback!!`](@ref). See that function for 
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+
 !!! note
     Calls `f(x...)` once during cache preparation.
 """
@@ -739,6 +746,13 @@ will return both to their original state as part of the process of computing the
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
 
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
     components of values returned by it will be mutated if you run this function again with
@@ -803,6 +817,13 @@ end
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
+
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
 
 !!! note
     Calls `f(x...)` once during cache preparation.
@@ -872,6 +893,13 @@ will return both to their original state as part of the process of computing the
     `x` must be of the same size and shape as those used to construct the `cache`. This is
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
+
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
