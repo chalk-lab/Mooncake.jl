@@ -1909,5 +1909,13 @@ end
         @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
             many_cache, many, many_aliased
         )
+        # Reuse after a rejected call must clear the validation workspace too.
+        @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
+        @test TestUtils.count_allocs(
+            Mooncake._check_tangent_aliasing,
+            many_cache.aliases,
+            many_cache.tangents,
+            (many, ms),
+        ) == 0
     end
 end
