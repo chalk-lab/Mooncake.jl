@@ -915,7 +915,8 @@ is honoured only at width 1.
 No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
 for derived rules as well as primitive ones — a derived rule runs the same width-N transform. A
 case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at the call site by
-passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
+passing `widths=(1,)` (`test_rule`'s `skip_chunked`). Chunked checks use a copy of `rng`
+so changing the chunked widths does not change subsequent finite-difference probes.
 """
 function test_frule(
     rng::AbstractRNG,
@@ -958,9 +959,11 @@ function test_frule(
     yp = _deepcopy_all(base)
     y_true = yp[1](yp[2:end]...)
     interp = get_interpreter(ForwardMode)
+    # Chunk checks must not change subsequent finite-difference probes (including reverse mode).
+    chunk_rng = copy(rng)
     for N in chunked_widths
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
-        seeds = _seed_lifteds(Val(N), rng, _deepcopy_all(x))
+        seeds = _seed_lifteds(Val(N), chunk_rng, _deepcopy_all(x))
         # Direct and width-1 references may reduce in different orders.
         prec = _partials_precision(map(tangent, seeds))
         # Only liftable lane tangents can form the width-1 oracle; invariants check all shapes.

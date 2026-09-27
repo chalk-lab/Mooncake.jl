@@ -399,6 +399,13 @@ end
     end
 
     @testset "forward chunk widths" begin
+        # A registry row cannot compare the probe stream across harness configurations.
+        rngs = [StableRNG(123456) for _ in 1:3]
+        for (rng, widths) in zip(rngs, ((1,), (1, 4), (1, 8)))
+            TestUtils.test_frule(rng, sin, 1.0; sig=Tuple{typeof(sin),Float64}, widths)
+        end
+        @test randn(rngs[1]) == randn(rngs[2]) == randn(rngs[3])
+
         # `chunk_size === nothing` is "unspecified", not "pin to 1" — `run_rule_test_cases`
         # passes it for every row, so conflating the two would run every case at width 1.
         @test TestUtils._fwd_widths(false, nothing) == (1, 8)
