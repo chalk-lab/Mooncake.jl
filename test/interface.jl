@@ -1773,6 +1773,45 @@ end
             p, 1.0, f, a, copy(a)
         )
     end
+    @static if VERSION >= v"1.11-rc4"
+        @testset "array headers and offsets" for wide in (false, true)
+            wrap(m, i) = Base.wrap(Array, memoryref(m, i), (1,))
+            mutate(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+            grow(x, y) = (push!(x, x[1]); sum(y))
+            for f in (mutate, grow), offset in (1, 2)
+                m = Memory{Float64}([1.0, 2.0])
+                x, y = wrap(m, 1), wrap(m, offset)
+                args = wide ? (ntuple(i -> if i == 1
+                    x
+                elseif i == 24
+                    y
+                else
+                    [1.0]
+                end, 24),) : (x, y)
+                fun = wide ? t -> f(t[1], t[24]) : f
+                g = prepare_gradient_cache(fun, args...)
+                p = prepare_pullback_cache(fun, args...)
+                same = wide ? ((Base.front(args[1])..., x),) : (x, x)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    g, fun, same...
+                )
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_pullback!!(
+                    p, 1.0, fun, same...
+                )
+                if offset == 2
+                    # Both headers stay distinct and share Memory, but the relative offset changes.
+                    z = wrap(m, 1)
+                    shifted = wide ? ((Base.front(args[1])..., z),) : (x, z)
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                        g, fun, shifted...
+                    )
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_pullback!!(
+                        p, 1.0, fun, shifted...
+                    )
+                end
+            end
+        end
+    end
     @testset "aliasing mismatch between preparation and call" begin
         # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
         # mismatch, which otherwise accumulates into the wrong prepared buffers.
