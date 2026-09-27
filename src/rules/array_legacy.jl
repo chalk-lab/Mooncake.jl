@@ -11,10 +11,12 @@ end
 @inline _legacy_cached(x::Array) = vec(x)
 
 @inline function zero_tangent_internal(x::Array{P,N}, dict::MaybeCache) where {P,N}
+    haskey(dict, x) && return dict[x]::Array{tangent_type(P),N}
     k = _legacy_storage(x)
-    haskey(dict, k) && return _legacy_reshape(dict[k], tangent_type(P), size(x))
+    haskey(dict, k) && return (dict[x] = _legacy_reshape(dict[k], tangent_type(P), size(x)))
 
     zt = Array{tangent_type(P),N}(undef, size(x)...)
+    dict[x] = zt
     dict[k] = _legacy_cached(zt)
     return _map_if_assigned!(
         Base.Fix2(zero_tangent_internal, dict), zt, x
@@ -24,10 +26,12 @@ end
 function randn_tangent_internal(
     rng::AbstractRNG, x::Array{T,N}, dict::MaybeCache
 ) where {T,N}
+    haskey(dict, x) && return dict[x]::Array{tangent_type(T),N}
     k = _legacy_storage(x)
-    haskey(dict, k) && return _legacy_reshape(dict[k], tangent_type(T), size(x))
+    haskey(dict, k) && return (dict[x] = _legacy_reshape(dict[k], tangent_type(T), size(x)))
 
     dx = Array{tangent_type(T),N}(undef, size(x)...)
+    dict[x] = dx
     dict[k] = _legacy_cached(dx)
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), dx, x)
 end
@@ -45,9 +49,11 @@ function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::Array{T,N}) where {T,N}
+    haskey(c, t) && return c[t]::Array{T,N}
     k = _legacy_storage(t)
-    haskey(c, k) && return _legacy_reshape(c[k], T, size(t))
+    haskey(c, k) && return (c[t] = _legacy_reshape(c[k], T, size(t)))
     t′ = Array{T,N}(undef, size(t)...)
+    c[t] = t′
     c[k] = _legacy_cached(t′)
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
@@ -69,9 +75,12 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, x::Array{P,N}, t::Array{<:Any,N}, unsafe::Bool
 ) where {P,N}
+    object_key = (x, t, unsafe)
+    haskey(c, object_key) && return c[object_key]::Array{P,N}
     key = (_legacy_storage(x), _legacy_storage(t), unsafe)
-    haskey(c, key) && return _legacy_reshape(c[key], P, size(x))
+    haskey(c, key) && return (c[object_key] = _legacy_reshape(c[key], P, size(x)))
     x′ = Array{P,N}(undef, size(x)...)
+    c[object_key] = x′
     c[key] = _legacy_cached(x′)
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
