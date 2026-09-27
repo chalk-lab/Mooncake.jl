@@ -15,6 +15,7 @@ using Mooncake:
 
 const HVP_ALIAS_GLOBAL = [1.0, 2.0]
 hvp_alias_global(x) = x[1] * HVP_ALIAS_GLOBAL[1] + x[2] * HVP_ALIAS_GLOBAL[2]
+jac_alias_global(x) = x .* HVP_ALIAS_GLOBAL
 
 # A first-order tangent need not support differentiation of itself.
 struct FirstOrderTangent
@@ -3014,9 +3015,31 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test dy ≈ -0.8
             end
 
-            @testset "FoR retains constant alias guards" begin
+            @testset "prepared calls retain constant alias guards" begin
                 x = copy(HVP_ALIAS_GLOBAL)
                 v = [0.3, -0.7]
+                for debug_mode in (false, true)
+                    config = Mooncake.Config(; debug_mode, silence_debug_messages=true)
+                    fcache = Mooncake.prepare_derivative_cache(hvp_alias_global, x; config)
+                    TestUtils._test_throws(ArgumentError, "constant") do
+                        Mooncake.value_and_derivative!!(
+                            fcache, (hvp_alias_global, NoTangent()), (HVP_ALIAS_GLOBAL, v)
+                        )
+                    end
+                    for cache in
+                        (fcache, prepare_gradient_cache(hvp_alias_global, x; config))
+                        TestUtils._test_throws(ArgumentError, "constant") do
+                            value_and_gradient!!(cache, hvp_alias_global, HVP_ALIAS_GLOBAL)
+                        end
+                    end
+                    for prepare in
+                        (Mooncake.prepare_derivative_cache, prepare_pullback_cache)
+                        cache = prepare(jac_alias_global, x; config)
+                        TestUtils._test_throws(ArgumentError, "constant") do
+                            value_and_jacobian!!(cache, jac_alias_global, HVP_ALIAS_GLOBAL)
+                        end
+                    end
+                end
                 cache = prepare_hvp_cache(hvp_alias_global, x)
                 @test value_and_hvp!!(cache, hvp_alias_global, v, x)[3] == zeros(2)
                 TestUtils._test_throws(ArgumentError, "constant") do

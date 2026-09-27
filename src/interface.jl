@@ -155,6 +155,13 @@ function _cache_show_fields(cache::FCache)
     )
 end
 
+# Check caller identities before forward sweeps substitute cache-owned primal buffers.
+_check_cache_constants(rule, fx) = nothing
+function _check_cache_constants(rule::DerivedFRule, fx)
+    return _check_constant_aliasing(rule.consts, map(x -> CoDual(x, NoTangent()), fx))
+end
+_check_cache_constants(rule::DebugFRule, fx) = _check_cache_constants(rule.rule, fx)
+
 # Encode `T` in the type so generated cache checks avoid runtime `jl_types_equal`.
 struct TypeAndSize{T,S}
     size::S
@@ -1405,6 +1412,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
+    _check_cache_constants(cache.single_rule, (f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
     total_dim = length(x)
@@ -2247,6 +2255,7 @@ end
 # type stability and fresh per-chunk allocations for shape generality. Concrete fast
 # paths retain type stability and zero allocation.
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
+    _check_cache_constants(cache.single_rule, (f, x...))
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
     _check_primal_aliasing(x)
@@ -2450,6 +2459,7 @@ function value_and_gradient!!(
     input_primals = (f, xs...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     f_seed_stored, arg_seeds, grad_bufs = seed
+    _check_cache_constants(cache.single_rule, input_primals)
     # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
     # guaranteed by the packability gate, so this is a free isbits rewrap.
