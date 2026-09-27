@@ -431,6 +431,45 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
+    @testset "cached forward calls leave RNGs advanced" begin
+        for friendly_tangents in (false, true), wrap in (identity, r -> (rng=r,))
+            unwrap(s) = s isa NamedTuple ? s.rng : s
+            f(s, x) = rand(unwrap(s)) * x
+            rng = Random.Xoshiro(123)
+            state = wrap(rng)
+            reference = copy(rng)
+            config = Mooncake.Config(; friendly_tangents)
+            cache = Mooncake.prepare_derivative_cache(f, state, 2.0; config)
+            for _ in 1:2
+                draw = rand(reference)
+                ds = friendly_tangents ? state : Mooncake.zero_tangent(state)
+                @test Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.NoTangent()), (state, ds), (2.0, 1.0)
+                ) == (2draw, draw)
+                @test rand(rng) == rand(reference)
+            end
+            draw = rand(reference)
+            y, _ = Mooncake.value_and_gradient!!(cache, f, state, 2.0)
+            @test y == 2draw
+            @test rand(rng) == rand(reference)
+        end
+        # Restoring a destination filled by rand! must still leave the RNG advanced.
+        rng = Random.Xoshiro(123)
+        reference = copy(rng)
+        x = [-1.0, -2.0]
+        expected = rand!(reference, similar(x))
+        cache = Mooncake.prepare_derivative_cache(rand!, rng, x)
+        y, _ = Mooncake.value_and_derivative!!(
+            cache,
+            (rand!, Mooncake.NoTangent()),
+            (rng, Mooncake.zero_tangent(rng)),
+            (x, ones(2)),
+        )
+        @test y == expected
+        @test x == [-1.0, -2.0]
+        @test rand(rng) == rand(reference)
+    end
+
     @testset "custom snapshot leaves" begin
         leaf = CustomSnapshotLeaf([1.0, 2.0])
         arg = StructuredPair(RebindBox(leaf), leaf)
