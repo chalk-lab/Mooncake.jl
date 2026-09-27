@@ -244,6 +244,8 @@ end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
     # Preserve backing-storage sharing before finite differences call `_add_to_primal`.
+    # As in `_add_to_primal`, the fallback for partial buffers or reference eltypes
+    # preserves repeated container identity but loses sharing between distinct arrays.
     tr = getfield(t, :ref)
     if _spans_memory(t, tr)
         t′ = Base.wrap(Array, construct_ref(tr, _scale_internal(c, a, tr.mem)), size(t))::T
