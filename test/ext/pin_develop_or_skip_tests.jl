@@ -1,13 +1,28 @@
 using Pkg, TOML
 
 @testset "pin_develop_or_skip" begin
-    for failure in (:compat, :update, :pin, :develop)
+    @testset "$failure" for failure in (
+        :compat,
+        :transitive,
+        :transitive_reverse,
+        :update,
+        :pin,
+        :develop,
+        :develop_with_cap,
+        :nested_with_cap,
+    )
+        transitive = failure in (:transitive, :transitive_reverse)
+        capped = failure in (:compat, :develop_with_cap, :nested_with_cap)
+        should_skip = failure == :compat || transitive
         mktempdir() do root
             suite = joinpath(root, "test", "ext", "function_wrappers")
             mkpath(suite)
             mooncake_uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
+            # Newer Pkg versions ignore impossible stdlib compat, so use a local package.
+            dependency_uuid = "11111111-2222-3333-4444-555555555555"
             for (dir, name, uuid, version) in (
                 (root, "Mooncake", mooncake_uuid, "2.0.0"),
+                (joinpath(root, "dependency"), "Dependency", dependency_uuid, "1.0.0"),
                 (joinpath(root, "old"), "Mooncake", mooncake_uuid, "1.0.0"),
                 (
                     joinpath(root, "target"),
@@ -21,16 +36,17 @@ using Pkg, TOML
                 project = Dict{String,Any}(
                     "name" => name, "uuid" => uuid, "version" => version
                 )
-                if name == "FunctionWrappers"
+                if name == "FunctionWrappers" && transitive
+                    project["deps"] = Dict("Dependency" => dependency_uuid)
+                elseif name == "Dependency" && transitive
+                    project["weakdeps"] = Dict("Mooncake" => mooncake_uuid)
+                    project["compat"] = Dict("Mooncake" => "1")
+                elseif name == "FunctionWrappers"
                     project["deps"] = Dict("Mooncake" => mooncake_uuid)
-                    project["compat"] = Dict(
-                        "Mooncake" => failure == :compat ? "1" : "1, 2"
-                    )
-                elseif dir == root && failure == :develop
-                    project["deps"] = Dict(
-                        "Random" => "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-                    )
-                    project["compat"] = Dict("Random" => "999")
+                    project["compat"] = Dict("Mooncake" => capped ? "1" : "1, 2")
+                elseif dir == root && failure in (:develop, :develop_with_cap)
+                    project["deps"] = Dict("Dependency" => dependency_uuid)
+                    project["compat"] = Dict("Dependency" => "999")
                 end
                 open(joinpath(dir, "Project.toml"), "w") do io
                     TOML.print(io, project)
@@ -43,39 +59,62 @@ using Pkg, TOML
             entry = read(
                 joinpath(@__DIR__, "function_wrappers", "function_wrappers.jl"), String
             )
+            entry =
+                first(split(entry, "\n\n")) * "\nerror(\"setup unexpectedly proceeded\")"
             failure == :pin &&
                 (entry = replace(entry, "\"FunctionWrappers\"" => "\"MissingTarget\""))
             write(joinpath(suite, "function_wrappers.jl"), entry)
+            # Exercise both orientations of Pkg's diagnostic, and a nested Mooncake mention.
+            prefix = if failure == :nested_with_cap
+                " └─restricted by compatibility requirements with Other [22222222] to versions: uninstalled — no versions left\n   └─Other [22222222] log:\n    "
+            else
+                ""
+            end
+            message =
+                "Unsatisfiable requirements detected for package Dependency [11111111]:\n" *
+                " Dependency [11111111] log:\n" *
+                prefix *
+                " └─restricted by compatibility requirements with Mooncake [da2b9cff] to versions: uninstalled — no versions left\n"
             script = """
                 using Pkg, TOML
                 Pkg.offline(true)
                 Pkg.activate($(repr(suite)))
                 Pkg.develop([
+                    PackageSpec(path=$(repr(joinpath(root, "dependency")))),
                     PackageSpec(path=$(repr(joinpath(root, "old")))),
                     PackageSpec(path=$(repr(joinpath(root, "target")))),
                 ])
                 if $(failure == :update)
                     p = TOML.parsefile(Base.active_project())
-                    p["deps"]["Random"] = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-                    p["compat"] = Dict("Random" => "999")
+                    p["compat"] = Dict("Dependency" => "999")
                     open(Base.active_project(), "w") do io
                         TOML.print(io, p)
                     end
                 end
+                if $(failure in (:transitive_reverse, :nested_with_cap))
+                    @eval Pkg develop(; path) = throw(Resolve.ResolverError($(repr(message))))
+                end
                 include($(repr(joinpath(suite, "function_wrappers.jl"))))
                 """
             output = IOBuffer()
+            color = transitive ? "yes" : "no"
             cmd = addenv(
-                `$(Base.julia_cmd()) --startup-file=no --project=$suite -e $script`,
+                `$(Base.julia_cmd()) --startup-file=no --color=$color --project=$suite -e $script`,
                 "JULIA_PKG_PRECOMPILE_AUTO" => "0",
             )
             process = run(pipeline(ignorestatus(cmd); stdout=output, stderr=output))
             log = String(take!(output))
-            @test success(process) == (failure == :compat)
-            @test occursin("skipped: incompatible with Mooncake", log) ==
-                (failure == :compat)
-            if failure != :compat
+            @test success(process) == should_skip
+            @test occursin("skipped: incompatible with Mooncake", log) == should_skip
+            if !should_skip
                 @test occursin("ERROR", log)
+                @test !occursin("setup unexpectedly proceeded", log)
+                if failure in (:develop, :develop_with_cap)
+                    @test occursin(
+                        "Unsatisfiable requirements detected for package Dependency [11111111]:",
+                        log,
+                    )
+                end
             end
         end
     end

@@ -12,10 +12,11 @@ targets:
     pin_develop_or_skip(@__DIR__, "OrdinaryDiffEq", "SciMLSensitivity")  # several targets
 
 Pinning stops the resolver from silently downgrading a target to accommodate an incompatible
-Mooncake. A develop-time `Pkg.Resolve.ResolverError` is skipped only when a pinned target's
-declared Mooncake compat excludes the checked-out version. A warning is logged and the process
-exits successfully (`exit(0)`). Update and pin failures, and conflicts without this evidence
-(including transitive conflicts), fail loudly.
+Mooncake. A develop-time `Pkg.Resolve.ResolverError` is skipped only when Mooncake has
+unsatisfiable requirements (including transitive compat constraints), or the conflicting package
+has no versions left compatible with Mooncake. A warning is logged and the process exits
+successfully (`exit(0)`). Update and pin failures, unrelated resolver conflicts, and all other
+develop failures fail loudly.
 
 !!! warning "A skipped suite is indistinguishable from a passing one"
     `exit(0)` means a skip shows up as green. That is deliberate — a downstream package that has
@@ -32,25 +33,25 @@ function pin_develop_or_skip(dir::AbstractString, targets::AbstractString...)
     # Update before pinning so a cached manifest cannot lock in an old target version.
     Pkg.update()
     Pkg.pin(collect(targets))
-    pinned_targets = filter(
-        p -> p.name in targets && p.is_pinned, collect(values(Pkg.dependencies()))
-    )
     mooncake_path = joinpath(@__DIR__, "..", "..")
-    mooncake = Pkg.Types.read_project(joinpath(mooncake_path, "Project.toml"))
     try
         Pkg.develop(; path=mooncake_path)
     catch err
         err isa Pkg.Resolve.ResolverError || rethrow()
-        incompatible = any(pinned_targets) do target
-            project = Pkg.Types.read_project(joinpath(target.source, "Project.toml"))
-            depends =
-                get(project.deps, "Mooncake", nothing) == mooncake.uuid ||
-                get(project.weakdeps, "Mooncake", nothing) == mooncake.uuid
-            return depends &&
-                   haskey(project.compat, "Mooncake") &&
-                   !(mooncake.version in project.compat["Mooncake"].val)
-        end
-        incompatible || rethrow()
+        # ResolverError has no structured package identity; match name and short UUID after
+        # stripping Pkg's colors. Pkg can report either end of a compat conflict, so
+        # also accept Mooncake as the final top-level constraint, never a nested mention.
+        message = replace(err.msg, r"\e\[[0-9;]*m" => "")
+        conflict = match(
+            r"\AUnsatisfiable requirements detected for package ([^\n]+):\n", message
+        )
+        isnothing(conflict) && rethrow()
+        conflict[1] == "Mooncake [da2b9cff]" ||
+            occursin(
+                r"^ └─restricted by compatibility requirements with Mooncake \[da2b9cff\] to versions: [^\n]+ — no versions left$"m,
+                message,
+            ) ||
+            rethrow()
         name = basename(dir)
         @warn "$name skipped: incompatible with Mooncake"
         if haskey(ENV, "GITHUB_STEP_SUMMARY")
