@@ -117,11 +117,12 @@ contribution through the global is written somewhere the caller never sees:
 ```julia
 const G = [1.0, 2.0]
 f(x) = sum(x .* G)
-value_and_gradient!!(build_rrule(f, G), f, G)   # gradient [1.0, 2.0]; the truth is [2.0, 4.0]
+value_and_gradient!!(build_rrule(f, G), f, G)   # throws ArgumentError
 ```
 
-The value returned is correct, which makes this easy to miss. Both modes refuse such a call with an
-`ArgumentError` rather than returning the wrong derivative. Pass a copy, or read the value through
+Without the guard, the value would be correct but the gradient would omit the global contribution.
+Both modes refuse such a call with an `ArgumentError`, including cached gradients checked against
+the caller's objects before copying them into cache storage. Pass a copy, or read the value through
 an argument instead of a global.
 
 The check is by object identity, so it covers what can actually be shared: arrays, mutable structs,
@@ -130,20 +131,36 @@ argument — `const C = ("a", 1.0)` — is not caught, and neither is a global r
 own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
 compares a rule's constants against that rule's own arguments.
 
-Aliasing between *arguments* is a different matter and is supported: two arguments over one array
-share derivative storage, so both positions report the one accumulated gradient.
+In reverse mode, aliased arguments share derivative storage, so both positions report the one
+accumulated gradient. Forward gradients have the restrictions described below.
 
 ### Conflicting forward tangents for one shared storage
 
-Positions that share one storage share one tangent, so supplying different tangents for them is
-ill-posed: only one direction can be carried. `value_and_derivative!!` refuses it with an
-`ArgumentError` — through a prepared cache under either `friendly_tangents` setting, and against a
-bare rule. Pass the same tangent object at every position the shared storage occupies.
+Every public `value_and_derivative!!` entry point requires positions sharing differentiable
+storage to share tangent storage too. This applies to bare rules, prepared caches under either
+`friendly_tangents` setting, and caller-supplied `Lifted` slots. Conflicting seeds raise
+`ArgumentError` before conversion or lifting can discard a direction. The check uses the
+call-time inputs, including aliases introduced after cache preparation.
 
-The refusal is by object identity, so it does not see sharing that identity cannot express: a
-`reshape` or a `view` of an argument, or an `Array` beside its backing `Memory`. Those still answer
-silently, carrying whichever tangent the lift reached first. `f(a, b) = sum(a) + sum(b)` run at
-`(a, da)` and `(reshape(a, 3, 1), db)` reports `sum(da)` twice rather than `sum(da) + sum(db)`.
+Distinct objects can share storage. For example:
+
+```julia
+f(a, b) = sum(a) + sum(b)
+a = [1.0, 2.0, 3.0]
+b = reshape(a, 3, 1)
+da = ones(3)
+db = fill(2.0, 3, 1)
+```
+
+Here `da` and `db` specify conflicting directions for one buffer. Bare tuple calls and both
+prepared tuple interfaces refuse these seeds with the same `ArgumentError`. Use compatible
+shared seeds, such as `db = reshape(da, 3, 1)`; all three paths then return `(12.0, 6.0)`.
+The same requirement applies to views, captured fields, and an `Array` beside its backing
+`Memory`. Equal values in separate tangent buffers do not establish shared storage.
+
+For `Lifted` inputs, build the slots jointly so their partial buffers share storage in every
+lane. Independently lifting two aliased primals allocates independent partial buffers, even
+when their supplied seeds are the same object; passing those slots together is refused.
 
 ### Forward gradients of arguments that share one storage
 
@@ -166,8 +183,11 @@ an aliased capture (`f = x -> x .* sum(q)` called at `x === q`) gives the full J
 
 `prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
 mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
-both object identity relationships and shared backing storage. On Julia 1.11 and later,
-array offsets within backing `Memory` must also match. A mismatch raises
+both object identity relationships and shared backing storage. Distinct array headers over one
+buffer must remain distinct; replacing them with one repeated array changes the relationship
+even if the elements coincide. On Julia 1.11 and later, relative offsets between arrays sharing
+backing `Memory` must also match. Moving all those arrays by the same offset is allowed, as is
+changing the offset of an array that shares no storage with another checked input. A mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
 those relationships change.
@@ -180,9 +200,10 @@ as dictionaries. It does not establish overlap introduced through raw pointers o
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
 
-Forward caches also reject incompatible sharing between prepared tangent buffers and
-call-time inputs. Structured forward gradients additionally check the array leaves reached
-through their structured seeds, including struct fields, before refreshing cached values.
+The friendly forward tuple interface also raises `PreparedCacheError` for incompatible sharing
+between prepared tangent buffers and call-time inputs. Structured forward gradients check the
+array leaves reached through their structured seeds, including struct fields, before refreshing
+cached values, and raise `PreparedCacheError` when that storage sharing changes.
 Their input snapshots can detect some mismatched sharing inside structs and reference-element
 arrays while copying inputs into cache storage.
 
@@ -192,10 +213,20 @@ Forward input snapshots retain the original mutable objects as well as their con
 If `f` rebinds a field of a mutable argument (`s.v = 2 .* s.v` rather than `s.v .= 2 .* s.v`),
 restoration puts the original object back in the field and restores its contents.
 
-The forward entry points (`value_and_derivative!!`, `value_and_jacobian!!` and the forward
-`value_and_gradient!!`) snapshot the arguments and restore them afterwards, including when the rule
-raises. RNG state is deliberately excluded from restoration: random draws leave the RNG advanced,
-including on failure. Random operations execute afresh in each gradient or Jacobian chunk.
+Restoration depends on the forward entry point:
+
+- `value_and_derivative!!(cache, (f, df), (x, dx), ...)` restores arguments after success or
+  failure, under either `friendly_tangents` setting.
+- Bare-rule calls to `value_and_derivative!!`, and calls with `Lifted` inputs even through a
+  cache, leave argument mutations in place.
+- Forward `value_and_gradient!!` and `value_and_jacobian!!` preserve their input arguments,
+  including when the rule raises.
+
+For example, `f(x) = (x[1] *= 2; sum(x))` leaves `x = [1.0, 2.0]` as `[2.0, 2.0]` through
+bare-rule or `Lifted` calls; the cached tuple interface restores `[1.0, 2.0]`.
+The callable `f` itself is not snapshotted. RNG state is deliberately excluded from restoration,
+including RNGs nested in arguments: random draws leave the RNG advanced, including on failure.
+Random operations execute afresh in each gradient or Jacobian chunk.
 Reverse mode restores mutations on the pullback instead, so an exception during the forward
 sweep leaves them in place: the
 arguments of a `value_and_pullback!!` or `value_and_gradient!!` call that threw are whatever the
@@ -507,29 +538,29 @@ or reverse mode.
 
 ### Re-typing a pointer through `Ptr{Cvoid}`
 
-A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
-sound: re-typing `Ptr{Float32}` to `Ptr{Float64}` is refused, because a load or store through the
-result would address eight bytes per element in a buffer laid out in four-byte ones.
+Re-typing must preserve the layout of tangent storage. A `Float64` load through a pointer into
+`Float32` tangent storage would straddle two elements, so Mooncake refuses it.
 
-Erasing the element type loses the information that check needs, because Mooncake gives an erased
-pointer and a pointer with no tangent storage at all the same representation — both are
-`Ptr{Nothing}`, and `fdata_type` pins a pointer field's fdata to `Ptr`.
+In reverse mode, a `Ptr{Cvoid}` has a `VoidPtrTangent` with an address `p` and the erased tangent
+element type `elt`. Its fdata is also `VoidPtrTangent`, so erasure preserves the information needed
+when re-typing back. `elt === NoTangent` marks absent differentiable storage; `elt === Nothing`
+marks a tangent object address checked by `pointer_from_objref`.
 
-The erasure itself is allowed. What is refused is re-typing to an element type the underlying
-tangent storage cannot hold, and that is checked when the pointer is widened back:
+In forward mode, the canonical `dual_type(Val(N), Ptr{Cvoid})` is `NTuple{N,Ptr{Cvoid}}`.
+A bitcast from typed lane pointers retains their element types when changing them would change
+the stride. For example, erasing a `Ptr{Float32}` leaves `Ptr{Float32}` lane pointers, even though
+the primal is now `Ptr{Cvoid}`. Re-typing that primal to `Ptr{Float64}` still leaves those lane
+pointers unchanged; a scalar load then raises `ArgumentError` because the lane representation
+does not match `Ptr{Float64}`.
+
+Thus this example raises in both modes, at re-typing in reverse and at the load in forward:
 
 ```julia
-f(b::Vector{Float32}, x) = x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))   # ArgumentError
+f(b::Vector{Float32}) = unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
 ```
 
-Erasing and re-typing back to the *same* element type is fine, which is the common direction:
-`pointer(::Array)` passes through a `Ptr{Cvoid}` intermediate and re-types back to the element type
-a foreigncall needs.
-
-The `Ptr{Cvoid}` round trip is not itself the problem. Going straight from `Ptr{Float32}` to
-`Ptr{Float64}` is refused identically — a `Float64` load would straddle two `Float32` tangent
-elements either way. The round trip only matters in that it hides the source type until the
-widening, which is why the error for that path suggests re-typing directly instead.
+Re-typing directly from `Ptr{Float32}` to `Ptr{Float64}` is also refused when used for a scalar
+load. Erasing and re-typing back to `Ptr{Float32}` supports the load and its derivative.
 
 ```@meta
 DocTestSetup = nothing
