@@ -521,38 +521,23 @@ end
     )
 end
 
-# A callable capturing an argument's array shares storage without top-level identity.
-# Compare supplied tangents against one canonically seeded set, only when the prepared
-# `inputs_share_storage` flag indicates sharing.
-@inline function _check_shared_input_tangents(
-    cache, input_primals::Tuple, input_tangents::Tuple
-)
-    # The prepared flag is only a pre-filter: call-time primals may be distinct, which is valid.
-    getfield(cache, :inputs_share_storage) || return nothing
+# Check caller-owned seeds before either friendly conversion or lifting can merge them.
+# The prepared sharing flag is insufficient: call-time inputs can introduce new aliases.
+@inline function _check_shared_input_tangents(input_primals::Tuple, input_tangents::Tuple)
     ts = _zero_tangents(input_primals)
-    shared_dim = tangent_dim(ts)
-    _inputs_share_storage(shared_dim, ts, input_primals) || return nothing
-    @static if VERSION >= v"1.11-rc4"
-        # Canonical tangents share the primals' backing Memory. Compare the actual mapping:
-        # equal dimension counts and unrelated sharing in reverse scratch cannot certify it.
-        # Coherent shared seeds remain supported; constructing them for HVP is separate work.
-        return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
-    end
-    # Canonical tangents count shared storage once. Extra supplied dimensions indicate
-    # conflicting seeds; fewer are valid when distinct primals receive the same direction.
-    shared = tangent_dim(input_tangents, IdDict{Any,Any}())
-    shared > shared_dim && _throw_shared_input_tangent_error()
-    # One buffer under two array containers (`da` and `reshape(da)`, or an `Array` beside its
-    # backing `Memory`) leaves the counts equal, so `_any_shared_storage` is what recognises it.
-    _any_shared_storage(input_tangents) && return nothing
-    summed = sum(t -> tangent_dim(t, IdDict{Any,Any}()), input_tangents; init=0)
-    shared == summed && _throw_shared_input_tangent_error()
-    return nothing
+    return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
+end
+
+# Slots already carry their seeds. Compare their partial storage against one joint lift,
+# without materialising lanes (which would itself merge or copy the storage being checked).
+@inline function _check_shared_input_tangents(fx::Tuple{Vararg{Lifted}})
+    ps = map(primal, fx)
+    expected = tangent(zero_lifted(Val(_lifted_width(first(fx))), ps))
+    return _check_tangent_storage!(IdDict{Any,Any}(), expected, map(tangent, fx))
 end
 
 # Compare canonical and supplied tangent storage, not scalar values. This is one-directional:
 # distinct primals may use the same direction, but a shared primal cannot carry two directions.
-# Julia 1.10 keeps the count check above because its reshape tangents do not share backing storage.
 function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     isbitstype(T) && return nothing
     if expected isa MistyClosureTangent
@@ -575,7 +560,16 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         end
         seen[key] = value
     end
-    if expected isa AbstractArray
+    if expected isa Union{Tangent,MutableTangent} &&
+        !(supplied isa Union{Tangent,MutableTangent})
+        for name in keys(expected.fields)
+            isdefined(supplied, name) && _check_tangent_storage!(
+                seen, getfield(expected.fields, name), getfield(supplied, name)
+            )
+        end
+    elseif expected isa PossiblyUninitTangent && !(supplied isa PossiblyUninitTangent)
+        is_init(expected) && _check_tangent_storage!(seen, val(expected), supplied)
+    elseif expected isa AbstractArray
         isbitstype(eltype(expected)) && return nothing
         for i in eachindex(expected)
             isassigned(expected, i) &&
@@ -588,6 +582,24 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         end
     end
     return nothing
+end
+
+function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualArray, supplied)
+    return _check_tangent_storage!(
+        seen,
+        Nfwd._block_storage(getfield(expected, :partials_block)),
+        Nfwd._block_storage(getfield(supplied, :partials_block)),
+    )
+end
+function _check_tangent_storage!(seen::IdDict, expected::Lifted, supplied::Lifted)
+    return _check_tangent_storage!(seen, tangent(expected), tangent(supplied))
+end
+@static if VERSION >= v"1.11-rc4"
+    function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied)
+        return _check_tangent_storage!(
+            seen, expected.partials_ref.mem, supplied.partials_ref.mem
+        )
+    end
 end
 
 @noinline function _throw_shared_input_tangent_error()
@@ -899,12 +911,10 @@ directional derivative. The `Lifted` interface returns the rule output (a `Lifte
 and computes one derivative per lane of the supplied `Lifted` width — width-1 unless the
 caller built wider (chunked) slots.
 
-Positions holding the same object share one tangent, so the tuple interface refuses two
-different tangents for them: only one direction can be carried and choosing silently is worse
-than refusing. Passing the same tangent object at every such position is well-posed and
-supported. The `Lifted` interface does not check — there the caller has already built the
-slots, and two slots over one primal carrying independent directions is a deliberate part of
-the forward representation.
+Positions sharing differentiable storage must share tangent storage, including through
+`reshape`, `view`, and captured fields. All interfaces refuse conflicting seeds before
+conversion or lifting can discard them. Build `Lifted` inputs jointly when their primals
+share storage; independently lifted slots have independent partial buffers.
 """
 @inline function value_and_derivative!!(rule::R) where {R}
     throw(
@@ -916,6 +926,7 @@ the forward representation.
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Lifted,N}) where {R,N}
+    _check_shared_input_tangents(fx)
     return __call_rule(rule, fx)
 end
 
@@ -923,6 +934,7 @@ end
     _check_repeated_arg_tangents(fx)
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
+    _check_shared_input_tangents(input_primals, input_tangents)
     # Share the lift cache across arguments: fresh partial blocks for aliased primals would
     # make mutations visible through the primal but not through its derivative.
     c = IdDict()
@@ -1102,14 +1114,21 @@ Returns a `Lifted` containing the result of applying forward-mode AD to compute 
 (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the
 tangent values in `f` and `x`.
 """
+function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
+    _check_shared_input_tangents(fx)
+    return _value_and_derivative!!(cache, fx...)
+end
+
+# Internally constructed basis slots share one seeding cache (or own distinct copied
+# primals). Their sweeps validate aliasing before seeding, so need no per-chunk graph walk.
 # Width-1 slots select `single_rule`; wider slots must match the prepared chunk width.
 # The tuple interface below always supplies width 1.
-function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
+function _value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     return __call_rule(cache.single_rule, fx)
 end
-function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
+function _value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     rule = cache.chunk_rule
@@ -1177,6 +1196,7 @@ snapshotted — a callable that mutates its own fields is not restored.
     _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
     _check_repeated_arg_tangents(fx)
     input_friendly_tangents = tuple_map(last, fx)
+    _check_shared_input_tangents(input_primals, input_friendly_tangents)
     input_tangents = tuple_map(
         primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
     )
@@ -1215,12 +1235,8 @@ end
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
-    # Only this method can check nested shared-input seeds: the friendly path has already
-    # merged them into prepared buffers, and the rule-direct path has no canonical tangent
-    # set. Building one there would defeat its allocation savings; see `known_limitations.md`.
-    _check_shared_input_tangents(cache, input_primals, input_tangents)
-
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
+    _check_shared_input_tangents(input_primals, input_tangents)
 
     # One aliasing cache scoped to this input lift: a reverse rule captured in
     # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
@@ -1346,7 +1362,7 @@ function _fcache_jacobian_packable!!(
             slot = s + lane - 1
             slot <= total_dim && Nfwd._set_partial!(nda, slot, lane, one(T))
         end
-        output = value_and_derivative!!(cache, f_seed, arg_seed)
+        output = _value_and_derivative!!(cache, f_seed, arg_seed)
         if s == 1
             # Not copied: this path is zero-allocation by contract, so the returned value aliases
             # cache-owned storage exactly as `J` does, and the next call on this cache overwrites
@@ -1462,7 +1478,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # compound) and once at the end, leaving `x` unchanged.
     snapshots, contexts = _snapshot_inputs!!(cache.input_snapshot, (x,))
     try
-        output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
+        output = _value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
         # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that
         # returns its mutated argument `y === x`, the restore would rewrite the value we return.
         # Same reason the `value_and_derivative!!` methods copy their output.
@@ -1480,7 +1496,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             seed_vs = tangent(zero_lifted(Val(W), (f, x)))
             f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
             x_seed = Lifted{typeof(x),W}(x, seed_vs[2])
-            output = value_and_derivative!!(
+            output = _value_and_derivative!!(
                 cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
             )
             @inbounds for lane in 1:W
@@ -2332,7 +2348,7 @@ end
             lifted = ntuple(
                 i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields
             )
-            output = value_and_derivative!!(cache, lifted...)
+            output = _value_and_derivative!!(cache, lifted...)
             if start_slot == 1
                 y = primal(output)
                 _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
@@ -2495,7 +2511,7 @@ function value_and_gradient!!(
             end
             off += len
         end
-        output = value_and_derivative!!(cache, f_seed, arg_seeds...)
+        output = _value_and_derivative!!(cache, f_seed, arg_seeds...)
         yv = primal(output)
         _check_scalar_output(yv; caller=(value_and_gradient!!), cache=cache)
         y = yv
@@ -2822,7 +2838,7 @@ function _structured_gradient!!(
         arg_seeds = _refresh_all!(arg_seeds, xs)
         _zero_seeds!(leaves)
         _seed_chunk!(leaves, s, W)
-        out = value_and_derivative!!(cache, f_seed, arg_seeds...)
+        out = _value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
         _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
         _scatter_chunk!(leaves, out, s, W)
@@ -2837,7 +2853,7 @@ end
     seed_w = zero_lifted(Val(W), input_primals)
     vs = tangent(basis_lifted!!(seed_w, ntuple(k -> s + k - 1, Val(W))))
     lifteds = map((t, p, v) -> typeof(t)(p, v), templates, input_primals, vs)
-    return value_and_derivative!!(cache, lifteds...)
+    return _value_and_derivative!!(cache, lifteds...)
 end
 
 # Write the chunk's `W` directional derivatives into the gradient. `out`'s lane `k` is the
@@ -3210,7 +3226,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
     end, Val(W))
     x_snapshot = copy(x1)
     try
-        output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
+        output = _value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
         po = primal(output)
         value = po[1]
         g .= po[2]
@@ -3220,7 +3236,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
         end
         for start_col in (W + 1):W:n
             copyto!(x1, x_snapshot)
-            output = value_and_derivative!!(
+            output = _value_and_derivative!!(
                 fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
             )
             @inbounds for lane in 1:W
@@ -3236,8 +3252,8 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
 end
 
 # Checked at the entry point, not in the sweep: the width-1 sweep reaches
-# `_check_shared_input_tangents` through `value_and_hvp!!`, but `_chunked_hessian_sweep!` calls the
-# pre-lifted `value_and_derivative!!` method, which that guard never sees.
+# `_check_shared_input_tangents` through `value_and_hvp!!`; the chunked sweep constructs
+# its own slots and calls `_value_and_derivative!!` after this admission check.
 @inline function _check_hessian_input_aliasing(cache::HVPCache)
     getfield(getfield(cache, :fwd_cache), :inputs_share_storage) &&
         _throw_hessian_input_alias_error()
