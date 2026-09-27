@@ -2893,13 +2893,13 @@ function Base.showerror(io::IO, err::PreparedCacheError)
     _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
 end
 
-function _throw_prepared_cache_aliasing_error(li::String, lj::String, aliased_now::Bool)
-    # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
-    # `===` yet are one storage, and that pair is exactly what `_shares_storage` added.
+function _throw_prepared_cache_aliasing_error(
+    li::String, lj::String, aliased_now::Bool, relation::String="storage"
+)
     what = if aliased_now
-        "share one storage now but were separate"
+        "share one $relation now but were separate"
     else
-        "are separate now but shared one storage"
+        "are separate now but shared one $relation"
     end
     throw(
         PreparedCacheError(
@@ -2940,8 +2940,10 @@ end
 # Use the same storage identity for primals and tangents: an Array and its backing
 # Memory are distinct objects but share accumulation storage, as do reshaped arrays.
 @inline _storage_id(@nospecialize(x)) = x
+@inline _storage_offset(@nospecialize(x)) = 0
 @static if VERSION >= v"1.11-rc4"
     @inline _storage_id(x::Array) = getfield(x, :ref).mem
+    @inline _storage_offset(x::Array) = Core.memoryrefoffset(getfield(x, :ref))
     @inline _storage_id(x::Memory) = x
 else
     @inline _storage_id(x::Array) = Base.dataids(x)
@@ -2972,11 +2974,19 @@ end
     leaves = _aliasable_positions(tangents, true)
     fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
     ids = Expr(
-        :tuple, (:(get!(first, _storage_id(primals[$k]), $k)) for k in eachindex(leaves))...
+        :tuple,
+        (
+            :((
+                get!(objects, primals[$k], $k),
+                get!(storage, _storage_id(primals[$k]), $k),
+                _storage_offset(primals[$k]),
+            )) for k in eachindex(leaves)
+        )...,
     )
     return quote
         primals = $fs
-        first = IdDict{Any,Int}()
+        objects = IdDict{Any,Int}()
+        storage = IdDict{Any,Int}()
         $ids
     end
 end
@@ -2992,29 +3002,55 @@ function _alias_checks(@nospecialize(tangents::Type))
         return :(_check_alias_partition(aliases, $fs, $labels))
     end
     checks = Expr(:block)
-    for a in 1:n, b in (a + 1):n
-        (i, pi), (j, pj) = leaves[a], leaves[b]
-        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
-        li, lj = _alias_label(i, pi), _alias_label(j, pj)
-        push!(
-            checks.args,
-            quote
-                same_primal = _shares_storage($fi, $fj)
-                same_primal == (aliases[$a] == aliases[$b]) ||
-                    _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
-            end,
-        )
+    for a in 1:n
+        i, pi = leaves[a]
+        fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi)
+        push!(checks.args, :(_check_alias_offset(aliases[$a][3], $fi, $li)))
+        for b in (a + 1):n
+            j, pj = leaves[b]
+            fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj)
+            push!(
+                checks.args,
+                quote
+                    same_object = $fi === $fj
+                    same_object == (aliases[$a][1] == aliases[$b][1]) ||
+                        _throw_prepared_cache_aliasing_error(
+                            $li, $lj, same_object, "object"
+                        )
+                    same_storage = _shares_storage($fi, $fj)
+                    same_storage == (aliases[$a][2] == aliases[$b][2]) ||
+                        _throw_prepared_cache_aliasing_error($li, $lj, same_storage)
+                end,
+            )
+        end
     end
     return checks
 end
 
+@inline function _check_alias_offset(offset::Int, primal, label::String)
+    offset == _storage_offset(primal) || throw(
+        PreparedCacheError(
+            "Cached autodiff call has a storage offset mismatch at $label. " *
+            "Prepare a separate cache for this array offset.",
+        ),
+    )
+    return nothing
+end
+
 @noinline function _check_alias_partition(aliases::Tuple, primals::Tuple, labels::Tuple)
-    first = IdDict{Any,Int}()
+    objects = IdDict{Any,Int}()
+    storage = IdDict{Any,Int}()
     for k in eachindex(primals)
-        f = get!(first, _storage_id(primals[k]), k)
-        f == aliases[k] || _throw_prepared_cache_aliasing_error(
-            labels[min(f, aliases[k])], labels[k], f < k
+        _check_alias_offset(aliases[k][3], primals[k], labels[k])
+        for (first, id, expected, relation) in (
+            (objects, primals[k], aliases[k][1], "object"),
+            (storage, _storage_id(primals[k]), aliases[k][2], "storage"),
         )
+            f = get!(first, id, k)
+            f == expected || _throw_prepared_cache_aliasing_error(
+                labels[min(f, expected)], labels[k], f < expected, relation
+            )
+        end
     end
     return nothing
 end
