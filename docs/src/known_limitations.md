@@ -367,7 +367,8 @@ both object identity relationships and shared backing storage. On Julia 1.11 and
 array offsets within backing `Memory` must also match. A mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
-those relationships change.
+those relationships change. Forward caches using structured gradient seeds also check
+the sharing of differentiable array leaves inside struct fields before refreshing their buffers.
 
 Callers must preserve types, shapes, and aliasing throughout the inputs, including
 parts the guard does not inspect. The guard does not traverse struct fields (including

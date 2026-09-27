@@ -470,6 +470,26 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         @test rand(rng) == rand(reference)
     end
 
+    @testset "structured cache alias partition" begin
+        f(p) = (p.u[1] *= 2; p.v[1])
+        for friendly_tangents in (false, true), W in (1, 2)
+            p = StructuredPair([3.0], [4.0])
+            cache = Mooncake.prepare_derivative_cache(
+                f, p; config=Mooncake.Config(; friendly_tangents, chunk_size=W)
+            )
+            @test cache.gradient_seed isa Mooncake.StructuredGradSeed
+            @test first(Mooncake.value_and_gradient!!(cache, f, p)) == 4.0
+            a = [3.0]
+            @test f(StructuredPair(a, a)) == 6.0
+            a[1] = 3.0
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                cache, f, StructuredPair(a, a)
+            )
+            @test a == [3.0]
+            @test first(Mooncake.value_and_gradient!!(cache, f, p)) == 4.0
+        end
+    end
+
     @testset "custom snapshot leaves" begin
         leaf = CustomSnapshotLeaf([1.0, 2.0])
         arg = StructuredPair(RebindBox(leaf), leaf)

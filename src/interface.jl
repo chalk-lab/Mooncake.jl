@@ -276,7 +276,9 @@ end
 # Variable-arity containers and struct fields remain unchecked; see `known_limitations.md`.
 # `bidirectional` requires both partitions to agree (reverse); forward only refuses
 # shared tangent storage for distinct primals.
-function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
+function _alias_checks(
+    @nospecialize(tangents::Type), bidirectional::Bool, label=_alias_label
+)
     # Compare leaves across the whole signature, including two leaves of one argument.
     leaves = _aliasable_positions(tangents, true)
     n = length(leaves)
@@ -285,7 +287,7 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
     if n * (n - 1) ÷ 2 > 256
         ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
         fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
-        labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
+        labels = Expr(:tuple, (label(i, p) for (i, p) in leaves)...)
         return :(_check_alias_partition($ts, $fs, $labels, $bidirectional))
     end
     bad = bidirectional ? :(same_primal != same_tangent) : :(same_tangent && !same_primal)
@@ -294,7 +296,7 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
         (i, pi), (j, pj) = leaves[a], leaves[b]
         ti, tj = _path_expr(:tangents, i, pi), _path_expr(:tangents, j, pj)
         fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
-        li, lj = _alias_label(i, pi), _alias_label(j, pj)
+        li, lj = label(i, pi), label(j, pj)
         push!(
             checks.args,
             quote
@@ -2767,12 +2769,28 @@ end
 
 # Structured sweep: restore seed primals and partials each chunk to prevent compounded
 # mutation. Each gradient dimension is written once, so grad_bufs needs no zeroing.
+_seed_array_inputs(::NoDual, x) = ()
+_seed_array_inputs(::Nfwd.NDualArray, x) = (x,)
+_seed_array_inputs(v::Union{ImmutableDual,MutableDual}, x) = _seed_array_inputs(v.fields, x)
+_seed_array_inputs(v::Tuple, x) = _cat_leaves(map(_seed_array_inputs, v, x))
+function _seed_array_inputs(v::NamedTuple{ns}, x) where {ns}
+    return _cat_leaves(map(n -> _seed_array_inputs(getfield(v, n), getfield(x, n)), ns))
+end
+
+@generated function _check_seed_aliasing(tangents::Tuple, fx::Tuple)
+    checks = _alias_checks(tangents, true, (i, _) -> "structured array leaf $i")
+    return Expr(:block, checks, :(return nothing))
+end
+
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
     input_primals = (f, xs...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
-    _check_tangent_aliasing((NoTangent(), seed.grad_bufs...), input_primals)
+    # The leaf table fixes the alias partition, including arrays inside struct fields.
+    _restore_seed_bindings!(seed.bindings)
+    arrays = _seed_array_inputs(map(tangent, seed.arg_seeds), xs)
+    _check_seed_aliasing(map(row -> row[2], seed.leaves), arrays)
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
