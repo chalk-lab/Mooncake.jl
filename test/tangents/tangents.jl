@@ -215,6 +215,20 @@ using DispatchDoctor: allow_unstable
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
     end
+    @testset "array storage caching preserves container identity" begin
+        a = ones(2, 2)
+        b = reshape(a, 1, 4)
+        p = (a, a, b, b)
+        for t in (
+            zero_tangent(p),
+            randn_tangent(StableRNG(123), p),
+            _scale(0.5, p),
+            _add_to_primal(p, p, true),
+        )
+            @test populate_address_map(p, t) isa AddressMap
+            @test pointer(t[1]) == pointer(t[3])
+        end
+    end
     @static if VERSION >= v"1.11-"
         @testset "_dot counts one buffer once across two positions" begin
             # Distinct arrays over one Memory must be counted once. This checks a relationship
