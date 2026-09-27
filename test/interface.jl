@@ -1782,6 +1782,36 @@ end
             p, 1.0, f, a, copy(a)
         )
     end
+    @testset "unaliased array offsets" for n in (1, 2, 24)
+        f = if n == 1
+            x -> sum(abs2, x)
+        elseif n == 2
+            (x, y) -> sum(x) + sum(y)
+        else
+            t -> sum(t[1]) + sum(t[24])
+        end
+        arrays = ntuple(_ -> ones(2), n)
+        args = n == 24 ? (arrays,) : arrays
+        g = prepare_gradient_cache(f, args...)
+        p = prepare_pullback_cache(f, args...)
+        y = ones(3)
+        popfirst!(y)
+        shifted = (y, Base.tail(arrays)...)
+        called = n == 24 ? (shifted,) : shifted
+        gradients = if n == 1
+            ([2.0, 2.0],)
+        elseif n == 2
+            (ones(2), ones(2))
+        else
+            (ntuple(i -> i in (1, 24) ? ones(2) : zeros(2), n),)
+        end
+        expected = (n == 1 ? 2.0 : 4.0, (Mooncake.NoTangent(), gradients...))
+        @test Mooncake.value_and_gradient!!(g, f, called...) == expected
+        @test Mooncake.value_and_pullback!!(p, 1.0, f, called...) == expected
+        @test TestUtils.count_allocs(
+            Mooncake._check_tangent_aliasing, g.aliases, g.tangents, (f, called...)
+        ) == 0
+    end
     @static if VERSION >= v"1.11-rc4"
         @testset "array headers and offsets" for wide in (false, true)
             wrap(m, i) = Base.wrap(Array, memoryref(m, i), (1,))
@@ -1807,6 +1837,18 @@ end
                 @test_throws Mooncake.PreparedCacheError Mooncake.value_and_pullback!!(
                     p, 1.0, fun, same...
                 )
+                moved = Memory{Float64}([0.0, 1.0, 2.0])
+                a, b = wrap(moved, 2), wrap(moved, offset + 1)
+                translated = wide ? ((a, Base.tail(Base.front(args[1]))..., b),) : (a, b)
+                @test Mooncake._check_tangent_aliasing(
+                    g.aliases, g.tangents, (fun, translated...)
+                ) === nothing
+                @test TestUtils.count_allocs(
+                    Mooncake._check_tangent_aliasing,
+                    g.aliases,
+                    g.tangents,
+                    (fun, translated...),
+                ) == 0
                 if offset == 2
                     # Both headers stay distinct and share Memory, but the relative offset changes.
                     z = wrap(m, 1)
