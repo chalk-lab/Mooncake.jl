@@ -31,6 +31,15 @@ import Base.CoreLogging as CoreLogging
 # results in encountering an Atomic->Int address bitcast followed by an LLVM atomic load call.
 @zero_derivative MinimalCtx Tuple{typeof(getindex),Atomic{I}} where {I<:Integer}
 
+# Reading a ScopedValue looks it up in the current `Scope`, whose `PersistentDict` (a HAMT)
+# has a self-referential type, so deriving a rule overflows the stack in `tangent_type`.
+# `getindex(::ScopedValue)` reads through `get`, so this rule covers both.
+@static if VERSION ≥ v"1.11-"
+    @zero_derivative MinimalCtx Tuple{
+        typeof(Base.ScopedValues.get),Base.ScopedValues.ScopedValue
+    }
+end
+
 # Some Base String-related rrules:
 @zero_derivative MinimalCtx Tuple{typeof(print),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(println),Vararg}
@@ -213,6 +222,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
         # F16 works fine even in 1.12
         (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
         (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+
+        # Reading a ScopedValue (Base.ScopedValues exists from 1.11).
+        if VERSION ≥ v"1.11-"
+            Any[(
+                false,
+                :stability_and_allocs,
+                nothing,
+                Base.ScopedValues.get,
+                Base.ScopedValues.ScopedValue(1),
+            )]
+        else
+            Any[]
+        end,
     )
     memory = Any[_x, _dx]
     return test_cases, memory

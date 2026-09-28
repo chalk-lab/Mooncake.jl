@@ -377,6 +377,10 @@ tangent_type(::Type{<:Base.LibuvStream}) = NoTangent
 
 tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
 
+@static if VERSION ≥ v"1.11-"
+    tangent_type(::Type{<:Base.ScopedValues.ScopedValue}) = NoTangent
+end
+
 tangent_type(::Type{Core.CodeInstance}) = NoTangent
 
 tangent_type(::Type{Core.MethodInstance}) = NoTangent
