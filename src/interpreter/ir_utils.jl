@@ -479,6 +479,19 @@ Throw an `UnhandledLanguageFeatureException` with message `msg`.
 """
 unhandled_feature(msg::String) = throw(UnhandledLanguageFeatureException(msg))
 
+# Scope construction rules cannot intercept @with before its current_scope() argument is
+# differentiated. Reject scoped entry before tangent types or exception IR are processed.
+function check_scoped_value_writes(ir::IRCode)
+    @static if VERSION >= v"1.11-"
+        for inst in stmt(ir.stmts)
+            if inst isa Core.EnterNode && isdefined(inst, :scope)
+                scoped_value_error("Writing")
+            end
+        end
+    end
+    return nothing
+end
+
 """
     replace_uses_with!(stmt, def::Union{Argument, SSAValue}, val)
 
