@@ -212,6 +212,7 @@ function generate_dual_ir(
 
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    check_scoped_value_writes(primal_ir)
     @static if VERSION > v"1.12-"
         # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         primal_ir = set_valid_world!(primal_ir, interp.world)

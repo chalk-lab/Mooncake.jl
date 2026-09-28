@@ -2,6 +2,7 @@
 
 Breaking release: the forward-mode AD representation was rewritten.
 
+- Refuse reading and writing scoped values in differentiated code with guidance to write a rule for the enclosing function or avoid the access.
 - Removed the public `Mooncake.Dual{P,T}` type. Forward-mode values are now carried by the
   `Mooncake.Lifted{P,N,V}` slot (now `@public`), whose forward value `V === dual_type(Val(N), P)`
   is built from the parallel-arrays representation (`NDual` for IEEE floats, `NDualArray` for arrays

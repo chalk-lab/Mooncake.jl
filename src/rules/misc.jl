@@ -121,6 +121,76 @@ end
 frule!!(::Lifted{typeof(rethrow)}) = rethrow()
 frule!!(::Lifted{typeof(rethrow)}, e::Lifted) = rethrow(primal(e))
 
+@static if VERSION >= v"1.11-"
+    @static if isdefined(Base.ScopedValues, :AbstractScopedValue)
+        using Base.ScopedValues: AbstractScopedValue
+    else
+        using Base.ScopedValues: ScopedValue as AbstractScopedValue
+    end
+    using Base.ScopedValues: Scope
+
+    function scoped_value_error(operation)
+        unhandled_feature(
+            "$operation a ScopedValue is not supported by Mooncake.jl in differentiated " *
+            "code and should be avoided. Strategies for resolving this error include " *
+            "writing a rule (rrule!!/frule!!, @zero_derivative, or @from_chainrules) for " *
+            "the function containing the ScopedValue access, or rewriting the code to " *
+            "avoid the access.",
+        )
+    end
+
+    # getindex delegates to get; isassigned consults the scope independently.
+    for f in (Base.ScopedValues.get, isassigned)
+        @eval begin
+            @is_primitive MinimalCtx Tuple{typeof($f),AbstractScopedValue}
+            function frule!!(::Lifted{typeof($f)}, ::Lifted{<:AbstractScopedValue})
+                scoped_value_error("Reading")
+            end
+            function rrule!!(::CoDual{typeof($f)}, ::CoDual{<:AbstractScopedValue})
+                scoped_value_error("Reading")
+            end
+        end
+    end
+
+    @is_primitive MinimalCtx Tuple{
+        Type{Scope},Any,Pair{<:AbstractScopedValue},Vararg{Pair{<:AbstractScopedValue}}
+    }
+    function frule!!(
+        ::Lifted{Type{Scope}},
+        ::Lifted,
+        ::Lifted{<:Pair{<:AbstractScopedValue}},
+        ::Vararg{Lifted{<:Pair{<:AbstractScopedValue}}},
+    )
+        scoped_value_error("Writing")
+    end
+    function rrule!!(
+        ::CoDual{Type{Scope}},
+        ::CoDual,
+        ::CoDual{<:Pair{<:AbstractScopedValue}},
+        ::Vararg{CoDual{<:Pair{<:AbstractScopedValue}}},
+    )
+        scoped_value_error("Writing")
+    end
+
+    @is_primitive MinimalCtx Tuple{Type{Scope},Union{Nothing,Scope},AbstractScopedValue,Any}
+    function frule!!(
+        ::Lifted{Type{Scope}},
+        ::Lifted{<:Union{Nothing,Scope}},
+        ::Lifted{<:AbstractScopedValue},
+        ::Lifted,
+    )
+        scoped_value_error("Writing")
+    end
+    function rrule!!(
+        ::CoDual{Type{Scope}},
+        ::CoDual{<:Union{Nothing,Scope}},
+        ::CoDual{<:AbstractScopedValue},
+        ::CoDual,
+    )
+        scoped_value_error("Writing")
+    end
+end
+
 """
     lgetfield(x, f::Val)
 
@@ -691,6 +761,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     test_cases = vcat(
         specific_test_cases, all_lgetfield_test_cases..., general_lsetfield_test_cases...
     )
+    @static if VERSION >= v"1.11-"
+        sv = Base.ScopedValues.ScopedValue(2.0)
+        read_opts = (throws=(UnhandledLanguageFeatureException, "Reading a ScopedValue"),)
+        write_opts = (throws=(UnhandledLanguageFeatureException, "Writing a ScopedValue"),)
+        append!(
+            test_cases,
+            Any[
+                (false, :none, read_opts, Base.ScopedValues.get, sv),
+                (false, :none, read_opts, isassigned, sv),
+                (false, :none, write_opts, Scope, nothing, sv => 1.5),
+                (false, :none, write_opts, Scope, nothing, sv => 1.5, sv => 3.0),
+                (false, :none, write_opts, Scope, nothing, sv, 1.5),
+            ],
+        )
+    end
     return test_cases, memory
 end
 
@@ -700,5 +785,48 @@ function derived_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
         (false, :none, nothing, () -> copy(Set())),
     ]
+    @static if VERSION >= v"1.11-"
+        sv = Base.ScopedValues.ScopedValue(2.0)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (throws=(UnhandledLanguageFeatureException, "Reading a ScopedValue"),),
+                (sv, x) -> x * sv[],
+                sv,
+                1.5,
+            ),
+        )
+        for mode in (ForwardMode, ReverseMode)
+            err = if mode === ForwardMode
+                UnhandledLanguageFeatureException
+            else
+                MooncakeRuleCompilationError
+            end
+            opts = (mode=mode, throws=(err, "Writing a ScopedValue"))
+            append!(
+                test_cases,
+                Any[
+                    (
+                        false,
+                        :none,
+                        opts,
+                        (sv, x) -> Base.ScopedValues.with(() -> x^2, sv => x),
+                        sv,
+                        1.5,
+                    ),
+                    (
+                        false,
+                        :none,
+                        opts,
+                        (sv, x) -> Base.ScopedValues.@with(sv => x, x^2),
+                        sv,
+                        1.5,
+                    ),
+                ],
+            )
+        end
+    end
     return test_cases, Any[]
 end
