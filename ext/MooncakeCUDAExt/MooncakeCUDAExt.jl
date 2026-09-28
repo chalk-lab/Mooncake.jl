@@ -916,7 +916,11 @@ function rrule!!(
     y = px[I...]
     dy = zero(y)
     function getindex_slice_pb!!(::NoRData)
-        view(dx, I...) .+= dy
+        if all(k -> k isa Colon || allunique(k), I)
+            view(dx, I...) .+= dy
+        else
+            _gpu_scatter_add!(dx, vec(LinearIndices(dx)[I...]), dy)
+        end
         return ntuple(_ -> NoRData(), length(I) + 2)
     end
     return CoDual(y, dy), getindex_slice_pb!!
