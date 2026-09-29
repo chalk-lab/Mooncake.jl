@@ -205,15 +205,18 @@ sr(n::Int) = StableRNG(n)
         end
     end
 
-    for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
-        f(x) = logsumexp(T(reshape(x, 2, 2)))
-        x = zeros(4)
-        cache = Mooncake.prepare_hvp_cache(f, x)
-        p = inv(2 + 2exp(1))
-        for a in (0.0, 1.0)
-            v = zeros(4)
-            v[i] = a
-            @test Mooncake.value_and_hvp!!(cache, f, v, x)[3] ≈ p * (1 - p) * v
+    @testset "unit-triangular HVPs" begin
+        # First-order rule checks cannot detect a lost derivative of the structural mask.
+        for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
+            f(x) = logsumexp(T(reshape(x, 2, 2)))
+            x = zeros(4)
+            cache = Mooncake.prepare_hvp_cache(f, x)
+            p = inv(2 + 2exp(1))
+            for a in (0.0, 1.0)
+                v = zeros(4)
+                v[i] = a
+                @test Mooncake.value_and_hvp!!(cache, f, v, x)[3] ≈ p * (1 - p) * v
+            end
         end
     end
 

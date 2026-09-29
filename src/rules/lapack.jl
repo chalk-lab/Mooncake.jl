@@ -989,7 +989,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     end
     @static if VERSION > v"1.11-"
         for P in complexPs
-            flags = (false, :none, (throws=(DimensionMismatch, ""),))
+            flags = (false, :none, (throws=(DimensionMismatch, nothing),))
             for (uplo, dims) in (('u', (2, 1)), ('l', (1, 2)))
                 push!(
                     test_cases,

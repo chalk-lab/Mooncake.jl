@@ -153,6 +153,7 @@ end
     @static if VERSION < v"1.12-"
         @testset "inference results stay out of newly_inferred" begin
             ccall(:jl_set_newly_inferred, Cvoid, (Any,), CC.newly_inferred)
+            prior = CC.track_newly_inferred.x
             CC.track_newly_inferred.x = true
             try
                 interp = get_interpreter(ReverseMode)
@@ -161,7 +162,7 @@ end
                 @test !isempty(cis)
                 @test !any(in(cis), CC.newly_inferred)
             finally
-                CC.track_newly_inferred.x = false
+                CC.track_newly_inferred.x = prior
                 empty!(CC.newly_inferred)
             end
         end
