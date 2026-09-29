@@ -259,8 +259,7 @@ end
                 incx,
                 "`: the routine reads raw memory from `pointer(X)`, and no step over this ",
                 "operand's own elements follows that walk, so the derivative would be taken of ",
-                "different elements from the ones it read. A positive increment that the ",
-                "operand's stride divides works, as does a dense operand or the raw-pointer form.",
+                "different elements from the ones it read.",
             ),
         ),
     )
@@ -269,11 +268,19 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    step = _blas_walk_step(x, incx, n)
-    if step === nothing
-        _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+    if x isa Union{Array,AbstractVector}
+        step = _blas_walk_step(x, incx, n)
+        step === nothing && _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+        return _viewify_one(n, x, step), _viewify_one(n, dx, step)
     end
-    return _viewify_one(n, x, step), _viewify_one(n, dx, step)
+    # Match physical offsets to logical indices, which also index the tangent.
+    offsets = Dict(
+        sum(Tuple(i - first(CartesianIndices(x))) .* strides(x)) => j for
+        (j, i) in enumerate(CartesianIndices(x))
+    )
+    inds = [get(offsets, k * incx, 0) for k in 0:(n - 1)]
+    all(!iszero, inds) || _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+    return view(x, inds), view(dx, inds)
 end
 
 #
@@ -539,7 +546,7 @@ function rrule!!(
             ∇a += _rvs_mul(X_copy[i]', dX[i])
             P <: BlasRealFloat && (dX[i] *= a')
         end
-        P <: BlasComplexFloat && BLAS.scal!(a', dX)
+        P <: BlasComplexFloat && _scale_or_zero!(dX, a')
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
@@ -2155,6 +2162,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         [
             (flags..., BLAS.nrm2, 2, zeros(P, 2), 1),
+            (flags..., BLAS.nrm2, 2, view(P[3 0; 4 0; 9 0], 1:2, :), 1),
+            (flags..., BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1),
+            (
+                flags...,
+                BLAS.axpy!,
+                2,
+                P(2),
+                view(P[3 0; 4 0; 9 0], 1:2, :),
+                1,
+                zeros(P, 2, 2),
+                1,
+            ),
             (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
@@ -2225,6 +2244,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     end
 
     # nrm2
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            A -> BLAS.nrm2(2, view(A, 1:2, :), 1),
+            P[3 0; 4 0; 9 0],
+        ),
+    )
     push!(test_cases, (false, :none, nothing, BLAS.nrm2, randn(rng, P, 105)))
 
     #
