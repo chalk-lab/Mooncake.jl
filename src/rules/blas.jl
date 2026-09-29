@@ -237,7 +237,7 @@ function viewify(
     x, dx = arrayify(x_dx)
     # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
     # pointer rule comes through here, and accumulating into it would mutate the primal.
-    IntrinsicsWrappers._check_tangent_ptr(x, dx)
+    IntrinsicsWrappers._check_tangent_ptr(x, dx, n)
     xinds = 1:incx:(incx * n)
     return (
         view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
@@ -2212,6 +2212,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     #
     # BLAS LEVEL 1
     #
+
+    push!(test_cases, (false, :none, (mode=ReverseMode,), x -> dot(x, x), P[]))
 
     # dot (real types only)
     if P <: BlasRealFloat
