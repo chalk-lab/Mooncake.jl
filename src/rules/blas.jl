@@ -482,9 +482,7 @@ function rrule!!(
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
-        # Removable singularity at the zero vector: there `y == 0` (all Xᵢ == 0), so
-        # `X * (dy / y)` would be `0 * Inf = NaN`. The gradient x/‖x‖ is taken as 0
-        # there, matching the frule's `iszero(s)` guard.
+        # Choose the zero subgradient at the zero vector to avoid division by zero.
         iszero(y) || (dX .+= X .* (dy / y))
         return NoRData(), NoRData(), NoRData(), NoRData()
     end

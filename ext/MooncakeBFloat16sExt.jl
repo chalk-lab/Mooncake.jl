@@ -45,7 +45,7 @@ import Mooncake:
 
 const P = Core.BFloat16
 
-# TEMPORARY: LLVM 16 fuses per-element extends into a v8f64 fp_extend it cannot select.
+# LLVM 16 fuses per-element extends into a v8f64 fp_extend it cannot select.
 @noinline _scalar_float64(x::Union{P,Float32}) = Float64(x)
 
 # zero(P) calls P(0), which requires BFloat16s.jl to define convert(Core.BFloat16, ::Int).
