@@ -889,19 +889,9 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         BLAS.$fname(ul, α, A, x, β, y)
 
         function symv!_or_hemv!_adjoint(::NoRData)
-            # dα = <dy, Ax>'
-            if (α == 1 && β == 0)
-                # Don't recompute Ax, it's already in y.
-                dα = _rvs_guarded_dot(y, dy)
-                BLAS.copyto!(y, y_copy)
-            else
-                # Reset y.
-                BLAS.copyto!(y, y_copy)
-
-                # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
-                BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
-                dα = _rvs_guarded_dot(y_copy, dy)
-            end
+            BLAS.copyto!(y, y_copy)
+            BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
+            dα = _rvs_guarded_dot(y_copy, dy)
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
@@ -1228,28 +1218,16 @@ end
 
     # Save state and run primal
     p_C_copy = copy(p_C)
-    tmp_ref = Ref{Matrix{T}}()
-
-    if (a == 1 && b == 0)
+    tmp = BLAS.gemm(primal(transA), primal(transB), one(T), p_A, p_B)
+    if iszero(a)
         BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
     else
-        tmp = BLAS.gemm(primal(transA), primal(transB), one(T), p_A, p_B)
-        tmp_ref[] = tmp
-        if iszero(a)
-            # Builds differ on skipping A at α == 0; call BLAS to preserve its NaN
-            # semantics, even though the α gradient already required a product.
-            BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
-        else
-            # β == 0 must overwrite C, which may contain NaN.
-            p_C .= _rvs_mul.(p_C, b)
-            p_C .+= a .* tmp
-        end
+        p_C .= _rvs_mul.(p_C, b)
+        p_C .+= a .* tmp
     end
 
     function gemm!_pb!!(::NoRData)
-        # gradient wrt alpha
-        da =
-            (a == 1 && b == 0) ? _rvs_guarded_dot(p_C, dC) : _rvs_guarded_dot(tmp_ref[], dC)
+        da = _rvs_guarded_dot(tmp, dC)
 
         # Restore state
         BLAS.copyto!(p_C, p_C_copy)
@@ -1380,27 +1358,13 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
 
-        # In this rule we optimise carefully for the special case a == 1 && b == 0, which
-        # corresponds to simply multiplying symm(A) and B together, and writing the result to C.
-        # This is an extremely common edge case, so it's important to do well for it.
         C_copy = copy(C)
-        tmp_ref = Ref{Matrix{T}}()
-        if (α == 1 && β == 0)
-            BLAS.$fname(primal(side), ul, α, A, B, β, C)
-        else
-            tmp = $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
-            tmp_ref[] = tmp
-            # Strong zeros, as in the `gemm!` pullback above.
-            C .= _rvs_mul.(C, β)
-            C .+= _rvs_mul.(tmp, α)
-        end
+        tmp = $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
+        C .= _rvs_mul.(C, β)
+        C .+= _rvs_mul.(tmp, α)
 
         function symm!_or_hemm!_adjoint(::NoRData)
-            dα = if (α == 1 && β == 0)
-                _rvs_guarded_dot(C, dC)
-            else
-                _rvs_guarded_dot(tmp_ref[], dC)
-            end
+            dα = _rvs_guarded_dot(tmp, dC)
 
             BLAS.copyto!(C, C_copy)
 
