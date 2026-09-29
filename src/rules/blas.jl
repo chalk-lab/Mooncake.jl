@@ -285,24 +285,22 @@ function viewify(
         return view(x, xinds), view(dx, xinds)
     end
     incx > 0 || _throw_no_walk_step(x, incx)
-    dims = ntuple(identity, ndims(x))
-    for i in 2:length(dims)
-        j = i
-        while j > 1 && abs(stride(x, dims[j])) > abs(stride(x, dims[j - 1]))
-            a, b = dims[j - 1], dims[j]
-            dims = Base.setindex(Base.setindex(dims, b, j - 1), a, j)
-            j -= 1
+    if x isa SubArray && parent(x) isa Array
+        p0 = n <= 0 ? 1 : 1 + sum((first.(x.indices) .- 1) .* strides(parent(x)))
+        pinds = p0:incx:(p0 + (n - 1) * incx)
+        for i in pinds
+            checkbounds(Bool, parent(x), i) || _throw_no_walk_step(x, incx)
+            coords = Tuple(CartesianIndices(parent(x))[i])
+            all(map(in, coords, x.indices)) || _throw_no_walk_step(x, incx)
+        end
+        return map((x, dx)) do z
+            view(Base.ReshapedArray(parent(z), (length(parent(z)),), ()), pinds)
         end
     end
+    dims = sort!(collect(1:ndims(x)); by=d -> abs(stride(x, d)), rev=true)
     offset = sum(min.(0, (size(x) .- 1) .* strides(x)))
     steps = Base.size_to_strides(1, size(x)...)
-    dense_parent = x isa SubArray && parent(x) isa Array
-    inds = if dense_parent
-        p0 = n <= 0 ? 1 : 1 + sum((first.(x.indices) .- 1) .* strides(parent(x)))
-        p0:incx:(p0 + (n - 1) * incx)
-    else
-        Vector{Int}(undef, max(n, 0))
-    end
+    inds = Vector{Int}(undef, max(n, 0))
     for k in 0:(n - 1)
         remaining, ind = k * incx - offset, 1
         # Physical strides decode in descending magnitude, including reversed axes.
@@ -313,12 +311,7 @@ function viewify(
             ind += (stride(x, d) > 0 ? q : size(x, d) - 1 - q) * steps[d]
         end
         iszero(remaining) || _throw_no_walk_step(x, incx)
-        dense_parent || (inds[k + 1] = ind)
-    end
-    if dense_parent
-        return map((x, dx)) do z
-            view(Base.ReshapedArray(parent(z), (length(parent(z)),), ()), inds)
-        end
+        inds[k + 1] = ind
     end
     return view(x, inds), view(dx, inds)
 end
