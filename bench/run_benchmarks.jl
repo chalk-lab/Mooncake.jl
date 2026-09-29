@@ -340,6 +340,13 @@ function combine_results(result, tag, _range, default_range)
     )
 end
 
+function _benchmark_rule_test_cases(test_cases, memory)
+    filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
+    ranges = map(x -> x[3], test_cases)
+    tags = fill(nothing, length(test_cases))
+    return map(x -> x[4:end], test_cases), memory, ranges, tags
+end
+
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
@@ -353,22 +360,14 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :misc,
         :new,
     ]) do s
-        test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
-        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
-        ranges = map(x -> x[3], test_cases)
-        tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return _benchmark_rule_test_cases(hand_written_rule_test_cases(rng_ctor, Val(s))...)
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03; retries=5)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
-        test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
-        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
-        ranges = map(x -> x[3], test_cases)
-        tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return _benchmark_rule_test_cases(derived_rule_test_cases(rng_ctor, Val(s))...)
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
