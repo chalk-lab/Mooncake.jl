@@ -41,6 +41,9 @@ end
 end
 
 @testset "reverse strong zeros" begin
+    grad(f, a) = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(f, a), f, a
+    )[2][2]
     # Strong zeros permit NaN in unreferenced operands. Finite differences cannot
     # express these inputs, so check the primal exactly against its BLAS semantics.
     @testset "BLAS strong zeros with a NaN operand" begin
@@ -150,9 +153,6 @@ end
             xx = randn(StableRNG(5), 3)
             ynan = [NaN, 1.0, 2.0]
             Cnan = [NaN 1.0 2.0; 3.0 4.0 5.0; 6.0 7.0 8.0]
-            grad(f, b) = Mooncake.value_and_gradient!!(
-                Mooncake.prepare_gradient_cache(f, b), f, b
-            )[2][2]
             @test grad(b -> (z=copy(ynan); BLAS.gemv!('N', 1.0, A, xx, b, z); z[2]), 2.0) ==
                 ynan[2]
             @test grad(
@@ -170,9 +170,6 @@ end
         @testset "alpha gradient ignores a NaN outside the selected output" begin
             Mn = [NaN 0.0 0.0; 1.0 2.0 3.0; 4.0 5.0 6.0]
             v3 = randn(StableRNG(6), 3)
-            grad(f, a) = Mooncake.value_and_gradient!!(
-                Mooncake.prepare_gradient_cache(f, a), f, a
-            )[2][2]
             @test grad(
                 a -> (Z=zeros(3, 3); BLAS.gemm!('N', 'N', a, Mn, B, 1.0, Z); Z[2, 2]), 2.0
             ) ≈ (Mn * B)[2, 2]
@@ -194,18 +191,12 @@ end
         @testset "trmm!/trsm! alpha gradient ignores a NaN in an unused column" begin
             At = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
             Bt = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
-            gr(f, a) = Mooncake.value_and_gradient!!(
-                Mooncake.prepare_gradient_cache(f, a), f, a
-            )[2][2]
-            @test gr(
+            @test grad(
                 a -> (C=copy(Bt); BLAS.trmm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]), 2.0
             ) ≈ (At * Bt)[1, 1]
-            @test isfinite(
-                gr(
-                    a -> (C=copy(Bt); BLAS.trsm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]),
-                    2.0,
-                ),
-            )
+            @test grad(
+                a -> (C=copy(Bt); BLAS.trsm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]), 2.0
+            ) == (At \ Bt)[1, 1]
         end
     end
 end
