@@ -6,7 +6,8 @@ function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    dx = iszero(UInt(tangent(x))) ? tangent(x) : tangent(x) + primal(y)
+    return CoDual(primal(x) + primal(y), dx), NoPullback(f, x, y)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
@@ -258,6 +259,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
 
     test_cases = vcat(
         Any[
+            (
+                false,
+                :none,
+                (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+                x -> unsafe_load(Ptr{Float64}(pointer(x)) + 8),
+                zeros(UInt8, 16),
+            ),
             # Package loading internals: Module can't be deepcopied, so test via closures
             # that capture the module and take a differentiable Float64 arg instead.
             (false, :none, nothing, (x) -> (Base.PkgId(Base); x), 1.0),
