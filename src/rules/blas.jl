@@ -1309,7 +1309,9 @@ end
         end
 
         # Propagate gradient through beta
-        dC .*= b'
+        @inbounds @simd for i in eachindex(dC)
+            dC[i] *= b'
+        end
 
         return (NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData())
     end
