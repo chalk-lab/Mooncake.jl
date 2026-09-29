@@ -2311,13 +2311,9 @@ end
 @inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
     x, 1:step:(1 + (n - 1) * step)
 )
-@inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
-    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
-)
 
 @inline function _blas_walk_step(x, inc::Integer, n::Integer)
     inc > 0 || return nothing
-    x isa Ptr && return inc
     n <= 1 && return n <= length(x) ? 1 : nothing
     step = if x isa AbstractVector
         st = stride(x, 1)
