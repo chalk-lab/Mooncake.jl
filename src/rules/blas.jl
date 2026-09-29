@@ -720,7 +720,7 @@ end
     BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
     # Strong zero is essential here, in case `y` has undefined element values.
-    if !iszero(dβ)
+    if !iszero(dβ) && !isempty(x)
         @inbounds for n in eachindex(y)
             tmp = dβ * y[n]
             dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
@@ -2210,7 +2210,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ),
             (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
-            (flags..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
+            (
+                false,
+                :stability,
+                nothing,
+                BLAS.gemv!,
+                'N',
+                P(2),
+                zeros(P, 2, 0),
+                P[],
+                P(3),
+                ones(P, 2),
+            ),
             (
                 false,
                 :stability,
