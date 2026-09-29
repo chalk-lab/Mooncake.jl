@@ -787,13 +787,13 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dA .+= alpha' .* dy .* x'
+            dA .+= _rvs_mul.(dy .* x', alpha')
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            dA .+= alpha .* x .* dy'
+            dA .+= _rvs_mul.(x .* dy', alpha)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            dA .+= alpha' .* conj.(x) .* transpose(dy)
+            dA .+= _rvs_mul.(conj.(x) .* transpose(dy), alpha')
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -905,7 +905,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
-            dA_tmp = α' * dy * x'
+            dA_tmp = _rvs_mul.(dy .* x', α')
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1406,7 +1406,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
-            dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
+            dA_tmp = s == 'L' ? dC * B' : B' * dC
+            dA_tmp .= _rvs_mul.(dA_tmp, α')
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1538,7 +1539,7 @@ for (fname, elty, relty) in (
 
             M1 = B + $(isherm ? adjoint : transpose)(B)
             M2 = $(isherm ? :A : :(conj(A)))
-            dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
+            dA .+= _rvs_mul.(trans == 'N' ? M1 * M2 : M2 * M1, $elty(α'))
             dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
 
             return (NoRData(), NoRData(), NoRData(), ∇α, NoRData(), ∇β, NoRData())
@@ -1637,19 +1638,19 @@ function rrule!!(
         # Increment gradients.
         if side == 'L'
             if tA == 'T' && P <: BlasComplexFloat
-                dA .+= α' .* tri!(conj(B) * transpose(dB), uplo, diag)
+                dA .+= _rvs_mul.(tri!(conj(B) * transpose(dB), uplo, diag), α')
             elseif tA == 'N'
-                dA .+= α' .* tri!(dB * B', uplo, diag)
+                dA .+= _rvs_mul.(tri!(dB * B', uplo, diag), α')
             else
-                dA .+= α .* tri!(B * dB', uplo, diag)
+                dA .+= _rvs_mul.(tri!(B * dB', uplo, diag), α)
             end
         else
             if tA == 'T' && P <: BlasComplexFloat
-                dA .+= α' .* tri!(transpose(dB) * conj(B), uplo, diag)
+                dA .+= _rvs_mul.(tri!(transpose(dB) * conj(B), uplo, diag), α')
             elseif tA == 'N'
-                dA .+= α' .* tri!(B' * dB, uplo, diag)
+                dA .+= _rvs_mul.(tri!(B' * dB, uplo, diag), α')
             else
-                dA .+= α .* tri!(dB' * B, uplo, diag)
+                dA .+= _rvs_mul.(tri!(dB' * B, uplo, diag), α)
             end
         end
 
@@ -1742,33 +1743,34 @@ function rrule!!(
     trsm!(primal(_side), uplo, primal(_t), primal(_diag), α, A, B)
 
     function trsm_adjoint(::NoRData)
-        ∇α = if iszero(α)
-            M = copy(B_copy)
-            trsm!(side, uplo, trans, diag, one(P), A, M)
-            _rvs_guarded_dot(M, dB)
+        M = if iszero(α)
+            trsm!(side, uplo, trans, diag, one(P), A, copy(B_copy))
         else
-            _rvs_guarded_dot(B, dB) / α'
+            B
         end
+        ∇α = _rvs_guarded_dot(M, dB)
+        iszero(α) || (∇α /= α')
+        c = iszero(α) ? (trans == 'C' ? α : α') : one(P)
 
         # Increment cotangents.
         if side == 'L'
             if trans == 'N'
-                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB * B')
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB * M')
             elseif trans == 'C'
-                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, B * dB')
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, M * dB')
             else
-                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, conj(B * dB'))
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, conj(M * dB'))
             end
-            dA .+= tri!(tmp, uplo, diag)
+            dA .+= _rvs_mul.(tri!(tmp, uplo, diag), c)
         else
             if trans == 'N'
-                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, B'dB)
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, M'dB)
             elseif trans == 'C'
-                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB'B)
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB'M)
             else
-                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, conj(dB'B))
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, conj(dB'M))
             end
-            dA .+= tri!(tmp, uplo, diag)
+            dA .+= _rvs_mul.(tri!(tmp, uplo, diag), c)
         end
 
         # Restore initial state.
