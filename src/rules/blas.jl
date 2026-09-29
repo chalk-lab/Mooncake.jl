@@ -808,13 +808,25 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dA .+= _rvs_mul.(dy .* x', alpha')
+            if iszero(alpha)
+                dA .+= _rvs_mul.(dy .* x', alpha')
+            else
+                dA .+= alpha' .* dy .* x'
+            end
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            dA .+= _rvs_mul.(x .* dy', alpha)
+            if iszero(alpha)
+                dA .+= _rvs_mul.(x .* dy', alpha)
+            else
+                dA .+= alpha .* x .* dy'
+            end
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            dA .+= _rvs_mul.(conj.(x) .* transpose(dy), alpha')
+            if iszero(alpha)
+                dA .+= _rvs_mul.(conj.(x) .* transpose(dy), alpha')
+            else
+                dA .+= alpha' .* conj.(x) .* transpose(dy)
+            end
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -916,7 +928,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
-            dA_tmp = _rvs_mul.(dy .* x', α')
+            dA_tmp = iszero(α) ? _rvs_mul.(dy .* x', α') : α' * dy * x'
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1258,7 +1270,9 @@ end
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
-        if tA == 'N'
+        if iszero(a)
+            dA .+= _trans(tA, _rvs_mul.(dC * _trans(tB, p_B)', a'))
+        elseif tA == 'N'
             # A not transposed: C = a*A*op(B) + b*C
             # dA += a' * dC * op(B)'
             Bherm = tB == 'T' ? conj(p_B) : p_B
@@ -1277,7 +1291,9 @@ end
             end
         end
 
-        if tB == 'N'
+        if iszero(a)
+            dB .+= _trans(tB, _rvs_mul.(_trans(tA, p_A)' * dC, a'))
+        elseif tB == 'N'
             # B not transposed: C = a*op(A)*B + b*C
             # dB += a' * op(A)' * dC
             Aherm = tA == 'T' ? conj(p_A) : p_A
@@ -1391,8 +1407,11 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
-            dA_tmp = s == 'L' ? dC * B' : B' * dC
-            dA_tmp .= _rvs_mul.(dA_tmp, α')
+            dA_tmp = if iszero(α)
+                _rvs_mul.(s == 'L' ? dC * B' : B' * dC, α')
+            else
+                s == 'L' ? (α' * dC) * B' : (α' * B') * dC
+            end
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
