@@ -132,15 +132,12 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
-    # Nonempty copies require real tangent storage for both pointers.
-    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest), primal(n))
-    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
-    _n = primal(n)
-
-    # Exact self-copy preserves downstream cotangents.
     if primal(dest) === primal(src)
         return dest, NoPullback(ntuple(_ -> NoRData(), 4))
     end
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest), primal(n))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
+    _n = primal(n)
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
@@ -530,6 +527,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, x -> unsafe_copyto_tester(x, x, 2), randn(5)),
+        (false, :none, nothing, function (::Val{p}, a) where {p}
+            unsafe_copyto!(p, p, 1)
+            return a * a
+        end, Val(ptr_a), 3.0),
         (
             false,
             :none,
