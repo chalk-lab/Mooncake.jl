@@ -270,10 +270,17 @@ function viewify(
         return _viewify_one(n, x, step), _viewify_one(n, dx, step)
     end
     incx > 0 || _throw_no_walk_step(x, incx)
-    dims = sort!(collect(1:ndims(x)); by=d -> abs(stride(x, d)), rev=true)
+    dims = sort(ntuple(identity, ndims(x)); by=d -> abs(stride(x, d)), rev=true)
     offset = sum(min.(0, (size(x) .- 1) .* strides(x)))
     steps = Base.size_to_strides(1, size(x)...)
-    inds = map(0:(n - 1)) do k
+    dense_parent = x isa SubArray && parent(x) isa Array
+    inds = if dense_parent
+        p0 = n <= 0 ? 1 : 1 + sum((first.(x.indices) .- 1) .* strides(parent(x)))
+        p0:incx:(p0 + (n - 1) * incx)
+    else
+        Vector{Int}(undef, max(n, 0))
+    end
+    for k in 0:(n - 1)
         remaining, ind = k * incx - offset, 1
         # Physical strides decode in descending magnitude, including reversed axes.
         for d in dims
@@ -283,7 +290,12 @@ function viewify(
             ind += (stride(x, d) > 0 ? q : size(x, d) - 1 - q) * steps[d]
         end
         iszero(remaining) || _throw_no_walk_step(x, incx)
-        return ind
+        dense_parent || (inds[k + 1] = ind)
+    end
+    if dense_parent
+        return map((x, dx)) do z
+            view(Base.ReshapedArray(parent(z), (length(parent(z)),), ()), inds)
+        end
     end
     return view(x, inds), view(dx, inds)
 end
@@ -2173,7 +2185,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         [
             (flags..., BLAS.nrm2, 2, zeros(P, 2), 1),
-            (false, :stability, nothing, BLAS.nrm2, 2, view(P[3 0; 4 0; 9 0], 1:2, :), 1),
+            (
+                false,
+                :stability_and_allocs,
+                nothing,
+                BLAS.nrm2,
+                2,
+                view(P[3 0; 4 0; 9 0], 1:2, :),
+                1,
+            ),
             (flags..., BLAS.nrm2, 2, view(P[9 9; 3 4; 9 9], 2:-1:1, :), 3),
             (flags..., BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1),
             (
