@@ -178,8 +178,7 @@ function rrule!!(
     IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
     _n = primal(n)
 
-    # Exact self-copy is identity: accumulating then restoring the same buffer would
-    # erase downstream cotangents. Partial overlap still uses snapshot-and-restore.
+    # Exact self-copy preserves downstream cotangents.
     if primal(dest) === primal(src)
         return dest, NoPullback(ntuple(_ -> NoRData(), 4))
     end
@@ -614,6 +613,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, x -> unsafe_copyto_tester(x, x, 2), randn(5)),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x),
+            [2.0, 3.0, 4.0],
+        ),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x),
+            [2.0, 3.0, 4.0],
+        ),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 1, 4),
         (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 2, 1, 3),
