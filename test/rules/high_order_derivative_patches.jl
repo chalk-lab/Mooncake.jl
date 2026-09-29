@@ -388,7 +388,7 @@ end
         else
             x -> sum(abs2, op('L', 'U', 'N', 'N', P(x[1]), fill(P(x[2]), 1, 1), ones(P, 1, 1)))
         end
-        @testset "$P $op $a $b" for a in (0.0,), b in (0.0, 1.0)
+        @testset "$P $op $a $b" for a in (0.0, 1.0, 2.0), b in (0.0, 1.0)
             x, v = [a, 3.0, b], ones(3)
             cache = Mooncake.prepare_gradient_cache(f, x)
             grad(z) = copy(Mooncake.value_and_gradient!!(cache, f, z)[2][2])
