@@ -345,3 +345,56 @@ end
 
     @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end
+
+@testset "BLAS coefficient HVPs" begin
+    # First-order registry checks cannot detect lost perturbations in a pullback.
+    for P in (Float64, ComplexF64),
+        op in (
+            BLAS.gemm!,
+            BLAS.gemv!,
+            BLAS.symm!,
+            BLAS.symv!,
+            BLAS.syrk!,
+            BLAS.trmm!,
+            BLAS.trsm!,
+            (P <: Complex ? (BLAS.hemm!, BLAS.hemv!, BLAS.herk!) : ())...,
+        )
+
+        f = if op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
+            flags = op === BLAS.gemm! ? ('N', 'N') : ('L', 'U')
+            x -> sum(
+                abs2,
+                op(
+                    flags...,
+                    P(x[1]),
+                    fill(P(x[2]), 1, 1),
+                    ones(P, 1, 1),
+                    P(x[3]),
+                    ones(P, 1, 1),
+                ),
+            )
+        elseif op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+            flag = op === BLAS.gemv! ? 'N' : 'U'
+            x -> sum(
+                abs2,
+                op(flag, P(x[1]), fill(P(x[2]), 1, 1), ones(P, 1), P(x[3]), ones(P, 1)),
+            )
+        elseif op in (BLAS.syrk!, BLAS.herk!)
+            Q = op === BLAS.herk! ? real(P) : P
+            x -> sum(
+                abs2,
+                op('U', 'N', Q(x[1]), fill(P(x[2]), 1, 1), Q(x[3]), ones(P, 1, 1)),
+            )
+        else
+            x -> sum(abs2, op('L', 'U', 'N', 'N', P(x[1]), fill(P(x[2]), 1, 1), ones(P, 1, 1)))
+        end
+        @testset "$P $op $a $b" for a in (0.0,), b in (0.0, 1.0)
+            x, v = [a, 3.0, b], ones(3)
+            cache = Mooncake.prepare_gradient_cache(f, x)
+            grad(z) = copy(Mooncake.value_and_gradient!!(cache, f, z)[2][2])
+            fd = (grad(x + 1e-5v) - grad(x - 1e-5v)) / 2e-5
+            h = Mooncake.value_and_hvp!!(Mooncake.prepare_hvp_cache(f, x), f, v, x)[3]
+            @test h ≈ fd rtol=1e-7 atol=1e-7
+        end
+    end
+end
