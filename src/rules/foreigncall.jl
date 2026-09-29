@@ -132,11 +132,9 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
-    # Both pointers are dereferenced below, so both must address real tangent
-    # bytes. Same guard as the load/store rules and reverse `unsafe_wrap`; it lives
-    # in `IntrinsicsWrappers`, not the top-level module.
-    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest))
-    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
+    # Nonempty copies require real tangent storage for both pointers.
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest), primal(n))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
     _n = primal(n)
 
     # Exact self-copy preserves downstream cotangents.
@@ -493,6 +491,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             ptr_a,
             ptr_b,
             2,
+        ),
+    )
+    push!(
+        test_cases,
+        (
+            true,
+            :none,
+            (mode=ReverseMode,),
+            unsafe_copyto!,
+            zero_fcodual(ptr_a),
+            zero_fcodual(ptr_b),
+            0,
         ),
     )
     return test_cases, memory

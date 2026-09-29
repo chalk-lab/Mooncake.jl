@@ -228,7 +228,7 @@ function rrule!!(
 ) where {T}
     # Check before wrapping: an Array over a NULL or placeholder tangent pointer
     # cannot be distinguished from valid storage by downstream consumers.
-    _check_tangent_ptr(primal(p), tangent(p))
+    _check_tangent_ptr(primal(p), tangent(p), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
@@ -315,11 +315,11 @@ const _NULL_TANGENT_PTR_MSG =
     "pointer is NULL. Reinterpreting such a buffer as a differentiable element type under AD " *
     "is not supported; allocate it with the differentiable element type instead."
 
-# NULL is safe only for zero-size tangent elements. Every consumer, including
-# container constructors such as unsafe_wrap, must reject it otherwise.
+# NULL is safe for empty operations and zero-size tangent elements.
 # Representing absent storage with its own type would enforce this by dispatch,
 # but requires changing every rule accepting a Ptr tangent.
-@inline function _check_tangent_ptr(x, dx)
+@inline function _check_tangent_ptr(x, dx, n=1)
+    iszero(n) && return nothing
     if dx isa Ptr && _elements_occupy_storage(eltype(dx))
         iszero(UInt(dx)) && throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
         # The non-NULL uninit_* placeholder aliases the primal's own bytes.
@@ -1773,6 +1773,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             :none,
             (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
             x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,)),
+            zeros(UInt8, 8),
+        ),
+    )
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> sum(unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (0,))),
             zeros(UInt8, 8),
         ),
     )
