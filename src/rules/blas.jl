@@ -195,7 +195,8 @@ end
 # `Adjoint`/`Transpose` store every entry, just at the transposed position.
 increment_densified_tangent!!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
 function increment_densified_tangent!!(dx::Transpose, dense)
-    (parent(dx) .+= transpose(dense); nothing)
+    parent(dx) .+= transpose(dense)
+    return nothing
 end
 
 # `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
@@ -260,6 +261,19 @@ end
         ),
     )
 end
+@inline function _blas_walk_step(x, inc::Integer, n::Integer)
+    inc > 0 || return nothing
+    n <= 1 && return n <= length(x) ? 1 : nothing
+    step = if x isa AbstractVector
+        st = stride(x, 1)
+        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
+    else
+        inc
+    end
+    step === nothing && return nothing
+    return 1 + (n - 1) * step <= length(x) ? step : nothing
+end
+
 function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
@@ -267,7 +281,8 @@ function viewify(
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
-        return _viewify_one(n, x, step), _viewify_one(n, dx, step)
+        xinds = 1:step:(1 + (n - 1) * step)
+        return view(x, xinds), view(dx, xinds)
     end
     incx > 0 || _throw_no_walk_step(x, incx)
     dims = sort(ntuple(identity, ndims(x)); by=d -> abs(stride(x, d)), rev=true)
@@ -309,10 +324,7 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
-# These rules require an output disjoint from their read-only operands. BLAS
-# may overwrite a later read, and shared partials/cotangents have the same hazard.
-# Supporting overlap would require snapshot semantics in both the primal and AD;
-# reject it at the boundary until the underlying operation guarantees those semantics.
+# Output operands must be disjoint from read-only inputs and their shared tangents.
 @inline function _check_blas_output_alias(f, output, inputs...)
     !isempty(output) &&
         any(input -> !isempty(input) && Base.mightalias(output, input), inputs) &&
@@ -580,6 +592,7 @@ function rrule!!(
             ∇a += _rvs_mul(X_copy[i]', dX[i])
             P <: BlasRealFloat && (dX[i] = _rvs_mul(dX[i], a'))
         end
+        # The real loop vectorises; complex scaling vectorises better as a separate broadcast.
         P <: BlasComplexFloat && (dX .= _rvs_mul.(dX, a'))
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
@@ -2352,25 +2365,6 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
 end
 
-# Reuse the primal's logical step for its partial: their index spaces match,
-# but their strides can differ.
-@inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
-    x, 1:step:(1 + (n - 1) * step)
-)
-
-@inline function _blas_walk_step(x, inc::Integer, n::Integer)
-    inc > 0 || return nothing
-    n <= 1 && return n <= length(x) ? 1 : nothing
-    step = if x isa AbstractVector
-        st = stride(x, 1)
-        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
-    else
-        strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
-    end
-    step === nothing && return nothing
-    return 1 + (n - 1) * step <= length(x) ? step : nothing
-end
-
 # Expected-throw checks preserve primal aliases.
 function _blas_alias_test_cases(P)
     rows = Any[]
@@ -2456,6 +2450,7 @@ function _blas_flag_test_cases(P)
             push!(rows, (flags..., f, 'U', trans, 'u', A, copy(x)))
         end
         for f in (BLAS.trmm!, BLAS.trsm!), side in ('l', 'r')
+            # Julia 1.10 cannot infer the triangular pullback's matrix product.
             perf_flag = VERSION < v"1.11-" ? :none : :stability
             push!(
                 rows,
