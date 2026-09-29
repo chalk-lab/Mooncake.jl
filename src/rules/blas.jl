@@ -2145,6 +2145,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     )
 
     flags = (false, :stability, (mode=ReverseMode,))
+    for n in (0, 1)
+        x, y = view(P[3], 1:2:1), view(P[2], 1:2:1)
+        append!(
+            test_cases,
+            [
+                (flags..., BLAS.nrm2, n, x, 1),
+                (flags..., BLAS.scal!, n, P(2), x, 1),
+                (flags..., BLAS.axpy!, n, P(2), x, 1, y, 1),
+            ],
+        )
+    end
     append!(
         test_cases,
         [
@@ -2326,6 +2337,7 @@ end
 @inline function _blas_walk_step(x, inc::Integer, n::Integer)
     inc > 0 || return nothing
     x isa Ptr && return inc
+    n <= 1 && return n <= length(x) ? 1 : nothing
     step = if x isa AbstractVector
         st = stride(x, 1)
         (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
