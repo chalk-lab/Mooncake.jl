@@ -533,15 +533,13 @@ function rrule!!(
     BLAS.scal!(n, a, primal(X_dX), incx)
 
     function scal_adjoint(::NoRData)
-
-        # Set primal to previous state.
-        X .= X_copy
-
-        # Compute gradient w.r.t. scaling.
-        ∇a = _rvs_guarded_dot(X, dX)
-
-        # Compute gradient w.r.t. DX.
-        BLAS.scal!(a', dX)
+        ∇a = zero(P)
+        @inbounds @simd for i in eachindex(X, X_copy, dX)
+            X[i] = X_copy[i]
+            ∇a += _rvs_mul(X_copy[i]', dX[i])
+            P <: BlasRealFloat && (dX[i] *= a')
+        end
+        P <: BlasComplexFloat && BLAS.scal!(a', dX)
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
@@ -737,26 +735,23 @@ end
 
     function gemv!_pb!!(::NoRData)
 
-        # BLAS quick-returns when the contracted dimension is zero and leaves `y` untouched, so the
-        # primal is the identity on `y`: nothing depends on `α`, `β`, `A` or `x`. Returning here
-        # also avoids the 3-arg `dot` below, which reads `first(A)` on Julia 1.10 and throws for an
-        # empty `A`.
+        # An empty contracted dimension leaves `y` unchanged, independent of the coefficients.
         if isempty(x)
             copyto!(y, y_copy)
             return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
         end
 
+        # Reuse the output as scratch before restoring its primal below.
+        dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
+
         # Increment fdata.
         if trans == 'N'
-            dalpha = _rvs_guarded_dot3(dy, A, x)
             dA .+= alpha' .* dy .* x'
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            dalpha = _rvs_guarded_dot3(dy, A', x)
             dA .+= alpha .* x .* dy'
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            dalpha = _rvs_guarded_dot3(dy, transpose(A), x)
             dA .+= alpha' .* conj.(x) .* transpose(dy)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
@@ -2286,7 +2281,7 @@ end
 
 # Differentiate the guarded product itself: differentiating its branch would discard
 # a live perturbation at a zero multiplier under forward-over-reverse.
-_rvs_mul(x::T, y::T) where {T<:BlasFloat} = iszero(y) ? zero(T) : x * y
+_rvs_mul(x::T, y::T) where {T<:BlasFloat} = ifelse(iszero(y), zero(T), x * y)
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_mul),T,T} where {T<:BlasFloat}
 function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:BlasFloat}
     a, da = extract(x)
@@ -2298,23 +2293,9 @@ end
 # In particular, BLAS permits undefined input y wherever β == 0 discards it.
 @inline function _rvs_guarded_dot(y, dy)
     s = zero(promote_type(eltype(y), eltype(dy)))
-    @inbounds for i in eachindex(y, dy)
+    @inbounds @simd for i in eachindex(y, dy)
         d = dy[i]
         s += _rvs_mul(y[i]', d)
-    end
-    return s
-end
-
-# Strong-zero dot(dy, B, x)', without materialising B*x.
-@inline function _rvs_guarded_dot3(dy, B, x)
-    s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
-    @inbounds for i in eachindex(dy)
-        d = dy[i]
-        r = zero(s)
-        for j in eachindex(x)
-            r += B[i, j] * x[j]
-        end
-        s += _rvs_mul(r', d)
     end
     return s
 end
