@@ -62,6 +62,68 @@ end
             @test iszero(only(dX))
         end
 
+        @testset "zero alpha array cotangents" begin
+            for P in (Float32, Float64, ComplexF32, ComplexF64), bad in (NaN, Inf)
+                ops=(
+                    BLAS.gemv!,
+                    BLAS.symv!,
+                    BLAS.gemm!,
+                    BLAS.symm!,
+                    BLAS.syrk!,
+                    BLAS.trmm!,
+                    BLAS.trsm!,
+                    (P<:Complex ? (BLAS.hemv!, BLAS.hemm!, BLAS.herk!) : ())...,
+                )
+                for op in ops, badarg in (1, 2)
+                    op in (BLAS.syrk!, BLAS.herk!) && badarg==2 && continue
+                    lhs=fill(P(badarg==1 ? bad : 1), 1, 1);
+                    rhs=fill(P(badarg==2 ? bad : 1), 1, 1)
+                    args = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+                        (
+                            op,
+                            op===BLAS.gemv! ? 'N' : 'U',
+                            zero(P),
+                            lhs,
+                            vec(rhs),
+                            one(P),
+                            zeros(P, 1),
+                        )
+                    elseif op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
+                        (
+                            op,
+                            (op===BLAS.gemm! ? ('N', 'N') : ('L', 'U'))...,
+                            zero(P),
+                            lhs,
+                            rhs,
+                            one(P),
+                            zeros(P, 1, 1),
+                        )
+                    elseif op in (BLAS.syrk!, BLAS.herk!)
+                        Q=op===BLAS.herk! ? real(P) : P
+                        (op, 'U', 'N', zero(Q), lhs, one(Q), zeros(P, 1, 1))
+                    else
+                        (op, 'L', 'U', 'N', 'N', zero(P), lhs, rhs)
+                    end
+                    ds=map(Mooncake.zero_fcodual, args);
+                    out, pb=Mooncake.rrule!!(ds...)
+                    fill!(Mooncake.tangent(out), one(P));
+                    pb(Mooncake.NoRData())
+                    inds = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+                        (4, 5)
+                    elseif op in (BLAS.trmm!, BLAS.trsm!)
+                        (7, 8)
+                    elseif op in (BLAS.syrk!, BLAS.herk!)
+                        (5,)
+                    else
+                        (5, 6)
+                    end
+                    @testset "$P $op $bad $badarg" for i in inds
+                        @test all(iszero, Mooncake.tangent(ds[i]))
+                    end
+                end
+            end
+        end
+
         # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
         for (f, flags, M) in ((BLAS.gemm!, ('N', 'N'), A), (BLAS.symm!, ('L', 'U'), Asym))
             args = (f, flags..., 2.0, copy(M), copy(B), 0.0, copy(nan3))
