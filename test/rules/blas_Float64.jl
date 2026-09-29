@@ -79,17 +79,17 @@ end
                 )
                 for op in ops, badarg in (1, 2)
                     op in (BLAS.syrk!, BLAS.herk!) && badarg==2 && continue
-                    lhs=fill(P(badarg==1 ? bad : 1), 1, 1);
-                    rhs=fill(P(badarg==2 ? bad : 1), 1, 1)
+                    lhs=fill(P(badarg==1 ? bad : 1), 3, 3);
+                    rhs=fill(P(badarg==2 ? bad : 1), 3, 3)
                     args = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
                         (
                             op,
                             op===BLAS.gemv! ? 'N' : 'U',
                             zero(P),
                             lhs,
-                            vec(rhs),
+                            rhs[:, 1],
                             one(P),
-                            zeros(P, 1),
+                            zeros(P, 3),
                         )
                     elseif op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
                         (
@@ -99,11 +99,11 @@ end
                             lhs,
                             rhs,
                             one(P),
-                            zeros(P, 1, 1),
+                            zeros(P, 3, 3),
                         )
                     elseif op in (BLAS.syrk!, BLAS.herk!)
                         Q=op===BLAS.herk! ? real(P) : P
-                        (op, 'U', 'N', zero(Q), lhs, one(Q), zeros(P, 1, 1))
+                        (op, 'U', 'N', zero(Q), lhs, one(Q), zeros(P, 3, 3))
                     else
                         (op, 'L', 'U', 'N', 'N', zero(P), lhs, rhs)
                     end
@@ -124,6 +124,48 @@ end
                         @test all(iszero, Mooncake.tangent(ds[i]))
                     end
                 end
+            end
+        end
+
+        @testset "finite extreme array cotangents" begin
+            for (a, lhs, rhs, seed) in
+                ((1e-300, 1e-200, 1e200, 1e200), (1e300, 1e-100, 1e-200, 1e-200)),
+                P in (Float64, ComplexF64),
+                op in (
+                    BLAS.gemv!,
+                    BLAS.symv!,
+                    BLAS.symm!,
+                    (P <: Complex ? (BLAS.hemv!, BLAS.hemm!) : ())...,
+                )
+
+                args = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+                    (
+                        op,
+                        op === BLAS.gemv! ? 'N' : 'U',
+                        P(a),
+                        fill(P(lhs), 1, 1),
+                        P[rhs],
+                        zero(P),
+                        zeros(P, 1),
+                    )
+                else
+                    (
+                        op,
+                        'L',
+                        'U',
+                        P(a),
+                        fill(P(lhs), 1, 1),
+                        fill(P(rhs), 1, 1),
+                        zero(P),
+                        zeros(P, 1, 1),
+                    )
+                end
+                ds = map(Mooncake.zero_fcodual, args)
+                out, pb = Mooncake.rrule!!(ds...)
+                fill!(Mooncake.tangent(out), P(seed))
+                pb(Mooncake.NoRData())
+                i = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? 4 : 5
+                @test only(Mooncake.tangent(ds[i])) ≈ (a * seed) * rhs
             end
         end
 
