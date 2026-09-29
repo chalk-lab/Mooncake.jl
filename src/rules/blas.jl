@@ -620,7 +620,7 @@ function rrule!!(
 
         # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
         # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
-        ∇a = dot(X, dY)
+        ∇a = _rvs_guarded_dot(X, dY)
         dX .+= a' .* dY
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
