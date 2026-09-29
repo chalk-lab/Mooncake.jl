@@ -572,7 +572,7 @@ end
         uplo = _lsame_flag(primal(_uplo))
 
         B_copy = copy(B)
-        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(B, A, primal(_uplo))
         # fill dB with zeros in the copied region
         same || zero_tri!(dB, uplo)
 
@@ -989,6 +989,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     end
     @static if VERSION > v"1.11-"
         for P in complexPs
+            flags = (false, :none, (throws=(DimensionMismatch, ""),))
+            for (uplo, dims) in (('u', (2, 1)), ('l', (1, 2)))
+                push!(
+                    test_cases,
+                    (flags..., LAPACK.lacpy!, zeros(P, 1, 1), ones(P, dims), uplo),
+                )
+            end
             push!(
                 test_cases,
                 (
