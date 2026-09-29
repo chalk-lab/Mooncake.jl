@@ -1189,6 +1189,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+            x -> unsafe_load(Ptr{Float64}(pointer(x, 9))),
+            zeros(UInt8, 16),
+        ),
         (true, :none, nothing, Array{Float64,0}, undef),
         (true, :none, nothing, Array{Float64,1}, undef, 5),
         (true, :none, nothing, Array{Float64,2}, undef, 5, 4),

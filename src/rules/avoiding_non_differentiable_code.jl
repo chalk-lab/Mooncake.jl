@@ -261,6 +261,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
 
     test_cases = vcat(
         Any[
+            (
+                false,
+                :none,
+                (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+                x -> unsafe_load(Ptr{Float64}(pointer(x)) + 8),
+                zeros(UInt8, 16),
+            ),
             # Package loading internals: Module can't be deepcopied, so test via closures
             # that capture the module and take a differentiable Float64 arg instead.
             (false, :none, nothing, (x) -> (Base.PkgId(Base); x), 1.0),
