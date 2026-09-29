@@ -2306,7 +2306,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         append!(
             test_cases,
             [
-                (flags..., BLAS.nrm2, n, x, 1),
+                (false, :stability, nothing, BLAS.nrm2, n, x, 1),
                 (flags..., BLAS.scal!, n, P(2), x, 1),
                 (flags..., BLAS.axpy!, n, P(2), x, 1, y, 1),
             ],
@@ -2315,7 +2315,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     append!(
         test_cases,
         [
-            (flags..., BLAS.nrm2, 2, zeros(P, 2), 1),
+            (false, :stability, nothing, BLAS.nrm2, 2, zeros(P, 2), 1),
             (
                 false,
                 :stability_and_allocs,
