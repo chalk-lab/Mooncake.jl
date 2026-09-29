@@ -919,22 +919,24 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
         y_copy = copy(y)
 
+        tmp = $(isherm ? BLAS.hemv : BLAS.symv)(ul, one(T), A, x)
         BLAS.$fname(ul, α, A, x, β, y)
 
         function symv!_or_hemv!_adjoint(::NoRData)
             BLAS.copyto!(y, y_copy)
-            BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
-            dα = _rvs_guarded_dot(y_copy, dy)
+            dα = _rvs_guarded_dot(tmp, dy)
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
             dA_tmp = iszero(α) ? _rvs_mul.(dy .* x', α') : α' * dy * x'
             if ul == 'L'
-                dA .+= LowerTriangular(dA_tmp)
-                dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
+                dA .=
+                    (dA .+ LowerTriangular(dA_tmp)) .+
+                    $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
             else
-                dA .+= $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))
-                dA .+= UpperTriangular(dA_tmp)
+                dA .=
+                    (dA .+ $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))) .+
+                    UpperTriangular(dA_tmp)
             end
             @inbounds for n in diagind(dA)
                 dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
