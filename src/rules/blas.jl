@@ -39,6 +39,7 @@ in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoin
 `Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
 for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
 helper should extract the backing store (see `_accum_sym_logdet!`).
+Forward tangents of unit-triangular matrices instead use a strict triangle with zero diagonal.
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
@@ -77,6 +78,8 @@ function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
+    dx isa Tangent && x isa UnitUpperTriangular && return x, triu(_dx, 1)
+    dx isa Tangent && x isa UnitLowerTriangular && return x, tril(_dx, -1)
     return x, Tx(_dx)
 end
 function arrayify(
