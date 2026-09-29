@@ -525,9 +525,9 @@ function frule!!(
     dy = zero(y)
     @inbounds for i in eachindex(X)
         xi = X[i] * r
-        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
+        dy += real(xi' * dX[i])
     end
-    return Dual(y, iszero(y) ? zero(y) : dy / 2(y * r))
+    return Dual(y, iszero(y) ? zero(y) : dy / (y * r))
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
