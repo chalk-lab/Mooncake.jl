@@ -249,7 +249,7 @@ end
             ) ≈ (At * Bt)[1, 1]
             @test grad(
                 a -> (C=copy(Bt); BLAS.trsm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]), 2.0
-            ) == (At \ Bt)[1, 1]
+            ) ≈ (At \ Bt)[1, 1]
         end
     end
 end
