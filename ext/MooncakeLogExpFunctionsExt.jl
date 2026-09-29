@@ -12,6 +12,7 @@ import Mooncake:
     CoDual,
     primal,
     tangent,
+    fdata,
     @is_primitive,
     densify_tangent,
     increment_densified_tangent!!,
@@ -292,7 +293,7 @@ function frule!!(
     ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
-    y, _dy = arrayify(out)
+    y, _dy = arrayify(primal(out), fdata(tangent(out)))
     logsumexp!(y, _x)
     sum!(_dy, _dx .* exp.(_x .- y))
     return out

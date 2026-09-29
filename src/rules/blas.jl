@@ -39,7 +39,7 @@ in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoin
 `Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
 for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
 helper should extract the backing store (see `_accum_sym_logdet!`).
-Forward tangents of unit-triangular matrices instead use a strict triangle with zero diagonal.
+Unit-triangular forward tangents are read-only strict-triangle copies; writers use fdata.
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
