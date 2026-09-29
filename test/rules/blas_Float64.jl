@@ -33,6 +33,17 @@
         end
     end
 
+    @testset "nrm2 large tangent" for P in (Float32, Float64, ComplexF32, ComplexF64)
+        d = floatmax(real(P))
+        out = Mooncake.frule!!(
+            Mooncake.zero_dual(BLAS.nrm2),
+            Mooncake.zero_dual(1),
+            Mooncake.Dual(ones(P, 1), P[d]),
+            Mooncake.zero_dual(1),
+        )
+        @test Mooncake.tangent(out) == d
+    end
+
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 end
 
