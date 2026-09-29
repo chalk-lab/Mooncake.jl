@@ -1025,11 +1025,13 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
             dA_tmp = iszero(α) ? _rvs_mul.(dy .* x', α') : α' * dy * x'
             if ul == 'L'
-                dA .+= LowerTriangular(dA_tmp)
-                dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
+                dA .=
+                    (dA .+ LowerTriangular(dA_tmp)) .+
+                    $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
             else
-                dA .+= $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))
-                dA .+= UpperTriangular(dA_tmp)
+                dA .=
+                    (dA .+ $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))) .+
+                    UpperTriangular(dA_tmp)
             end
             @inbounds for n in diagind(dA)
                 dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
