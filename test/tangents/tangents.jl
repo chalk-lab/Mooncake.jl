@@ -93,6 +93,14 @@ using DispatchDoctor: allow_unstable
         (@NamedTuple{a::Any}, Any),
         (@NamedTuple{a::Any, b::Any}, Any),
         (@NamedTuple{a::Int, b::Any}, Any),
+        (
+            @NamedTuple{a::Float64, b::Union{Nothing,Vector{Float64}}},
+            @NamedTuple{a::Float64, b::Union{NoTangent,Vector{Float64}}}
+        ),
+        (
+            @NamedTuple{a::Float64, b::Union{Nothing,Float64}},
+            @NamedTuple{a::Float64, b::Union{NoTangent,Float64}}
+        ),
         (@NamedTuple{b::Int, a::Float64}, @NamedTuple{b::NoTangent, a::Float64}),
         (@NamedTuple{a::Type{Float64}, b::Float64}, @NamedTuple{a::NoTangent, b::Float64}),
         (

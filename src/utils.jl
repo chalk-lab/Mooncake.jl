@@ -5,7 +5,11 @@ Central definition of typeof, which is specific to the use-required in this pack
 """
 @unstable _typeof(x) = Base._stable_typeof(x)
 @unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
-@unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
+# Unlike a Tuple's type, a NamedTuple's keeps its declared field types, so keep Unions.
+@unstable function _typeof(x::NamedTuple{names,T}) where {names,T}
+    Ts = tuple_map((F, v) -> F isa Union ? F : _typeof(v), fieldtypes(T), Tuple(x))
+    return NamedTuple{names,Tuple{Ts...}}
+end
 
 function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=nothing)
     first_item = iterate(lines)

@@ -462,9 +462,23 @@ end
 @unstable @foldable function tangent_type(::Type{P}) where {N,P<:NamedTuple{N}}
     P isa Union && return Union{tangent_type(P.a),tangent_type(P.b)}
     !isconcretetype(P) && return Union{NoTangent,NamedTuple{N}}
-    TT = tangent_type(Tuple{fieldtypes(P)...})
-    TT == NoTangent && return NoTangent
-    return isconcretetype(TT) ? NamedTuple{N,TT} : Any
+    return _nt_field_map_type(tangent_type, NoTangent, P)
+end
+
+# Apply the type function `f` to each field type of a `NamedTuple`, so that a Union-typed
+# field stays a Union, as for structs. Returns `Z` if every field maps to `Z`. Generated
+# (rather than `map`) so that it constant-folds for any number of fields.
+@foldable @generated function _nt_field_map_type(
+    f::F, ::Type{Z}, ::Type{NamedTuple{N,T}}
+) where {F,Z,N,T<:Tuple}
+    !isempty(T.parameters) && last(T.parameters) isa Core.TypeofVararg && return Any
+    Ts = Expr(:tuple, map(P -> :(f($P)), fieldtypes(T))...)
+    return quote
+        Ts = $Ts
+        stable_all(tuple_map(==(Z), Ts)) && return Z
+        concrete = stable_all(tuple_map(isconcrete_or_union, Ts))
+        return concrete ? NamedTuple{N,Tuple{Ts...}} : Any
+    end
 end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
@@ -555,9 +569,19 @@ zero_tangent_internal(x::IEEEFloat, ::MaybeCache) = zero(x)
         return $(Expr(:call, :tuple, zt_exprs...))
     end
 end
+# Like `tuple_map`, but builds a `T`, keeping its declared (possibly Union) field types
+# rather than narrowing them to the types of the results.
+@generated function _map_as(::Type{T}, f::F, xs::Vararg{NamedTuple,N}) where {T,F,N}
+    all(X -> fieldnames(X) == fieldnames(T), xs) || return :(error("field names differ"))
+    fields = map(n -> :(f($(map(k -> :(getfield(xs[$k], $n)), 1:N)...))), 1:fieldcount(T))
+    return Expr(:new, T, fields...)
+end
+
 function zero_tangent_internal(x::NamedTuple, dict::MaybeCache)
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    return tuple_map(Base.Fix2(zero_tangent_internal, dict), x)
+    T = tangent_type(typeof(x))
+    T == NoTangent && return NoTangent()
+    f = Base.Fix2(zero_tangent_internal, dict)
+    return isconcretetype(T) ? _map_as(T, f, x) : tuple_map(f, x)
 end
 # Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
 # placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
@@ -678,8 +702,10 @@ end
     end
 end
 function randn_tangent_internal(rng::AbstractRNG, x::NamedTuple, dict::MaybeCache)
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    return tuple_map(x -> randn_tangent_internal(rng, x, dict), x)
+    T = tangent_type(typeof(x))
+    T == NoTangent && return NoTangent()
+    f = x -> randn_tangent_internal(rng, x, dict)
+    return isconcretetype(T) ? _map_as(T, f, x) : tuple_map(f, x)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::SimpleVector, dict::MaybeCache)
     return map!(Vector{Any}(undef, length(x)), eachindex(x)) do n
@@ -966,8 +992,11 @@ references are correctly handled. If `c` is a `NoCache`, assume no circular refe
 """
 set_to_zero_internal!!(::SetToZeroCache, ::NoTangent) = NoTangent()
 set_to_zero_internal!!(::SetToZeroCache, x::Base.IEEEFloat) = zero(x)
-function set_to_zero_internal!!(c::SetToZeroCache, x::Union{Tuple,NamedTuple})
+function set_to_zero_internal!!(c::SetToZeroCache, x::Tuple)
     return tuple_map(Base.Fix1(set_to_zero_internal!!, c), x)
+end
+function set_to_zero_internal!!(c::SetToZeroCache, x::NamedTuple)
+    return _map_as(typeof(x), Base.Fix1(set_to_zero_internal!!, c), x)
 end
 function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:PossiblyUninitTangent}
     return is_init(x) ? T(set_to_zero_internal!!(c, val(x))) : x
@@ -1000,8 +1029,11 @@ Implementation for [`_scale`](@ref). Use `c` to handle circular references and a
 """
 _scale_internal(::MaybeCache, ::Float64, ::NoTangent) = NoTangent()
 _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:IEEEFloat} = T(a * t)
-@unstable function _scale_internal(c::MaybeCache, a::Float64, t::Union{Tuple,NamedTuple})
+@unstable function _scale_internal(c::MaybeCache, a::Float64, t::Tuple)
     return map(ti -> _scale_internal(c, a, ti)::typeof(ti), t)
+end
+@unstable function _scale_internal(c::MaybeCache, a::Float64, t::NamedTuple)
+    return _map_as(typeof(t), ti -> _scale_internal(c, a, ti)::typeof(ti), t)
 end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:PossiblyUninitTangent}
     return is_init(t) ? T(_scale_internal(c, a, val(t))) : T()
@@ -1105,7 +1137,7 @@ function _add_to_primal_internal(c::MaybeCache, x::Tuple, t::Tuple, unsafe::Bool
     return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
 end
 function _add_to_primal_internal(c::MaybeCache, x::NamedTuple, t::NamedTuple, unsafe::Bool)
-    return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
+    return _map_as(typeof(x), (x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)
 end
 
 struct AddToPrimalException <: Exception
@@ -1844,11 +1876,12 @@ end
 end
 function tangent_to_primal_internal!!(x::NamedTuple, tx, c::MaybeCache)
     tx isa NoTangent && return x
-    return tuple_map((xn, txn) -> tangent_to_primal_internal!!(xn, txn, c), x, tx)
+    return _map_as(typeof(x), (xn, txn) -> tangent_to_primal_internal!!(xn, txn, c), x, tx)
 end
 function primal_to_tangent_internal!!(tx, x::NamedTuple, c::MaybeCache)
     tx isa NoTangent && return NoTangent()
-    return tuple_map((txn, xn) -> primal_to_tangent_internal!!(txn, xn, c), tx, x)
+    f = (txn, xn) -> primal_to_tangent_internal!!(txn, xn, c)
+    return _map_as(typeof(tx), f, tx, x)
 end
 function tangent_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return x

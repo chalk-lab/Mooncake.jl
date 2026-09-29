@@ -227,13 +227,7 @@ fdata_type(::Type{T}) where {T<:Ptr} = T
 end
 
 function fdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if fdata_type(T) == NoFData
-        return NoFData
-    elseif isconcretetype(fdata_type(T))
-        return NamedTuple{names,fdata_type(T)}
-    else
-        return Any
-    end
+    return _nt_field_map_type(fdata_type, NoFData, NamedTuple{names,T})
 end
 
 """
@@ -278,8 +272,13 @@ function fdata(t::T) where {T<:PossiblyUninitTangent}
     return is_init(t) ? F(fdata(val(t))) : F()
 end
 
-function fdata(t::T) where {T<:Union{Tuple,NamedTuple}}
+function fdata(t::T) where {T<:Tuple}
     return fdata_type(T) == NoFData ? NoFData() : tuple_map(fdata, t)
+end
+function fdata(t::T) where {T<:NamedTuple}
+    F = fdata_type(T)
+    F == NoFData && return NoFData()
+    return isconcretetype(F) ? _map_as(F, fdata, t) : tuple_map(fdata, t)
 end
 
 """
@@ -514,13 +513,7 @@ rdata_type(::Type{<:Ptr}) = NoRData
 end
 
 function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if rdata_type(T) == NoRData
-        return NoRData
-    elseif isconcretetype(rdata_type(T))
-        return NamedTuple{names,rdata_type(T)}
-    else
-        return Any
-    end
+    return _nt_field_map_type(rdata_type, NoRData, NamedTuple{names,T})
 end
 
 """
@@ -557,8 +550,13 @@ function rdata(t::T) where {T<:PossiblyUninitTangent}
     return is_init(t) ? R(rdata(val(t))) : R()
 end
 
-@generated function rdata(t::Union{Tuple,NamedTuple})
+@generated function rdata(t::Tuple)
     return :(rdata_type($t) == NoRData ? NoRData() : tuple_map(rdata, t))
+end
+function rdata(t::T) where {T<:NamedTuple}
+    R = rdata_type(T)
+    R == NoRData && return NoRData()
+    return isconcretetype(R) ? _map_as(R, rdata, t) : tuple_map(rdata, t)
 end
 
 """
@@ -631,8 +629,13 @@ zero_rdata(p::IEEEFloat) = zero(p)
     end
 end
 
-function zero_rdata(p::P) where {P<:Union{Tuple,NamedTuple}}
+function zero_rdata(p::P) where {P<:Tuple}
     return rdata_type(tangent_type(P)) == NoRData ? NoRData() : tuple_map(zero_rdata, p)
+end
+function zero_rdata(p::P) where {P<:NamedTuple}
+    R = rdata_type(tangent_type(P))
+    R == NoRData && return NoRData()
+    return isconcretetype(R) ? _map_as(R, zero_rdata, p) : tuple_map(zero_rdata, p)
 end
 
 has_definite_fieldcount(P) = P isa DataType && Base.datatype_fieldcount(P) !== nothing
@@ -1023,12 +1026,18 @@ tangent(f::Tuple, ::NoRData) = tuple_map(_f -> tangent(_f, NoRData()), f)
 
 # NamedTuples
 function tangent(f::NamedTuple{n}, r::NamedTuple{n}) where {n}
+    T = tangent_type(typeof(f), typeof(r))
+    isconcretetype(T) && return _map_as(T, tangent, f, r)
     return NamedTuple{n}(tangent(Tuple(f), Tuple(r)))
 end
 function tangent(::NoFData, r::NamedTuple{ns}) where {ns}
+    T = tangent_type(NoFData, typeof(r))
+    isconcretetype(T) && return _map_as(T, _r -> tangent(NoFData(), _r), r)
     return NamedTuple{ns}(tangent(NoFData(), Tuple(r)))
 end
 function tangent(f::NamedTuple{ns}, ::NoRData) where {ns}
+    T = tangent_type(typeof(f), NoRData)
+    isconcretetype(T) && return _map_as(T, _f -> tangent(_f, NoRData()), f)
     return NamedTuple{ns}(tangent(Tuple(f), NoRData()))
 end
 

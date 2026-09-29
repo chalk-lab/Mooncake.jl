@@ -54,6 +54,16 @@ end
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
         )
+        # NamedTuples keep a Union-typed field's Union in their tangent, fdata and rdata.
+        for (T, x) in (
+            (Vector{Float64}, [1.0, 2.0]),
+            (Vector{Float64}, nothing),
+            (Float64, 3.0),
+            (Float64, nothing),
+        )
+            P = @NamedTuple{a::Float64, b::Union{Nothing,T}}
+            TestUtils.test_tangent_splitting(Xoshiro(123456), P((5.0, x)))
+        end
         # Direct dispatch checks for tangent_type(F, R) on union shapes.
         # NoFData + Union{NoRData, IEEEFloat}
         @test tangent_type(NoFData, Union{NoRData,Float64}) == Union{NoTangent,Float64}

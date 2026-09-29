@@ -4,6 +4,12 @@ end
 (w::_RefCaptureWrap)(x) = w.f(x)
 Mooncake.tangent_type(::Type{<:_RefCaptureWrap}) = Mooncake.NoTangent
 
+mutable struct _UnionFieldBox
+    a::Float64
+    b::Union{Nothing,Vector{Float64}}
+end
+_make_union_field_box(x) = _UnionFieldBox(x[1], x[2:2])
+
 const _EMPTY_FDATA_EXCEPTION = ErrorException("x")
 _throw_empty_fdata_exception(x) = x < 0 ? throw(_EMPTY_FDATA_EXCEPTION) : x^2
 
@@ -294,6 +300,15 @@ end
             @test hvps[1] ≈ 0.128 rtol = 1e-10
             @test hvps[2] ≈ -0.096 rtol = 1e-10
         end
+    end
+
+    @testset "mutable struct with a Union-typed field" begin
+        # Its tangent's fields are a NamedTuple with a Union-typed field, whose own tangent
+        # is needed by the forward pass over the reverse pass.
+        f = x -> (b=_make_union_field_box(x); b.a^2 * sum(b.b)^2)
+        x = [3.0, 2.0]
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0, 0.0], x)
+        @test hvp ≈ [2 * x[2]^2, 4 * x[1] * x[2]]
     end
 
     @testset "Ref-capture under NoTangent wrapper (issue #1193)" begin
