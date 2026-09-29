@@ -139,8 +139,7 @@ function rrule!!(
     IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
     _n = primal(n)
 
-    # Exact self-copy is identity: accumulating then restoring the same buffer would
-    # erase downstream cotangents. Partial overlap still uses snapshot-and-restore.
+    # Exact self-copy preserves downstream cotangents.
     if primal(dest) === primal(src)
         return dest, NoPullback(ntuple(_ -> NoRData(), 4))
     end
@@ -148,6 +147,7 @@ function rrule!!(
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
     ddest_copy = Vector{T}(undef, _n)
+    ddest_out = similar(ddest_copy)
     pdest = primal(dest)
     ddest = tangent(dest)
     unsafe_copyto!(pointer(dest_copy), pdest, _n)
@@ -160,12 +160,13 @@ function rrule!!(
 
     function unsafe_copyto!_pb!!(::NoRData)
 
-        # Increment dsrc.
-        _increment_pointer!(dsrc, ddest, _n)
+        # Snapshot cotangents before restoring potentially overlapping destination storage.
+        unsafe_copyto!(pointer(ddest_out), ddest, _n)
 
         # Restore initial state.
         unsafe_copyto!(pdest, pointer(dest_copy), _n)
         unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+        GC.@preserve ddest_out _increment_pointer!(dsrc, pointer(ddest_out), _n)
 
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -519,6 +520,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, x -> unsafe_copyto_tester(x, x, 2), randn(5)),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x),
+            [2.0, 3.0, 4.0],
+        ),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x),
+            [2.0, 3.0, 4.0],
+        ),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             false,
