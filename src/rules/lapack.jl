@@ -573,7 +573,7 @@ end
         uplo = _blas_flag(_uplo)
 
         B_copy = copy(B)
-        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(B, A, primal(_uplo))
         # fill dB with zeros in the copied region
         same || zero_tri!(dB, uplo)
 
