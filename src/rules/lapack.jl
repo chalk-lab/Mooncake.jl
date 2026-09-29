@@ -85,8 +85,8 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
     dL = tril(dA, -1)
     dU = UpperTriangular(dA)
 
-    # Figure out the pivot matrix used; `ipiv` permutes rows.
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
+    # Figure out the pivot matrix used.
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
 
     # Compute pullback using Seth's method.
     _dF = tril(L'dL, -1) + UpperTriangular(dU * U')
