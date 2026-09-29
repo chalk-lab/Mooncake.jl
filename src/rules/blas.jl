@@ -551,7 +551,7 @@ function rrule!!(
         @inbounds @simd for i in eachindex(X, X_copy, dX)
             X[i] = X_copy[i]
             ∇a += _rvs_mul(X_copy[i]', dX[i])
-            P <: BlasRealFloat && (dX[i] *= a')
+            P <: BlasRealFloat && (dX[i] = _rvs_mul(dX[i], a'))
         end
         P <: BlasComplexFloat && _scale_or_zero!(dX, a')
 
