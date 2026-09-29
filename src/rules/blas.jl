@@ -942,7 +942,7 @@ function frule!!(
     tmp = copy(x)
     BLAS.trmv!(uplo, trans, diag, dA, tmp)
     dx .+= tmp
-    if diag === 'U'
+    if _lsame_flag(diag) === 'U'
         dx .-= x
     end
 
@@ -1053,7 +1053,7 @@ function frule!!(
 
     BLAS.trsv!(uplo, trans, diag, A, dx)
     tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if diag == 'U'
+    if _lsame_flag(diag) == 'U'
         tmp .-= x
     end
     BLAS.trsv!(uplo, trans, diag, A, tmp)
@@ -1557,7 +1557,7 @@ function frule!!(
     # Compute Fréchet derivative.
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
+    if _lsame_flag(diag) == 'U'
         dB .-= α .* B
     end
     if !iszero(dα)
@@ -1681,7 +1681,7 @@ function frule!!(
 
     tmp2 = copy(tmp)
     BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
-    if diag == 'U'
+    if _lsame_flag(diag) == 'U'
         tmp .-= α .* tmp2
     end
     BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
@@ -2185,7 +2185,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
-            (flags..., BLAS.gemv!, 'n', P(2), P[1 2; 3 4], P[1, 2], P(3), P[3, 4]),
+            (
+                false,
+                :stability,
+                nothing,
+                BLAS.gemv!,
+                'n',
+                P(2),
+                P[1 2; 3 4],
+                P[1, 2],
+                P(3),
+                P[3, 4],
+            ),
         ],
     )
     for f in (BLAS.trmm!, BLAS.trsm!)
@@ -2451,6 +2462,29 @@ function _blas_flag_test_cases(P)
     end
     for f in (BLAS.trmm!, BLAS.trsm!)
         push!(rows, (flags..., f, 'l', 'U', 'N', 'N', P(2), A, ones(P, 2, 3)))
+    end
+    flags = (false, :stability, nothing)
+    for trans in ('n', 't', 'c')
+        push!(rows, (flags..., BLAS.gemm!, trans, trans, P(2), A, B, P(3), copy(B)))
+        for f in (BLAS.trmv!, BLAS.trsv!)
+            push!(rows, (flags..., f, 'U', trans, 'u', A, copy(x)))
+        end
+        for f in (BLAS.trmm!, BLAS.trsm!), side in ('l', 'r')
+            perf_flag = VERSION < v"1.11-" ? :none : :stability
+            push!(
+                rows,
+                (false, perf_flag, nothing, f, side, 'U', trans, 'u', P(2), A, copy(B)),
+            )
+        end
+    end
+    for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...), side in ('l', 'r')
+        push!(rows, (flags..., f, side, 'U', P(2), A, B, P(3), copy(B)))
+    end
+    for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
+        Q = f === BLAS.herk! ? real(P) : P
+        for trans in ('n', f === BLAS.herk! ? 'c' : 't')
+            push!(rows, (flags..., f, 'U', trans, Q(2), A, Q(3), copy(B)))
+        end
     end
     return rows
 end
