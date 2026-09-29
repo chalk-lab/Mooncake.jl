@@ -46,6 +46,19 @@ foo_throws(e) = throw(e)
         @test db ≈ -2 / b
     end
 
+    @testset "div_float with scaled seeds: $f" for f in (
+        IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast
+    )
+        dual = Mooncake.frule!!(
+            Dual(f, NoTangent()), Dual(-1.0f0, 3.0f38), Dual(2.0f0, 3.0f38)
+        )
+        @test tangent(dual) ≈ 2.25f38
+        _, pullback = Mooncake.rrule!!(
+            zero_fcodual(f), zero_fcodual(1.0f30), zero_fcodual(1.0f10)
+        )
+        @test pullback(1.0f-36)[3] ≈ -1.0f-26
+    end
+
     # Unhandled built-in throws an intelligible error.
     @test_throws(
         Mooncake.MissingRuleForBuiltinException,

@@ -413,18 +413,15 @@ function frule!!(::Dual{typeof(div_float)}, a, b)
     c = div_float(primal(a), primal(b))
     da = tangent(a)
     db = tangent(b)
-    # Never squares `b`: `b^2` under/overflows long before the quotient does.
-    dc = div_float(da - c * db, primal(b))
+    # Strict sequential divisions avoid an out-of-range `b^2`.
+    dc = div_float(da, primal(b)) - (primal(a) * db / primal(b)) / primal(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
     _y = div_float(_a, _b)
-    function div_float_pullback!!(dy)
-        da = div_float(dy, _b)
-        return NoRData(), da, -da * _y
-    end
+    div_float_pullback!!(dy) = NoRData(), div_float(dy, _b), (-dy * _a / _b) / _b
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
 
@@ -433,7 +430,7 @@ function frule!!(::Dual{typeof(div_float_fast)}, a, b)
     c = div_float_fast(primal(a), primal(b))
     da = tangent(a)
     db = tangent(b)
-    dc = div_float_fast(da - c * db, primal(b))
+    dc = div_float(da, primal(b)) - (primal(a) * db / primal(b)) / primal(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
@@ -441,8 +438,7 @@ function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _b = primal(b)
     _y = div_float_fast(_a, _b)
     function div_float_pullback!!(dy)
-        da = div_float_fast(dy, _b)
-        return NoRData(), da, -da * _y
+        return NoRData(), div_float_fast(dy, _b), (-dy * _a / _b) / _b
     end
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
