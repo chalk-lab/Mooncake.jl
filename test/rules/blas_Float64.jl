@@ -49,6 +49,19 @@ end
         Asym = (A + A') / 2
         nan3 = fill(NaN, 3, 3)
 
+        for P in (Float32, Float64, ComplexF32, ComplexF64)
+            dX = P[NaN]
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(BLAS.scal!),
+                Mooncake.zero_fcodual(1),
+                Mooncake.zero_fcodual(zero(P)),
+                CoDual(ones(P, 1), dX),
+                Mooncake.zero_fcodual(1),
+            )
+            pb(NoRData())
+            @test iszero(only(dX))
+        end
+
         # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
         for (f, flags, M) in ((BLAS.gemm!, ('N', 'N'), A), (BLAS.symm!, ('L', 'U'), Asym))
             args = (f, flags..., 2.0, copy(M), copy(B), 0.0, copy(nan3))
