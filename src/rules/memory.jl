@@ -796,6 +796,10 @@ function rrule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    # Zero-size tangent memories store offsets rather than storage addresses.
+    if wants_offset && !IntrinsicsWrappers._elements_occupy_storage(eltype(x.dx))
+        dy = Ptr{NoTangent}(0)
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1175,6 +1179,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+            x -> unsafe_load(Ptr{Float64}(pointer(x, 9))),
+            zeros(UInt8, 16),
+        ),
         (true, :none, nothing, Array{Float64,0}, undef),
         (true, :none, nothing, Array{Float64,1}, undef, 5),
         (true, :none, nothing, Array{Float64,2}, undef, 5, 4),
