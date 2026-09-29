@@ -569,7 +569,7 @@ end
         same || _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
-        uplo = _lsame_flag(primal(_uplo))
+        uplo = uppercase(primal(_uplo))
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, primal(_uplo))
