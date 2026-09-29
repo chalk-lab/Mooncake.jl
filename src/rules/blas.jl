@@ -173,8 +173,7 @@ function increment_densified_tangent!!(
     parent(dx) .+= T(dense)
     return nothing
 end
-# The unit variants store only the STRICT triangle: their diagonal reads a constant `1`, a
-# non-parameter whose contribution is dropped exactly as the off-structure entries are.
+# Unit-triangular tangents store only the strict triangle; their diagonal is constant.
 function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
     p = parent(dx)
     for j in axes(dense, 2), i in 1:(j - 1)
@@ -244,14 +243,11 @@ function viewify(
         view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
     )
 end
-# Raised where `_blas_walk_step` finds no logical step, i.e. BLAS visits memory the operand does not
-# address. `label` names the caller so the message says which rule refused.
-@noinline function _throw_no_walk_step(label, x, incx)
+@noinline function _throw_no_walk_step(x, incx)
     throw(
         ArgumentError(
             LazyString(
-                label,
-                " does not support operand `",
+                "BLAS does not support operand `",
                 typeof(x),
                 "` with strides ",
                 strides(x),
@@ -270,10 +266,10 @@ function viewify(
     x, dx = arrayify(x_dx)
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
-        step === nothing && _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+        step === nothing && _throw_no_walk_step(x, incx)
         return _viewify_one(n, x, step), _viewify_one(n, dx, step)
     end
-    incx > 0 || _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+    incx > 0 || _throw_no_walk_step(x, incx)
     dims = sort!(collect(1:ndims(x)); by=d -> abs(stride(x, d)), rev=true)
     offset = sum(min.(0, (size(x) .- 1) .* strides(x)))
     steps = Base.size_to_strides(1, size(x)...)
@@ -283,10 +279,10 @@ function viewify(
         for d in dims
             size(x, d) == 1 && continue
             q, remaining = divrem(remaining, abs(stride(x, d)))
-            0 <= q < size(x, d) || _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+            0 <= q < size(x, d) || _throw_no_walk_step(x, incx)
             ind += (stride(x, d) > 0 ? q : size(x, d) - 1 - q) * steps[d]
         end
-        iszero(remaining) || _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+        iszero(remaining) || _throw_no_walk_step(x, incx)
         return ind
     end
     return view(x, inds), view(dx, inds)
@@ -316,6 +312,27 @@ end
             "Pass a copy of the input or use an elementwise Julia update.",
         ),
     )
+end
+
+# Differentiate the guarded product itself: differentiating its branch would discard
+# a live perturbation at a zero multiplier under forward-over-reverse.
+_rvs_mul(x::T, y::T) where {T<:BlasFloat} = ifelse(iszero(y), zero(T), x * y)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_mul),T,T} where {T<:BlasFloat}
+function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:BlasFloat}
+    a, da = extract(x)
+    b, db = extract(y)
+    return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
+end
+
+# Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
+# In particular, BLAS permits undefined input y wherever β == 0 discards it.
+@inline function _rvs_guarded_dot(y, dy)
+    s = zero(promote_type(eltype(y), eltype(dy)))
+    @inbounds @simd for i in eachindex(y, dy)
+        d = dy[i]
+        s += _rvs_mul(y[i]', d)
+    end
+    return s
 end
 
 #
@@ -451,10 +468,6 @@ for (fname, jlfname, elty) in (
     end
 end
 
-# Match BLAS/LAPACK's case-insensitive LSAME before branching on flags; leave
-# validation to the routine.
-_lsame_flag(c::Char) = uppercase(c)
-
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -553,7 +566,7 @@ function rrule!!(
             ∇a += _rvs_mul(X_copy[i]', dX[i])
             P <: BlasRealFloat && (dX[i] = _rvs_mul(dX[i], a'))
         end
-        P <: BlasComplexFloat && _scale_or_zero!(dX, a')
+        P <: BlasComplexFloat && (dX .= _rvs_mul.(dX, a'))
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
@@ -717,7 +730,7 @@ end
     _check_blas_output_alias(BLAS.gemv!, primal(_y), primal(_A), primal(_x))
 
     # Pull out primals and tangents (the latter only where necessary).
-    trans = _lsame_flag(primal(_tA))
+    trans = uppercase(primal(_tA))
     alpha = _alpha.x
     A, dA = matrixify(_A)
     x, dx = arrayify(_x)
@@ -942,7 +955,7 @@ function frule!!(
     tmp = copy(x)
     BLAS.trmv!(uplo, trans, diag, dA, tmp)
     dx .+= tmp
-    if _lsame_flag(diag) === 'U'
+    if uppercase(diag) === 'U'
         dx .-= x
     end
 
@@ -964,8 +977,8 @@ function rrule!!(
 
     # Extract primals.
     uplo = primal(_uplo)
-    trans = _lsame_flag(primal(_trans))
-    diag = _lsame_flag(primal(_diag))
+    trans = uppercase(primal(_trans))
+    diag = uppercase(primal(_diag))
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     x_copy = copy(x)
@@ -1053,7 +1066,7 @@ function frule!!(
 
     BLAS.trsv!(uplo, trans, diag, A, dx)
     tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if _lsame_flag(diag) == 'U'
+    if uppercase(diag) == 'U'
         tmp .-= x
     end
     BLAS.trsv!(uplo, trans, diag, A, tmp)
@@ -1071,8 +1084,8 @@ function rrule!!(
 ) where {T<:BlasFloat}
     _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
     uplo = primal(_uplo)
-    trans = _lsame_flag(primal(_trans))
-    diag = _lsame_flag(primal(_diag))
+    trans = uppercase(primal(_trans))
+    diag = uppercase(primal(_diag))
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -1191,8 +1204,8 @@ end
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
     _check_blas_output_alias(BLAS.gemm!, primal(C), primal(A), primal(B))
-    tA = _lsame_flag(primal(transA))
-    tB = _lsame_flag(primal(transB))
+    tA = uppercase(primal(transA))
+    tB = uppercase(primal(transB))
     a = primal(alpha)
     b = primal(beta)
     p_A, dA = matrixify(A)
@@ -1214,7 +1227,7 @@ end
             BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
         else
             # β == 0 must overwrite C, which may contain NaN.
-            _scale_or_zero!(p_C, b)
+            p_C .= _rvs_mul.(p_C, b)
             p_C .+= a .* tmp
         end
     end
@@ -1345,7 +1358,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
 
         # Extract primals.
-        s = _lsame_flag(primal(side))
+        s = uppercase(primal(side))
         ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
@@ -1364,7 +1377,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
             tmp_ref[] = tmp
             # Strong zeros, as in the `gemm!` pullback above.
-            _scale_or_zero!(C, β)
+            C .= _rvs_mul.(C, β)
             C .+= _rvs_mul.(tmp, α)
         end
 
@@ -1479,7 +1492,7 @@ for (fname, elty, relty) in (
 
         # Extract values from pairs.
         uplo = primal(_uplo)
-        trans = _lsame_flag(primal(_t))
+        trans = uppercase(primal(_t))
         α = primal(α_dα)
         A, dA = matrixify(A_dA)
         β = primal(β_dβ)
@@ -1557,7 +1570,7 @@ function frule!!(
     # Compute Fréchet derivative.
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if _lsame_flag(diag) == 'U'
+    if uppercase(diag) == 'U'
         dB .-= α .* B
     end
     if !iszero(dα)
@@ -1581,10 +1594,10 @@ function rrule!!(
     _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
 
     # Extract values.
-    side = _lsame_flag(primal(_side))
+    side = uppercase(primal(_side))
     uplo = primal(_uplo)
-    tA = _lsame_flag(primal(_ta))
-    diag = _lsame_flag(primal(_diag))
+    tA = uppercase(primal(_ta))
+    diag = uppercase(primal(_diag))
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1595,12 +1608,7 @@ function rrule!!(
 
     function trmm_adjoint(::NoRData)
 
-        # Compute α gradient. `B` holds `α·op(A)·B_old`, and `dot` conjugates its first argument, so
-        # `dot(B, dB)/α' = dot(op(A)·B_old, dB)` — the true, finite ∇α. But at α==0 the primal zeroed
-        # `B`, making that `0/0 = NaN`; recompute the unscaled `op(A)·B_old` from the saved input in
-        # that case (the mathematically-defined limit), keeping the cheap division for α≠0.
-        # Guarded on the cotangent, as the `gemv!` family is: an entry of `B` the selected output
-        # does not depend on may hold a `NaN`, and a plain `dot` lets it poison the whole gradient.
+        # Recompute the unscaled output at α == 0 to avoid dividing by zero.
         ∇α = if iszero(α)
             M = copy(B_copy)
             BLAS.trmm!(side, uplo, tA, diag, one(P), A, M)
@@ -1681,7 +1689,7 @@ function frule!!(
 
     tmp2 = copy(tmp)
     BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
-    if _lsame_flag(diag) == 'U'
+    if uppercase(diag) == 'U'
         tmp .-= α .* tmp2
     end
     BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
@@ -1705,10 +1713,10 @@ function rrule!!(
     _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
 
     # Extract parameters.
-    side = _lsame_flag(primal(_side))
+    side = uppercase(primal(_side))
     uplo = primal(_uplo)
-    trans = _lsame_flag(primal(_t))
-    diag = _lsame_flag(primal(_diag))
+    trans = uppercase(primal(_t))
+    diag = uppercase(primal(_diag))
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1720,10 +1728,6 @@ function rrule!!(
     trsm!(primal(_side), uplo, primal(_t), primal(_diag), α, A, B)
 
     function trsm_adjoint(::NoRData)
-        # Compute α gradient. `B` holds `α·op(A)⁻¹·B_old`; `dot(B, dB)/α' = dot(op(A)⁻¹·B_old, dB)` is
-        # the true finite ∇α, but α==0 zeroes `B` → `0/0 = NaN`. Recompute the unscaled
-        # `op(A)⁻¹·B_old` from the saved input in that case; keep the cheap division for α≠0.
-        # Guarded on the cotangent, as in `trmm!` above.
         ∇α = if iszero(α)
             M = copy(B_copy)
             trsm!(side, uplo, trans, diag, one(P), A, M)
@@ -2339,33 +2343,6 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
 end
 
-# Differentiate the guarded product itself: differentiating its branch would discard
-# a live perturbation at a zero multiplier under forward-over-reverse.
-_rvs_mul(x::T, y::T) where {T<:BlasFloat} = ifelse(iszero(y), zero(T), x * y)
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_mul),T,T} where {T<:BlasFloat}
-function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:BlasFloat}
-    a, da = extract(x)
-    b, db = extract(y)
-    return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
-end
-
-# Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
-# In particular, BLAS permits undefined input y wherever β == 0 discards it.
-@inline function _rvs_guarded_dot(y, dy)
-    s = zero(promote_type(eltype(y), eltype(dy)))
-    @inbounds @simd for i in eachindex(y, dy)
-        d = dy[i]
-        s += _rvs_mul(y[i]', d)
-    end
-    return s
-end
-
-# BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
-@inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
-    B .= _rvs_mul.(B, β)
-    return nothing
-end
-
 # Reuse the primal's logical step for its partial: their index spaces match,
 # but their strides can differ.
 @inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
@@ -2385,7 +2362,7 @@ end
     return 1 + (n - 1) * step <= length(x) ? step : nothing
 end
 
-# Aliases are intentional: the registry seeds and copies them with shared caches.
+# Expected-throw checks preserve primal aliases.
 function _blas_alias_test_cases(P)
     rows = Any[]
     flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
