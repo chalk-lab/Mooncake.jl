@@ -314,7 +314,9 @@ end
 # Supporting overlap would require snapshot semantics in both the primal and AD;
 # reject it at the boundary until the underlying operation guarantees those semantics.
 @inline function _check_blas_output_alias(f, output, inputs...)
-    any(input -> Base.mightalias(output, input), inputs) && _throw_blas_output_alias(f)
+    !isempty(output) &&
+        any(input -> !isempty(input) && Base.mightalias(output, input), inputs) &&
+        _throw_blas_output_alias(f)
     return nothing
 end
 @noinline function _throw_blas_output_alias(f)
@@ -2261,6 +2263,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     rng = rng_ctor(123)
     test_cases = Any[]
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            nothing,
+            A -> BLAS.gemm!('N', 'N', one(P), A, A, zero(P), A),
+            zeros(P, 0, 0),
+        ),
+    )
 
     #
     # BLAS LEVEL 1
