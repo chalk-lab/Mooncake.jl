@@ -285,7 +285,15 @@ function viewify(
         return view(x, xinds), view(dx, xinds)
     end
     incx > 0 || _throw_no_walk_step(x, incx)
-    dims = sort(ntuple(identity, ndims(x)); by=d -> abs(stride(x, d)), rev=true)
+    dims = ntuple(identity, ndims(x))
+    for i in 2:length(dims)
+        j = i
+        while j > 1 && abs(stride(x, dims[j])) > abs(stride(x, dims[j - 1]))
+            a, b = dims[j - 1], dims[j]
+            dims = Base.setindex(Base.setindex(dims, b, j - 1), a, j)
+            j -= 1
+        end
+    end
     offset = sum(min.(0, (size(x) .- 1) .* strides(x)))
     steps = Base.size_to_strides(1, size(x)...)
     dense_parent = x isa SubArray && parent(x) isa Array
