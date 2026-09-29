@@ -633,8 +633,11 @@ function rrule!!(
     end
     Base._unsetindex!(x.x)
     Base._unsetindex!(x.dx)
+
+    # Pointer-free inline elements are left in place, so their cotangent passes through.
+    to_restore = to_save && !isassigned(x.x)
     function _unsetindex!_pullback!!(::NoRData)
-        if to_save
+        if to_restore
             memoryrefset!(x.x, old_x[][1], :not_atomic, true)
             memoryrefset!(x.dx, old_x[][2], :not_atomic, true)
         end
