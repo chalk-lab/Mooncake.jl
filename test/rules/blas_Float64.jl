@@ -107,6 +107,12 @@ end
                 a -> (Z=zeros(3, 3); BLAS.syrk!('U', 'N', a, Mn, 1.0, Z); Z[2, 2]), 2.0
             ) ≈ (Mn * Mn')[2, 2]
             @test grad(a -> (z=[NaN, 2.0, 3.0]; BLAS.scal!(3, a, z, 1); z[2]), 2.0) == 2.0
+            for P in (Float32, Float64, ComplexF32, ComplexF64)
+                @test grad(
+                    a -> (y=P[NaN, 2]; BLAS.axpy!(2, a, P[NaN, 3], 1, y, 1); real(y[2])),
+                    P(2),
+                ) == P(3)
+            end
         end
 
         # Cover NaN in unused columns for triangular α gradients. Keep operands
