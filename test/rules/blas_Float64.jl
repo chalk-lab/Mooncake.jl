@@ -115,8 +115,7 @@ end
             end
         end
 
-        # Cover NaN in unused columns for triangular α gradients. Keep operands
-        # local to avoid sharing a captured global's tangent between differentiations.
+        # Keep operands local to avoid sharing a captured global's tangent between differentiations.
         @testset "trmm!/trsm! alpha gradient ignores a NaN in an unused column" begin
             At = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
             Bt = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
