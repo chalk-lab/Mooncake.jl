@@ -919,7 +919,9 @@ function rrule!!(
         if all(k -> k isa Colon || allunique(k), I)
             view(dx, I...) .+= dy
         else
-            _gpu_scatter_add!(dx, vec(LinearIndices(dx)[I...]), dy)
+            lin_dx = similar(dy, Int)
+            lin_dx .= view(LinearIndices(dx), I...)
+            _gpu_scatter_add!(dx, lin_dx, dy)
         end
         return ntuple(_ -> NoRData(), length(I) + 2)
     end
