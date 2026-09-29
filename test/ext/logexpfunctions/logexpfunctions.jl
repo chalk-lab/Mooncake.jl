@@ -79,6 +79,20 @@ sr(n::Int) = StableRNG(n)
                     view(randn(sr(7), P, 5, 4), 1:5, 1:4),
                 ),
                 (:none, true, logsumexp!, [P(1.0)], [P(2.0), P(2.0)]),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    view(UnitUpperTriangular(zeros(P, 2, 2)), 1:1, 2:2),
+                    ones(P, 1, 1),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    view(UnitLowerTriangular(zeros(P, 2, 2)), 2:2, 1:1),
+                    ones(P, 1, 1),
+                ),
                 (:none, true, logsumexp!, [P(1.0)], view([P(2.0), P(2.0)], 1:2)),
                 (:none, true, logsumexp!, view([P(1.0)], 1:1), view([P(2.0), P(2.0)], 1:2)),
                 # not a primitive because the two inputs have different eltypes, but we can
