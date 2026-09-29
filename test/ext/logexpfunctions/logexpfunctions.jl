@@ -52,6 +52,8 @@ sr(n::Int) = StableRNG(n)
                 # Structured tangents: the adjoint is dense, so it has to be projected
                 # onto what the wrapper stores. `Symmetric` folds rather than masks.
                 (:none, true, logsumexp, UpperTriangular(randn(sr(20), P, 4, 4))),
+                (:none, true, logsumexp, UnitUpperTriangular(zeros(P, 2, 2))),
+                (:none, true, logsumexp, UnitLowerTriangular(zeros(P, 2, 2))),
                 (:none, true, logsumexp, Diagonal(randn(sr(21), P, 4))),
                 (:none, true, logsumexp, Symmetric(randn(sr(22), P, 4, 4))),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
@@ -186,6 +188,18 @@ sr(n::Int) = StableRNG(n)
                 @test result.value === f(x, y)
                 @test only(result.partials) == b
             end
+        end
+    end
+
+    for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
+        f(x) = logsumexp(T(reshape(x, 2, 2)))
+        x = zeros(4)
+        cache = Mooncake.prepare_hvp_cache(f, x)
+        p = inv(2 + 2exp(1))
+        for a in (0.0, 1.0)
+            v = zeros(4)
+            v[i] = a
+            @test Mooncake.value_and_hvp!!(cache, f, v, x)[3] ≈ p * (1 - p) * v
         end
     end
 
