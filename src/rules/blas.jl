@@ -355,6 +355,68 @@ function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:Bla
     return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
 end
 
+# Skip unused operands without losing a live coefficient direction in nested AD.
+# Keep the rank-one loop out of callers; output storage must be disjoint from inputs.
+@noinline function _rvs_muladd!(
+    C::AbstractMatrix{T},
+    X::AbstractVecOrMat{T},
+    Y::AbstractVecOrMat{T},
+    α::T,
+    tX::Char,
+    tY::Char,
+    add::Bool,
+) where {T<:BlasFloat}
+    isempty(C) && return C
+    if iszero(α)
+        add || fill!(C, zero(T))
+    elseif (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
+        @inbounds for j in axes(C, 2)
+            y = tY == 'N' ? Y[1, j] : Y[j, 1]
+            tY == 'C' && (y = conj(y))
+            @simd ivdep for i in axes(C, 1)
+                x = tX == 'N' ? X[i, 1] : X[1, i]
+                tX == 'C' && (x = conj(x))
+                v = (α * x) * y
+                C[i, j] = add ? C[i, j] + v : v
+            end
+        end
+    else
+        BLAS.gemm!(tX, tY, α, X, Y, add, C)
+    end
+    return C
+end
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(_rvs_muladd!),
+    AbstractMatrix{T},
+    AbstractVecOrMat{T},
+    AbstractVecOrMat{T},
+    T,
+    Char,
+    Char,
+    Bool,
+} where {T<:BlasFloat}
+function frule!!(
+    ::Dual{typeof(_rvs_muladd!)},
+    C::Dual,
+    X::Dual,
+    Y::Dual,
+    α::Dual,
+    tX::Dual{Char},
+    tY::Dual{Char},
+    add::Dual{Bool},
+)
+    c, dc = arrayify(C)
+    x, dx = arrayify(X)
+    y, dy = arrayify(Y)
+    a, da = extract(α)
+    tx, ty = primal(tX), primal(tY)
+    _rvs_muladd!(dc, x, y, da, tx, ty, primal(add))
+    _rvs_muladd!(dc, dx, y, a, tx, ty, true)
+    _rvs_muladd!(dc, x, dy, a, tx, ty, true)
+    _rvs_muladd!(c, x, y, a, tx, ty, primal(add))
+    return C
+end
+
 # Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
 # In particular, BLAS permits undefined input y wherever β == 0 discards it.
 @inline function _rvs_guarded_dot(y, dy)
@@ -805,25 +867,13 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            if iszero(alpha)
-                dA .+= _rvs_mul.(dy .* x', alpha')
-            else
-                dA .+= alpha' .* dy .* x'
-            end
+            _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true)
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            if iszero(alpha)
-                dA .+= _rvs_mul.(x .* dy', alpha)
-            else
-                dA .+= alpha .* x .* dy'
-            end
+            _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            if iszero(alpha)
-                dA .+= _rvs_mul.(conj.(x) .* transpose(dy), alpha')
-            else
-                dA .+= alpha' .* conj.(x) .* transpose(dy)
-            end
+            _rvs_muladd!(dA, conj.(x), dy, alpha', 'N', 'T', true)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -925,7 +975,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
-            dA_tmp = iszero(α) ? _rvs_mul.(dy .* x', α') : α' * dy * x'
+            dA_tmp = _rvs_muladd!(similar(dA), dy, x, α', 'N', 'C', false)
             if ul == 'L'
                 dA .=
                     (dA .+ LowerTriangular(dA_tmp)) .+
@@ -1269,52 +1319,46 @@ end
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
-        if iszero(a)
-            dA .+= _trans(tA, _rvs_mul.(dC * _trans(tB, p_B)', a'))
-        elseif tA == 'N'
+        if tA == 'N'
             # A not transposed: C = a*A*op(B) + b*C
             # dA += a' * dC * op(B)'
             Bherm = tB == 'T' ? conj(p_B) : p_B
-            BLAS.gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, one(T), dA)
+            _rvs_muladd!(dA, dC, Bherm, a', 'N', tB == 'N' ? 'C' : 'N', true)
         elseif tA == 'C'
             # A conjugate transposed: C = a*A'*op(B) + b*C
             # dA += a * op(B) * dC'
-            BLAS.gemm!(tB, 'C', a, p_B, dC, one(T), dA)
+            _rvs_muladd!(dA, p_B, dC, a, tB, 'C', true)
         else  # tA == 'T'
             # A transposed (complex): C = a*A^T*op(B) + b*C
             # dA += conj(a) * conj(op(B)) * transpose(dC)
             if tB == 'N'
-                BLAS.gemm!('N', 'T', a', conj(p_B), dC, one(T), dA)
+                _rvs_muladd!(dA, conj(p_B), dC, a', 'N', 'T', true)
             else
-                BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
+                _rvs_muladd!(dA, p_B, dC, a', tB == 'T' ? 'C' : 'T', 'T', true)
             end
         end
 
-        if iszero(a)
-            dB .+= _trans(tB, _rvs_mul.(_trans(tA, p_A)' * dC, a'))
-        elseif tB == 'N'
+        if tB == 'N'
             # B not transposed: C = a*op(A)*B + b*C
             # dB += a' * op(A)' * dC
             Aherm = tA == 'T' ? conj(p_A) : p_A
-            BLAS.gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, one(T), dB)
+            _rvs_muladd!(dB, Aherm, dC, a', tA == 'N' ? 'C' : 'N', 'N', true)
         elseif tB == 'C'
             # B conjugate transposed: C = a*op(A)*B' + b*C
             # dB += a * dC' * op(A)
-            BLAS.gemm!('C', tA, a, dC, p_A, one(T), dB)
+            _rvs_muladd!(dB, dC, p_A, a, 'C', tA, true)
         else  # tB == 'T'
             # B transposed (complex): C = a*op(A)*B^T + b*C
             # dB += conj(a) * transpose(dC) * conj(op(A))
             if tA == 'N'
-                BLAS.gemm!('T', 'N', a', dC, conj(p_A), one(T), dB)
+                _rvs_muladd!(dB, dC, conj(p_A), a', 'T', 'N', true)
             else
-                BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
+                _rvs_muladd!(dB, dC, p_A, a', 'T', tA == 'T' ? 'C' : 'T', true)
             end
         end
 
         # Propagate gradient through beta
-        @inbounds @simd for i in eachindex(dC)
-            dC[i] *= b'
-        end
+        dC .*= b'
 
         return (NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData())
     end
@@ -1408,17 +1452,20 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
-            dA_tmp = if iszero(α)
-                _rvs_mul.(s == 'L' ? dC * B' : B' * dC, α')
+            dA_tmp = similar(dA)
+            if s == 'L'
+                _rvs_muladd!(dA_tmp, dC, B, α', 'N', 'C', false)
             else
-                s == 'L' ? (α' * dC) * B' : (α' * B') * dC
+                _rvs_muladd!(dA_tmp, B, dC, α', 'C', 'N', false)
             end
             if ul == 'L'
-                dA .+= LowerTriangular(dA_tmp)
-                dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
+                dA .=
+                    (dA .+ LowerTriangular(dA_tmp)) .+
+                    $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
             else
-                dA .+= $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))
-                dA .+= UpperTriangular(dA_tmp)
+                dA .=
+                    (dA .+ $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))) .+
+                    UpperTriangular(dA_tmp)
             end
             @inbounds for n in diagind(dA)
                 dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
