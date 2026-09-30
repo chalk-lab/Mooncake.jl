@@ -424,3 +424,14 @@ end
         end
     end
 end
+
+@testset "zero alpha extreme HVP" for (A, B, seed, da) in (
+    (1e-200, 1e200, 1e200, 1e-300), (1e-100, 1e-200, 1e-200, 1e300)
+)
+    f(x) =
+        seed *
+        only(BLAS.gemm!('N', 'N', x[1], fill(x[2], 1, 1), fill(B, 1, 1), 0.0, zeros(1, 1)))
+    x = [0.0, A]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [da, 0.0], x)[3]
+    @test h[2] ≈ (da * seed) * B
+end
