@@ -435,3 +435,18 @@ end
     h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [da, 0.0], x)[3]
     @test h[2] ≈ (da * seed) * B
 end
+
+@testset "nonzero alpha extreme HVP" for unit in (1.0, 1.0 + 0.0im),
+    (a, seed) in ((1e200, 1e-200), (1e-200, 1e200))
+
+    function f(x)
+        A = fill(oftype(unit, x[1]), 1, 1)
+        B = fill(oftype(unit, x[2]), 1, 1)
+        C = fill(zero(unit), 1, 1)
+        return seed * real(only(BLAS.gemm!('N', 'N', oftype(unit, a), A, B, zero(unit), C)))
+    end
+    x = [1e-200, 1e-200]
+    value, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [a, 0.0], x)
+    @test isfinite(value)
+    @test h ≈ [0.0, a]
+end
