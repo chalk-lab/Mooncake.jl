@@ -67,6 +67,54 @@
         )
     end
 
+    @testset "vector accumulation follows scalar frules" begin
+        function broadcast_product!(C, X, Y, a, add)
+            if add
+                C .+= a .* X .* Y'
+            else
+                C .= a .* X .* Y'
+            end
+            return C
+        end
+        for P in (Float32, Float64, ComplexF32, ComplexF64)
+            big = P <: Union{Float32,ComplexF32} ? 1.0f30 : 1e200
+            rule = Mooncake.build_frule(
+                broadcast_product!, zeros(P, 1, 1), zeros(P, 1), zeros(P, 1), zero(P), true
+            )
+            for add in (false, true),
+                (a, da, x, dx, y, dy) in (
+                    (1, big, 1, -big, big, 0),
+                    (0, inv(big), inv(big), 0, big, 0),
+                    (0, big, big, 1, inv(big), 2),
+                    (0, 1, NaN, 0, 1, 0),
+                    (0, 0, Inf, 0, 1, 0),
+                )
+
+                ds = (
+                    Mooncake.Dual(zeros(P, 1, 1), ones(P, 1, 1)),
+                    Mooncake.Dual(P[x], P[dx]),
+                    Mooncake.Dual(P[y], P[dy]),
+                    Mooncake.Dual(P(a), P(da)),
+                )
+                expected = rule(
+                    Mooncake.zero_dual(broadcast_product!),
+                    deepcopy(ds)...,
+                    Mooncake.zero_dual(add),
+                )
+                actual = Mooncake.frule!!(
+                    Mooncake.zero_dual(Mooncake._rvs_muladd!),
+                    ds...,
+                    Mooncake.zero_dual('N'),
+                    Mooncake.zero_dual('C'),
+                    Mooncake.zero_dual(add),
+                    Mooncake.zero_dual(true),
+                )
+                @test isequal(Mooncake.tangent(actual), Mooncake.tangent(expected))
+                iszero(a) && @test iszero(Mooncake.primal(actual))
+            end
+        end
+    end
+
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 end
 
