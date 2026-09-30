@@ -1129,11 +1129,16 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         BLAS.$fname(ul, α, A, x, β, y)
 
         function symv!_or_hemv!_adjoint(::NoRData)
+            # dα = <dy, Ax>'
             if fast
+                # Don't recompute Ax, it's already in y.
                 dα = _rvs_guarded_dot(y, dy)
                 BLAS.copyto!(y, y_copy)
             else
+                # Reset y.
                 BLAS.copyto!(y, y_copy)
+
+                # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
                 BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
                 dα = _rvs_guarded_dot(y_copy, dy)
             end
@@ -2455,12 +2460,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     )
 
     flags = (false, :stability, (mode=ReverseMode,))
+    both_modes = (false, :stability, nothing)
     for n in (0, 1)
         x, y = view(P[3], 1:2:1), view(P[2], 1:2:1)
         append!(
             test_cases,
             [
-                (false, :stability, nothing, BLAS.nrm2, n, x, 1),
+                (both_modes..., BLAS.nrm2, n, x, 1),
                 (flags..., BLAS.scal!, n, P(2), x, 1),
                 (flags..., BLAS.axpy!, n, P(2), x, 1, y, 1),
             ],
@@ -2469,7 +2475,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     append!(
         test_cases,
         [
-            (false, :stability, nothing, BLAS.nrm2, 2, zeros(P, 2), 1),
+            (both_modes..., BLAS.nrm2, 2, zeros(P, 2), 1),
             (flags..., BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1),
             (
                 false,
@@ -2494,18 +2500,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ),
             (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
             (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
-            (
-                false,
-                :stability,
-                nothing,
-                BLAS.gemv!,
-                'N',
-                P(2),
-                zeros(P, 2, 0),
-                P[],
-                P(3),
-                ones(P, 2),
-            ),
+            (both_modes..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
         ],
     )
     for f in (BLAS.trmm!, BLAS.trsm!)
@@ -2514,27 +2509,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (flags..., f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2)),
         )
     end
+    flags = (
+        false, :none, (mode=ReverseMode, throws=(ArgumentError, "does not support operand"))
+    )
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (mode=ReverseMode, throws=(ArgumentError, "does not support operand")),
-            BLAS.nrm2,
-            2,
-            view(P[3, 9, 4, 9], 1:2:4),
-            1,
-        ),
-        (
-            false,
-            :none,
-            (mode=ReverseMode, throws=(ArgumentError, "does not support operand")),
-            BLAS.scal!,
-            2,
-            P(2),
-            view(P[3 0; 4 0; 9 0], 1:2, :),
-            0,
-        ),
+        (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 1),
+        (flags..., BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 0),
     )
     append!(test_cases, _blas_flag_test_cases(P))
     append!(test_cases, _blas_alias_test_cases(P))

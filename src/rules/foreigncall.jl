@@ -564,10 +564,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, "5", UInt(3)),
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
-    ]
-    memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
-    push!(
-        test_cases,
         (
             false,
             :none,
@@ -577,9 +573,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             ptr_b,
             2,
         ),
-    )
-    push!(
-        test_cases,
         (
             true,
             :none,
@@ -589,7 +582,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             zero_fcodual(ptr_b),
             0,
         ),
-    )
+    ]
+    memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
     return test_cases, memory
 end
 
