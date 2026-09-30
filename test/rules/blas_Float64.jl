@@ -45,12 +45,12 @@
     end
 
     @testset "guarded accumulation" for P in (Float32, Float64, ComplexF32, ComplexF64),
-        a in (0, 2), outer in (false, true),
+        a in (0, 2), coefficient_first in (false, true),
         add in (false, true)
 
         rng = StableRNG(12)
-        X = outer ? randn(rng, P, 3) : randn(rng, P, 3, 3)
-        Y = outer ? randn(rng, P, 3) : randn(rng, P, 3, 3)
+        X = coefficient_first ? randn(rng, P, 3) : randn(rng, P, 3, 3)
+        Y = coefficient_first ? randn(rng, P, 3) : randn(rng, P, 3, 3)
         TestUtils.test_rule(
             rng,
             Mooncake._rvs_muladd!,
@@ -61,7 +61,7 @@
             'N',
             'C',
             add,
-            outer;
+            coefficient_first;
             mode=Mooncake.ForwardMode,
             perf_flag=:stability,
         )
@@ -296,7 +296,8 @@ end
             out, pb = Mooncake.rrule!!(ds...)
             fill!(Mooncake.tangent(out), P(b))
             pb(Mooncake.NoRData())
-            @test Mooncake.tangent(ds[6]) ≈ fill(P(n * a), n, n)
+            expected = BLAS.gemm('N', 'N', P(a), lhs, fill(P(b), n, n))
+            @test isequal(Mooncake.tangent(ds[6]), expected)
         end
 
         @testset "matrix reference extremes" for (op, P) in (
