@@ -433,7 +433,18 @@ end
         only(BLAS.gemm!('N', 'N', x[1], fill(x[2], 1, 1), fill(B, 1, 1), 0.0, zeros(1, 1)))
     x = [0.0, A]
     h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [da, 0.0], x)[3]
-    @test h[2] ≈ (da * seed) * B
+    @test isequal(h[2], only(da * fill(seed, 1, 1) * fill(B, 1, 1)))
+end
+
+@testset "zero alpha coefficient direction HVP" for (big, small) in
+                                                    ((1e200, 1e-200), (1e-200, 1e200))
+    f(x) =
+        small * only(
+            BLAS.gemm!('N', 'N', x[1], fill(big, 1, 1), fill(x[2], 1, 1), 0.0, zeros(1, 1))
+        )
+    x = [0.0, small]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [big, 0.0], x)[3]
+    @test isequal(h, [0.0, big])
 end
 
 @testset "nonzero alpha extreme HVP" for unit in (1.0, 1.0 + 0.0im),
@@ -449,4 +460,15 @@ end
     value, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [a, 0.0], x)
     @test isfinite(value)
     @test h ≈ [0.0, a]
+end
+
+@testset "mixed extreme HVP directions" begin
+    f(x) =
+        x[4] * only(
+            BLAS.gemm!('N', 'N', x[1], fill(x[2], 1, 1), fill(x[3], 1, 1), 0.0, zeros(1, 1))
+        )
+    x = [2.0, 1.0, 1.0, 1.0]
+    v = [1e308, 0.0, -5e307, 5e307]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
+    @test isequal(h, [0.0, 1e308, Inf, 0.0])
 end
