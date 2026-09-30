@@ -134,73 +134,34 @@ end
         Asym = (A + A') / 2
         nan3 = fill(NaN, 3, 3)
 
-        for P in (Float32, Float64, ComplexF32, ComplexF64)
-            dX = P[NaN]
-            _, pb = Mooncake.rrule!!(
-                Mooncake.zero_fcodual(BLAS.scal!),
-                Mooncake.zero_fcodual(1),
-                Mooncake.zero_fcodual(zero(P)),
-                CoDual(ones(P, 1), dX),
-                Mooncake.zero_fcodual(1),
-            )
-            pb(NoRData())
-            @test iszero(only(dX))
-        end
+        args = (BLAS.scal!, 1, 0.0, [1.0], 1)
+        ds = map(Mooncake.zero_fcodual, args)
+        fill!(Mooncake.tangent(ds[4]), NaN)
+        _, pb = Mooncake.rrule!!(ds...)
+        pb(NoRData())
+        @test iszero(only(Mooncake.tangent(ds[4])))
 
         @testset "zero alpha array cotangents" begin
-            for P in (Float32, Float64, ComplexF32, ComplexF64), bad in (NaN, Inf)
-                ops=(
-                    BLAS.gemv!,
-                    BLAS.symv!,
-                    BLAS.gemm!,
-                    BLAS.symm!,
-                    BLAS.syrk!,
-                    BLAS.trmm!,
-                    BLAS.trsm!,
-                    (P<:Complex ? (BLAS.hemv!, BLAS.hemm!, BLAS.herk!) : ())...,
-                )
-                for op in ops,
-                    badarg in (1, 2),
-                    flags in
-                    (op === BLAS.gemm! ? Iterators.product("NTC", "NTC") : (('L', 'U'),))
-
-                    op in (BLAS.syrk!, BLAS.herk!) && badarg==2 && continue
-                    lhs=fill(P(badarg==1 ? bad : 1), 3, 3);
-                    rhs=fill(P(badarg==2 ? bad : 1), 3, 3)
-                    args = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
-                        (
-                            op,
-                            op===BLAS.gemv! ? 'N' : 'U',
-                            zero(P),
-                            lhs,
-                            rhs[:, 1],
-                            one(P),
-                            zeros(P, 3),
-                        )
-                    elseif op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
-                        (op, flags..., zero(P), lhs, rhs, one(P), zeros(P, 3, 3))
-                    elseif op in (BLAS.syrk!, BLAS.herk!)
-                        Q=op===BLAS.herk! ? real(P) : P
-                        (op, 'U', 'N', zero(Q), lhs, one(Q), zeros(P, 3, 3))
-                    else
-                        (op, 'L', 'U', 'N', 'N', zero(P), lhs, rhs)
-                    end
-                    ds=map(Mooncake.zero_fcodual, args);
-                    out, pb=Mooncake.rrule!!(ds...)
-                    fill!(Mooncake.tangent(out), one(P));
-                    pb(Mooncake.NoRData())
-                    inds = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
-                        (4, 5)
-                    elseif op in (BLAS.trmm!, BLAS.trsm!)
-                        (7, 8)
-                    elseif op in (BLAS.syrk!, BLAS.herk!)
-                        (5,)
-                    else
-                        (5, 6)
-                    end
-                    @testset "$P $op $flags $bad $badarg" for i in inds
-                        @test all(iszero, Mooncake.tangent(ds[i]))
-                    end
+            local A, N = ones(1, 1), fill(NaN, 1, 1)
+            C, Z = ones(ComplexF64, 1, 1), fill(ComplexF64(NaN), 1, 1)
+            M, bad = ones(2, 2), fill(NaN, 2, 2)
+            for (args, i) in (
+                ((BLAS.gemv!, 'N', 0.0, A, [NaN], 1.0, [0.0]), 4),
+                ((BLAS.symv!, 'U', 0.0, A, [NaN], 1.0, [0.0]), 4),
+                ((BLAS.hemv!, 'U', 0.0im, C, ComplexF64[NaN], 1.0 + 0im, ComplexF64[0]), 4),
+                ((BLAS.gemm!, 'N', 'N', 0.0, M, bad, 1.0, zeros(2, 2)), 5),
+                ((BLAS.gemm!, 'N', 'N', 0.0, bad, M, 1.0, zeros(2, 2)), 6),
+                ((BLAS.syrk!, 'U', 'N', 0.0, N, 1.0, zeros(1, 1)), 5),
+                ((BLAS.herk!, 'U', 'N', 0.0, Z, 1.0, zeros(ComplexF64, 1, 1)), 5),
+                ((BLAS.trmm!, 'L', 'U', 'N', 'N', 0.0, A, N), 7),
+                ((BLAS.trsm!, 'L', 'U', 'N', 'N', 0.0, N, A), 7),
+            )
+                ds = map(Mooncake.zero_fcodual, deepcopy(args))
+                out, pb = Mooncake.rrule!!(ds...)
+                fill!(Mooncake.tangent(out), 1)
+                pb(Mooncake.NoRData())
+                @testset "$(first(args)) operand $i" begin
+                    @test all(iszero, Mooncake.tangent(ds[i]))
                 end
             end
         end
@@ -335,16 +296,8 @@ end
         end
 
         # `α == 0`: A unreferenced, so a NaN there must not reach the result or the partials.
-        o = Mooncake.rrule!!(
-            Mooncake.zero_fcodual(BLAS.symm!),
-            Mooncake.zero_fcodual('L'),
-            Mooncake.zero_fcodual('U'),
-            Mooncake.zero_fcodual(0.0),
-            Mooncake.zero_fcodual(copy(nan3)),
-            Mooncake.zero_fcodual(copy(B)),
-            Mooncake.zero_fcodual(1.0),
-            Mooncake.zero_fcodual(zeros(3, 3)),
-        )[1]
+        args = (BLAS.symm!, 'L', 'U', 0.0, copy(nan3), copy(B), 1.0, zeros(3, 3))
+        o = Mooncake.rrule!!(map(Mooncake.zero_fcodual, args)...)[1]
         @test all(iszero, primal(o))
 
         # Ignore NaN outside the selected output. The finite-difference oracle

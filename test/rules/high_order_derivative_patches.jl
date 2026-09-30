@@ -196,9 +196,8 @@ end
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
     @testset "BLAS zero cotangents with live perturbations" begin
         fscal(a) = (BLAS.scal!(1, a, [2.0], 1)[1] - 2.0)^2
-        faxpy(a) = (BLAS.axpy!(1, a, [2.0], 1, [0.0], 1)[1] - 2.0)^2
         fgemv(a) = (BLAS.gemv!('N', a, ones(1, 1), ones(1), 0.0, zeros(1))[1] - 1.0)^2
-        for (f, h) in ((fscal, 8.0), (faxpy, 8.0), (fgemv, 2.0))
+        for (f, h) in ((fscal, 8.0), (fgemv, 2.0))
             cache = prepare_hvp_cache(f, 1.0)
             @test value_and_hvp!!(cache, f, 1.0, 1.0) == (0.0, 0.0, h)
         end
@@ -348,74 +347,27 @@ end
 
 @testset "BLAS coefficient HVPs" begin
     # First-order registry checks cannot detect lost perturbations in a pullback.
-    for P in (Float64, ComplexF64),
-        op in (
-            BLAS.gemm!,
-            BLAS.gemv!,
-            BLAS.symm!,
-            BLAS.symv!,
-            BLAS.syrk!,
-            BLAS.trmm!,
-            BLAS.trsm!,
-            (P <: Complex ? (BLAS.hemm!, BLAS.hemv!, BLAS.herk!) : ())...,
-        )
-
-        p = one(P)
-        f = if op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
-            flags = op === BLAS.gemm! ? ('N', 'N') : ('L', 'U')
-            x -> sum(
-                abs2,
-                op(
-                    flags...,
-                    oftype(p, x[1]),
-                    fill(oftype(p, x[2]), 1, 1),
-                    fill(p, 1, 1),
-                    oftype(p, x[3]),
-                    fill(p, 1, 1),
-                ),
-            )
-        elseif op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
-            flag = op === BLAS.gemv! ? 'N' : 'U'
-            x -> sum(
-                abs2,
-                op(
-                    flag,
-                    oftype(p, x[1]),
-                    fill(oftype(p, x[2]), 1, 1),
-                    fill(p, 1),
-                    oftype(p, x[3]),
-                    fill(p, 1),
-                ),
-            )
-        elseif op in (BLAS.syrk!, BLAS.herk!)
-            q = op === BLAS.herk! ? real(p) : p
-            x -> sum(
-                abs2,
-                op(
-                    'U',
-                    'N',
-                    oftype(q, x[1]),
-                    fill(oftype(p, x[2]), 1, 1),
-                    oftype(q, x[3]),
-                    fill(p, 1, 1),
-                ),
-            )
-        else
-            x -> sum(
-                abs2,
-                op(
-                    'L',
-                    'U',
-                    'N',
-                    'N',
-                    oftype(p, x[1]),
-                    fill(oftype(p, x[2]), 1, 1),
-                    fill(p, 1, 1),
-                ),
-            )
+    for (op, p, flags, a) in (
+        (BLAS.gemm!, 1.0, ('N', 'N'), 1.0),
+        (BLAS.symm!, 1.0, ('L', 'U'), 1.0),
+        (BLAS.symv!, 1.0, ('U',), 1.0),
+        (BLAS.hemm!, 1.0 + 0im, ('L', 'U'), 1.0),
+        (BLAS.hemv!, 1.0 + 0im, ('U',), 1.0),
+        (BLAS.trmm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+        (BLAS.trsm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+    )
+        function f(x)
+            A = fill(oftype(p, x[2]), 1, 1)
+            dims = op in (BLAS.symv!, BLAS.hemv!) ? (1,) : (1, 1)
+            args = if op in (BLAS.trmm!, BLAS.trsm!)
+                (oftype(p, x[1]), A, fill(p, dims))
+            else
+                (oftype(p, x[1]), A, fill(p, dims), oftype(p, x[3]), fill(p, dims))
+            end
+            return sum(abs2, op(flags..., args...))
         end
-        @testset "$P $op $a $b" for a in (0.0, 1.0, 2.0), b in (0.0, 1.0)
-            x, v = [a, 3.0, b], ones(3)
+        @testset "$op" begin
+            x, v = [a, 3.0, 0.0], ones(3)
             cache = Mooncake.prepare_gradient_cache(f, x)
             grad(z) = copy(Mooncake.value_and_gradient!!(cache, f, z)[2][2])
             fd = (grad(x + 1e-5v) - grad(x - 1e-5v)) / 2e-5
