@@ -360,33 +360,59 @@ end
             (P <: Complex ? (BLAS.hemm!, BLAS.hemv!, BLAS.herk!) : ())...,
         )
 
+        p = one(P)
         f = if op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
             flags = op === BLAS.gemm! ? ('N', 'N') : ('L', 'U')
             x -> sum(
                 abs2,
                 op(
                     flags...,
-                    P(x[1]),
-                    fill(P(x[2]), 1, 1),
-                    ones(P, 1, 1),
-                    P(x[3]),
-                    ones(P, 1, 1),
+                    oftype(p, x[1]),
+                    fill(oftype(p, x[2]), 1, 1),
+                    fill(p, 1, 1),
+                    oftype(p, x[3]),
+                    fill(p, 1, 1),
                 ),
             )
         elseif op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
             flag = op === BLAS.gemv! ? 'N' : 'U'
             x -> sum(
                 abs2,
-                op(flag, P(x[1]), fill(P(x[2]), 1, 1), ones(P, 1), P(x[3]), ones(P, 1)),
+                op(
+                    flag,
+                    oftype(p, x[1]),
+                    fill(oftype(p, x[2]), 1, 1),
+                    fill(p, 1),
+                    oftype(p, x[3]),
+                    fill(p, 1),
+                ),
             )
         elseif op in (BLAS.syrk!, BLAS.herk!)
-            Q = op === BLAS.herk! ? real(P) : P
+            q = op === BLAS.herk! ? real(p) : p
             x -> sum(
                 abs2,
-                op('U', 'N', Q(x[1]), fill(P(x[2]), 1, 1), Q(x[3]), ones(P, 1, 1)),
+                op(
+                    'U',
+                    'N',
+                    oftype(q, x[1]),
+                    fill(oftype(p, x[2]), 1, 1),
+                    oftype(q, x[3]),
+                    fill(p, 1, 1),
+                ),
             )
         else
-            x -> sum(abs2, op('L', 'U', 'N', 'N', P(x[1]), fill(P(x[2]), 1, 1), ones(P, 1, 1)))
+            x -> sum(
+                abs2,
+                op(
+                    'L',
+                    'U',
+                    'N',
+                    'N',
+                    oftype(p, x[1]),
+                    fill(oftype(p, x[2]), 1, 1),
+                    fill(p, 1, 1),
+                ),
+            )
         end
         @testset "$P $op $a $b" for a in (0.0, 1.0, 2.0), b in (0.0, 1.0)
             x, v = [a, 3.0, b], ones(3)
