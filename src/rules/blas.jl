@@ -356,9 +356,9 @@ function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:Bla
 end
 
 # Skip unused operands without losing a live coefficient direction in nested AD.
-# GEMM callers disable `outer` to retain BLAS scaling even at contraction length one.
-# Keep the rank-one loop out of callers; output storage must be disjoint from inputs.
-@noinline function _rvs_muladd!(
+# Vector callers use coefficient-first products; matrix callers use BLAS scaling.
+# Output storage must be disjoint from inputs.
+@inline function _rvs_muladd!(
     C::AbstractMatrix{T},
     X::AbstractVecOrMat{T},
     Y::AbstractVecOrMat{T},
@@ -366,14 +366,13 @@ end
     tX::Char,
     tY::Char,
     add::Bool,
-    outer::Bool=true,
+    coefficient_first::Bool,
 ) where {T<:BlasFloat}
-    isempty(C) && return C
+    coefficient_first && isempty(C) && return C
     if iszero(α)
         add || fill!(C, zero(T))
-    elseif outer && (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
-        # Coefficient-first outer products keep finite extremes representable and beat gemm!.
-        # Hoist flag/indexing decisions out of the complex GEMV transpose broadcast.
+    elseif coefficient_first && (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
+        # Inlining exposes the specialised broadcast to caller optimisation.
         if X isa Transpose{T,<:AbstractVector} && tX == 'C' && tY == 'T' && add
             C .+= α .* conj.(parent(X)) .* transpose(Y)
             return C
@@ -389,20 +388,10 @@ end
             end
         end
     else
-        BLAS.gemm!(tX, tY, α, X, Y, add, C)
+        @inline BLAS.gemm!(tX, tY, α, X, Y, T(add), C)
     end
     return C
 end
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(_rvs_muladd!),
-    AbstractMatrix{T},
-    AbstractVecOrMat{T},
-    AbstractVecOrMat{T},
-    T,
-    Char,
-    Char,
-    Bool,
-} where {T<:BlasFloat}
 @is_primitive MinimalCtx ForwardMode Tuple{
     typeof(_rvs_muladd!),
     AbstractMatrix{T},
@@ -423,18 +412,24 @@ function frule!!(
     tX::Dual{Char},
     tY::Dual{Char},
     add::Dual{Bool},
-    outer::Dual{Bool}=zero_dual(true),
+    coefficient_first::Dual{Bool},
 )
     c, dc = arrayify(C)
     x, dx = arrayify(X)
     y, dy = arrayify(Y)
     a, da = extract(α)
     tx, ty = primal(tX), primal(tY)
-    # The coefficient direction retains coefficient-first products for extreme HVPs.
-    _rvs_muladd!(dc, x, y, da, tx, ty, primal(add))
-    _rvs_muladd!(dc, dx, y, a, tx, ty, true, primal(outer))
-    _rvs_muladd!(dc, x, dy, a, tx, ty, true, primal(outer))
-    _rvs_muladd!(c, x, y, a, tx, ty, primal(add), primal(outer))
+    if primal(coefficient_first)
+        _rvs_muladd!(dc, x, y, da, tx, ty, primal(add), true)
+        _rvs_muladd!(dc, dx, y, a, tx, ty, true, true)
+        _rvs_muladd!(dc, x, dy, a, tx, ty, true, true)
+    else
+        # BLAS adds operand directions before the coefficient direction.
+        _rvs_muladd!(dc, dx, y, a, tx, ty, primal(add), false)
+        _rvs_muladd!(dc, x, dy, a, tx, ty, true, false)
+        _rvs_muladd!(dc, x, y, da, tx, ty, true, false)
+    end
+    _rvs_muladd!(c, x, y, a, tx, ty, primal(add), primal(coefficient_first))
     return C
 end
 
@@ -888,10 +883,10 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true)
+            _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true, true)
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true)
+            _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
             @inline _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
@@ -996,7 +991,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
-            dA_tmp = _rvs_muladd!(similar(dA), dy, x, α', 'N', 'C', false)
+            dA_tmp = _rvs_muladd!(similar(dA), dy, x, α', 'N', 'C', false, true)
             if ul == 'L'
                 dA .=
                     (dA .+ LowerTriangular(dA_tmp)) .+
@@ -1475,9 +1470,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
             dA_tmp = similar(dA)
             if s == 'L'
-                _rvs_muladd!(dA_tmp, dC, B, α', 'N', 'C', false)
+                _rvs_muladd!(dA_tmp, dC, B, α', 'N', 'C', false, false)
             else
-                _rvs_muladd!(dA_tmp, B, dC, α', 'C', 'N', false)
+                _rvs_muladd!(dA_tmp, B, dC, α', 'C', 'N', false, false)
             end
             if ul == 'L'
                 dA .=
