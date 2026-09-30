@@ -472,3 +472,30 @@ end
     h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
     @test isequal(h, [0.0, 1e308, Inf, 0.0])
 end
+
+@testset "vector mixed extreme HVP directions" for unit in (1.0, 1.0 + 0im, 1.0 + 1im),
+    sign in (1.0, -1.0)
+
+    f(x) =
+        x[4] * real(
+            only(
+                BLAS.gemv!(
+                    'N',
+                    unit * x[1],
+                    fill(unit * x[2], 1, 1),
+                    [unit * x[3]],
+                    zero(unit),
+                    zeros(typeof(unit), 1),
+                ),
+            ),
+        )
+    x = [2.0, 1.0, 2.0, 1.0]
+    v = sign .* [1e308, 0.0, 0.0, -5e307]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
+    expected = if unit == 1
+        [-sign * 1e308, 0.0, 0.0, sign * Inf]
+    else
+        [sign * Inf, 0.0, -sign * Inf, NaN]
+    end
+    @test isequal(h, expected)
+end
