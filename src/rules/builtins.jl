@@ -222,8 +222,6 @@ const _NULL_TANGENT_PTR_MSG =
     "is not supported; allocate it with the differentiable element type instead."
 
 # NULL is safe for empty operations and zero-size tangent elements.
-# Representing absent storage with its own type would enforce this by dispatch,
-# but requires changing every rule accepting a Ptr tangent.
 @inline function _check_tangent_ptr(x, dx, n=1)
     iszero(n) && return nothing
     if dx isa Ptr && _elements_occupy_storage(eltype(dx))
@@ -1765,9 +1763,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
-    ]
-    push!(
-        test_cases,
         (
             false,
             :none,
@@ -1775,9 +1770,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,)),
             zeros(UInt8, 8),
         ),
-    )
-    push!(
-        test_cases,
         (
             false,
             :none,
@@ -1785,6 +1777,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> sum(unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (0,))),
             zeros(UInt8, 8),
         ),
-    )
+    ]
     return test_cases, Any[]
 end

@@ -1357,7 +1357,8 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
 end
 
 function _run_rule_test_cases(rng_ctor, test_cases, memory, mode; is_primitive)
-    # Preserve backing objects for pointer-backed test cases.
+    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
+    # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$mode, $f, $(_typeof(x))" for (
         interface_only, perf_flag, options, f, x...
     ) in test_cases
