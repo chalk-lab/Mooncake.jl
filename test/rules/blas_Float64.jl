@@ -44,6 +44,28 @@
         @test Mooncake.tangent(out) == d
     end
 
+    @testset "guarded accumulation" for P in (Float32, Float64, ComplexF32, ComplexF64),
+        a in (0, 2), outer in (false, true),
+        add in (false, true)
+
+        rng = StableRNG(12)
+        X = outer ? randn(rng, P, 3) : randn(rng, P, 3, 3)
+        Y = outer ? randn(rng, P, 3) : randn(rng, P, 3, 3)
+        TestUtils.test_rule(
+            rng,
+            Mooncake._rvs_muladd!,
+            randn(rng, P, 3, 3),
+            X,
+            Y,
+            P(a),
+            'N',
+            'C',
+            add;
+            mode=Mooncake.ForwardMode,
+            perf_flag=:stability,
+        )
+    end
+
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 end
 
@@ -88,7 +110,11 @@ end
                     BLAS.trsm!,
                     (P<:Complex ? (BLAS.hemv!, BLAS.hemm!, BLAS.herk!) : ())...,
                 )
-                for op in ops, badarg in (1, 2)
+                for op in ops,
+                    badarg in (1, 2),
+                    flags in
+                    (op === BLAS.gemm! ? Iterators.product("NTC", "NTC") : (('L', 'U'),))
+
                     op in (BLAS.syrk!, BLAS.herk!) && badarg==2 && continue
                     lhs=fill(P(badarg==1 ? bad : 1), 3, 3);
                     rhs=fill(P(badarg==2 ? bad : 1), 3, 3)
@@ -103,15 +129,7 @@ end
                             zeros(P, 3),
                         )
                     elseif op in (BLAS.gemm!, BLAS.symm!, BLAS.hemm!)
-                        (
-                            op,
-                            (op===BLAS.gemm! ? ('N', 'N') : ('L', 'U'))...,
-                            zero(P),
-                            lhs,
-                            rhs,
-                            one(P),
-                            zeros(P, 3, 3),
-                        )
+                        (op, flags..., zero(P), lhs, rhs, one(P), zeros(P, 3, 3))
                     elseif op in (BLAS.syrk!, BLAS.herk!)
                         Q=op===BLAS.herk! ? real(P) : P
                         (op, 'U', 'N', zero(Q), lhs, one(Q), zeros(P, 3, 3))
@@ -131,7 +149,7 @@ end
                     else
                         (5, 6)
                     end
-                    @testset "$P $op $bad $badarg" for i in inds
+                    @testset "$P $op $flags $bad $badarg" for i in inds
                         @test all(iszero, Mooncake.tangent(ds[i]))
                     end
                 end
