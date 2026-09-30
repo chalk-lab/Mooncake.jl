@@ -249,7 +249,8 @@ end
                     tmp = only(P(a)' * fill(P(seed), 1, 1) * fill(P(rhs), 1, 1)')
                     op === BLAS.hemm! ? tmp + tmp' - real(tmp) : tmp + tmp - tmp
                 end
-                @test isequal(only(Mooncake.tangent(ds[i])), expected)
+                # Ignore backend-dependent zero signs, keeping all other values exact.
+                @test isequal(only(Mooncake.tangent(ds[i])) + zero(P), expected + zero(P))
             end
         end
 
@@ -322,7 +323,8 @@ end
                 transpose(LowerTriangular(expected)) + UpperTriangular(expected)
             )
             projected[diagind(projected)] .-= diag(expected)
-            @test isequal(Mooncake.tangent(ds[5]), projected)
+            # BLAS and the projection can differ in zero signs (including imaginary parts).
+            @test isequal(Mooncake.tangent(ds[5]) .+ zero(P), projected .+ zero(P))
         end
 
         # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
