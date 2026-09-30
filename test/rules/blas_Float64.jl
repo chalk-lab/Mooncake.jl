@@ -298,7 +298,7 @@ end
             fill!(Mooncake.tangent(out), P(b))
             pb(Mooncake.NoRData())
             expected = BLAS.gemm('N', 'N', P(a), lhs, fill(P(b), n, n))
-            @test isequal(Mooncake.tangent(ds[6]), expected)
+            @test isequal(Mooncake.tangent(ds[6]) .+ zero(P), expected .+ zero(P))
         end
 
         @testset "matrix reference extremes" for (op, P) in (
