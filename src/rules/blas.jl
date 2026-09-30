@@ -1125,19 +1125,15 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
         y_copy = copy(y)
 
+        fast = isone(α) && iszero(β)
         BLAS.$fname(ul, α, A, x, β, y)
 
         function symv!_or_hemv!_adjoint(::NoRData)
-            # dα = <dy, Ax>'
-            if (α == 1 && β == 0)
-                # Don't recompute Ax, it's already in y.
+            if fast
                 dα = _rvs_guarded_dot(y, dy)
                 BLAS.copyto!(y, y_copy)
             else
-                # Reset y.
                 BLAS.copyto!(y, y_copy)
-
-                # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
                 BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
                 dα = _rvs_guarded_dot(y_copy, dy)
             end
@@ -1171,10 +1167,8 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             end
 
             # gradient w.r.t. beta.
-            dβ = dot(y, dy)
-            # Reusing y adds α/β directions to dα in forward-over-reverse; remove them.
-            (α == 1 && β == 0) &&
-                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
+            dβ = _rvs_guarded_dot(y, dy)
+            fast && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -1467,28 +1461,29 @@ end
 
     # Save state and run primal
     p_C_copy = copy(p_C)
-    tmp_ref = Ref{Matrix{T}}()
-
-    if (a == 1 && b == 0)
+    fast = isone(a) && iszero(b)
+    tmp = if fast
         BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
     else
-        tmp = BLAS.gemm(primal(transA), primal(transB), one(T), p_A, p_B)
-        tmp_ref[] = tmp
-        p_C .= a .* tmp .+ _guarded_mul.(p_C, b)
+        BLAS.gemm(primal(transA), primal(transB), one(T), p_A, p_B)
+    end
+    if !fast && iszero(a)
+        BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
+    elseif !fast
+        p_C .= _rvs_mul.(p_C, b) .+ a .* tmp
     end
 
     function gemm!_pb!!(::NoRData)
         # gradient wrt alpha
-        da =
-            (a == 1 && b == 0) ? _rvs_guarded_dot(p_C, dC) : _rvs_guarded_dot(tmp_ref[], dC)
+        da = (a == 1 && b == 0) ? _rvs_guarded_dot(p_C, dC) : _rvs_guarded_dot(tmp, dC)
 
         # Restore state
         BLAS.copyto!(p_C, p_C_copy)
 
         # gradient wrt beta
-        db = dot(p_C, dC)
-        # Reusing p_C adds a/b directions to da in forward-over-reverse; remove them.
-        (a == 1 && b == 0) && (da -= _guarded_mul(db, b') + _guarded_mul(da, a' - one(T)))
+        db = _rvs_guarded_dot(p_C, dC)
+        # At a=1, b=0 these terms vanish but cancel the output's coefficient directions.
+        fast && (da -= _rvs_mul(db, b') + _rvs_mul(da, a' - one(T)))
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1617,20 +1612,21 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         # corresponds to simply multiplying symm(A) and B together, and writing the result to C.
         # This is an extremely common edge case, so it's important to do well for it.
         C_copy = copy(C)
-        tmp_ref = Ref{Matrix{T}}()
-        if (α == 1 && β == 0)
+        fast = isone(α) && iszero(β)
+        tmp = if fast
             BLAS.$fname(primal(side), ul, α, A, B, β, C)
         else
-            tmp = $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
-            tmp_ref[] = tmp
-            C .= _guarded_mul.(tmp, α) .+ _guarded_mul.(C, β)
+            $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
+        end
+        if !fast
+            C .= _rvs_mul.(C, β) .+ _rvs_mul.(tmp, α)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
             dα = if (α == 1 && β == 0)
                 _rvs_guarded_dot(C, dC)
             else
-                _rvs_guarded_dot(tmp_ref[], dC)
+                _rvs_guarded_dot(tmp, dC)
             end
 
             BLAS.copyto!(C, C_copy)
@@ -1657,10 +1653,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.$fname(s, ul, α', $(isherm ? :A : :(conj(A))), dC, one(T), dB)
 
             # gradient w.r.t. beta.
-            dβ = dot(C, dC)
-            # Reusing C adds α/β directions to dα in forward-over-reverse; remove them.
-            (α == 1 && β == 0) &&
-                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
+            dβ = _rvs_guarded_dot(C, dC)
+            # Remove the output's coefficient perturbations from the unscaled product.
+            fast && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. C.
             dC .*= β'

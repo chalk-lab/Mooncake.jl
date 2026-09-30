@@ -253,6 +253,39 @@ end
             end
         end
 
+        @testset "fast coefficient cotangent extremes" for P in (Float64, ComplexF64),
+            op in (
+                BLAS.gemm!,
+                BLAS.symm!,
+                BLAS.symv!,
+                (P <: Complex ? (BLAS.hemm!, BLAS.hemv!) : ())...,
+            ),
+            (a, b, seed, expected) in
+            ((1e200, 1e100, 1e100, Inf), (1e-200, 1e-100, 1e-100, 0.0))
+
+            vector = op in (BLAS.symv!, BLAS.hemv!)
+            flags = if vector
+                ('U',)
+            elseif op === BLAS.gemm!
+                ('N', 'N')
+            else
+                ('L', 'U')
+            end
+            dims = vector ? (1,) : (1, 1)
+            args = (
+                op,
+                flags...,
+                one(P),
+                fill(P(a), 1, 1),
+                fill(P(b), dims),
+                zero(P),
+                zeros(P, dims),
+            )
+            out, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, args)...)
+            fill!(Mooncake.tangent(out), P(seed))
+            @test isequal(pb(Mooncake.NoRData())[length(flags) + 2], P(expected))
+        end
+
         @testset "finite extreme gemm cotangents" for P in (Float64, ComplexF64),
             (a, b) in ((1e200, 1e-200), (1e-200, 1e200)), tA in "NTC", tB in "NTC",
             n in (1, 2, 3, 16)
