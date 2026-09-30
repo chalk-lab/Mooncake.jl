@@ -356,6 +356,7 @@ function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:Bla
 end
 
 # Skip unused operands without losing a live coefficient direction in nested AD.
+# GEMM callers disable `outer` to retain BLAS scaling even at contraction length one.
 # Keep the rank-one loop out of callers; output storage must be disjoint from inputs.
 @noinline function _rvs_muladd!(
     C::AbstractMatrix{T},
@@ -365,12 +366,18 @@ end
     tX::Char,
     tY::Char,
     add::Bool,
+    outer::Bool=true,
 ) where {T<:BlasFloat}
     isempty(C) && return C
     if iszero(α)
         add || fill!(C, zero(T))
-    elseif (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
+    elseif outer && (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
         # Coefficient-first outer products keep finite extremes representable and beat gemm!.
+        # Hoist flag/indexing decisions out of the complex GEMV transpose broadcast.
+        if X isa Transpose{T,<:AbstractVector} && tX == 'C' && tY == 'T' && add
+            C .+= α .* conj.(parent(X)) .* transpose(Y)
+            return C
+        end
         @inbounds for j in axes(C, 2)
             y = tY == 'N' ? Y[1, j] : Y[j, 1]
             tY == 'C' && (y = conj(y))
@@ -396,6 +403,17 @@ end
     Char,
     Bool,
 } where {T<:BlasFloat}
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(_rvs_muladd!),
+    AbstractMatrix{T},
+    AbstractVecOrMat{T},
+    AbstractVecOrMat{T},
+    T,
+    Char,
+    Char,
+    Bool,
+    Bool,
+} where {T<:BlasFloat}
 function frule!!(
     ::Dual{typeof(_rvs_muladd!)},
     C::Dual,
@@ -405,16 +423,18 @@ function frule!!(
     tX::Dual{Char},
     tY::Dual{Char},
     add::Dual{Bool},
+    outer::Dual{Bool}=zero_dual(true),
 )
     c, dc = arrayify(C)
     x, dx = arrayify(X)
     y, dy = arrayify(Y)
     a, da = extract(α)
     tx, ty = primal(tX), primal(tY)
+    # The coefficient direction retains coefficient-first products for extreme HVPs.
     _rvs_muladd!(dc, x, y, da, tx, ty, primal(add))
-    _rvs_muladd!(dc, dx, y, a, tx, ty, true)
-    _rvs_muladd!(dc, x, dy, a, tx, ty, true)
-    _rvs_muladd!(c, x, y, a, tx, ty, primal(add))
+    _rvs_muladd!(dc, dx, y, a, tx, ty, true, primal(outer))
+    _rvs_muladd!(dc, x, dy, a, tx, ty, true, primal(outer))
+    _rvs_muladd!(c, x, y, a, tx, ty, primal(add), primal(outer))
     return C
 end
 
@@ -874,7 +894,7 @@ end
             _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true)
+            @inline _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -1324,18 +1344,18 @@ end
             # A not transposed: C = a*A*op(B) + b*C
             # dA += a' * dC * op(B)'
             Bherm = tB == 'T' ? conj(p_B) : p_B
-            _rvs_muladd!(dA, dC, Bherm, a', 'N', tB == 'N' ? 'C' : 'N', true)
+            _rvs_muladd!(dA, dC, Bherm, a', 'N', tB == 'N' ? 'C' : 'N', true, false)
         elseif tA == 'C'
             # A conjugate transposed: C = a*A'*op(B) + b*C
             # dA += a * op(B) * dC'
-            _rvs_muladd!(dA, p_B, dC, a, tB, 'C', true)
+            _rvs_muladd!(dA, p_B, dC, a, tB, 'C', true, false)
         else  # tA == 'T'
             # A transposed (complex): C = a*A^T*op(B) + b*C
             # dA += conj(a) * conj(op(B)) * transpose(dC)
             if tB == 'N'
-                _rvs_muladd!(dA, conj(p_B), dC, a', 'N', 'T', true)
+                _rvs_muladd!(dA, conj(p_B), dC, a', 'N', 'T', true, false)
             else
-                _rvs_muladd!(dA, p_B, dC, a', tB == 'T' ? 'C' : 'T', 'T', true)
+                _rvs_muladd!(dA, p_B, dC, a', tB == 'T' ? 'C' : 'T', 'T', true, false)
             end
         end
 
@@ -1343,18 +1363,18 @@ end
             # B not transposed: C = a*op(A)*B + b*C
             # dB += a' * op(A)' * dC
             Aherm = tA == 'T' ? conj(p_A) : p_A
-            _rvs_muladd!(dB, Aherm, dC, a', tA == 'N' ? 'C' : 'N', 'N', true)
+            _rvs_muladd!(dB, Aherm, dC, a', tA == 'N' ? 'C' : 'N', 'N', true, false)
         elseif tB == 'C'
             # B conjugate transposed: C = a*op(A)*B' + b*C
             # dB += a * dC' * op(A)
-            _rvs_muladd!(dB, dC, p_A, a, 'C', tA, true)
+            _rvs_muladd!(dB, dC, p_A, a, 'C', tA, true, false)
         else  # tB == 'T'
             # B transposed (complex): C = a*op(A)*B^T + b*C
             # dB += conj(a) * transpose(dC) * conj(op(A))
             if tA == 'N'
-                _rvs_muladd!(dB, dC, conj(p_A), a', 'T', 'N', true)
+                _rvs_muladd!(dB, dC, conj(p_A), a', 'T', 'N', true, false)
             else
-                _rvs_muladd!(dB, dC, p_A, a', 'T', tA == 'T' ? 'C' : 'T', true)
+                _rvs_muladd!(dB, dC, p_A, a', 'T', tA == 'T' ? 'C' : 'T', true, false)
             end
         end
 

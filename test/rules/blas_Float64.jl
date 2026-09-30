@@ -198,6 +198,19 @@ end
             end
         end
 
+        @testset "finite extreme gemm cotangents" for P in (Float64, ComplexF64),
+            (a, b) in ((1e200, 1e-200), (1e-200, 1e200)), tA in "NTC",
+            tB in "NTC"
+
+            lhs, rhs = fill(P(a), 1, 1), fill(P(b), 1, 1)
+            args = (BLAS.gemm!, tA, tB, P(a), lhs, rhs, zero(P), zeros(P, 1, 1))
+            ds = map(Mooncake.zero_fcodual, args)
+            out, pb = Mooncake.rrule!!(ds...)
+            fill!(Mooncake.tangent(out), P(b))
+            pb(Mooncake.NoRData())
+            @test only(Mooncake.tangent(ds[6])) ≈ P(a)
+        end
+
         # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
         for (f, flags, M) in ((BLAS.gemm!, ('N', 'N'), A), (BLAS.symm!, ('L', 'U'), Asym))
             args = (f, flags..., 2.0, copy(M), copy(B), 0.0, copy(nan3))
