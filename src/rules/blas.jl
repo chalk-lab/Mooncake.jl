@@ -425,7 +425,6 @@ end
     add::Bool,
     coefficient_first::Bool,
 ) where {T<:BlasFloat}
-    coefficient_first && isempty(C) && return C
     if iszero(α)
         add || fill!(C, zero(T))
     elseif coefficient_first && (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
@@ -441,6 +440,7 @@ end
             end
         end
     else
+        # Avoid the BLAS wrapper call boundary in tiny GEMM pullbacks.
         @inline BLAS.gemm!(tX, tY, α, X, Y, T(add), C)
     end
     return C
@@ -482,7 +482,7 @@ function frule!!(
         _rvs_muladd!(dc, dx, y, a, tx, ty, true, true)
         _rvs_muladd!(dc, x, dy, a, tx, ty, true, true)
     else
-        # BLAS adds operand directions before the coefficient direction.
+        # Mooncake's BLAS.gemm! frule adds operand directions before the coefficient direction.
         _rvs_muladd!(dc, dx, y, a, tx, ty, primal(add), false)
         _rvs_muladd!(dc, x, dy, a, tx, ty, true, false)
         _rvs_muladd!(dc, x, y, da, tx, ty, true, false)
@@ -947,7 +947,7 @@ end
             _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            @inline _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
+            _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -1897,6 +1897,7 @@ function rrule!!(
         end
         ∇α = _rvs_guarded_dot(M, dB)
         iszero(α) || (∇α /= α')
+        # Keep the zero alpha perturbation live under forward-over-reverse.
         c = iszero(α) ? (trans == 'C' ? α : α') : one(P)
 
         # Increment cotangents.
@@ -2336,6 +2337,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         [
             (false, :stability, nothing, BLAS.nrm2, 2, zeros(P, 2), 1),
+            (flags..., BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1),
             (
                 false,
                 :stability_and_allocs,
