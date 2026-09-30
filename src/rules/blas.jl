@@ -355,6 +355,63 @@ function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:Bla
     return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
 end
 
+# Evaluate the broadcast with the transform's scalar rules, including Base's complex expansion.
+struct _RvsScalar{T<:BlasRealFloat} <: Real
+    dual::Dual{T,T}
+    _RvsScalar(dual::Dual{T,T}) where {T<:BlasRealFloat} = new{T}(dual)
+end
+_RvsScalar(x::T, dx::T) where {T<:BlasRealFloat} = _RvsScalar(Dual(x, dx))
+function _RvsScalar(x::Complex, dx::Complex)
+    return Complex(_RvsScalar(real(x), real(dx)), _RvsScalar(imag(x), imag(dx)))
+end
+for (op, intrinsic) in ((:+, :add_float), (:-, :sub_float), (:*, :mul_float))
+    @eval Base.$op(x::_RvsScalar{T}, y::_RvsScalar{T}) where {T} = _RvsScalar(
+        frule!!(zero_dual(IntrinsicsWrappers.$intrinsic), x.dual, y.dual)
+    )
+end
+function Base.:-(x::_RvsScalar)
+    return _RvsScalar(frule!!(zero_dual(IntrinsicsWrappers.neg_float), x.dual))
+end
+_rvs_extract(x::_RvsScalar) = extract(x.dual)
+function _rvs_extract(x::Complex{<:_RvsScalar})
+    a, da = _rvs_extract(real(x))
+    b, db = _rvs_extract(imag(x))
+    return complex(a, b), complex(da, db)
+end
+
+@inline function _rvs_product(a, x, y)
+    # Inline Base's complex operations on the scalar adapter too.
+    return @inline (a * x) * y
+end
+
+# Specialize the update modes outside the loop so the scalar rules can vectorize.
+function _rvs_vector_frule!(
+    c, dc, x, dx, y, dy, a, da, tx, ty, ::Val{add}, ::Val{zero_a}
+) where {add,zero_a}
+    ad = _RvsScalar(a, da)
+    @inbounds for j in axes(c, 2)
+        cj, dcj = view(c, :, j), view(dc, :, j)
+        yd = ty == 'N' ? _RvsScalar(y[1, j], dy[1, j]) : _RvsScalar(y[j, 1], dy[j, 1])
+        ty == 'C' && (yd = conj(yd))
+        @simd ivdep for i in axes(c, 1)
+            xd = if tx == 'N'
+                _RvsScalar(x[i, 1], dx[i, 1])
+            else
+                _RvsScalar(x[1, i], dx[1, i])
+            end
+            tx == 'C' && (xd = conj(xd))
+            p, v = _rvs_extract(_rvs_product(ad, xd, yd))
+            dcj[i] = add ? dcj[i] + v : v
+            if zero_a
+                add || (cj[i] = zero(a))
+            else
+                cj[i] = add ? cj[i] + p : p
+            end
+        end
+    end
+    return nothing
+end
+
 # Skip unused operands without losing a live coefficient direction in nested AD.
 # Vector callers use coefficient-first products; matrix callers use BLAS scaling.
 # Output storage must be disjoint from inputs.
@@ -372,19 +429,15 @@ end
     if iszero(α)
         add || fill!(C, zero(T))
     elseif coefficient_first && (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
-        # Inlining exposes the specialised broadcast to caller optimisation.
-        if X isa Transpose{T,<:AbstractVector} && tX == 'C' && tY == 'T' && add
-            C .+= α .* conj.(parent(X)) .* transpose(Y)
-            return C
-        end
         @inbounds for j in axes(C, 2)
+            cj = view(C, :, j)
             y = tY == 'N' ? Y[1, j] : Y[j, 1]
             tY == 'C' && (y = conj(y))
             @simd ivdep for i in axes(C, 1)
                 x = tX == 'N' ? X[i, 1] : X[1, i]
                 tX == 'C' && (x = conj(x))
-                v = (α * x) * y
-                C[i, j] = add ? C[i, j] + v : v
+                v = _rvs_product(α, x, y)
+                cj[i] = add ? cj[i] + v : v
             end
         end
     else
@@ -419,7 +472,12 @@ function frule!!(
     y, dy = arrayify(Y)
     a, da = extract(α)
     tx, ty = primal(tX), primal(tY)
-    if primal(coefficient_first)
+    if primal(coefficient_first) && (tx == 'N' ? size(x, 2) : size(x, 1)) == 1
+        add_mode = primal(add) ? Val(true) : Val(false)
+        zero_mode = iszero(a) ? Val(true) : Val(false)
+        _rvs_vector_frule!(c, dc, x, dx, y, dy, a, da, tx, ty, add_mode, zero_mode)
+        return C
+    elseif primal(coefficient_first)
         _rvs_muladd!(dc, x, y, da, tx, ty, primal(add), true)
         _rvs_muladd!(dc, dx, y, a, tx, ty, true, true)
         _rvs_muladd!(dc, x, dy, a, tx, ty, true, true)
