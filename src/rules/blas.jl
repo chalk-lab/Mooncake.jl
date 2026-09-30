@@ -370,6 +370,7 @@ end
     if iszero(α)
         add || fill!(C, zero(T))
     elseif (tX == 'N' ? size(X, 2) : size(X, 1)) == 1
+        # Coefficient-first outer products keep finite extremes representable and beat gemm!.
         @inbounds for j in axes(C, 2)
             y = tY == 'N' ? Y[1, j] : Y[j, 1]
             tY == 'C' && (y = conj(y))
@@ -873,7 +874,7 @@ end
             _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true)
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            _rvs_muladd!(dA, conj.(x), dy, alpha', 'N', 'T', true)
+            _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
