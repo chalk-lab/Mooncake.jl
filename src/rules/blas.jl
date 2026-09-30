@@ -297,7 +297,11 @@ function viewify(
             view(Base.ReshapedArray(parent(z), (length(parent(z)),), ()), pinds)
         end
     end
-    dims = sort!(collect(1:ndims(x)); by=d -> abs(stride(x, d)), rev=true)
+    ranks = ntuple(
+        d -> count(e -> (abs(stride(x, e)), -e) > (abs(stride(x, d)), -d), 1:ndims(x)),
+        Val(ndims(x)),
+    )
+    dims = ntuple(i -> something(findfirst(==(i - 1), ranks)), Val(ndims(x)))
     offset = sum(min.(0, (size(x) .- 1) .* strides(x)))
     steps = Base.size_to_strides(1, size(x)...)
     inds = Vector{Int}(undef, max(n, 0))
