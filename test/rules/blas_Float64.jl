@@ -60,7 +60,8 @@
             P(a),
             'N',
             'C',
-            add;
+            add,
+            outer;
             mode=Mooncake.ForwardMode,
             perf_flag=:stability,
         )
@@ -194,21 +195,52 @@ end
                 fill!(Mooncake.tangent(out), P(seed))
                 pb(Mooncake.NoRData())
                 i = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? 4 : 5
-                @test only(Mooncake.tangent(ds[i])) ≈ (a * seed) * rhs
+                expected = if i == 4
+                    (a * seed) * rhs
+                else
+                    tmp = only(P(a)' * fill(P(seed), 1, 1) * fill(P(rhs), 1, 1)')
+                    op === BLAS.hemm! ? tmp + tmp' - real(tmp) : tmp + tmp - tmp
+                end
+                @test isequal(only(Mooncake.tangent(ds[i])), expected)
             end
         end
 
         @testset "finite extreme gemm cotangents" for P in (Float64, ComplexF64),
-            (a, b) in ((1e200, 1e-200), (1e-200, 1e200)), tA in "NTC",
-            tB in "NTC"
+            (a, b) in ((1e200, 1e-200), (1e-200, 1e200)), tA in "NTC", tB in "NTC",
+            n in (1, 2, 3, 16)
 
-            lhs, rhs = fill(P(a), 1, 1), fill(P(b), 1, 1)
-            args = (BLAS.gemm!, tA, tB, P(a), lhs, rhs, zero(P), zeros(P, 1, 1))
+            lhs, rhs = fill(P(a), n, n), fill(P(b), n, n)
+            args = (BLAS.gemm!, tA, tB, P(a), lhs, rhs, zero(P), zeros(P, n, n))
             ds = map(Mooncake.zero_fcodual, args)
             out, pb = Mooncake.rrule!!(ds...)
             fill!(Mooncake.tangent(out), P(b))
             pb(Mooncake.NoRData())
-            @test only(Mooncake.tangent(ds[6])) ≈ P(a)
+            @test Mooncake.tangent(ds[6]) ≈ fill(P(n * a), n, n)
+        end
+
+        @testset "matrix reference extremes" for (op, P) in (
+                (BLAS.symm!, Float64), (BLAS.hemm!, ComplexF64)
+            ),
+            side in "LR", n in (1, 2, 3, 16),
+            (a, b, c) in (
+                (1e200, 1e-200, 1e200),
+                (1e-200, 1e200, 1e-200),
+                (1e200, 1e200, 1e-200),
+                (1e-200, 1e-200, 1e200),
+            )
+
+            rhs, seed = fill(P(b), n, n), fill(P(c), n, n)
+            args = (op, side, 'U', P(a), ones(P, n, n), rhs, zero(P), zeros(P, n, n))
+            ds = map(Mooncake.zero_fcodual, args)
+            out, pb = Mooncake.rrule!!(ds...)
+            Mooncake.tangent(out) .= seed
+            pb(Mooncake.NoRData())
+            expected = side == 'L' ? P(a)' * seed * rhs' : P(a)' * rhs' * seed
+            projected = Matrix(
+                transpose(LowerTriangular(expected)) + UpperTriangular(expected)
+            )
+            projected[diagind(projected)] .-= diag(expected)
+            @test isequal(Mooncake.tangent(ds[5]), projected)
         end
 
         # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
