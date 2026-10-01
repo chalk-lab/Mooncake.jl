@@ -114,6 +114,30 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log1mlogistic, -P(0.9)),
                 (:allocs, false, logit1mexp, -P(0.6)),
             ]
+            for W in (UnitUpperTriangular, UnitLowerTriangular)
+                x = W(randn(sr(24), P, 2, 2))
+                V = if W === UnitUpperTriangular
+                    UnitLowerTriangular
+                else
+                    UnitUpperTriangular
+                end
+                push!(
+                    cases,
+                    (:none, true, logsumexp, view(x, [2, 1, 2], [2, 1])),
+                    (:none, true, Core.kwcall, (; dims=:), logsumexp, reshape(x, 4)),
+                    (
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims=1),
+                        logsumexp,
+                        Adjoint(view(x, :, :)),
+                    ),
+                    (:none, true, logsumexp!, zeros(P, 1, 2), Transpose(view(x, :, :))),
+                    (:none, true, logsumexp, Diagonal(reshape(x, 4))),
+                    (:none, true, logsumexp, V(view(x, :, :))),
+                )
+            end
             @static if isdefined(LogExpFunctions, :logabstanh)
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(0.3)))
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(1.5)))
@@ -122,6 +146,16 @@ sr(n::Int) = StableRNG(n)
         end...,
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+    end
+
+    @testset "nested unit-triangular reverse rules" begin
+        for W in (UnitUpperTriangular, UnitLowerTriangular)
+            x = W(randn(sr(24), 2, 2))
+            # Forward arrayify throws "Cannot convert Matrix{Float64} to UnitUpperTriangular" here.
+            for V in (UpperTriangular, LowerTriangular)
+                test_rule(sr(123456), logsumexp, V(x); mode=Mooncake.ReverseMode)
+            end
+        end
     end
 
     @testset "zero multipliers and inactive directions" begin
