@@ -444,10 +444,20 @@ end
     x = [2.0, 1.0, 2.0, 1.0]
     v = sign .* [1e308, 0.0, 0.0, -5e307]
     h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
-    expected = if unit == 1
-        [-sign * 1e308, 0.0, 0.0, sign * Inf]
-    else
-        [sign * Inf, 0.0, -sign * Inf, NaN]
+    # The reference pullback uses a plain broadcast for dA. Keep its BLAS calls too:
+    # their complex overflow/accumulation order depends on the platform.
+    project(z) = real(unit) * real(z) + imag(unit) * imag(z)
+    function reference_gradient(x)
+        a, A, b = unit * x[1], fill(unit * x[2], 1, 1), [unit * x[3]]
+        seed = [oftype(unit, x[4])]
+        da = sum(conj.(BLAS.gemv('N', one(unit), A, b)) .* seed)
+        dA = only(a' .* seed .* b')
+        db = only(BLAS.gemv('C', a', A, seed))
+        ds = real(only(BLAS.gemv('N', a, A, b)))
+        return [project(da), project(dA), project(db), ds]
     end
+    expected = tangent(
+        build_frule(reference_gradient, x)(zero_dual(reference_gradient), Dual(x, v))
+    )
     @test isequal(h, expected)
 end
