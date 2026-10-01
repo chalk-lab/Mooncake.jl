@@ -2543,6 +2543,16 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         Yb, ycopied = _partials_block(y_dy)
         n = length(x)
         Xbm, Ybm = reshape(Xb, Nw, n), reshape(Yb, Nw, n)
+        inactive = ntuple(
+            k ->
+                iszero(dαs[k]) &&
+                iszero(dβs[k]) &&
+                (
+                    iszero(α) || (iszero(_block_lane(Ab, k)) && iszero(_block_lane(Xbm, k)))
+                ) &&
+                (iszero(β) || iszero(_block_lane(Ybm, k))),
+            Val(Nw),
+        )
         # 1) β·dy + α·A·dx, β folded in (applied exactly once, first). For the symmetric
         #    case Aᵀ = A, so per-lane `A·dx_k` is one wide side-'R' symm over the lane
         #    matrix (reading only the `ul` triangle, like the primal). The hermitian
@@ -2584,10 +2594,11 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
                 yi = y[i]
                 isnan(yi) && continue
                 for k in 1:Nw
-                    Ybm[k, i] += dβs[k] * yi
+                    Ybm[k, i] += _rvs_mul(yi, dβs[k])
                 end
             end
         end
+        _zero_inactive_partials!(Ybm, inactive)
         ycopied && _write_back_partials!(y_dy, Yb)
         # Primal hoisted after all tangent terms so every lane's `dβ·y` reads the
         # original `y`.
@@ -2700,6 +2711,9 @@ function frule!!(
     Xb, xcopied = _partials_block(x_dx)
     n = length(x)
     Xbm = reshape(Xb, Nw, n)
+    inactive = ntuple(
+        k -> iszero(_block_lane(Ab, k)) && iszero(_block_lane(Xbm, k)), Val(Nw)
+    )
     # Frechet: dx_k := op(A)·dx_k + op(dA_k)·x (+ unit-diag adjustment).
     # 1) op(A)·dx_k for all lanes: right-multiply the lane matrix by op(A)ᵀ — one wide
     #    trmm over the block. Complex 'C' (op(A)ᵀ = conj(A), inexpressible on the right)
@@ -2727,6 +2741,7 @@ function frule!!(
             view(Xbm, k, :) .+= tmp
         end
     end
+    _zero_inactive_partials!(Xbm, inactive)
     xcopied && _write_back_partials!(x_dx, Xb)
     BLAS.trmv!(uplo, trans, diag, A, x)
     return x_dx
@@ -2834,6 +2849,9 @@ function frule!!(
     Xb, xcopied = _partials_block(x_dx)
     n = length(x)
     Xbm = reshape(Xb, Nw, n)
+    inactive = ntuple(
+        k -> iszero(_block_lane(Ab, k)) && iszero(_block_lane(Xbm, k)), Val(Nw)
+    )
     # d(op(A)⁻¹·x) = op(A)⁻¹·(dx − op(dA)·x). op(A)⁻¹ is linear, so the tangent takes one
     # solve of that combined RHS, not separate solves of `dx` and `op(dA)·x`.
     # 1) dx_k −= op(dA_k)·x — skipped when `A` is constant data.
@@ -2860,6 +2878,7 @@ function frule!!(
             BLAS.trsv!(uplo, 'C', diag, A, view(Xbm, k, :))
         end
     end
+    _zero_inactive_partials!(Xbm, inactive)
     xcopied && _write_back_partials!(x_dx, Xb)
     return x_dx
 end
@@ -3214,6 +3233,14 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         Bb, _ = _partials_block(B_dB)
         Cb, ccopied = _partials_block(C_dC)
         m, n = size(C)
+        inactive = ntuple(
+            k ->
+                iszero(dαs[k]) &&
+                iszero(dβs[k]) &&
+                (iszero(α) || (iszero(_block_lane(Ab, k)) && iszero(_block_lane(Bb, k)))) &&
+                (iszero(β) || iszero(_block_lane(Cb, k))),
+            Val(Nw),
+        )
         # 1) β·dC + α·(A⊛dB) (side-dependent product), β folded in (applied exactly once,
         #    first). Side 'R' contracts dB's last axis with A — one flat wide $fname on
         #    the (Nw·m, n) view. Side 'L' right-multiplies each dC slab by Aᵀ: symmetric
@@ -3266,10 +3293,11 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
                 ci = C[li]
                 isnan(ci) && continue
                 for k in 1:Nw
-                    Cbm[k, li] += dβs[k] * ci
+                    Cbm[k, li] += _rvs_mul(ci, dβs[k])
                 end
             end
         end
+        _zero_inactive_partials!(Cb, inactive)
         ccopied && _write_back_partials!(C_dC, Cb)
         BLAS.$fname(primal(side), ul, α, A, B, β, C)
         return C_dC
@@ -3419,6 +3447,14 @@ for (fname, elty, relty) in (
         Cb, ccopied = _partials_block(C_dC)
         nC = size(C, 1)
         Cbm = reshape(Cb, Nw, nC, nC)
+        inactive = ntuple(
+            k ->
+                iszero(dαs[k]) &&
+                iszero(dβs[k]) &&
+                (iszero(α) || iszero(_block_lane(Ab, k))) &&
+                iszero(_block_lane(Cbm, k)),
+            Val(Nw),
+        )
         # 1) β·dC + α·(op(dA)·op(A)' + op(A)·op(dA)') on the `uplo` triangle. The rank-2k
         #    update mixes the lane-varying dA into both factors, so it stays per lane:
         #    gather dA's lane and dC's `uplo` triangle into dense scratches, run the same
@@ -3475,7 +3511,7 @@ for (fname, elty, relty) in (
                     ci = C[i, j]
                     isnan(ci) && continue
                     for k in 1:Nw
-                        Cbm[k, i, j] += dβs[k] * ci
+                        Cbm[k, i, j] += iszero(dβs[k]) ? zero(ci) : dβs[k] * ci
                     end
                 end
             end
@@ -3486,6 +3522,7 @@ for (fname, elty, relty) in (
                 Cbm[k, i, i] = real(Cbm[k, i, i])
             end
         end : :())
+        _zero_inactive_partials!(Cbm, inactive)
         ccopied && _write_back_partials!(C_dC, Cb)
         BLAS.$fname(uplo, primal(_t), α, A, β, C)
         return C_dC
@@ -3584,6 +3621,12 @@ function frule!!(
     Ab, _ = _partials_block(A_dA)
     Bb, bcopied = _partials_block(B_dB)
     m, n = size(B)
+    inactive = ntuple(
+        k ->
+            iszero(dαs[k]) &&
+            (iszero(α) || (iszero(_block_lane(Ab, k)) && iszero(_block_lane(Bb, k)))),
+        Val(Nw),
+    )
     # dB_k := α·(op(A)⊛dB_k) + α·(op(dA_k)⊛B) + dα_k·(op(A)⊛B), the products on `side`.
     # 1) α·(op(A)⊛dB_k) for all lanes, applied first (it overwrites; later terms add).
     #    Side 'R' contracts dB's last axis with op(A) — one flat wide trmm, flags native.
@@ -3609,7 +3652,7 @@ function frule!!(
     #    (and implicit unit diagonal, whose derivative the `diag == 'U'` correction
     #    removes: the stored diagonal never enters the primal, so its partial must not
     #    enter the tangent).
-    if !iszero(Ab)
+    if !iszero(α) && !iszero(Ab)
         R = size(A, 1)
         Abm = reshape(Ab, Nw, R, R)
         Ascr = Matrix{P}(undef, R, R)
@@ -3631,6 +3674,7 @@ function frule!!(
             iszero(dαs[k]) || (view(Bb,k,:,:) .+= dαs[k] .* AopB)
         end
     end
+    _zero_inactive_partials!(Bb, inactive)
     bcopied && _write_back_partials!(B_dB, Bb)
     BLAS.trmm!(primal(_side), uplo, primal(_ta), primal(_diag), α, A, B)
     return B_dB
@@ -3756,6 +3800,10 @@ function frule!!(
     end
     Ab, _ = _partials_block(A_dA)
     m, n = size(B)
+    inactive = ntuple(
+        k -> iszero(dαs[k]) && iszero(_block_lane(Ab, k)) && iszero(_block_lane(Bb, k)),
+        Val(Nw),
+    )
     # Form α·dB + dα·B before the primal overwrites B. With Y = α·op(A)⁻¹⊛B,
     # dY = op(A)⁻¹⊛(α·dB + dα·B − op(dA)⊛Y): no unscaled primal solve is needed.
     @inbounds for j in 1:n, i in 1:m, k in 1:Nw
@@ -3794,6 +3842,7 @@ function frule!!(
             BLAS.trsm!('R', uplo, fA, diag, one(P), Ae, view(Bb,:,:,j))
         end
     end
+    _zero_inactive_partials!(Bb, inactive)
     bcopied && _write_back_partials!(B_dB, Bb)
     return B_dB
 end
@@ -4905,6 +4954,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     return test_cases, memory
 end
 
+_blas_test_copy(f, args...) = f(deepcopy(args)...)
+
 function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     rng = rng_ctor(123)
@@ -5199,6 +5250,47 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
             (false, :allocs, (; mode=ForwardMode), x -> real(dot(x, x)), randn(rng, P, 16)),
         )
     end
+    # Inactive lanes beside a nonfinite operand stay exactly zero.
+    for bad in (P(NaN), P(Inf))
+        A = CoDual(ones(P, 3, 3), ones(P, 3, 3))
+        B = zero_codual(fill(bad, 3, 3))
+        α, x = zero_codual(zero(P)), zero_codual(ones(P, 3))
+        mat = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3, 3),))
+        vec = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3),))
+        if P <: Real
+            C = zero_codual(zeros(P, 3, 3))
+            push!(
+                test_cases,
+                (false, :none, mat, _blas_test_copy, BLAS.gemm!, 'N', 'N', α, A, B, α, C),
+            )
+        end
+        push!(
+            test_cases,
+            (false, :none, mat, _blas_test_copy, BLAS.trmm!, 'L', 'U', 'N', 'U', α, A, B),
+        )
+        for f in (BLAS.trmv!, BLAS.trsv!)
+            push!(test_cases, (false, :none, vec, _blas_test_copy, f, 'U', 'N', 'U', B, x))
+        end
+        one_α, A0 = zero_codual(one(P)), zero_codual(primal(A))
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                mat,
+                _blas_test_copy,
+                BLAS.trsm!,
+                'L',
+                'U',
+                'N',
+                'U',
+                one_α,
+                B,
+                A0,
+            ),
+        )
+    end
+
     return test_cases, memory
 end
 
