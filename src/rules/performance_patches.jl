@@ -342,17 +342,11 @@ function Mooncake.frule!!(
     x2::Lifted{<:AbstractMatrix{T},N},
 ) where {N,T<:BlasFloat}
     pout, dout_s = arrayify(out)
-    px1, dx1_s = arrayify(x1)
-    px2, dx2_s = arrayify(x2)
+    px1, dx1_s = arrayify(x1, Val(:read))
+    px2, dx2_s = arrayify(x2, Val(:read))
     LinearAlgebra._kron!(pout, px1, px2)
     for lane in 1:N
-        _kron!_jvp_lane!(
-            dout_s[lane],
-            px1,
-            _mask_unit_diagonal(dx1_s[lane]),
-            px2,
-            _mask_unit_diagonal(dx2_s[lane]),
-        )
+        _kron!_jvp_lane!(dout_s[lane], px1, dx1_s[lane], px2, dx2_s[lane])
     end
     return out
 end
@@ -454,8 +448,8 @@ function Mooncake.frule!!(
     x1::Lifted{<:AbstractVecOrMat{T},N},
     x2::Lifted{<:AbstractVecOrMat{T},N},
 ) where {N,T<:Union{Float32,Float64}}
-    px1, dx1s = arrayify(x1)
-    px2, dx2s = arrayify(x2)
+    px1, dx1s = arrayify(x1, Val(:read))
+    px2, dx2s = arrayify(x2, Val(:read))
     # Materialise wrappers once to avoid per-element branches; dense matrices pass through.
     mx1 = _kron_densify(px1)
     mx2 = _kron_densify(px2)
@@ -466,13 +460,7 @@ function Mooncake.frule!!(
     bp = Nfwd._block_storage(blk)
     for k in 1:N
         _kron!_jvp_lane_into_block!(
-            bp,
-            k,
-            Val(N),
-            mx1,
-            _kron_densify(_mask_unit_diagonal(dx1s[k])),
-            mx2,
-            _kron_densify(_mask_unit_diagonal(dx2s[k])),
+            bp, k, Val(N), mx1, _kron_densify(dx1s[k]), mx2, _kron_densify(dx2s[k])
         )
     end
     V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)

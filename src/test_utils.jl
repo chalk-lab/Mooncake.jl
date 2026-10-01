@@ -2072,7 +2072,11 @@ _throws_primal(x) = x
 # `@test_throws` cannot express, and it keeps the diagnostic itself under test.
 _throwing_case_expectation(E::Type) = (E, nothing)
 _throwing_case_expectation(msg::Union{AbstractString,Regex}) = (nothing, msg)
-_throwing_case_expectation(E::Tuple{Type,Union{AbstractString,Regex}}) = E
+function _throwing_case_expectation(
+    E::Tuple{Union{Nothing,Type},Union{Nothing,AbstractString,Regex}}
+)
+    E
+end
 
 function _test_rule_throws(
     rng::AbstractRNG,

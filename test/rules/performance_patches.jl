@@ -1,6 +1,23 @@
 @testset "performance_patches" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:performance_patches))
 
+    @testset "nested unit-triangular reads" begin
+        for P in (Float64, Float32),
+            W in (UnitUpperTriangular, UnitLowerTriangular),
+            wrap in (x -> view(x, :, :), x -> reshape(x, 1, 4), Symmetric)
+
+            x, y = wrap(W(zeros(P, 2, 2))), ones(P, 2, 2)
+            for args in ((kron, x, y), (LinearAlgebra._kron!, zero(kron(x, y)), x, y))
+                TestUtils.test_rule(
+                    StableRNG(123),
+                    args...;
+                    mode=wrap === Symmetric ? Mooncake.ForwardMode : nothing,
+                    is_primitive=true,
+                )
+            end
+        end
+    end
+
     # Wrapped Float16 must stay derived because arrayify supports only BlasFloat.
     # Loose tolerances accommodate Float16 finite differences.
     @testset "Float16 wrapped kron! is derived, not an arrayify crash" begin

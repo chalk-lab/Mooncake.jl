@@ -36,10 +36,10 @@
         end
     end
     @testset "zero seeds for symmetric determinant rules" for P in (Float32, Float64),
-        bad in (NaN, Inf),
-        f in (logdet, det, logabsdet)
+        bad in (NaN, Inf), f in (logdet, det, logabsdet),
+        W in (Symmetric, Hermitian)
 
-        S = Symmetric(isnan(bad) ? P[0 bad; bad 1] : P[1 bad; bad bad])
+        S = W(isnan(bad) ? P[0 bad; bad 1] : P[1 bad; bad bad])
         ds = map(Mooncake.zero_fcodual, (f, S))
         _, pb = Mooncake.rrule!!(ds...)
         pb(f === logabsdet ? (zero(P), zero(P)) : zero(P))

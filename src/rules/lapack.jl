@@ -130,9 +130,9 @@ function frule!!(
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     _check_blas_output_alias(LAPACK.trtrs!, primal(B_dB), primal(A_dA))
-    uplo = _lsame_flag(primal(_uplo))
-    trans = _lsame_flag(primal(_trans))
-    diag = _lsame_flag(primal(_diag))
+    uplo = uppercase(primal(_uplo))
+    trans = uppercase(primal(_trans))
+    diag = uppercase(primal(_diag))
     A = primal(A_dA)
     B = primal(B_dB)
     Ab, _ = _partials_block(A_dA)
@@ -141,7 +141,7 @@ function frule!!(
     Bb3 = reshape(Bb, Nw, m, nrhs)
     # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it.
     X = copy(B)
-    LAPACK.trtrs!(uplo, trans, diag, A, X)
+    LAPACK.trtrs!(primal(_uplo), primal(_trans), primal(_diag), A, X)
     # Linearity combines dB − op(dA)·X into one solve. trmm masks the triangle;
     # subtract X for a unit diagonal, whose derivative is zero.
     if !iszero(Ab)
@@ -221,14 +221,14 @@ function frule!!(
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     _check_blas_output_alias(LAPACK.getrs!, primal(B_dB), primal(A_dA))
-    trans = _lsame_flag(primal(_trans))
+    trans = uppercase(primal(_trans))
     ipiv = primal(_ipiv)
     A = primal(A_dA)
     B = primal(B_dB)
     Ab, _ = _partials_block(A_dA)
     Bb, bcopied = _partials_block(B_dB)
     Bbf = reshape(Bb, Nw, :)
-    LAPACK.getrs!(trans, A, ipiv, B)
+    LAPACK.getrs!(primal(_trans), A, ipiv, B)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
     invp = invperm(p)
@@ -434,10 +434,10 @@ end
 function frule!!(
     ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasRealFloat}
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = uppercase(primal(_uplo))
     A = primal(A_dA)
     Ab, acopied = _partials_block(A_dA)
-    _, info = LAPACK.potrf!(uplo, A)
+    _, info = LAPACK.potrf!(primal(_uplo), A)
     N = size(A, 1)
     Abm = reshape(Ab, Nw, N, N)
     # Left and right solves stack lanes differently; at width 1 both layouts share storage.
@@ -576,7 +576,7 @@ function frule!!(
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     _check_blas_output_alias(LAPACK.potrs!, primal(B_dB), primal(A_dA))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = uppercase(primal(_uplo))
     A = primal(A_dA)
     B = primal(B_dB)
     Ab, _ = _partials_block(A_dA)
@@ -584,7 +584,7 @@ function frule!!(
     Bbf = reshape(Bb, Nw, :)
     n = size(A, 1)
     Abm = reshape(Ab, Nw, n, n)
-    LAPACK.potrs!(uplo, A, B)
+    LAPACK.potrs!(primal(_uplo), A, B)
     # dS = dL*L' + L*dL' (or U'dU + dU'U) is symmetric, so Symmetric(buf1)
     # reads it exactly. Reuse dense scratches: BLAS/LAPACK cannot use stride-Nw lanes.
     buf1 = similar(A)
@@ -671,12 +671,12 @@ end
     ) where {Nw,P<:BlasFloat}
         primal(A_dA) === primal(B_dB) ||
             _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
-        uplo = _lsame_flag(primal(_uplo))
+        uplo = uppercase(primal(_uplo))
         B = primal(B_dB)
         A = primal(A_dA)
         Ab, _ = _partials_block(A_dA)
         Bb, bcopied = _partials_block(B_dB)
-        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(B, A, primal(_uplo))
         # Copy whole contiguous lane columns for each selected primal element.
         m, n = size(A)
         Ab3 = reshape(Ab, Nw, size(A)...)
@@ -894,7 +894,9 @@ function rrule!!(
     # logdet dispatches to the primitive above; inv uses differentiable LU. Separate
     # factorizations cost 1.6–2.2x for n=10,50,200; sharing one needs a new primitive.
     ld = logdet(S)
-    Sinv = Matrix(inv(S))
+    # LU rejects nonfinite inputs accepted by the primal. Keep Bunch-Kaufman there;
+    # nested AD on that branch still needs a sytrf! frule.
+    Sinv = (all(isfinite, S) ? Matrix(inv(S)) : Matrix(inv(bunchkaufman(S))))
     function logdet_sym_pb!!(ȳ::P)
         _accum_sym_logdet!(ddata, Sinv, ȳ)
         return NoRData(), NoRData()
@@ -967,7 +969,11 @@ function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:_SymHerm{P}}) where {P<:Bla
     d = det(S)
     # `S̄ += ȳ·adj(S)`, weighted for symmetric storage. Keep the cheap `d·S⁻¹` form off the
     # singular path, where it is `0·Inf`.
-    G, scale = iszero(d) ? (_sym_adjugate(S), one(P)) : (Matrix(inv(S)), d)
+    G, scale = if iszero(d)
+        (_sym_adjugate(S), one(P))
+    else
+        ((all(isfinite, S) ? Matrix(inv(S)) : Matrix(inv(bunchkaufman(S)))), d)
+    end
     function det_sym_pb!!(ȳ::P)
         _accum_sym_logdet!(ddata, G, _rvs_mul(scale, ȳ))
         return NoRData(), NoRData()
@@ -1009,9 +1015,13 @@ function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    # `bunchkaufman`-free, as in `logdet`'s pullback above.
+    # Keep finite inputs differentiable, as in `logdet`'s pullback above.
     ld, s = logabsdet(S)
-    Sinv = iszero(s) ? nothing : Matrix(inv(S))
+    Sinv = if iszero(s)
+        nothing
+    else
+        (all(isfinite, S) ? Matrix(inv(S)) : Matrix(inv(bunchkaufman(S))))
+    end
     function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
         isnothing(Sinv) && return NoRData(), NoRData()
         _accum_sym_logdet!(ddata, Sinv, ȳ[1])

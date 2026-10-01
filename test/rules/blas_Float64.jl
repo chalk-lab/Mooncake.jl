@@ -53,6 +53,31 @@
                 _, parts2 = Mooncake.arrayify(slot)
                 @test parts2[1][i, j] == 1
                 @test all(p -> iszero(p[i, j]), parts2[2:end])
+                fill!(parent(parts[1]), 7)
+                expected = Matrix(parts[1])
+                W === UnitUpperTriangular && (expected = triu(expected, 1))
+                W === UnitLowerTriangular && (expected = tril(expected, -1))
+                _, reads = Mooncake.arrayify(slot, Val(:read))
+                @test reads[1] == expected
+                @test selectdim(first(Mooncake._partials_block(slot)), 1, 1) == expected
+                @test all(==(7), parent(parts[1]))
+                # The mask must also survive wrappers around a unit triangular.
+                for wrap in (
+                    identity,
+                    x -> view(x, :, :),
+                    vec,
+                    transpose,
+                    adjoint,
+                    Symmetric,
+                    Hermitian,
+                    UpperTriangular,
+                    LowerTriangular,
+                )
+                    wrapped = Mooncake.zero_lifted(Val(N), wrap(x))
+                    _, reads = Mooncake.arrayify(wrapped, Val(:read))
+                    @test all(iszero, reads)
+                    @test iszero(first(Mooncake._partials_block(wrapped)))
+                end
             end
         end
     end
@@ -88,6 +113,30 @@
             coefficient_first;
             mode=Mooncake.ForwardMode,
             perf_flag=:stability,
+        )
+    end
+
+    @testset "guarded unit-triangular reads" for W in
+                                                 (UnitUpperTriangular, UnitLowerTriangular),
+        (x, y) in (
+            (view(W(zeros(2, 2)), :, 1:1), view(W(zeros(2, 2)), 1:1, :)),
+            (W(zeros(1, 1)), W(zeros(1, 1))),
+        )
+
+        TestUtils.test_rule(
+            StableRNG(12),
+            Mooncake._rvs_muladd!,
+            zeros(size(x, 1), size(y, 2)),
+            x,
+            y,
+            1.0,
+            'N',
+            'N',
+            false,
+            true;
+            mode=Mooncake.ForwardMode,
+            # Before 1.12, type-only analysis reports dispatch in a generic BLAS branch these inputs never take.
+            perf_flag=VERSION >= v"1.12-" ? :stability : :none,
         )
     end
 
@@ -276,7 +325,7 @@
                     ),
                 )
             end
-            for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+            for f in (P <: Real ? (BLAS.dot, dot) : (BLAS.dotc, BLAS.dotu))
                 push!(cases, (f, nx, x))
             end
             for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...), bad_arg in 1:3

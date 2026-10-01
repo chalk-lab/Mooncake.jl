@@ -1167,17 +1167,20 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
     },
 )
 function frule!!(
-    ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
-    i::Dual{<:_CuSliceIndex},
-    j::Dual{<:_CuSliceIndex},
-    inds::Vararg{Dual{<:_CuSliceIndex}},
-)
+    ::Lifted{typeof(getindex),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    i::Lifted{<:_CuSliceIndex},
+    j::Lifted{<:_CuSliceIndex},
+    inds::Vararg{Lifted{<:_CuSliceIndex}},
+) where {Nw}
     I = map(primal, (i, j, inds...))
     all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
-    px, dx = arrayify(x)
-    return Dual(px[I...], dx[I...])
+    y = primal(x)[I...]
+    x_partials = Nfwd._lane_views(tangent(x))
+    y_partials = ntuple(k -> x_partials[k][I...], Val(Nw))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
+
 function rrule!!(
     ::CoDual{typeof(getindex)},
     x::CoDual{<:CuMaybeComplexArray},

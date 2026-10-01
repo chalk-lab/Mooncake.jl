@@ -32,8 +32,10 @@ foo_throws(e) = throw(e)
         b in (1.0f-30, 1.0f30)
 
         a = 2b
-        dual = Mooncake.frule!!(Dual(f, NoTangent()), Dual(a, 1.0f0), Dual(b, 1.0f0))
-        @test tangent(dual) ≈ (1 - 2) / b
+        dual = Mooncake.frule!!(
+            Mooncake.lift(f, NoTangent()), Mooncake.lift(a, 1.0f0), Mooncake.lift(b, 1.0f0)
+        )
+        @test tangent(dual, 1) ≈ (1 - 2) / b
         _, pullback = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(a), zero_fcodual(b))
         _, da, db = pullback(1.0f0)
         @test da ≈ 1 / b
@@ -44,9 +46,11 @@ foo_throws(e) = throw(e)
         IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast
     )
         dual = Mooncake.frule!!(
-            Dual(f, NoTangent()), Dual(-1.0f0, 3.0f38), Dual(2.0f0, 3.0f38)
+            Mooncake.lift(f, NoTangent()),
+            Mooncake.lift(-1.0f0, 3.0f38),
+            Mooncake.lift(2.0f0, 3.0f38),
         )
-        @test tangent(dual) ≈ 2.25f38
+        @test tangent(dual, 1) ≈ 2.25f38
         _, pullback = Mooncake.rrule!!(
             zero_fcodual(f), zero_fcodual(1.0f30), zero_fcodual(1.0f10)
         )

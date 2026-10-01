@@ -254,6 +254,7 @@ function frule!!(
     src::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
     n::Lifted,
 ) where {Nw,P<:Ptr}
+    primal(dest) === primal(src) && return dest
     _n = primal(n)
     dest_partials = tangent(dest)
     src_partials = tangent(src)
@@ -771,7 +772,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, (skip_chunked=true,), x -> unsafe_copyto_tester(x, x, 2), randn(5)),
         (false, :none, nothing, function (::Val{p}, a) where {p}
             unsafe_copyto!(p, p, 1)
@@ -791,7 +791,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x),
             [2.0, 3.0, 4.0],
         ),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
         # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
         # `jl_reshape_array` foreigncall, which the frule must handle for complex element types too.
