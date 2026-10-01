@@ -763,6 +763,9 @@ function rrule!!(
     X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
         # Choose the zero subgradient at the zero vector to avoid division by zero.
+        # `dy / y` and `X .* (dy / y)` can over- or underflow at extreme finite inputs
+        # although the derivative is representable; a range-safe form needs scaled
+        # accumulation.
         iszero(y) || (dX .+= _rvs_zero.(X .* (dy / y), iszero(dy)))
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -1680,6 +1683,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             else
                 _rvs_muladd!(dA_tmp, B, dC, α', 'C', 'N', false, false)
             end
+            # Doubling the diagonal below can overflow near `floatmax` although the
+            # projected cotangent is representable, and products of opposite-extreme
+            # coefficients and operands follow the fixed BLAS evaluation order.
             if ul == 'L'
                 dA .=
                     (dA .+ LowerTriangular(dA_tmp)) .+
