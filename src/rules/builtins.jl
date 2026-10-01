@@ -207,29 +207,33 @@ end
 @inactive_intrinsic and_int
 @inactive_intrinsic ashr_int
 
-const _PLACEHOLDER_TANGENT_PTR_MSG =
-    "Cannot differentiate a load or store through a `Ptr` whose tangent is the placeholder that " *
-    "the `uninit_*` convention builds from the pointer's own address. There is no derivative " *
-    "buffer behind it, so writing a derivative through it would land in the primal buffer. " *
-    "This arises when a bare `Ptr` reaches AD as a differentiable input; differentiate the " *
-    "underlying array instead, so a real tangent buffer exists."
-
-const _NULL_TANGENT_PTR_MSG =
-    "Cannot differentiate a load or store through a `Ptr` with no tangent storage behind it. " *
-    "The pointer derives from a buffer whose element type is non-differentiable (a " *
-    "`Vector{UInt8}`, say), so no derivative buffer exists to read or write and its tangent " *
-    "pointer is NULL. Reinterpreting such a buffer as a differentiable element type under AD " *
-    "is not supported; allocate it with the differentiable element type instead."
-
 # NULL is safe for empty operations and zero-size tangent elements.
 @inline function _check_tangent_ptr(x, dx, n=1)
     iszero(n) && return nothing
     if dx isa Ptr && _elements_occupy_storage(eltype(dx))
-        iszero(UInt(dx)) && throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
+        if iszero(UInt(dx))
+            msg =
+                "Cannot differentiate a load or store through a `Ptr` with no tangent " *
+                "storage behind it. The pointer derives from a buffer whose element " *
+                "type is non-differentiable (a `Vector{UInt8}`, say), so no derivative " *
+                "buffer exists to read or write and its tangent pointer is NULL. " *
+                "Reinterpreting such a buffer as a differentiable element type under AD " *
+                "is not supported; allocate it with the differentiable element type " *
+                "instead."
+            throw(ArgumentError(msg))
+        end
         # The non-NULL uninit_* placeholder aliases the primal's own bytes.
-        x isa Ptr &&
-            UInt(dx) == UInt(x) &&
-            throw(ArgumentError(_PLACEHOLDER_TANGENT_PTR_MSG))
+        if x isa Ptr && UInt(dx) == UInt(x)
+            msg =
+                "Cannot differentiate a load or store through a `Ptr` whose tangent is " *
+                "the placeholder that the `uninit_*` convention builds from the " *
+                "pointer's own address. There is no derivative buffer behind it, so " *
+                "writing a derivative through it would land in the primal buffer. This " *
+                "arises when a bare `Ptr` reaches AD as a differentiable input; " *
+                "differentiate the underlying array instead, so a real tangent buffer " *
+                "exists."
+            throw(ArgumentError(msg))
+        end
     end
     return nothing
 end
