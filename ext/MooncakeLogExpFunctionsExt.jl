@@ -308,11 +308,11 @@ function frule!!(
     x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual},
 ) where {Nw,P<:BlasFloat}
     kw = primal(kwargs)
-    px, dxs = arrayify(x)
+    px, dxs = arrayify(x, Val(:read))
     y = logsumexp(px; kw...)
     # `dot` conjugates, so keep `sum(dxs .* w)` here (P may be Complex); w is lane-independent.
     w = exp.(px .- y)  # softmax weights, computed once, not per lane
-    tmp = similar(px)  # scratch reused across lanes
+    tmp = similar(w)  # unrestricted scratch reused across lanes
     dy = ntuple(Val(Nw)) do lane
         tmp .= dxs[lane] .* w
         sum(tmp; kw...)
@@ -326,7 +326,7 @@ end
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw}, x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasFloat}
-    px, dxs = arrayify(x)
+    px, dxs = arrayify(x, Val(:read))
     y = logsumexp(px)
     # As above, foldl shares weights across lanes without boxing the accumulator.
     grad = foldl(eachindex(px); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
@@ -341,11 +341,11 @@ function frule!!(
     out::Lifted{<:AbstractArray{P},Nw},
     x::Lifted{<:AbstractArray{P},Nw},
 ) where {Nw,P<:BlasFloat}
-    px, dxs = arrayify(x)
+    px, dxs = arrayify(x, Val(:read))
     y, dys = arrayify(out)
     logsumexp!(y, px)
     w = exp.(px .- y)  # softmax weights, lane-independent — computed once, not per lane
-    tmp = similar(px)  # scratch reused across lanes
+    tmp = similar(w)  # unrestricted scratch reused across lanes
     for lane in 1:Nw
         tmp .= dxs[lane] .* w
         sum!(dys[lane], tmp)

@@ -577,6 +577,8 @@ end
 
 # VoidPtrTangent preserves the erased element type so a Cvoid hop gets the same
 # verdict as direct re-typing; checking primal types alone cannot recover it.
+# Hide NULL values from inference: Julia 1.10 otherwise constant-folds atomic
+# loads through them before the consumer can throw for missing storage.
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
     return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_type(A))
 end
@@ -588,10 +590,19 @@ end
     _tangent_retyping_verdict(
         dx.elt, TB, " (the element type was erased through a `Ptr{Cvoid}`)"
     )
-    return bitcast(Ptr{TB}, dx.p)
+    return if dx.elt === Nothing || _elements_occupy_storage(dx.elt)
+        bitcast(Ptr{TB}, dx.p)
+    else
+        (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
+    end
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx) where {A,B}
-    return bitcast(Ptr{tangent_type(B)}, dx)
+    TB = tangent_type(B)
+    return if _elements_occupy_storage(tangent_type(A))
+        bitcast(Ptr{TB}, dx)
+    else
+        (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
+    end
 end
 
 # Share the verdict between direct re-typing and recovery from Cvoid.
@@ -602,6 +613,7 @@ end
 )
     TA === Nothing && return nothing            # a tangent OBJECT, checked where it was created
     TA === TB && return nothing
+    !_elements_occupy_storage(TA) && return nothing
     isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
     isbitstype(TA) && isbitstype(TB) && sizeof(TA) == sizeof(TB) && return nothing
     why = if TA === NoTangent
@@ -2586,8 +2598,8 @@ function _builtins_throwing_rows()
 
         push!(cases, (err, f, (slot, args...), (; mode=ForwardMode)))
     end
-    # Refuse at re-typing on every version, including 1.10 where NoTangent storage
-    # has a real address rather than the Memory NULL sentinel.
+    # Retyped zero-size storage becomes NULL on every version, including 1.10;
+    # consuming it as differentiable storage must refuse.
     push!(
         cases,
         (
