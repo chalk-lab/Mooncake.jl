@@ -144,7 +144,7 @@ end
         @testset "zero coefficients with NaN cotangents" for P in (
             Float32, Float64, ComplexF32, ComplexF64
         )
-            A, x, y, C = ones(P, 1, 1), ones(P, 1), zeros(P, 1), zeros(P, 1, 1)
+            local A, x, y, C = ones(P, 1, 1), ones(P, 1), zeros(P, 1), zeros(P, 1, 1)
             cases = [
                 ((BLAS.axpy!, 1, zero(P), x, 1, y, 1), 4),
                 ((BLAS.gemv!, 'N', one(P), A, x, zero(P), y), 7),
@@ -244,6 +244,19 @@ end
                 # Ignore backend-dependent zero signs, keeping all other values exact.
                 @test isequal(only(Mooncake.tangent(ds[i])) + zero(P), expected + zero(P))
             end
+        end
+
+        # Nonfinite inputs and overflowing differences need direct cotangent checks.
+        @testset "finite alpha cotangents" for P in (Float64, ComplexF64),
+            op in (BLAS.gemv!, BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...),
+            flag in (op === BLAS.gemv! ? ('N', 'T', 'C') : ('U', 'L')),
+            (a, x, dy, expected) in
+            ((1e308, 2, 1e-308, 1.9999999999999998), (1.0, NaN, 0.0, 0.0))
+
+            args = (op, flag, P(1e-308), fill(P(a), 1, 1), P[x], zero(P), zeros(P, 1))
+            out, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, args)...)
+            fill!(Mooncake.tangent(out), P(dy))
+            @test pb(NoRData())[3] == P(expected)
         end
 
         @testset "fast coefficient cotangent extremes" for P in (Float64, ComplexF64),
