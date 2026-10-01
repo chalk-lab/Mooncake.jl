@@ -66,6 +66,32 @@ end
                 (:none, true, logsumexp, UpperTriangular(randn(sr(20), P, 4, 4))),
                 (:none, true, logsumexp, UnitUpperTriangular(zeros(P, 2, 2))),
                 (:none, true, logsumexp, UnitLowerTriangular(zeros(P, 2, 2))),
+                (
+                    :none,
+                    false,
+                    x -> logsumexp(x; dims=1),
+                    UnitUpperTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    false,
+                    x -> logsumexp(x; dims=2),
+                    UnitLowerTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    zeros(P, 1, 2),
+                    UnitUpperTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    zeros(P, 2, 1),
+                    UnitLowerTriangular(zeros(P, 2, 2)),
+                ),
                 (:none, true, logsumexp, Diagonal(randn(sr(21), P, 4))),
                 (:none, true, logsumexp, Symmetric(randn(sr(22), P, 4, 4))),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
@@ -147,6 +173,8 @@ end
                     ),
                     (:none, true, logsumexp!, zeros(P, 1, 2), Transpose(view(x, :, :))),
                     (:none, true, logsumexp, Diagonal(reshape(x, 4))),
+                    (:none, true, logsumexp, UpperTriangular(x)),
+                    (:none, true, logsumexp, LowerTriangular(x)),
                     (:none, true, logsumexp, V(view(x, :, :))),
                 )
             end
@@ -160,16 +188,6 @@ end
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
     end
 
-    @testset "nested unit-triangular reverse rules" begin
-        for W in (UnitUpperTriangular, UnitLowerTriangular)
-            x = W(randn(sr(24), 2, 2))
-            # Forward arrayify throws "Cannot convert Matrix{Float64} to UnitUpperTriangular" here.
-            for V in (UpperTriangular, LowerTriangular)
-                test_rule(sr(123456), logsumexp, V(x); mode=Mooncake.ReverseMode)
-            end
-        end
-    end
-
     # Assert primitive dispatch only in forward mode; reverse uses derived rules.
     @testset "forward-only primitives" begin
         for P in (Float64, Float32), (f, x) in ((log1psq, P(0.3)), (log2mexp, P(0.1)))
@@ -180,6 +198,21 @@ end
                 perf_flag=:allocs,
                 is_primitive=true,
                 mode=Mooncake.ForwardMode,
+            )
+        end
+    end
+
+    @testset "nested unit-triangular reads" begin
+        for P in (Float64, Float32),
+            W in (UnitUpperTriangular, UnitLowerTriangular),
+            wrap in (x -> view(x, :, :), x -> reshape(x, 4), Symmetric)
+
+            test_rule(
+                sr(123456),
+                logsumexp,
+                wrap(W(zeros(P, 2, 2)));
+                mode=wrap === Symmetric ? Mooncake.ForwardMode : nothing,
+                is_primitive=true,
             )
         end
     end
