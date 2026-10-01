@@ -6,6 +6,7 @@ function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
+    # Keep a NULL tangent NULL: offsetting it would fake tangent storage.
     dx = iszero(UInt(tangent(x))) ? tangent(x) : tangent(x) + primal(y)
     return CoDual(primal(x) + primal(y), dx), NoPullback(f, x, y)
 end
