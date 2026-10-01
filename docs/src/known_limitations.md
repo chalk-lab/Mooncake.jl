@@ -35,6 +35,8 @@ calls. The checks cover both differentiation modes at the legacy `_growbeg!`,
 rules. Forward collection deletion checks run before Base moves elements. Arrays
 on Julia 1.11 and later are unaffected.
 
+`LAPACK.getrf!` differentiation supports square matrices only; both modes reject rectangular inputs before mutation.
+
 ## Overlapping BLAS and LAPACK Operands
 
 Mutating BLAS matrix products and triangular operations, and LAPACK solves, require
