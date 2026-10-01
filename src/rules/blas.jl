@@ -898,7 +898,7 @@ end
     _check_blas_output_alias(BLAS.gemv!, primal(_y), primal(_A), primal(_x))
 
     # Pull out primals and tangents (the latter only where necessary).
-    trans = uppercase(primal(_tA))
+    trans = primal(_tA)
     alpha = _alpha.x
     A, dA = matrixify(_A)
     x, dx = arrayify(_x)
@@ -929,42 +929,61 @@ end
     BLAS.gemv!(trans, alpha, A, x, beta, y)
 
     function gemv!_pb!!(::NoRData)
-
-        # An empty contracted dimension leaves `y` unchanged, independent of the coefficients.
-        if isempty(x)
-            copyto!(y, y_copy)
-            return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
+        if trans == 'n' && stride(A, 2) < 0
+            return _gemv!_pullback(
+                'N',
+                alpha,
+                A,
+                dA,
+                view(x, length(x):-1:1),
+                view(dx, length(dx):-1:1),
+                beta,
+                view(y, length(y):-1:1),
+                view(dy, length(dy):-1:1),
+                view(y_copy, length(y_copy):-1:1),
+            )
         end
+        return _gemv!_pullback(uppercase(trans), alpha, A, dA, x, dx, beta, y, dy, y_copy)
+    end
+    return gemv!_pb!!
+end
 
-        # Reuse the output as scratch before restoring its primal below.
-        dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
+@inline function _gemv!_pullback(
+    trans, alpha::P, A, dA, x, dx, beta, y, dy, y_copy
+) where {P<:BlasFloat}
 
-        # Increment fdata.
-        if trans == 'N'
-            _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true, true)
-            BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
-        elseif trans == 'C' || P <: BlasRealFloat
-            _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
-            BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
-        else
-            _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
-            # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
-            # but BLAS has no "conjugate only" gemv
-            conj!(dx)
-            BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
-            conj!(dx)
-        end
-        dbeta = _rvs_guarded_dot(y_copy, dy)
-        dy .*= beta'
-
-        # Restore primal.
+    # An empty contracted dimension leaves `y` unchanged, independent of the coefficients.
+    if isempty(x)
         copyto!(y, y_copy)
-
-        # Return rdata.
-        return (NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData())
+        return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
     end
 
-    return gemv!_pb!!
+    # Reuse the output as scratch before restoring its primal below.
+    dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
+
+    # Increment fdata.
+    if trans == 'N'
+        _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true, true)
+        BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
+    elseif trans == 'C' || P <: BlasRealFloat
+        _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
+        BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
+    else
+        _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
+        # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
+        # but BLAS has no "conjugate only" gemv
+        conj!(dx)
+        BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
+        conj!(dx)
+    end
+    dbeta = _rvs_guarded_dot(y_copy, dy)
+    dy .*= beta'
+
+    # Restore primal.
+    copyto!(y, y_copy)
+
+    # Return rdata.
+    return (NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData())
 end
 
 # Note that the complex symv are not BLAS but auxiliary functions in LAPACK
@@ -2372,6 +2391,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
             (both_modes..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
             (both_modes..., BLAS.gemv!, 'n', P(2), P[1 2; 3 4], P[1, 2], P(3), P[3, 4]),
+            (
+                both_modes...,
+                BLAS.gemv!,
+                'n',
+                P(2),
+                view(P[1 2; 3 4], :, 2:-1:1),
+                P[1, 2],
+                P(3),
+                P[3, 4],
+            ),
         ],
     )
     for f in (BLAS.trmm!, BLAS.trsm!)
