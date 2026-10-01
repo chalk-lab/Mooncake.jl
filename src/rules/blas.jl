@@ -332,9 +332,44 @@ end
 # Output operands must be disjoint from read-only inputs and their shared tangents.
 @inline function _check_blas_output_alias(f, output, inputs...)
     !isempty(output) &&
-        any(input -> !isempty(input) && Base.mightalias(output, input), inputs) &&
+        any(
+            input ->
+                !isempty(input) &&
+                Base.mightalias(output, input) &&
+                _blas_overlaps(output, input),
+            inputs,
+        ) &&
         _throw_blas_output_alias(f)
     return nothing
+end
+function _blas_overlaps(a, b)
+    wrappers = Union{Transpose,Adjoint,LinearAlgebra.AbstractTriangular,Symmetric,Hermitian}
+    a isa wrappers && return _blas_overlaps(parent(a), b)
+    b isa wrappers && return _blas_overlaps(a, parent(b))
+    sa = sizeof(eltype(a)) .* strides(a)
+    sb = sizeof(eltype(b)) .* strides(b)
+    a0, b0 = Int(pointer(a)), Int(pointer(b))
+    alo = a0 + sum(min.(0, (size(a) .- 1) .* sa))
+    ahi = a0 + sum(max.(0, (size(a) .- 1) .* sa))
+    blo = b0 + sum(min.(0, (size(b) .- 1) .* sb))
+    bhi = b0 + sum(max.(0, (size(b) .- 1) .* sb))
+    (ahi < blo || bhi < alo) && return false
+    length(a) > length(b) && return _blas_overlaps(b, a)
+    dims = abs(stride(b, 1)) >= abs(stride(b, 2)) ? (1, 2) : (2, 1)
+    for i in CartesianIndices(a)
+        offset = a0 + sum((Tuple(i) .- 1) .* sa) - blo
+        0 <= offset <= bhi - blo || continue
+        for d in dims
+            size(b, d) == 1 && continue
+            q, offset = divrem(offset, abs(stride(b, d)) * sizeof(eltype(b)))
+            if q >= size(b, d)
+                offset = -1
+                break
+            end
+        end
+        iszero(offset) && return true
+    end
+    return false
 end
 @noinline function _throw_blas_output_alias(f)
     throw(
@@ -2427,6 +2462,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     rng = rng_ctor(123)
     test_cases = Any[]
+    for cols in (1:2, 1:2:3)
+        output = cols == 1:2 ? (7:8) : (3:4)
+        f =
+            v -> BLAS.gemv!(
+                'N',
+                one(P),
+                view(reshape(v, 2, 4), :, cols),
+                P[1, 2],
+                one(P),
+                view(v, output),
+            )
+        push!(test_cases, (false, :none, nothing, f, P.(1:8)))
+    end
     push!(
         test_cases,
         (
