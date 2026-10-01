@@ -29,3 +29,16 @@ if Base.get_extension(Mooncake, :MooncakeChainRulesExt) !== nothing
         TestUtils.test_rule(rng, f, randn(rng, 3, 3); mode=ReverseMode, is_primitive=false)
     end
 end
+
+# The registry cannot replicate a pinned struct seed into selected lanes.
+@testset "MulAddMul inactive lanes" for P in (Float64, ComplexF64), a in (1, 2), b in (0, 2)
+    p = LinearAlgebra.MulAddMul(P(a), P(b))
+    da = Mooncake._scalar_ndual(P(a), (P(3), ntuple(_ -> zero(P), 7)...))
+    db = Mooncake._scalar_ndual(P(b), (P(5), ntuple(_ -> zero(P), 7)...))
+    d = Mooncake.Lifted{typeof(p),8}(p, Mooncake.ImmutableDual((; alpha=da, beta=db)))
+    for args in ((P(7),), (P(7), P(11)))
+        out = Mooncake.frule!!(d, map(x -> Mooncake.zero_lifted(Val(8), x), args)...)
+        @test tangent(out, 1) == P(length(args) == 1 ? 21 : 76)
+        @test all(k -> iszero(tangent(out, k)), 2:8)
+    end
+end
