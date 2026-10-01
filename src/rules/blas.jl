@@ -150,6 +150,8 @@ function densify_tangent(
         Hermitian,
         Adjoint,
         Transpose,
+        SubArray,
+        ReshapedArray,
     },
 )
     return zeros(eltype(dx), size(dx))
@@ -159,43 +161,74 @@ end
     increment_densified_tangent!!(dx, dense)
 
 Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
-returned `dx` itself, the increment is already complete.
+returned `dx` itself, the increment is already complete. Projection recurses through wrapper
+parents. Callers must allow `dense` to be overwritten.
 """
-increment_densified_tangent!!(::StridedArray, dense) = nothing
-function increment_densified_tangent!!(
-    ::SubArray{T,N,A}, dense
-) where {T,N,A<:StridedArray{T}}
+function increment_densified_tangent!!(dx::StridedArray, dense)
+    dx === dense || (dx .+= dense)
     return nothing
 end
+# Both view methods accumulate repeated indices, via broadcast or the explicit loop.
 function increment_densified_tangent!!(
-    dx::T, dense
-) where {T<:Union{UpperTriangular,LowerTriangular}}
-    parent(dx) .+= T(dense)
+    dx::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    dx === dense || (dx .+= dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::SubArray, dense)
+    # Allocates and sweeps the whole parent; project through the view's indices to avoid this.
+    p = densify_tangent(parent(dx))
+    v = view(p, parentindices(dx)...)
+    for i in eachindex(v, dense)
+        @inbounds v[i] += dense[i]
+    end
+    increment_densified_tangent!!(parent(dx), p)
+    return nothing
+end
+function increment_densified_tangent!!(dx::ReshapedArray, dense)
+    increment_densified_tangent!!(parent(dx), reshape(dense, size(parent(dx))))
+    return nothing
+end
+function increment_densified_tangent!!(dx::Union{UpperTriangular,LowerTriangular}, dense)
+    increment_densified_tangent!!(
+        parent(dx), dx isa UpperTriangular ? UpperTriangular(dense) : LowerTriangular(dense)
+    )
     return nothing
 end
 # Unit-triangular tangents store only the strict triangle; their diagonal is constant.
 function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
     p = parent(dx)
-    for j in axes(dense, 2), i in 1:(j - 1)
-        @inbounds p[i, j] += dense[i, j]
+    if p isa StridedMatrix
+        for j in axes(dense, 2), i in 1:(j - 1)
+            @inbounds p[i, j] += dense[i, j]
+        end
+    else
+        increment_densified_tangent!!(p, triu!(dense, 1))
     end
     return nothing
 end
 function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
     p = parent(dx)
-    for j in axes(dense, 2), i in (j + 1):size(dense, 1)
-        @inbounds p[i, j] += dense[i, j]
+    if p isa StridedMatrix
+        for j in axes(dense, 2), i in (j + 1):size(dense, 1)
+            @inbounds p[i, j] += dense[i, j]
+        end
+    else
+        increment_densified_tangent!!(p, tril!(dense, -1))
     end
     return nothing
 end
 function increment_densified_tangent!!(dx::Diagonal, dense)
-    dx.diag .+= view(dense, diagind(dense))
+    increment_densified_tangent!!(dx.diag, view(dense, diagind(dense)))
     return nothing
 end
 # `Adjoint`/`Transpose` store every entry, just at the transposed position.
-increment_densified_tangent!!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
+function increment_densified_tangent!!(dx::Adjoint, dense)
+    increment_densified_tangent!!(parent(dx), adjoint(dense))
+    return nothing
+end
 function increment_densified_tangent!!(dx::Transpose, dense)
-    parent(dx) .+= transpose(dense)
+    increment_densified_tangent!!(parent(dx), transpose(dense))
     return nothing
 end
 
