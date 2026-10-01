@@ -141,6 +141,37 @@ end
         pb(NoRData())
         @test iszero(only(Mooncake.tangent(ds[4])))
 
+        @testset "zero coefficients with NaN cotangents" for P in (
+            Float32, Float64, ComplexF32, ComplexF64
+        )
+            A, x, y, C = ones(P, 1, 1), ones(P, 1), zeros(P, 1), zeros(P, 1, 1)
+            cases = [
+                ((BLAS.axpy!, 1, zero(P), x, 1, y, 1), 4),
+                ((BLAS.gemv!, 'N', one(P), A, x, zero(P), y), 7),
+                ((BLAS.symv!, 'U', one(P), A, x, zero(P), y), 7),
+                ((BLAS.gemm!, 'N', 'N', one(P), A, copy(A), zero(P), C), 8),
+                ((BLAS.symm!, 'L', 'U', one(P), A, copy(A), zero(P), C), 8),
+                ((BLAS.syrk!, 'U', 'N', one(P), A, zero(P), C), 7),
+            ]
+            if P <: Complex
+                append!(
+                    cases,
+                    [
+                        ((BLAS.hemv!, 'U', one(P), A, x, zero(P), y), 7),
+                        ((BLAS.hemm!, 'L', 'U', one(P), A, copy(A), zero(P), C), 8),
+                        ((BLAS.herk!, 'U', 'N', one(real(P)), A, zero(real(P)), C), 7),
+                    ],
+                )
+            end
+            for (args, i) in cases
+                ds = map(Mooncake.zero_fcodual, deepcopy(args))
+                out, pb = Mooncake.rrule!!(ds...)
+                fill!(Mooncake.tangent(out), P(NaN))
+                pb(NoRData())
+                @test all(iszero, Mooncake.tangent(ds[i]))
+            end
+        end
+
         @testset "zero alpha array cotangents" begin
             local A, N = ones(1, 1), fill(NaN, 1, 1)
             C, Z = ones(ComplexF64, 1, 1), fill(ComplexF64(NaN), 1, 1)
