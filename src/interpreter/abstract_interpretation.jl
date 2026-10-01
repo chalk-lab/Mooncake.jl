@@ -110,23 +110,29 @@ end
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_world_counter(interp)
 else
     CC.get_inference_world(interp::MooncakeInterpreter) = interp.world
-    CC.cache_owner(::MooncakeInterpreter) = nothing
+    # Julia 1.11 tracks foreign CIs too; distinguish them from native inference.
+    CC.cache_owner(::MooncakeInterpreter) =
+        VERSION < v"1.12-" ? MooncakeInterpreter : nothing
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
-@static if VERSION < v"1.12-"
-    # Before 1.12, cache_result! records every interpreter's CodeInstances as native;
-    # suppress Mooncake's pkgimage entries. Julia 1.12+ only records InternalCodeCache results.
+@static if VERSION < v"1.11-"
     function CC.cache_result!(interp::MooncakeInterpreter, result::CC.InferenceResult)
-        tracked = CC.track_newly_inferred.x
-        CC.track_newly_inferred.x = false
-        try
-            @invoke CC.cache_result!(
-                interp::CC.AbstractInterpreter, result::CC.InferenceResult
-            )
-        finally
-            CC.track_newly_inferred.x = tracked
+        # 1.10's `cache_result!` minus its `newly_inferred` push: foreign CIs stay out of
+        # pkgimages without suppressing nested native inference.
+        valid_worlds = result.valid_worlds
+        if CC.last(valid_worlds) == CC.get_world_counter()
+            valid_worlds = CC.WorldRange(CC.first(valid_worlds), typemax(UInt))
         end
+        mi = result.linfo
+        if !CC.already_inferred_quick_test(interp, mi) &&
+            !CC.haskey(CC.WorldView(CC.code_cache(interp), valid_worlds), mi)
+            inferred = CC.transform_result_for_cache(interp, mi, valid_worlds, result)
+            ci = CC.CodeInstance(interp, result, inferred, valid_worlds)
+            CC.setindex!(CC.code_cache(interp), ci, mi)
+        end
+        CC.unlock_mi_inference(interp, mi)
+        return nothing
     end
 end
 
