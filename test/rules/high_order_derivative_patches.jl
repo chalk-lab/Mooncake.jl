@@ -348,6 +348,8 @@ end
 @testset "BLAS coefficient HVPs" begin
     # First-order registry checks cannot detect lost perturbations in a pullback.
     for (op, p, flags, a) in (
+        (BLAS.axpy!, 1.0, (), 0.0),
+        (BLAS.gemv!, 1.0, ('N',), 0.0),
         (BLAS.gemm!, 1.0, ('N', 'N'), 1.0),
         (BLAS.symm!, 1.0, ('L', 'U'), 1.0),
         (BLAS.symv!, 1.0, ('U',), 1.0),
@@ -358,8 +360,10 @@ end
     )
         function f(x)
             A = fill(oftype(p, x[2]), 1, 1)
-            dims = op in (BLAS.symv!, BLAS.hemv!) ? (1,) : (1, 1)
-            args = if op in (BLAS.trmm!, BLAS.trsm!)
+            dims = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? (1,) : (1, 1)
+            args = if op === BLAS.axpy!
+                (1, x[1], [x[2]], 1, [x[3]], 1)
+            elseif op in (BLAS.trmm!, BLAS.trsm!)
                 (oftype(p, x[1]), A, fill(p, dims))
             else
                 (oftype(p, x[1]), A, fill(p, dims), oftype(p, x[3]), fill(p, dims))
