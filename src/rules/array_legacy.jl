@@ -294,6 +294,7 @@ function rrule!!(
 ) where {T,V}
     y = CoDual(
         ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a)),
+        # 1.10 gives zero-size elements a non-null address; NULL marks absent storage.
         if IntrinsicsWrappers._elements_occupy_storage(V)
             ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
         else
