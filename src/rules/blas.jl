@@ -341,17 +341,14 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
 # Output operands must be disjoint from read-only inputs and their shared tangents.
-@inline function _check_blas_output_alias(f, output, inputs...)
+@inline _check_blas_output_alias(f, output) = nothing
+@inline function _check_blas_output_alias(f, output, input, inputs...)
     !isempty(output) &&
-        any(
-            input ->
-                !isempty(input) &&
-                Base.mightalias(output, input) &&
-                _blas_overlaps(output, input),
-            inputs,
-        ) &&
+        !isempty(input) &&
+        Base.mightalias(output, input) &&
+        _blas_overlaps(output, input) &&
         _throw_blas_output_alias(f)
-    return nothing
+    return _check_blas_output_alias(f, output, inputs...)
 end
 function _blas_overlaps(a, b)
     wrappers = Union{Transpose,Adjoint,LinearAlgebra.AbstractTriangular,Symmetric,Hermitian}
@@ -539,11 +536,23 @@ end
 
 # Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
 # In particular, BLAS permits undefined input y wherever β == 0 discards it.
-@inline function _rvs_guarded_dot(y, dy)
+@inline function _rvs_guarded_dot(y, dy, conjugate::Bool=false)
     s = zero(promote_type(eltype(y), eltype(dy)))
     @inbounds @simd for i in eachindex(y, dy)
-        d = dy[i]
+        d = conjugate ? conj(dy[i]) : dy[i]
         s += _rvs_mul(y[i]', d)
+    end
+    return s
+end
+
+@inline function _rvs_guarded_dot(A::AbstractMatrix, x::AbstractVector, dy::AbstractVector)
+    s = zero(promote_type(eltype(A), eltype(x), eltype(dy)))
+    @inbounds for j in axes(A, 2)
+        t = zero(s)
+        @simd for i in axes(A, 1)
+            t += _rvs_mul(A[i, j]', dy[i])
+        end
+        s += _rvs_mul(x[j]', t)
     end
     return s
 end
@@ -1004,8 +1013,14 @@ end
         return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
     end
 
-    # Reuse the output as scratch before restoring its primal below.
-    dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
+    conjdy = trans == 'T' && P <: BlasComplexFloat ? conj.(dy) : dy
+    dalpha = if length(x) == length(y)
+        BLAS.gemv!(trans == 'N' ? 'C' : 'N', one(P), A, conjdy, zero(P), y)
+        d = _rvs_guarded_dot(x, y, trans == 'T' && P <: BlasComplexFloat)
+        isnan(d) ? _rvs_guarded_dot(_trans(trans, A), x, dy) : d
+    else
+        _rvs_guarded_dot(_trans(trans, A), x, dy)
+    end
 
     # Increment fdata.
     if trans == 'N'
@@ -1019,7 +1034,7 @@ end
         # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
         # but BLAS has no "conjugate only" gemv
         conj!(dx)
-        BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
+        BLAS.gemv!('N', alpha, A, conjdy, one(eltype(A)), dx)
         conj!(dx)
     end
     dbeta = _rvs_guarded_dot(y_copy, dy)
@@ -1109,19 +1124,18 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         BLAS.$fname(ul, α, A, x, β, y)
 
         function symv!_or_hemv!_adjoint(::NoRData)
-            # dα = <dy, Ax>'
-            if fast
-                # Don't recompute Ax, it's already in y.
-                dα = _rvs_guarded_dot(y, dy)
-                BLAS.copyto!(y, y_copy)
+            conjdy = T <: BlasRealFloat || $isherm ? dy : conj.(dy)
+            dα = if fast
+                _rvs_guarded_dot(y, dy)
+            elseif all(!iszero, dy)
+                BLAS.$fname(ul, one(T), A, conjdy, zero(T), y)
+                _rvs_guarded_dot(x, y, T <: BlasComplexFloat && !$isherm)
             else
-                # Reset y.
-                BLAS.copyto!(y, y_copy)
-
-                # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
-                BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
-                dα = _rvs_guarded_dot(y_copy, dy)
+                _rvs_guarded_dot(
+                    $(isherm ? Hermitian : Symmetric)(A, ul == 'U' ? :U : :L), x, dy
+                )
             end
+            BLAS.copyto!(y, y_copy)
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
@@ -1147,7 +1161,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
                 # A is symmetric but complex so A' = conj(A)
                 # Instead we compute conj(dx) += α A conj(dy)
                 conj!(dx)
-                BLAS.$fname(ul, α, A, conj.(dy), one(T), dx)
+                BLAS.$fname(ul, α, A, conjdy, one(T), dx)
                 conj!(dx)
             end
 
