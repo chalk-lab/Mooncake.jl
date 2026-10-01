@@ -1015,42 +1015,47 @@ end
     BLAS.gemv!(trans, alpha, A, x, beta, y)
 
     function gemv!_pb!!(::NoRData)
+        return _gemv!_pullback(trans, alpha, A, dA, x, dx, beta, y, dy, y_copy)
+    end
+    return gemv!_pb!!
+end
 
-        # An empty contracted dimension leaves `y` unchanged, independent of the coefficients.
-        if isempty(x)
-            copyto!(y, y_copy)
-            return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
-        end
+@inline function _gemv!_pullback(
+    trans, alpha::P, A, dA, x, dx, beta, y, dy, y_copy
+) where {P<:BlasFloat}
 
-        # Reuse the output as scratch before restoring its primal below.
-        dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
-
-        # Increment fdata.
-        if trans == 'N'
-            _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true, true)
-            BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
-        elseif trans == 'C' || P <: BlasRealFloat
-            _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
-            BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
-        else
-            _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
-            # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
-            # but BLAS has no "conjugate only" gemv
-            conj!(dx)
-            BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
-            conj!(dx)
-        end
-        dbeta = _rvs_guarded_dot(y_copy, dy)
-        dy .*= beta'
-
-        # Restore primal.
+    # An empty contracted dimension leaves `y` unchanged, independent of the coefficients.
+    if isempty(x)
         copyto!(y, y_copy)
-
-        # Return rdata.
-        return (NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData())
+        return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
     end
 
-    return gemv!_pb!!
+    # Reuse the output as scratch before restoring its primal below.
+    dalpha = _rvs_guarded_dot(BLAS.gemv!(trans, one(P), A, x, zero(P), y), dy)
+
+    # Increment fdata.
+    if trans == 'N'
+        _rvs_muladd!(dA, dy, x, alpha', 'N', 'C', true, true)
+        BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
+    elseif trans == 'C' || P <: BlasRealFloat
+        _rvs_muladd!(dA, x, dy, alpha, 'N', 'C', true, true)
+        BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
+    else
+        _rvs_muladd!(dA, transpose(x), dy, alpha', 'C', 'T', true, true)
+        # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
+        # but BLAS has no "conjugate only" gemv
+        conj!(dx)
+        BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
+        conj!(dx)
+    end
+    dbeta = _rvs_guarded_dot(y_copy, dy)
+    dy .*= beta'
+
+    # Restore primal.
+    copyto!(y, y_copy)
+
+    # Return rdata.
+    return (NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData())
 end
 
 # Note that the complex symv are not BLAS but auxiliary functions in LAPACK
