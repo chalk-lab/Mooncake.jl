@@ -276,13 +276,24 @@ end
 
 function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+) where {A<:Transpose{<:BlasFloat}}
+    x = parent(primal(x_dx))
+    dx = _fields(tangent(x_dx)).parent
+    return viewify(n, x_dx isa Dual ? Dual(x, dx) : CoDual(x, dx), incx)
+end
+
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
         xinds = 1:step:(1 + (n - 1) * step)
-        return view(x, xinds), view(dx, xinds)
+        return map((x, dx)) do z
+            v = z isa Array && ndims(z) > 1 ? Base.ReshapedArray(z, (length(z),), ()) : z
+            view(v, xinds)
+        end
     end
     incx > 0 || _throw_no_walk_step(x, incx)
     if x isa SubArray && parent(x) isa Array
@@ -2400,6 +2411,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         [
             (both_modes..., BLAS.nrm2, 2, zeros(P, 2), 1),
+            (
+                false,
+                :stability_and_allocs,
+                nothing,
+                BLAS.nrm2,
+                3,
+                transpose(P[1 2; 3 4]),
+                1,
+            ),
             (flags..., BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1),
             (
                 false,
