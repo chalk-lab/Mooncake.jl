@@ -227,6 +227,7 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
+            # Reverse-only rows are not forward-tested, so skip their forward timing.
             if !(
                 ranges[n] isa NamedTuple &&
                 get(ranges[n], :mode, nothing) === Mooncake.ReverseMode
@@ -336,6 +337,7 @@ function combine_results(result, tag, _range, default_range)
         ReverseDiff=rd_time / primal_time,
         enzyme_time=ez_time,
         Enzyme=ez_time / primal_time,
+        # Options without `lb` (e.g. only `mode`) take the default bounds.
         range=_range === nothing || !haskey(_range, :lb) ? default_range : _range,
     )
 end
@@ -354,6 +356,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :new,
     ]) do s
         test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
+        # Rows that expect an exception have nothing to time.
         filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
@@ -365,6 +368,7 @@ end
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
         test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
+        # Rows that expect an exception have nothing to time.
         filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))

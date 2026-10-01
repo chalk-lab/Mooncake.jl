@@ -293,6 +293,7 @@ function frule!!(
     ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
+    # `arrayify(out)` copies unit-triangular tangents; the fdata form writes through.
     y, _dy = arrayify(primal(out), fdata(tangent(out)))
     logsumexp!(y, _x)
     sum!(_dy, _dx .* exp.(_x .- y))
