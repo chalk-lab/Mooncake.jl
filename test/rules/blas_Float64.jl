@@ -673,3 +673,65 @@ end
     )[1]
     @test isequal(got_b, beta_zero(copy(Cnan), Aone, Bone))
 end
+
+# The registry cannot replicate pinned array seeds or mix active and inactive lanes.
+@testset "BLAS inactive lanes" begin
+    for P in (Float64, Float32, ComplexF64, ComplexF32),
+        bad in (P(NaN), P(Inf)), a in (zero(P), one(P)), which in 1:3,
+        coefficients in (false, true)
+
+        A = fill(which == 1 ? bad : P(2), 3, 3)
+        B = fill(which == 2 ? bad : P(2), 3, 3)
+        C = fill(which == 3 ? bad : P(2), 3, 3)
+        cases = Any[
+            (BLAS.gemm!, 'N', 'N', a, A, B, zero(P), C),
+            (BLAS.gemv!, 'N', a, A, B[:, 1], zero(P), C[:, 1]),
+            (BLAS.symm!, 'L', 'U', a, A, B, zero(P), C),
+            (BLAS.symv!, 'U', a, A, B[:, 1], zero(P), C[:, 1]),
+            (BLAS.syrk!, 'U', 'N', a, A, zero(P), C),
+        ]
+        if P <: Complex
+            append!(
+                cases,
+                [
+                    (BLAS.hemm!, 'L', 'U', a, A, B, zero(P), C),
+                    (BLAS.hemv!, 'U', a, A, B[:, 1], zero(P), C[:, 1]),
+                    (BLAS.herk!, 'U', 'N', real(a), A, zero(real(P)), C),
+                ],
+            )
+        end
+        for f in (BLAS.trmm!, BLAS.trsm!), side in ('L', 'R'), diag in ('N', 'U')
+            push!(cases, (f, side, 'U', 'N', diag, a, A, B))
+        end
+        for f in (BLAS.trmv!, BLAS.trsv!), diag in ('N', 'U')
+            push!(cases, (f, 'U', 'N', diag, A, B[:, 1]))
+        end
+        for args in cases
+            expected = first(args)(deepcopy(args[2:end])...)
+            slots = map(deepcopy(args)) do x
+                d = Mooncake.zero_lifted(Val(8), x)
+                if x isa AbstractArray
+                    if !coefficients || which == 3
+                        lane = coefficients ? 2 : 1
+                        fill!(Mooncake.tangent_view(d, lane), one(eltype(x)))
+                    end
+                elseif x isa Union{AbstractFloat,Complex}
+                    ds = ntuple(k -> k == 1 && coefficients ? one(x) : zero(x), 8)
+                    d = Mooncake.Lifted{typeof(x),8}(x, Mooncake._scalar_ndual(x, ds))
+                end
+                d
+            end
+            reference = if coefficients && which == 3
+                ds = map(d -> Mooncake.lift(deepcopy(primal(d)), tangent(d, 2)), slots)
+                tangent(Mooncake.frule!!(ds...), 1)
+            end
+            out = Mooncake.frule!!(slots...)
+            @test isequal(primal(out), expected)
+            first_inactive = reference === nothing ? 2 : 3
+            @test all(
+                k -> isequal(Mooncake.tangent(out, k), zero(expected)), first_inactive:8
+            )
+            reference === nothing || @test isequal(tangent(out, 2), reference)
+        end
+    end
+end
