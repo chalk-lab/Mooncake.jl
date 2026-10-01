@@ -862,7 +862,7 @@ function rrule!!(
         # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
         # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
         ∇a = _rvs_guarded_dot(X, dY)
-        dX .+= a' .* dY
+        dX .+= _rvs_mul.(dY, a')
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -1023,7 +1023,7 @@ end
         conj!(dx)
     end
     dbeta = _rvs_guarded_dot(y_copy, dy)
-    dy .*= beta'
+    dy .= _rvs_mul.(dy, beta')
 
     # Restore primal.
     copyto!(y, y_copy)
@@ -1156,7 +1156,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             fast && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. y.
-            BLAS.scal!(β', dy)
+            dy .= _rvs_mul.(dy, β')
 
             return (NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData())
         end
@@ -1515,7 +1515,7 @@ end
         end
 
         # Propagate gradient through beta
-        dC .*= b'
+        dC .= _rvs_mul.(dC, b')
 
         return (NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData())
     end
@@ -1647,7 +1647,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             fast && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. C.
-            dC .*= β'
+            dC .= _rvs_mul.(dC, β')
 
             return (
                 NoRData(), NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData()
@@ -1760,7 +1760,7 @@ for (fname, elty, relty) in (
             M1 = B + $(isherm ? adjoint : transpose)(B)
             M2 = $(isherm ? :A : :(conj(A)))
             dA .+= _rvs_mul.(trans == 'N' ? M1 * M2 : M2 * M1, $elty(α'))
-            dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
+            dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ _rvs_mul.(B, $elty(β'))
 
             return (NoRData(), NoRData(), NoRData(), ∇α, NoRData(), ∇β, NoRData())
         end
