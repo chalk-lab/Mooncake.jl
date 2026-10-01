@@ -217,6 +217,7 @@ returned `dx` itself, the increment is already complete. The projection may over
 function increment_densified_tangent!!(dx::StridedArray, dense)
     (dx === dense || (dx .+= dense); nothing)
 end
+# Both view methods accumulate repeated indices, via broadcast or the explicit loop.
 function increment_densified_tangent!!(
     dx::SubArray{T,N,A}, dense
 ) where {T,N,A<:StridedArray{T}}
@@ -234,15 +235,23 @@ end
 # Unit-triangular tangents store only the strict triangle; their diagonal is constant.
 function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
     p = parent(dx)
-    for j in axes(dense, 2), i in 1:(j - 1)
-        @inbounds p[i, j] += dense[i, j]
+    if p isa StridedMatrix
+        for j in axes(dense, 2), i in 1:(j - 1)
+            @inbounds p[i, j] += dense[i, j]
+        end
+    else
+        increment_densified_tangent!!(p, triu!(dense, 1))
     end
     return nothing
 end
 function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
     p = parent(dx)
-    for j in axes(dense, 2), i in (j + 1):size(dense, 1)
-        @inbounds p[i, j] += dense[i, j]
+    if p isa StridedMatrix
+        for j in axes(dense, 2), i in (j + 1):size(dense, 1)
+            @inbounds p[i, j] += dense[i, j]
+        end
+    else
+        increment_densified_tangent!!(p, tril!(dense, -1))
     end
     return nothing
 end
