@@ -203,6 +203,17 @@ end
         end
     end
 
+    @testset "zero seed value with a live seed direction" begin
+        function f(a)
+            B = fill(a, 2, 2)
+            BLAS.gemm!('N', 'N', 1.0, fill(NaN, 2, 2), B, 0.0, zeros(2, 2))
+            C = BLAS.gemm!('N', 'N', 1.0, ones(2, 2), B, 0.0, zeros(2, 2))
+            return (C[1, 1] - 2.0)^2
+        end
+        cache = prepare_hvp_cache(f, 1.0)
+        @test value_and_hvp!!(cache, f, 1.0, 1.0) == (0.0, 0.0, 8.0)
+    end
+
     @testset "BLAS zero coefficients with live perturbations" begin
         fgemm(b) = only(BLAS.gemm!('N', 'N', 2.0, ones(1, 1), ones(1, 1), b, ones(1, 1)))^2
         fsymm(a) = only(BLAS.symm!('L', 'U', a, ones(1, 1), ones(1, 1), 1.0, ones(1, 1)))^2

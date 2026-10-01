@@ -172,6 +172,104 @@ end
             end
         end
 
+        @testset "zero output cotangents with nonfinite operands" for P in (
+                Float32, Float64, ComplexF32, ComplexF64
+            ),
+            bad in (NaN, Inf)
+
+            local A, N = P[2 1; 0 3], fill(P(bad), 2, 2)
+            local x, nx, y, C = ones(P, 2), fill(P(bad), 2), zeros(P, 2), zeros(P, 2, 2)
+            cases = Any[
+                (BLAS.scal!, 2, P(bad), x, 1),
+                (BLAS.axpy!, 2, P(bad), x, 1, y, 1),
+                (BLAS.nrm2, 2, nx, 1),
+            ]
+            for (f, flags, vector) in (
+                    (BLAS.gemm!, ('N', 'N'), false),
+                    (BLAS.symm!, ('L', 'U'), false),
+                    (BLAS.gemv!, ('N',), true),
+                    (BLAS.symv!, ('U',), true),
+                    (
+                        if P <: Complex
+                            ((BLAS.hemm!, ('L', 'U'), false), (BLAS.hemv!, ('U',), true))
+                        else
+                            ()
+                        end
+                    )...,
+                ),
+                bad_arg in 1:4
+
+                push!(
+                    cases,
+                    (
+                        f,
+                        flags...,
+                        bad_arg == 3 ? P(bad) : one(P),
+                        bad_arg == 1 ? N : A,
+                        vector ? (bad_arg == 2 ? nx : x) : (bad_arg == 2 ? N : copy(A)),
+                        bad_arg == 4 ? P(bad) : zero(P),
+                        vector ? y : C,
+                    ),
+                )
+            end
+            for f in (BLAS.trmv!, BLAS.trsv!), lhs in (false, true)
+                push!(cases, (f, 'U', 'N', 'N', lhs ? N : A, lhs ? x : nx))
+            end
+            for f in (BLAS.trmm!, BLAS.trsm!), bad_arg in 1:3
+                push!(
+                    cases,
+                    (
+                        f,
+                        'L',
+                        'U',
+                        'N',
+                        'N',
+                        bad_arg == 3 ? P(bad) : one(P),
+                        bad_arg == 1 ? N : A,
+                        bad_arg == 2 ? N : copy(A),
+                    ),
+                )
+            end
+            for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+                push!(cases, (f, nx, x))
+            end
+            for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...), bad_arg in 1:3
+                R = f === BLAS.herk! ? real(P) : P
+                push!(
+                    cases,
+                    (
+                        f,
+                        'U',
+                        'N',
+                        bad_arg == 2 ? R(bad) : one(R),
+                        bad_arg == 1 ? N : A,
+                        bad_arg == 3 ? R(bad) : zero(R),
+                        C,
+                    ),
+                )
+            end
+            for args in cases
+                ds = map(Mooncake.zero_fcodual, deepcopy(args))
+                rule = if first(args) in (BLAS.dot, BLAS.dotc, BLAS.dotu)
+                    build_rrule(args...)
+                else
+                    rrule!!
+                end
+                out, pb = rule(ds...)
+                scalar = primal(out) isa Number
+                scalar || fill!(Mooncake.tangent(out), zero(P))
+                r = pb(scalar ? zero(primal(out)) : NoRData())
+                @testset "$(first(args))" begin
+                    @test all(
+                        i ->
+                            !(args[i] isa AbstractArray) ||
+                            all(iszero, Mooncake.tangent(ds[i])),
+                        eachindex(args),
+                    ) && all(v -> !(v isa Number) || iszero(v), r)
+                end
+            end
+        end
+
         @testset "zero alpha array cotangents" begin
             local A, N = ones(1, 1), fill(NaN, 1, 1)
             C, Z = ones(ComplexF64, 1, 1), fill(ComplexF64(NaN), 1, 1)
