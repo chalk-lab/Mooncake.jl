@@ -132,6 +132,10 @@ end
 
     @testset "TestCase hvp" begin
         @test_throws ArgumentError TestCase(abs2, 1.0; hvp=(typo=true,))
+        @test_throws ArgumentError TestCase(abs2, 1.0; hvp=(throws=nothing,))
+        @test_throws ArgumentError TestCase(
+            abs2, 1.0; hvp=(throws=ArgumentError, check=:full)
+        )
     end
 
     @testset "has_equal_data" begin

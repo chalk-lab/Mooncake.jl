@@ -1814,6 +1814,7 @@ so fallbacks or the keyword API's default values apply.
   Finite differences use `isapprox` with `rtol=max(1e-5, 10fd_step^2)` when unset.
   Value/gradient agreement with reverse and Hessian agreement with basis HVPs always
   use the `isapprox` defaults. These tolerances are independent of first order.
+- `throws`: assert an exception from HVP preparation; cannot be combined with other HVP options.
 - `first_order=false`: opt into the first-order battery too. Otherwise first-order
   options are refused: `is_primitive`, `mode`, `unsafe_perturb`, `output_tangent`,
   `atol`, `rtol`, `max_fd_step`, `skip_chunked`, `oracle`, `throws`, `chunk_size`,
@@ -1958,9 +1959,18 @@ function _check_hvp(hvp, args, interface_only)
         hvp isa NamedTuple ||
         throw(ArgumentError("hvp must be nothing, true, or a NamedTuple"))
     opts = hvp === true ? (;) : hvp
-    allowed = (:check, :directions, :fd_step, :reference, :cmp, :rtol, :atol, :first_order)
+    allowed = (
+        :check, :directions, :fd_step, :reference, :cmp, :rtol, :atol, :first_order, :throws
+    )
     for key in keys(opts)
         key in allowed || throw(ArgumentError("Unknown hvp option: $key"))
+    end
+    if haskey(opts, :throws)
+        keys(opts) == (:throws,) ||
+            throw(ArgumentError("hvp.throws cannot be combined with other HVP options"))
+        isnothing(opts.throws) &&
+            throw(ArgumentError("hvp.throws needs an exception expectation"))
+        _throwing_case_expectation(opts.throws)
     end
     get(opts, :check, :full) in (:full, :hvp, :reference) ||
         throw(ArgumentError("hvp.check must be :full, :hvp, or :reference"))
@@ -2042,7 +2052,15 @@ function _test_rule_hvp(
     cmp=isequal,
     rtol=nothing,
     atol=0,
+    throws=nothing,
 )
+    if !isnothing(throws)
+        err, msg = _throwing_case_expectation(throws)
+        _test_throws(err, msg) do
+            Mooncake.prepare_hvp_cache(f, x)
+        end
+        return nothing
+    end
     if isnothing(directions)
         v = randn_tangent(rng, x)
         directions = check === :reference ? (v,) : (v, _scale(-1.0, v))
