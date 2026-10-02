@@ -2,7 +2,8 @@ include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
 pin_develop_or_skip(@__DIR__, "FunctionWrappers")
 
 using AllocCheck, FunctionWrappers, JET, Mooncake, StableRNGs, Test
-using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
+using Mooncake.TestUtils:
+    TestCase, test_rule, test_tangent_interface, test_tangent_splitting
 using FunctionWrappers: FunctionWrapper
 
 @testset "function_wrappers" begin
@@ -23,26 +24,16 @@ using FunctionWrappers: FunctionWrapper
     end
 
     # Rule testing.
-    @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
-        (
-            false,
-            :none,
-            false,
-            function (x, y)
-                p = FunctionWrapper{Float64,Tuple{Float64}}(x -> x * y)
-                out = 0.0
-                for _ in 1:1_000
-                    out += p(x)
-                end
-                return out
-            end,
-            5.0,
-            4.0,
-        ),
-        (
-            false,
-            :none,
-            false,
+    test_cases = [
+        TestCase(function (x, y)
+            p = FunctionWrapper{Float64,Tuple{Float64}}(x -> x * y)
+            out = 0.0
+            for _ in 1:1_000
+                out += p(x)
+            end
+            return out
+        end, 5.0, 4.0),
+        TestCase(
             function (x::Vector{Float64}, y::Float64)
                 p = FunctionWrapper{Float64,Tuple{Float64}}(x -> x * y)
                 out = 0.0
@@ -50,35 +41,29 @@ using FunctionWrappers: FunctionWrapper
                     out += p(_x)
                 end
                 return out
-            end,
-            randn(100),
-            randn(),
+            end, randn(100), randn()
         ),
     ]
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+    for (tc, name) in zip(test_cases, Mooncake.TestUtils._test_case_names(test_cases))
+        test_rule(rng, tc; fallbacks=(is_primitive=false,), name)
     end
 
     # `skip_chunked`: a `FunctionWrapperTangent` bakes all N lanes into one `OpaqueClosure`, so
     # per-lane extraction is unsupported at width > 1. Constructing and calling a wrapper are
     # covered at width N by the dedicated testset below; the Nothing-return construction is not,
     # which is a known gap rather than an oversight.
-    @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
-        (
-            false,
-            :none,
-            true,
+    wrapper_case(f, args...; kw...) = TestCase(f, args...; kw..., skip_chunked=true)
+    test_cases = [
+        wrapper_case(FunctionWrapper{Float64,Tuple{Float64}}, sin),
+        wrapper_case(FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
+        wrapper_case(
             FunctionWrapper{
                 Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
             },
             (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
         ),
         # Calling that same Nothing-return wrapper (#1005).
-        (
-            false,
-            :none,
-            true,
+        wrapper_case(
             FunctionWrapper{
                 Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
             }(
@@ -90,7 +75,8 @@ using FunctionWrappers: FunctionWrapper
             0.5,
         ),
     ]
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, skip_chunked=true)
+    for (tc, name) in zip(test_cases, Mooncake.TestUtils._test_case_names(test_cases))
+        test_rule(rng, tc; name)
     end
 
     # The generic per-lane oracle skips FunctionWrapperTangent's opaque width-N captures.
