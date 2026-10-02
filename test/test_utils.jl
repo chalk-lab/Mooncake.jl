@@ -68,6 +68,10 @@ end
         @test_throws "atlo" TestCase(sin, 1.0; atlo=1e-5)
     end
 
+    @testset "TestCase hvp" begin
+        @test_throws ArgumentError TestCase(abs2, 1.0; hvp=(typo=true,))
+    end
+
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
         # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s

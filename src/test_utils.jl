@@ -1711,8 +1711,38 @@ Internal API: a rule test case, with test options in `opts` and benchmark bounds
 in `bench`. Options must belong to `_TEST_RULE_OPTIONS`; `print_results`, `debug_mode`,
 `frule`, and `rrule` belong at the call site instead. `name` overrides the generated
 `f(argument types)` label. `interface_only` and `perf_flag` default to `nothing` (unset),
-so fallbacks or the keyword API's default values apply. `hvp` reserves second-order settings,
-which are not yet supported.
+so fallbacks or the keyword API's default values apply.
+
+`hvp=nothing` disables second order; `true` selects the default battery. A NamedTuple accepts:
+- `check=:full`: value/gradient agreement with reverse mode, central differences of the
+  reverse gradient, and Hessian assembly against basis HVPs for `AbstractVector{<:IEEEFloat}`.
+  `:hvp` skips implicit Hessian assembly; `:reference` checks only supplied references.
+- `directions`: directions for one reused cache; defaults to a random tangent and its
+  negation (`:reference` uses only the random tangent).
+- `fd_step`: defaults to cube-root machine epsilon of the numeric input element type,
+  taking the maximum over tuple/named-tuple components and the Float64 default. Structs
+  and other inputs use the Float64 default; set `fd_step` explicitly for their precision.
+- `reference`: a nonempty NamedTuple with optional `value`, `gradient`, `hvp`, `hessian`.
+  An HVP entry replaces finite differences. Value, gradient, and Hessian
+  entries may be zero-argument functions; an HVP function receives each direction.
+  A non-function HVP reference requires explicit `directions`.
+  A Hessian reference always requests assembly, including under `:hvp` and `:reference`.
+- `cmp=isequal`, `rtol=nothing`, `atol=0`: references use `cmp`, applied per component
+  of tuple results (arrays and other leaves are compared whole). With `cmp=isapprox`,
+  references use these tolerances, with the `isapprox` default for an unset `rtol`.
+  Finite differences use `isapprox` with `rtol=max(1e-5, 10fd_step^2)` when unset.
+  Value/gradient agreement with reverse and Hessian agreement with basis HVPs always
+  use the `isapprox` defaults. These tolerances are independent of first order.
+- `first_order=false`: opt into the first-order battery too. Otherwise first-order
+  options are refused: `is_primitive`, `mode`, `unsafe_perturb`, `output_tangent`,
+  `atol`, `rtol`, `max_fd_step`, `skip_chunked`, `oracle`, `throws`, `chunk_size`,
+  `primal_throws`, `interface_only`, and `perf_flag`. Runner fallbacks may still
+  supply first-order options, which apply only when first order runs, except
+  `interface_only=true`, which is always refused with `hvp`.
+
+An HVP test case must have exactly one argument and a real scalar output, as required by
+Mooncake's public HVP/Hessian APIs. `interface_only=true` is refused. Failed comparisons
+name the key, actual value, and expected value in their testset.
 """
 struct TestCase
     f::Any
@@ -1743,6 +1773,21 @@ struct TestCase
         for key in keys(opts)
             key in _TEST_RULE_OPTIONS ||
                 throw(ArgumentError("Unknown TestCase option: $key"))
+        end
+        if !isnothing(hvp)
+            settings = _check_hvp(hvp, args, something(interface_only, false))
+            if !get(settings, :first_order, false)
+                first_order = (
+                    keys(opts)...,
+                    (isnothing(interface_only) ? () : (:interface_only,))...,
+                    (isnothing(perf_flag) ? () : (:perf_flag,))...,
+                )
+                isempty(first_order) || throw(
+                    ArgumentError(
+                        "hvp-only test case refuses first-order options: $(join(first_order, ", "))",
+                    ),
+                )
+            end
         end
         return new(f, args, name, interface_only, perf_flag, (; opts...), hvp, bench)
     end
@@ -1775,8 +1820,10 @@ Internal API: run a test case through the keyword `test_rule` API. Fallbacks app
 options the test case leaves unset; explicitly set fields and `opts` take precedence.
 Call-site keywords may be supplied through `fallbacks`. First-order modes intersect `mode`,
 the effective test case mode, and `TEST_MODE` (`forward` or `reverse`); excluded modes add no
-tests. `TEST_MODE=hvp` skips first-order test cases. Second-order test cases currently raise
-a "not yet supported" error.
+tests. `TEST_MODE=hvp` runs only second order; `forward` and `reverse` skip second order.
+An `hvp` test case runs first order only when `hvp.first_order=true`. Second order is
+run only when the runner `mode` is `nothing` or `ReverseMode`, independently of the
+test case's first-order mode.
 Each selected mode has a testset prefixed with its mode and labelled by `_test_case_name(tc)`,
 unless the call-site `name` overrides it (for example, to append a collision suffix).
 """
@@ -1787,7 +1834,6 @@ function test_rule(
     fallbacks=(;),
     name=nothing,
 )
-    isnothing(tc.hvp) || throw(ArgumentError("TestCase hvp checks are not yet supported"))
     opts = merge(
         fallbacks,
         isnothing(tc.interface_only) ? (;) : (; tc.interface_only),
@@ -1798,6 +1844,22 @@ function test_rule(
     case_mode in (nothing, ForwardMode, ReverseMode) ||
         throw(ArgumentError("TestCase mode must be nothing, ForwardMode, or ReverseMode"))
     filter = _test_mode_filter()
+    if !isnothing(tc.hvp)
+        get(opts, :interface_only, false) &&
+            throw(ArgumentError("interface_only is not supported with hvp"))
+        hvp = tc.hvp === true ? (;) : tc.hvp
+        if mode in (nothing, ReverseMode) && filter in (nothing, :hvp)
+            @testset "hvp, $(something(name, _test_case_name(tc)))" begin
+                _test_rule_hvp(
+                    rng,
+                    tc.f,
+                    only(tc.args);
+                    Base.structdiff(hvp, (; first_order=nothing))...,
+                )
+            end
+        end
+        get(hvp, :first_order, false) || return nothing
+    end
     primal_throws = get(opts, :primal_throws, false)
     for m in (ForwardMode, ReverseMode)
         mode in (nothing, m) && case_mode in (nothing, m) && filter in (nothing, m) ||
@@ -1810,7 +1872,160 @@ function test_rule(
     return nothing
 end
 
-# TEST_MODE selects a mode; :hvp excludes first-order checks. Unset/other values run both.
+function _check_hvp(hvp, args, interface_only)
+    hvp === true ||
+        hvp isa NamedTuple ||
+        throw(ArgumentError("hvp must be nothing, true, or a NamedTuple"))
+    opts = hvp === true ? (;) : hvp
+    allowed = (:check, :directions, :fd_step, :reference, :cmp, :rtol, :atol, :first_order)
+    for key in keys(opts)
+        key in allowed || throw(ArgumentError("Unknown hvp option: $key"))
+    end
+    get(opts, :check, :full) in (:full, :hvp, :reference) ||
+        throw(ArgumentError("hvp.check must be :full, :hvp, or :reference"))
+    get(opts, :first_order, false) isa Bool ||
+        throw(ArgumentError("hvp.first_order must be a Bool"))
+    interface_only && throw(ArgumentError("interface_only is not supported with hvp"))
+    length(args) == 1 || throw(ArgumentError("hvp requires exactly one argument"))
+    directions = get(opts, :directions, nothing)
+    isnothing(directions) ||
+        (applicable(iterate, directions) && !isempty(directions)) ||
+        throw(ArgumentError("hvp.directions must be a nonempty collection"))
+    step = get(opts, :fd_step, nothing)
+    isnothing(step) ||
+        (step isa Real && isfinite(step) && step > 0) ||
+        throw(ArgumentError("hvp.fd_step must be finite and positive"))
+    for key in (:rtol, :atol)
+        tol = get(opts, key, key === :rtol ? nothing : 0)
+        (key === :rtol && isnothing(tol)) ||
+            (tol isa Real && isfinite(tol) && tol >= 0) ||
+            throw(ArgumentError("hvp.$key must be finite and nonnegative"))
+    end
+    ref = get(opts, :reference, nothing)
+    if !isnothing(ref)
+        ref isa NamedTuple || throw(ArgumentError("hvp.reference must be a NamedTuple"))
+        isempty(ref) && throw(ArgumentError("hvp.reference asserts nothing"))
+        for key in keys(ref)
+            key in (:value, :gradient, :hvp, :hessian) ||
+                throw(ArgumentError("Unknown hvp.reference key: $key"))
+        end
+        if haskey(ref, :hvp) && !(ref.hvp isa Function) && isnothing(directions)
+            throw(
+                ArgumentError(
+                    "A non-function hvp.reference.hvp requires explicit directions"
+                ),
+            )
+        end
+    elseif get(opts, :check, :full) === :reference
+        throw(ArgumentError("hvp.check=:reference needs hvp.reference"))
+    end
+    return opts
+end
+
+function _hvp_compare(cmp, a, b; tolerances...)
+    if a isa Tuple && b isa Tuple
+        return length(a) == length(b) &&
+               all(map((a, b) -> _hvp_compare(cmp, a, b; tolerances...), a, b))
+    end
+    return cmp === isapprox ? isapprox(a, b; tolerances...) : cmp(a, b)
+end
+
+function _hvp_check(key, actual, expected, cmp; tolerances...)
+    matches = _hvp_compare(cmp, actual, expected; tolerances...)
+    if matches
+        @test matches
+    else
+        @testset "$key: actual=$(repr(actual)), expected=$(repr(expected))" begin
+            @test matches
+        end
+    end
+    return nothing
+end
+
+_hvp_fd_step(x) = cbrt(eps(Float64))
+function _hvp_fd_step(
+    x::Union{T,AbstractArray{T}}
+) where {T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+    return cbrt(eps(real(T)))
+end
+_hvp_fd_step(x::Union{Tuple,NamedTuple}) = maximum(_hvp_fd_step, x; init=cbrt(eps(Float64)))
+
+function _test_rule_hvp(
+    rng,
+    f,
+    x;
+    check=:full,
+    directions=nothing,
+    fd_step=nothing,
+    reference=nothing,
+    cmp=isequal,
+    rtol=nothing,
+    atol=0,
+)
+    if isnothing(directions)
+        v = randn_tangent(rng, x)
+        directions = check === :reference ? (v,) : (v, _scale(-1.0, v))
+    end
+    step = Float64(isnothing(fd_step) ? _hvp_fd_step(x) : fd_step)
+    ref_tolerances = isnothing(rtol) ? (; atol) : (; rtol, atol)
+    fd_rtol = isnothing(rtol) ? max(1e-5, 10step^2) : rtol
+    ref = isnothing(reference) ? (;) : reference
+    ref = NamedTuple{keys(ref)}(
+        map(keys(ref), values(ref)) do key, value
+            key !== :hvp && value isa Function ? value() : value
+        end,
+    )
+    cache = Mooncake.prepare_hvp_cache(f, x)
+    reverse_cache = check === :reference ? nothing : Mooncake.prepare_gradient_cache(f, x)
+    assemble =
+        haskey(ref, :hessian) || (check === :full && x isa AbstractVector{<:Base.IEEEFloat})
+    for v in directions
+        value, gradient, hvp = Mooncake.value_and_hvp!!(cache, f, v, x)
+        for (key, actual) in ((:value, value), (:gradient, gradient), (:hvp, hvp))
+            if haskey(ref, key)
+                expected = key === :hvp && ref[key] isa Function ? ref[key](v) : ref[key]
+                _hvp_check(key, actual, expected, cmp; ref_tolerances...)
+            end
+        end
+        if check !== :reference
+            rv, rg = Mooncake.value_and_gradient!!(reverse_cache, f, x)
+            _hvp_check(:value, value, rv, isapprox)
+            _hvp_check(:gradient, gradient, rg[2], isapprox)
+            if !haskey(ref, :hvp)
+                # Preserve cache types and snapshot before the next call reuses storage.
+                plus = _add_to_primal(x, _scale(step, v))
+                minus = _add_to_primal(x, _scale(-step, v))
+                gp = deepcopy(Mooncake.value_and_gradient!!(reverse_cache, f, plus)[2][2])
+                gm = Mooncake.value_and_gradient!!(reverse_cache, f, minus)[2][2]
+                fd = _scale(1 / (2step), increment!!(gp, _scale(-1.0, gm)))
+                _hvp_check(:hvp, hvp, fd, isapprox; rtol=fd_rtol, atol)
+            end
+        end
+    end
+    if assemble
+        hessian_cache = Mooncake.prepare_hessian_cache(f, x)
+        hv, hg, H = Mooncake.value_gradient_and_hessian!!(hessian_cache, f, x)
+        for (key, actual) in ((:value, hv), (:gradient, hg), (:hessian, H))
+            if haskey(ref, key)
+                _hvp_check(key, actual, ref[key], cmp; ref_tolerances...)
+            end
+        end
+        if check === :full
+            rv, rg = Mooncake.value_and_gradient!!(reverse_cache, f, x)
+            _hvp_check(:value, hv, rv, isapprox)
+            _hvp_check(:gradient, hg, rg[2], isapprox)
+            for k in eachindex(x)
+                basis = zero(x)
+                basis[k] = one(eltype(x))
+                _, _, column = Mooncake.value_and_hvp!!(cache, f, basis, x)
+                _hvp_check("hessian column $k", H[:, k], column, isapprox)
+            end
+        end
+    end
+    return nothing
+end
+
+# TEST_MODE selects first or second order; unset/other values run all selected checks.
 function _test_mode_filter()
     m = get(ENV, "TEST_MODE", "")
     m == "forward" && return ForwardMode
@@ -2236,7 +2451,9 @@ end
 
 # Hand-written cases require primitives; derived cases exercise the AD transform.
 function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool)
-    _test_mode_filter() in (nothing, mode) || return nothing
+    selected = _test_mode_filter()
+    (selected in (nothing, mode) || (selected === :hvp && mode === ReverseMode)) ||
+        return nothing
     test_cases, memory = if derived
         test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
             Mooncake.derived_rule_test_cases(rng_ctor, v)
@@ -2256,9 +2473,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 end
 
 function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
-    _filter = _test_mode_filter()
     for m in (mode === nothing ? (ForwardMode, ReverseMode) : (mode,))
-        (_filter === nothing || _filter === m) || continue
         run_rule_test_cases(rng_ctor, v, m, false)
         run_rule_test_cases(rng_ctor, v, m, true)
     end
