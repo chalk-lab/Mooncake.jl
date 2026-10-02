@@ -26,14 +26,12 @@ If all the tests in these functions pass, then you have satisfied the interface.
 
 ## Forward-mode representation interface
 
-The functions above define the *reverse-mode* tangent interface. The forward-mode (`Lifted` /
-`NDual`) representation has a parallel, rule-free contract checked by
-[`Mooncake.TestUtils.test_lifted`](@ref) (with [`Mooncake.TestUtils.test_lifted_type`](@ref) for the
-type-level part) — the forward counterpart of [`Mooncake.TestUtils.test_tangent`](@ref). It verifies,
-at chunk widths 1 and 8, that the forward seed factories produce a coherent slot whose primal aliases
-the input, that every inner dual's `.value` tracks the primal it shadows (the inner-value invariant,
-also checked on rule outputs by the chunked forward path of `test_rule`), and that a reverse tangent
-round-trips through `unlift`/`lift`.
+The functions above define the reverse-mode tangent interface. Custom reverse tangents need
+additional methods to support forward mode; see the
+[forward-mode counterpart](@ref custom-forward-representation).
+[`Mooncake.TestUtils.test_lifted`](@ref) checks forward representations and seed factories at
+chunk widths 1 and 8. [`Mooncake.TestUtils.test_lifted_type`](@ref) checks their type-level
+contract. Use [`Mooncake.TestUtils.test_rule`](@ref) separately to check differentiation rules.
 
 The forward-mode slot type itself:
 
