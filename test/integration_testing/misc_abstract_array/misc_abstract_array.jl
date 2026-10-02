@@ -4,35 +4,35 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using LinearAlgebra, Mooncake, Random, StableRNGs, Test
 using Mooncake: ForwardMode, ReverseMode
-using Mooncake.TestUtils: test_rule
+using Mooncake.TestUtils: TestCase, test_rule
 
 @testset "misc_abstract_array" begin
-    @testset for (interface_only, f, x...) in vcat(
+    test_cases = vcat(
         [
-            (false, getindex, randn(5), 4),
-            (false, getindex, randn(5, 4), 1, 3),
-            (false, setindex!, randn(5), 4.0, 3),
-            (false, setindex!, randn(5, 4), 3.0, 1, 3),
-            (false, x -> getglobal(Main, :sin)(x), 5.0),
-            (false, x -> (Base.pointerset(pointer(x), UInt8(3), 2, 1); x), rand(UInt8, 5)),
-            (false, x -> Ref(x)[], 5.0),
-            (false, view, randn(5, 4), 1, 1),
-            (false, view, randn(5, 4), 2:3, 1),
-            (false, view, randn(5, 4), 1, 2:3),
-            (false, view, randn(5, 4), 2:3, 2:4),
-            (true, Array{Float64,1}, undef, (1,)),
-            (true, Array{Float64,2}, undef, (2, 3)),
-            (true, Array{Float64,3}, undef, (2, 3, 4)),
-            (false, Array{Vector{Float64},1}, undef, (1,)),
-            (false, Array{Vector{Float64},2}, undef, (2, 3)),
-            (false, Array{Vector{Float64},3}, undef, (2, 3, 4)),
-            (false, push!, randn(5), 3.0),
-            (false, x -> (a=x, b=x), 5.0),
+            TestCase(getindex, randn(5), 4),
+            TestCase(getindex, randn(5, 4), 1, 3),
+            TestCase(setindex!, randn(5), 4.0, 3),
+            TestCase(setindex!, randn(5, 4), 3.0, 1, 3),
+            TestCase(x -> getglobal(Main, :sin)(x), 5.0),
+            TestCase(x -> (Base.pointerset(pointer(x), UInt8(3), 2, 1); x), rand(UInt8, 5)),
+            TestCase(x -> Ref(x)[], 5.0),
+            TestCase(view, randn(5, 4), 1, 1),
+            TestCase(view, randn(5, 4), 2:3, 1),
+            TestCase(view, randn(5, 4), 1, 2:3),
+            TestCase(view, randn(5, 4), 2:3, 2:4),
+            TestCase(Array{Float64,1}, undef, (1,); interface_only=true),
+            TestCase(Array{Float64,2}, undef, (2, 3); interface_only=true),
+            TestCase(Array{Float64,3}, undef, (2, 3, 4); interface_only=true),
+            TestCase(Array{Vector{Float64},1}, undef, (1,)),
+            TestCase(Array{Vector{Float64},2}, undef, (2, 3)),
+            TestCase(Array{Vector{Float64},3}, undef, (2, 3, 4)),
+            TestCase(push!, randn(5), 3.0),
+            TestCase(x -> (a=x, b=x), 5.0),
         ],
-        map(n -> (false, map, sin, (randn(n)...,)), 1:7),
-        map(n -> (false, map, sin, randn(n)), 1:7),
-        map(n -> (false, x -> sin.(x), (randn(n)...,)), 1:7),
-        map(n -> (false, x -> sin.(x), randn(n)), 1:7),
+        map(n -> TestCase(map, sin, (randn(n)...,)), 1:7),
+        map(n -> TestCase(map, sin, randn(n)), 1:7),
+        map(n -> TestCase(x -> sin.(x), (randn(n)...,)), 1:7),
+        map(n -> TestCase(x -> sin.(x), randn(n)), 1:7),
         vec(
             map(
                 Iterators.product(
@@ -62,7 +62,7 @@ using Mooncake.TestUtils: test_rule
                     ],
                 ),
             ) do (A, B, C)
-                (false, mul!, A, B, C, randn(), randn())
+                TestCase(mul!, A, B, C, randn(), randn())
             end,
         ),
         vec(
@@ -91,29 +91,30 @@ using Mooncake.TestUtils: test_rule
                 ),
             ) do (B, C)
                 A = randn(3, 3)
-                (false, mul!, A, B, C, randn(), randn())
+                TestCase(mul!, A, B, C, randn(), randn())
             end,
         ),
     )
-        @info "$(typeof((f, x...)))"
-        test_rule(StableRNG(123456), f, x...; interface_only, is_primitive=false)
-    end
-
-    # Raw-pointer cases, split out because the tuples above carry no options slot.
-    # A pointer cannot address one lane of the element-major partials block, which stores each
-    # lane with stride N, so these are width-1 only.
-    @testset "raw pointer, width 1 only" for (f, x...) in [
-        ((v, x) -> (Base.pointerset(pointer(x), v, 2, 1); x), 3.0, randn(5)),
-        (x -> unsafe_load(Base.unsafe_convert(Ptr{Float64}, x)), randn(5)),
-    ]
-        test_rule(
-            StableRNG(123456),
-            f,
-            x...;
-            interface_only=false,
-            is_primitive=false,
-            skip_chunked=true,
-        )
+    # A pointer cannot address a strided lane in the element-major block.
+    append!(
+        test_cases,
+        [
+            TestCase(
+                (v, x) -> (Base.pointerset(pointer(x), v, 2, 1); x),
+                3.0,
+                randn(5);
+                skip_chunked=true,
+            ),
+            TestCase(
+                x -> unsafe_load(Base.unsafe_convert(Ptr{Float64}, x)),
+                randn(5);
+                skip_chunked=true,
+            ),
+        ],
+    )
+    for (tc, name) in zip(test_cases, Mooncake.TestUtils._test_case_names(test_cases))
+        @info name
+        test_rule(StableRNG(123456), tc; fallbacks=(is_primitive=false,), name)
     end
 
     # Reading a value back through its OWN object address is refused in forward mode at every
