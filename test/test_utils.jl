@@ -130,6 +130,18 @@ end
         @test_throws "atlo" TestCase(sin, 1.0; atlo=1e-5)
     end
 
+    @testset "reference lanes preserve shared seed values" begin
+        a = [2.0]
+        x = (CoDual(+, NoTangent()), CoDual(a, [1.0]), CoDual(a, [1.0]))
+        reference = (lanes=((seed=(NoTangent(), [1.0], [1.0]), value=[2.0]),),)
+        slots = TestUtils._reference_lane_seeds(sr(1), x, reference, Val(1))
+        @test tangent(slots[2], 1) == tangent(slots[3], 1) == [1.0]
+        conflicting = (lanes=((seed=(NoTangent(), [1.0], [2.0]), value=[3.0]),),)
+        @test_throws "conflicting tangent values" TestUtils._reference_lane_seeds(
+            sr(1), x, conflicting, Val(1)
+        )
+    end
+
     @testset "TestCase hvp" begin
         @test_throws ArgumentError TestCase(abs2, 1.0; hvp=(typo=true,))
         @test_throws ArgumentError TestCase(abs2, 1.0; hvp=(throws=nothing,))
@@ -393,7 +405,8 @@ end
     end
 
     @testset "a pinned tangent spreads over distinct lanes" begin
-        # Identical directions would let broadcasting lane 1 pass the comparison with each width-1 result.
+        # Identical directions would let broadcasting lane 1 pass the comparison with each
+        # width-1 result.
         lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
         p = lanes(CoDual(2.0, 1.5), 8).partials
         @test p[1] == 1.5                      # lane 1 is the pin exactly
@@ -742,7 +755,7 @@ end
                     @test reference_result_count(captured, Test.Error) == 0
                 end
             end
-            for reference in (nothing, (deriv=4.0,))
+            for reference in (nothing, (deriv=4.0,), (value=4.0,))
                 captured = @testset ReferenceTestSet "independent width-1 check" begin
                     test_rule(
                         Xoshiro(1),
