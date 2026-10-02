@@ -787,6 +787,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_copyto!(p, p, 1)
             return a * a
         end, Val(ptr_a), 3.0),
+        # Forward overlapping copies require raw array pointers, unsupported at chunk width > 1.
         TestCase(
             (x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x)),
             [2.0, 3.0, 4.0];

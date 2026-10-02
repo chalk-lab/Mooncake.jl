@@ -3929,7 +3929,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
-    flags = (; perf_flag=:stability, mode=ReverseMode)
     both_modes = (; perf_flag=:stability)
     for n in (0, 1)
         x, y = view(P[3], 1:2:1), view(P[2], 1:2:1)
@@ -3937,8 +3936,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             test_cases,
             [
                 TestCase(BLAS.nrm2, n, x, 1; both_modes...),
-                TestCase(BLAS.scal!, n, P(2), x, 1; flags...),
-                TestCase(BLAS.axpy!, n, P(2), x, 1, y, 1; flags...),
+                TestCase(BLAS.scal!, n, P(2), x, 1; both_modes...),
+                TestCase(BLAS.axpy!, n, P(2), x, 1, y, 1; both_modes...),
             ],
         )
     end
@@ -3949,8 +3948,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             TestCase(
                 BLAS.nrm2, 3, transpose(P[1 2; 3 4]), 1; perf_flag=:stability_and_allocs
             ),
+            # Forward axpy! cannot walk a transposed matrix operand in raw-memory order.
             TestCase(
-                BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1; flags...
+                BLAS.axpy!,
+                3,
+                P(2),
+                transpose(P[1 2; 3 4]),
+                1,
+                zeros(P, 3),
+                1;
+                both_modes...,
+                mode=ReverseMode,
             ),
             TestCase(
                 BLAS.nrm2,
@@ -3959,8 +3967,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 1;
                 perf_flag=:stability_and_allocs,
             ),
-            TestCase(BLAS.nrm2, 2, view(P[9 9; 3 4; 9 9], 2:-1:1, :), 3; flags...),
-            TestCase(BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1; flags...),
+            TestCase(BLAS.nrm2, 2, view(P[9 9; 3 4; 9 9], 2:-1:1, :), 3; both_modes...),
+            TestCase(BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1; both_modes...),
             TestCase(
                 BLAS.axpy!,
                 2,
@@ -3969,10 +3977,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 1,
                 view(zeros(P, 3, 2), 1:2, :),
                 1;
-                flags...,
+                both_modes...,
             ),
-            TestCase(BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2; flags...),
-            TestCase(BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2; flags...),
+            TestCase(BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2; both_modes...),
+            TestCase(BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2; both_modes...),
             TestCase(
                 BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2); both_modes...
             ),
@@ -3994,7 +4002,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     for f in (BLAS.trmm!, BLAS.trsm!)
         push!(
             test_cases,
-            TestCase(f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2); flags...),
+            TestCase(
+                f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2); both_modes...
+            ),
         )
     end
     flags = (; mode=ReverseMode, throws=(ArgumentError, "does not support operand"))
@@ -4462,7 +4472,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # BLAS LEVEL 1
     #
 
-    push!(test_cases, TestCase((x -> dot(x, x)), P[]; mode=ReverseMode))
+    # Forward empty complex dot hits pointer guards: chunk width > 1 on 1.10, empty storage on 1.12.
+    empty_dot_opts = P <: Complex ? (; mode=ReverseMode) : (;)
+    push!(test_cases, TestCase((x -> dot(x, x)), P[]; empty_dot_opts...))
 
     # dot (real types only)
     if P <: BlasRealFloat
@@ -4522,12 +4534,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     end
 
     # nrm2
-    push!(
-        test_cases,
-        TestCase(
-            (A -> BLAS.nrm2(2, view(A, 1:2, :), 1)), P[3 0; 4 0; 9 0]; mode=ReverseMode
-        ),
-    )
+    push!(test_cases, TestCase((A -> BLAS.nrm2(2, view(A, 1:2, :), 1)), P[3 0; 4 0; 9 0]))
     push!(test_cases, TestCase(BLAS.nrm2, randn(rng, P, 105)))
 
     #
