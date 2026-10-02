@@ -51,6 +51,12 @@ At width one, `lift(p, dp)` and `unlift(x)` convert to and from a primal and an
 ordinary Mooncake tangent. For arrays, `arrayify(x)` returns the primal and a tuple
 of writable lane views.
 
+Array, Memory, MemoryRef, and Ref factories select numeric or structural storage
+through `_storage_kind` before dispatching to their implementations.
+`Union{}`-element storage uses the structural representation: bottom is a subtype
+of every numeric type, but has no values or numeric partials. Its container shape
+is preserved, including when nested inside tuples or structs.
+
 ### Testing
 
 Suppose that we have (somehow) produced a supposed forwards-rule. To check that it is correctly implemented, we must ensure that

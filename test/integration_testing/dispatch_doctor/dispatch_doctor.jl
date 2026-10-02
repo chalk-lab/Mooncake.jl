@@ -33,6 +33,7 @@ function skip_instability_check(::Type{T}) where {T}
         (fieldcount(T) > 16 || any(skip_instability_check, fieldtypes(T)))
     )
 end
+skip_instability_check(::Type{Union{}}) = false
 function skip_instability_check(::Type{<:Tangent{Tfields}}) where {Tfields}
     skip_instability_check(Tfields)
 end

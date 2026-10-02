@@ -449,7 +449,18 @@ end
             end
         end
 
-        @testset "@from_chainrules width>1 unsupported result errors loudly" begin
+        @testset "@from_chainrules result shapes" begin
+            xs = Any[Union{}[]]
+            @static if VERSION >= v"1.11-"
+                push!(xs, Memory{Union{}}(undef, 0))
+            end
+            for x in xs, N in (1, 8)
+                @test Mooncake._lift_from_lanes(x, ntuple(_ -> x, N)) ==
+                    Mooncake.zero_lifted(Val(N), x)
+            end
+            @test_throws ArgumentError Mooncake._lift_from_lanes(
+                Vector{Float64}[], (Vector{Float64}[], Vector{Float64}[])
+            )
             # NamedTuple works via width-1 `lift` but needs a clear wider-width error.
             @test_throws ArgumentError Mooncake._lift_from_lanes(
                 (a=1.0, b=2.0), ((a=0.1, b=0.2), (a=0.3, b=0.4))

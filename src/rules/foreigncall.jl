@@ -187,8 +187,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 # Recover the full tangent object for non-NULL lanes. This dynamic boundary widens
 # inference: the primal and canonical V types are known only at runtime.
-function frule!!(
-    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
+@inline function frule!!(f::Lifted{typeof(Base.unsafe_pointer_to_objref)}, x::Lifted{<:Ptr})
+    return _unsafe_pointer_to_objref_frule(StructuralStorage(), f, x)
+end
+function _unsafe_pointer_to_objref_frule(
+    ::StructuralStorage,
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
+    x::Lifted{<:Ptr},
 ) where {Nw}
     y = unsafe_pointer_to_objref(primal(x))
     tx = tangent(x)
@@ -208,9 +213,14 @@ end
 # Numeric per-lane pointers distinguish Ref partial storage from the generic objref tag.
 # Read P at runtime: NTuple{0,Ptr{P}} erases P, causing an unbound signature parameter.
 # Width 0 is rejected by _nfwd_check_chunk_size, so eltype needs no degenerate case.
-function frule!!(
-    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
+@inline function frule!!(
+    f::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
     x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
+) where {Nw}
+    return _unsafe_pointer_to_objref_frule(_storage_kind(eltype(eltype(tangent(x)))), f, x)
+end
+function _unsafe_pointer_to_objref_frule(
+    ::NumericStorage, ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted
 ) where {Nw}
     ref = unsafe_pointer_to_objref(primal(x))
     P = eltype(eltype(tangent(x)))
@@ -938,7 +948,8 @@ function _foreigncall_throwing_rows()
     # address as a tangent would corrupt it; a raw Ptr seed cannot express this shape.
     objref_target = [1.0, 2.0]
     push!(memory, objref_target)
-    let p = pointer_from_objref(objref_target)
+    for P in (Nothing, Union{})
+        p = Ptr{P}(pointer_from_objref(objref_target))
         push!(
             cases,
             (

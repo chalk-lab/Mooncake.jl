@@ -285,9 +285,9 @@ end
     if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
         throw(
             ArgumentError(
-                "Forward-mode raw pointer of a lifted nested array is unsupported at chunk " *
-                "width $Nw > 1: the per-element dual has no dense per-lane buffer a single raw " *
-                "pointer could address, so the derivative would be silently dropped. " *
+                "Forward-mode raw pointer of lifted element-wise storage is unsupported at chunk " *
+                "width $Nw > 1: the pointer projection provides one lane, but the forward " *
+                "representation requires $Nw lanes. " *
                 "Differentiate at chunk width 1.",
             ),
         )
@@ -477,6 +477,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
 
 function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:IEEEFloat}
+    if _storage_kind(T) isa StructuralStorage
+        return zero_lifted(Val(N), sort(primal(x)))
+    end
     p = sortperm(primal(x))
     y = primal(x)[p]
     # Element `i` of `y` is element `p[i]` of `x`, so its lane column is column `p[i]` of `x`'s block.
@@ -600,6 +603,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # lsetfield! frule must accept Val(1) as well as Val(:x).
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
+        (false, :stability, (; mode=ForwardMode), sort, Union{}[]),
     ]
 
     for T in (Float16, Float32, Float64), f in (sort, sortperm)

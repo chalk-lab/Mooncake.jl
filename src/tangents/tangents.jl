@@ -2121,6 +2121,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (svec(5.0), Vector{Any}),
         ([3.0, 2.0], Vector{Float64}),
         (Float64[], Vector{Float64}),
+        (Union{}[], Vector{Union{}}),
         ([1, 2], Vector{NoTangent}),
         ([[1.0], [1.0, 2.0]], Vector{Vector{Float64}}),
         (setindex!(Vector{Vector{Float64}}(undef, 2), [1.0], 1), Vector{Vector{Float64}}),
@@ -2180,6 +2181,9 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         UpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitLowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitUpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
+        (Union{}[], 1.0),
+        Ref(Union{}[]),
+        Ref{Union{}}(),
         (2.0, 3),
         (3, 2.0),
         (2.0, 1.0),
@@ -2208,6 +2212,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         # readable.
         Dict(:a => 5.0, :b => 4.0),
     ]
+    if VERSION >= v"1.11"
+        mem = Memory{Union{}}(undef, 0)
+        append!(rel_test_cases, (mem, memoryref(mem)))
+    end
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
     VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
     # A complex `MemoryRef`: the `Memory` and `MemoryRef` lifts have to agree on which eltypes
