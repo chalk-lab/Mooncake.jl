@@ -520,8 +520,7 @@ end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
-    # allow nan comparisons to return true, real() to cover complex case
-    return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
+    return TestUtils.has_equal_data_internal(Array(x), Array(y), equal_undefs, d)
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
