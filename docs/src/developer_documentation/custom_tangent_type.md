@@ -276,9 +276,21 @@ By contrast, separate rules for `setfield!` are generally unnecessary. In Moonca
 
 By following this process—starting with a minimal set of methods and expanding as Mooncake requests more—you can support recursive types robustly in Mooncake.jl.
 
-### Forward-mode counterpart: [`TestUtils.test_lifted`](@ref)
+### [Forward-mode counterpart](@id custom-forward-representation)
 
-[`TestUtils.test_data`](@ref) / [`TestUtils.test_tangent`](@ref) define the *reverse-mode* tangent interface. The forward (`Lifted` / `NDual`) representation has a parallel, rule-free contract checked by [`TestUtils.test_lifted`](@ref) (with [`TestUtils.test_lifted_type`](@ref) for the type-level part). For a value `p` it verifies, at chunk widths 1 and 8, that the forward seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifted`) produce a slot of the coherent type `lifted_type(Val(N), typeof(p))` whose primal *aliases* `p`, that every inner dual's `.value` tracks the primal it shadows (the inner-value invariant, also checked on rule outputs by the chunked forward path of `test_rule`), that the per-lane accessor `tangent(slot, lane)` materialises a reverse tangent of type `tangent_type(typeof(p))`, and that a reverse tangent round-trips through `unlift(lift(p, ẋ))`. Run it alongside `test_data` whenever a custom type must also work under forward-mode AD; it is purely representational, so rule correctness is still the job of [`TestUtils.test_rule`](@ref).
+The implementation in this page provides reverse-mode support. For forward-mode support,
+implement `dual_type` and the representation operations described in
+[`TestUtils.test_lifted`](@ref). The generic `zero_lifted`, `uninit_lifted`, and `randn_lifted`
+wrappers call `_zero_dual_internal`, `_uninit_dual_internal`, and `_randn_dual_internal`,
+respectively; overload those internal methods for custom seed construction.
+
+Run `test_lifted` alongside `test_data`. At chunk widths 1 and 8, it checks the lifted
+factories, the cache-free `zero_dual`/`uninit_dual`/`randn_dual(Val(N), …)` factories, and
+per-lane materialisation through `tangent(slot, lane)` (`_materialise_lane` for aggregates).
+It also checks the width-one `lift`/`unlift` round trip.
+[`TestUtils.test_lifted_type`](@ref) checks the representation's type-level contract.
+For cyclic values, use `test_lifted(rng, p; cache_free=false)` to omit the cache-free factory
+checks. Test differentiation rules separately with [`TestUtils.test_rule`](@ref).
 
 ## Appendix: Full Implementations
 
