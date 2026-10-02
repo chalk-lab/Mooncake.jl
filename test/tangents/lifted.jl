@@ -887,8 +887,10 @@ const NDAC_VecC64 = NDualArray{
 
         @static if VERSION >= v"1.11-"
             # Structural MemoryRefs leave the following scalar at the first basis position.
-            p = (memoryref(Memory{Int}(undef, 0)), 1.0)
-            @test tangent(bl(p, (1,)), 1)[2] == 1.0
+            for T in (Int, Union{})
+                p = (memoryref(Memory{T}(undef, 0)), 1.0)
+                @test tangent(bl(p, (1,)), 1)[2] == 1.0
+            end
 
             # Complex `MemoryRef` (Julia 1.11+): the complex `NDualMemoryRef` `_basis_seed!!`
             # mirrors the complex `NDualArray` (two dimensions per element — real then imag). Regression

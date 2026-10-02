@@ -64,11 +64,12 @@ function frule!!(
         pr, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(parts))
     )
 end
-# Uninitialised real/complex RefValue needs zero-init NDualRef, not MutableDual.
+# Uninitialised RefValue must use the same storage classification as the seed factories.
 function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}
 ) where {Nw,P<:NDualEltype}
-    return Lifted{Base.RefValue{P},Nw}(Base.RefValue{P}(), NDualRef{P,Nw}())
+    pr = Base.RefValue{P}()
+    return Lifted{Base.RefValue{P},Nw}(pr, zero_dual(Val(Nw), pr))
 end
 
 function rrule!!(
@@ -197,6 +198,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     # Specialised test cases for _new_.
     specific_test_cases = Any[
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{}),
+        (false, :none, nothing, _new_, Base.RefValue{Union{}}),
         # `Ref(x)` / `RefValue{P}(x)` construction (real + complex): the canonical V is `NDualRef`.
         # `:none` perf — a mutable `Ref` allocates, so the alloc check does not apply.
         (false, :none, nothing, _new_, Base.RefValue{Float64}, 5.0),
