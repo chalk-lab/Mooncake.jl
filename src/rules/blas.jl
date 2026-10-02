@@ -4083,7 +4083,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                         BLAS.iamax,
                         P[3, 2 + 2im, -2 - 2im];
                         perf_flag=:stability_and_allocs,
-                        oracle=(value=BLAS.BlasInt(2),),
+                        reference=(value=BLAS.BlasInt(2),),
                     ),
                 ]
             else
@@ -5427,7 +5427,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     end
 
     # The mutated arrays are dead: their zero cotangent must survive infinite coefficients.
-    # Return a scalar so the oracle observes the array cotangents after accumulation.
+    # Return a scalar so the reference observes the array cotangents after accumulation.
     for alias in (false, true), (a, b) in ((1, Inf), (Inf, 1), (Inf, -Inf))
         unused_axpby = (a, b, v) -> begin
             x = [v]
@@ -5437,7 +5437,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         end
         opts = (
             output_tangent=one(real(P)),
-            oracle=(
+            reference=(
                 value=real(P)(2),
                 deriv=(fwd=one(real(P)), rvs=(NoRData(), zero(P), zero(P), one(P))),
             ),
@@ -5476,7 +5476,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     )
         R = real(P)
         deriv = (NoRData(), map(P, dcoefficients)..., map(P, dvw)...)
-        opts = (mode=ReverseMode, output_tangent=one(R), oracle=(value=R(Inf), deriv=deriv))
+        opts = (
+            mode=ReverseMode, output_tangent=one(R), reference=(value=R(Inf), deriv=deriv)
+        )
         push!(test_cases, TestCase(f, map(P, coefficients)..., P(2), P(3); opts...))
     end
 
@@ -5515,8 +5517,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         A = CoDual(ones(P, 3, 3), ones(P, 3, 3))
         B = zero_codual(fill(bad, 3, 3))
         α, x = zero_codual(zero(P)), zero_codual(ones(P, 3))
-        mat = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3, 3),))
-        vec = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3),))
+        mat = (mode=ForwardMode, skip_chunked=true, reference=(deriv=zeros(P, 3, 3),))
+        vec = (mode=ForwardMode, skip_chunked=true, reference=(deriv=zeros(P, 3),))
         if P <: Real
             C = zero_codual(zeros(P, 3, 3))
             push!(

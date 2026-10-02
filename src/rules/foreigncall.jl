@@ -1080,7 +1080,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             opts = if kind === :copy && T !== Ptr{Cvoid}
                 (mode=ForwardMode, throws=ArgumentError)
             else
-                (mode=ForwardMode, skip_chunked=true, oracle=(value=2.5, deriv=2.0))
+                (mode=ForwardMode, skip_chunked=true, reference=(value=2.5, deriv=2.0))
             end
             slot = kind === :copy && T !== Ptr{Cvoid} ? lift : CoDual
             push!(

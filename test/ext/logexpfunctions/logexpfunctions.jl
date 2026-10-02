@@ -302,7 +302,7 @@ sr(n::Int) = StableRNG(n)
             # Even the largest width-8 lane stays finite; normalize before multiplying.
             directions = kind === :large ? (one(T), floatmax(T) / T(8)) : (zero(T),)
             for d in directions
-                push!(cases, ((; oracle=(deriv=d,)), f, Mooncake.CoDual(zero(T), d)))
+                push!(cases, ((; reference=(deriv=d,)), f, Mooncake.CoDual(zero(T), d)))
             end
         end
         # Float16 weights and lane sums accumulate in Float32; a long random reduction
@@ -315,7 +315,7 @@ sr(n::Int) = StableRNG(n)
                 (;
                     mode=Mooncake.ForwardMode,
                     skip_chunked=true,
-                    oracle=(deriv=Float16(0.18917951944454753),),
+                    reference=(deriv=Float16(0.18917951944454753),),
                 ),
                 logsumexp,
                 Mooncake.CoDual(x16, d16),
@@ -327,7 +327,7 @@ sr(n::Int) = StableRNG(n)
                 (;
                     mode=Mooncake.ForwardMode,
                     skip_chunked=true,
-                    oracle=(deriv=Float16(0.18917951944454753),),
+                    reference=(deriv=Float16(0.18917951944454753),),
                 ),
                 x -> logsumexp(x; dims=:),
                 Mooncake.CoDual(x16, d16),
@@ -339,7 +339,7 @@ sr(n::Int) = StableRNG(n)
                 (;
                     mode=Mooncake.ForwardMode,
                     skip_chunked=true,
-                    oracle=(deriv=Float16(0.18917951944454753),),
+                    reference=(deriv=Float16(0.18917951944454753),),
                 ),
                 x -> only(logsumexp(x; dims=1)),
                 Mooncake.CoDual(x16, d16),
@@ -354,7 +354,9 @@ sr(n::Int) = StableRNG(n)
             end
             d = T(1 + (slope - 1) / (1 + exp(-1)))
             cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
-            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+            push!(
+                cases, ((; reference=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T)))
+            )
         end
         # `Base.mightalias` misses each of these over `out`'s parent on some Julia version.
         for T in (Float16, Float32, Float64),
@@ -375,7 +377,9 @@ sr(n::Int) = StableRNG(n)
             A0 = [0 2 1; 1 0 2; 2 1 0]
             d = T(exp(A0[1, 1]) / sum(exp, W(A0)))
             cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
-            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+            push!(
+                cases, ((; reference=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T)))
+            )
         end
         @testset "$i" for (i, (opts, f, x)) in enumerate(cases)
             test_rule(

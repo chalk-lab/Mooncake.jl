@@ -952,7 +952,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 return TestCase(
                     significand,
                     CoDual(x, P(1));
-                    oracle=(value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))),
+                    reference=(
+                        value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))
+                    ),
                     output_tangent=P(1),
                 )
             end,
@@ -997,7 +999,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 rvs = (NoRData(), dy, map(_ -> NoRData(), args)...)
                 output_tangent = f === frexp ? (seed, NoTangent()) : seed
                 opts = (
-                    oracle=(value=y, deriv=(fwd=fwd, rvs=rvs)),
+                    reference=(value=y, deriv=(fwd=fwd, rvs=rvs)),
                     output_tangent=output_tangent,
                 )
                 return TestCase(f, CoDual(seed, seed), args...; opts...)
@@ -1012,14 +1014,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 TestCase(
                     tan,
                     CoDual(x, x);
-                    oracle=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
+                    reference=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
                     output_tangent=x,
                 )
             end,
             TestCase(
                 asinh,
                 CoDual(Float16(1000), Float16(1));
-                oracle=(
+                reference=(
                     value=asinh(Float16(1000)),
                     deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
                 ),
@@ -1028,7 +1030,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             TestCase(
                 acosh,
                 CoDual(Float16(1000), Float16(1));
-                oracle=(
+                reference=(
                     value=acosh(Float16(1000)),
                     deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
                 ),
@@ -1041,7 +1043,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     atan,
                     CoDual(x, 1.0),
                     CoDual(x, 0.0);
-                    oracle=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
+                    reference=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
                     mode=ForwardMode,
                 )
             end,
@@ -1052,7 +1054,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     atan,
                     CoDual(x, 0.0),
                     CoDual(x, 0.0);
-                    oracle=(
+                    reference=(
                         deriv=(NoRData(), d, -d),
                         cmp=(a, b) ->
                             isequal(a[1], b[1]) &&
@@ -1082,7 +1084,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (sec, Float16(π / 2)),
         ]) do (f, x)
             z = zero(x)
-            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
+            opts = (reference=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
             return TestCase(f, CoDual(x, z); opts...)
         end,
         # At hypot's singular origin, FD cannot pin the zero-derivative convention.
@@ -1091,7 +1093,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             map(Iterators.product([Float16, Float32, Float64], 1:3)) do (P, arity)
                 seeds = ntuple(_ -> CoDual(P(0), P(1)), arity)
                 rvs = (NoRData(), ntuple(_ -> P(0), arity)...)
-                opts = (oracle=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1))
+                opts = (
+                    reference=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1)
+                )
                 return TestCase(hypot, seeds...; opts...)
             end,
         ),
@@ -1126,7 +1130,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 [(f, x, s) for (f, x) in zero_coefficient for s in (P(NaN), P(Inf))],
             )
             return map(cases) do (f, x, s)
-                opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s)
+                opts = (
+                    reference=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s
+                )
                 return TestCase(f, CoDual(x, s); opts...)
             end
         end...,
@@ -1137,12 +1143,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (_rvs_guarded_scale, P(3), P(3), (NoRData(), P(3), z)),
             (Nfwd._nfwd_guarded_div, P(2), P(0.5), (NoRData(), P(0.5), -z)),
         )
-            opts = (oracle=(value=z, deriv=(fwd=expected, rvs=rvs)), output_tangent=o)
+            opts = (reference=(value=z, deriv=(fwd=expected, rvs=rvs)), output_tangent=o)
             push!(test_cases, scalar_case(f, CoDual(z, o), CoDual(b, z); opts...))
         end
         for op in (muladd, fma)
             opts = (
-                oracle=(value=o, deriv=(fwd=P(3), rvs=(NoRData(), NoRData(), P(3), z, o))),
+                reference=(
+                    value=o, deriv=(fwd=P(3), rvs=(NoRData(), NoRData(), P(3), z, o))
+                ),
                 output_tangent=o,
             )
             push!(
@@ -1163,7 +1171,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         for (a, b, da, db, dy) in
             ((z, bad, z, o, z), (bad, z, o, z, z), (z, z, bad, bad, bad))
             opts = (
-                oracle=(value=z, deriv=(fwd=z, rvs=(NoRData(), z, z))), output_tangent=dy
+                reference=(value=z, deriv=(fwd=z, rvs=(NoRData(), z, z))), output_tangent=dy
             )
             push!(
                 test_cases,
@@ -1171,7 +1179,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             )
             for op in (muladd, fma)
                 opts = (
-                    oracle=(value=o, deriv=(fwd=z, rvs=(NoRData(), NoRData(), z, z, dy))),
+                    reference=(
+                        value=o, deriv=(fwd=z, rvs=(NoRData(), NoRData(), z, z, dy))
+                    ),
                     output_tangent=dy,
                 )
                 push!(
@@ -1188,7 +1198,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             end
         end
         for (a, b, da, db) in ((z, P(3), z, bad), (bad, P(3), z, z), (z, bad, z, z))
-            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z, -z)),), output_tangent=z)
+            opts = (reference=(deriv=(fwd=z, rvs=(NoRData(), z, -z)),), output_tangent=z)
             push!(
                 test_cases,
                 TestCase(Nfwd._nfwd_guarded_div, CoDual(a, da), CoDual(b, db); opts...),
@@ -1277,7 +1287,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         a = T <: Complex ? T(1, 2) : zero(T)
         b = T <: Complex ? T(3, -4) : T(3)
         opts = (
-            oracle=(
+            reference=(
                 value=ntuple(_ -> a * b, M),
                 deriv=(fwd=ntuple(_ -> b, M), rvs=(NoRData(), M * conj(b), M * conj(a))),
             ),
@@ -1294,7 +1304,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             z = zero(T)
             zs = ntuple(_ -> z, M)
             opts = (
-                oracle=(value=zs, deriv=(fwd=zs, rvs=(NoRData(), z, z))),
+                reference=(value=zs, deriv=(fwd=zs, rvs=(NoRData(), z, z))),
                 output_tangent=ntuple(_ -> dy, M),
             )
             push!(test_cases, TestCase(f, CoDual(a, da), CoDual(b, db); opts...))

@@ -1465,7 +1465,7 @@ end
 
         # ComplexF16 needs the GPU arrayify overload; the host one excludes it.
         # Finite differences are unreliable here; linear rearrangements give exact
-        # per-lane JVP oracles.
+        # per-lane JVP references.
         @testset "Float16/ComplexF16 concat forward exact — $ET, width $N" for ET in (
                 Float16, ComplexF16
             ),

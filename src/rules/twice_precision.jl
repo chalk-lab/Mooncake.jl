@@ -659,7 +659,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         opts = (
             mode=ReverseMode,
             output_tangent=seed,
-            oracle=(deriv=(NoRData(), P(1 // 1000), P(999 // 1000), NoRData()),),
+            reference=(deriv=(NoRData(), P(1 // 1000), P(999 // 1000), NoRData()),),
         )
         push!(
             test_cases,
@@ -681,7 +681,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         opts = (
             mode=ReverseMode,
             output_tangent=seed,
-            oracle=(deriv=(NoRData(), P(0.1), P(0.1), last),),
+            reference=(deriv=(NoRData(), P(0.1), P(0.1), last),),
         )
         push!(test_cases, TestCase(f, P(-999), P(1), stop; perf_flag=:allocs, opts...))
     end
@@ -696,7 +696,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             seed = Tangent((ref=3.0, step=6.0, len=NoTangent(), offset=NoTangent()))
             da, db = f === Base.range_start_stop_length ? (P(1), P(2)) : (P(3), P(6))
             dc = f === (:) ? zero(P) : NoRData()
-            (mode=ReverseMode, output_tangent=seed, oracle=(deriv=(NoRData(), da, db, dc),))
+            (
+                mode=ReverseMode,
+                output_tangent=seed,
+                reference=(deriv=(NoRData(), da, db, dc),),
+            )
         else
             (mode=ReverseMode,)
         end
@@ -712,7 +716,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         opts = if P === Float16
             ds = f === Base.range_start_stop_length ? 1.0 : 6.0
             dt = Tangent((ref=3.0, step=ds, len=NoTangent(), offset=NoTangent()))
-            (mode=ForwardMode, oracle=(deriv=dt,))
+            (mode=ForwardMode, reference=(deriv=dt,))
         else
             (mode=ForwardMode,)
         end
@@ -741,7 +745,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             len=NoTangent(),
             offset=NoTangent(),
         ))
-        opts = (mode=ForwardMode, oracle=(deriv=dt,))
+        opts = (mode=ForwardMode, reference=(deriv=dt,))
         push!(
             test_cases,
             TestCase(f, CoDual(a, da), CoDual(b, db), c; perf_flag=:allocs, opts...),
@@ -814,7 +818,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         (f, deriv) in ((+, 1.5), (*, 5.0), (/, 0.1875))
 
         g = (x, y) -> Float64(f(TwicePrecision(x, zero(x)), y))
-        opts = (mode=ForwardMode, oracle=(deriv=deriv,))
+        opts = (mode=ForwardMode, reference=(deriv=deriv,))
         push!(
             test_cases,
             TestCase(
@@ -829,7 +833,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             a ->
                 Float64(f(TwicePrecision(a, a * lo), one(a)) - TwicePrecision(a, zero(a))) /
                 lo
-        opts = (mode=ForwardMode, oracle=(value=1.0, deriv=1.0))
+        opts = (mode=ForwardMode, reference=(value=1.0, deriv=1.0))
         push!(test_cases, TestCase(g, CoDual(one(P), one(P)); perf_flag=:allocs, opts...))
     end
     @static if VERSION >= v"1.11"

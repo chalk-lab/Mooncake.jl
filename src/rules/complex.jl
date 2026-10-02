@@ -460,7 +460,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             op === :dot && return real(dot(ones(E, length(r)), r))
             sum(abs2, r) + (op === :alias ? real(sum(p)) : Float16(0))
         end
-        opts = (oracle=(deriv=(fwd=d, rvs=(NoRData(), d)),), output_tangent=Float16(1))
+        opts = (reference=(deriv=(fwd=d, rvs=(NoRData(), d)),), output_tangent=Float16(1))
         push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))
     end
     for E in (Float16, ComplexF16), memory in (false, true)
@@ -473,7 +473,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             sum(abs2, reinterpret(E, view(p, :)))
         end
         opts = (
-            oracle=(deriv=(fwd=Float16(4), rvs=(NoRData(), Float16(4))),),
+            reference=(deriv=(fwd=Float16(4), rvs=(NoRData(), Float16(4))),),
             output_tangent=Float16(1),
         )
         push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))
@@ -489,7 +489,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             real(dot(ones(E, 2), view(reinterpret(E, p), inds)))
         end
         opts = (
-            oracle=(deriv=(fwd=Float16(2), rvs=(NoRData(), Float16(2))),),
+            reference=(deriv=(fwd=Float16(2), rvs=(NoRData(), Float16(2))),),
             output_tangent=Float16(1),
         )
         push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))

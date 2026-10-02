@@ -33,7 +33,7 @@ end
     end
 end
 
-# The registry oracle sees returned rdata, not the mutated parent fdata checked here.
+# The registry reference sees returned rdata, not the mutated parent fdata checked here.
 @testset "reinterpret dot strong zeros" for T in (Float16, Float32, Float64),
     E in (T, Complex{T})
 

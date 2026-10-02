@@ -40,7 +40,8 @@ end
         TestCase(cbrt, P(0.4)),
         TestCase(exp, P(0.2)),
         # In the fine-spacing range: at P(1.12) the reverse rule is correct
-        # (grad == exp2(x)·log 2) but BF16's coarse spacing cannot resolve the FD oracle.
+        # (grad == exp2(x)·log 2) but BF16's coarse spacing cannot resolve the
+        # finite-difference check.
         TestCase(exp2, P(0.15)),
         TestCase(exp10, P(0.249)),
         TestCase(expm1, P(-0.3)),
