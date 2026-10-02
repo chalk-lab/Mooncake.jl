@@ -502,7 +502,7 @@ end
                 e
             end
             @test function_err isa ArgumentError
-            @test occursin("the function `f`", sprint(showerror, function_err))
+            @test occursin("fdata[1]", sprint(showerror, function_err))
             @test TestUtils.test_rrule_reference(
                 zero_codual(sum),
                 zero_codual([1.0, 2.0]);
@@ -523,7 +523,7 @@ end
                 e
             end
             @test err isa ArgumentError
-            @test occursin("positional argument 1 of `f`", sprint(showerror, err))
+            @test occursin("fdata[2]", sprint(showerror, err))
             # Registry `throws` cases cannot assert that the harness rejects a wrong reference.
             for (deriv, failures) in ((3.0, 0), (0.0, 1))
                 seed = [1.0, 1.0]
@@ -686,6 +686,21 @@ end
                     Mooncake.lift(primal(f)(primal(x)), 3 * Mooncake.tangent(x, 1)),
                 reference=(value=3.0, deriv=3.0),
             ) === nothing
+        end
+    end
+
+    @testset "reference extensions" begin
+        withenv("TEST_MODE" => nothing) do
+            captured = @testset ReferenceTestSet "wrong reference" begin
+                test_rule(
+                    Xoshiro(1),
+                    TestCase(x -> 2x, CoDual(2.0, 1.0); reference=(value=6.0,));
+                    mode=ForwardMode,
+                    fallbacks=(is_primitive=false, skip_chunked=true, print_results=false),
+                )
+            end
+            @test reference_result_count(captured, Test.Fail) == 1
+            @test reference_result_count(captured, Test.Error) == 0
         end
     end
 
