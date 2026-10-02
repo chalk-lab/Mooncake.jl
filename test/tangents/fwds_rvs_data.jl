@@ -124,10 +124,14 @@ end
         @test zero_rdata_from_type(Tuple) == CannotProduceZeroRDataFromType()
         # Float sub-unions must use the generic fallback: they cannot construct zeros.
         @testset "float sub-unions produce no zero rdata: $T" for T in (
-            Union{Float32,Float64}, Union{Float16,Float64}, Union{Float16,Float32,Float64}
+            Union{Float16,Float32},
+            Union{Float32,Float64},
+            Union{Float16,Float64},
+            IEEEFloat,
         )
             @test !can_produce_zero_rdata_from_type(T)
             @test zero_rdata_from_type(T) == CannotProduceZeroRDataFromType()
+            @test zero_like_rdata_from_type(T) == Mooncake.ZeroRData()
         end
         @testset "concrete floats still do: $P" for P in (Float16, Float32, Float64)
             @test can_produce_zero_rdata_from_type(P)
