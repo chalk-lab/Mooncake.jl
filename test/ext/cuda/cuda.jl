@@ -8,6 +8,7 @@ using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
+    has_equal_data,
     test_tangent_interface,
     test_tangent_splitting,
     test_rule,
@@ -98,10 +99,88 @@ end
             )
         end
 
+        @testset "non-finite tangent arithmetic" begin
+            for (T, U) in ((Float16, UInt16), (Float32, UInt32), (Float64, UInt64))
+                inf_bits = reinterpret(U, T(Inf))
+                snan = reinterpret(T, inf_bits | one(U))
+                qnan = reinterpret(T, reinterpret(U, T(NaN)) | U(0x123))
+                xs = T[
+                    0,
+                    -0.0,
+                    1,
+                    -1,
+                    Inf,
+                    -Inf,
+                    snan,
+                    qnan,
+                    -qnan,
+                    nextfloat(zero(T)),
+                    -nextfloat(zero(T)),
+                    prevfloat(floatmin(T)),
+                    -prevfloat(floatmin(T)),
+                    floatmin(T),
+                    -floatmin(T),
+                    floatmax(T),
+                    -floatmax(T),
+                ]
+                for ET in (T, Complex{T})
+                    a = ET <: Real ? reshape(xs, :, 1) : complex.(xs, permutedims(xs))
+                    for dims in ((length(a),), size(a), (length(a), 1, 1)),
+                        backend in (Array, CuArray)
+
+                        p = backend(reshape(a, dims))
+                        q = Mooncake._add_to_primal(p, Mooncake.zero_tangent(p), true)
+                        @test has_equal_data(q, p)
+                        @test isequal(Array(q), Array(p) .+ zero(ET))
+                        for scale in (1.0, -1.0, 2.0)
+                            @test isequal(
+                                Array(Mooncake._scale(scale, p)),
+                                Mooncake._scale(scale, Array(p)),
+                            )
+                        end
+                        @test isequal(
+                            Array(Mooncake.TestUtils._diff(Mooncake.zero_tangent(p), p)),
+                            Mooncake.TestUtils._diff(zero(Array(p)), Array(p)),
+                        )
+                        if T !== Float16 && length(dims) == 2
+                            test_tangent_interface(
+                                StableRNG(123456), p; interface_only=false
+                            )
+                            test_tangent_splitting(StableRNG(123456), p)
+                        end
+                    end
+                end
+                # A complex BLAS dot can contaminate the real result with 0 * Inf.
+                for z in (complex(T(Inf), zero(T)), complex(zero(T), T(Inf))),
+                    dims in ((), (1,), (1, 1), (1, 1, 1))
+
+                    a = fill(z, dims)
+                    b = fill(iszero(real(z)) ? complex(zero(T), one(T)) : one(z), dims)
+                    @test isequal(
+                        Mooncake._dot(CuArray(a), CuArray(b)), Mooncake._dot(a, b)
+                    )
+                end
+                for backend in (Array, CuArray)
+                    @test !has_equal_data(
+                        backend([complex(qnan, one(T))]), backend([complex(qnan, T(2))])
+                    )
+                    @test !has_equal_data(
+                        backend([complex(qnan, one(T))]), backend([complex(one(T), qnan)])
+                    )
+                    @test !has_equal_data(
+                        backend([complex(T(Inf), qnan)]), backend([complex(T(-Inf), qnan)])
+                    )
+                end
+            end
+        end
+
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
             # Use `undef` to test against garbage memory (NaNs, Infs, subnormals).
             # `randn` generates well-behaved values and can miss these edge cases.
             p = CuArray{ET,2,CUDA.DeviceMemory}(undef, 8, 8)
+            # A nonzero random tangent must change at least one entry. Arbitrary garbage
+            # could consist entirely of NaNs, Infs, or values too large to perturb.
+            p[1:1] .= zero(ET)
             test_tangent_interface(StableRNG(123456), p; interface_only=false)
             test_tangent_splitting(StableRNG(123456), p)
 

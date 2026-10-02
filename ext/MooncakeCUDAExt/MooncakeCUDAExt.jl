@@ -497,8 +497,7 @@ end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:CuMaybeComplexArray}
-    # allow nan comparisons to return true, real() to cover complex case
-    return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
+    return TestUtils.has_equal_data_internal(Array(x), Array(y), equal_undefs, d)
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
@@ -528,7 +527,8 @@ function _add_to_primal_internal(
 ) where {P<:CuMaybeComplexArray}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
-    x′ = x + y
+    # Matrix `+` uses cuBLAS geam, whose complex scaling can turn 0 * Inf into NaN.
+    x′ = x .+ y
     c[key] = x′
     return x′
 end
@@ -548,11 +548,15 @@ function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return Float64(real(dot(x, y)))
+    # The tangent dot is a real componentwise inner product. Complex BLAS dot
+    # introduces cross-component 0 * Inf terms, even when its real answer is Inf.
+    T = real(eltype(P))
+    return Float64(dot(reinterpret(T, vec(x)), reinterpret(T, vec(y))))
 end
 function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
     haskey(c, y) && return c[y]::P
-    t′ = eltype(P)(x) * y
+    # Keep the scale real: complex multiplication introduces cross-component 0 * Inf.
+    t′ = real(eltype(P))(x) .* y
     c[y] = t′
     return t′
 end
