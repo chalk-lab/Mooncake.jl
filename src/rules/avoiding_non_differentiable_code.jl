@@ -3,11 +3,15 @@
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+    return Dual(primal(x) + primal(y), _tangent_ptr_add(tangent(x), primal(y)))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    dx = _tangent_ptr_add(tangent(x), primal(y))
+    return CoDual(primal(x) + primal(y), dx), NoPullback(f, x, y)
 end
+
+# A null tangent pointer means there is no tangent storage, so offsetting it must keep it null.
+_tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
