@@ -2067,6 +2067,10 @@ end
         end
         return v
     end
+    function _basis_seed!!(v::MemoryRef, slots::NTuple{N,Int}, cursor, dict) where {N}
+        _basis_seed!!(v.mem, slots, cursor, dict)
+        return v
+    end
 end
 function _basis_seed!!(v::Tuple, slots::NTuple{N,Int}, cursor, dict) where {N}
     return map(e -> _basis_seed!!(e, slots, cursor, dict), v)
