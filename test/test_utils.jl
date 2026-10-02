@@ -8,6 +8,8 @@ Test.finish(ts::JETTestSet) = ts
 
 jet_cache_target(x::Vector{Any}) = x[1](1)
 
+using Mooncake.TestUtils: TestCase
+
 # Capture harness assertion failures; registry `throws` cases assert rule exceptions instead.
 struct OracleTestSet <: Test.AbstractTestSet
     results::Vector{Any}
@@ -122,6 +124,10 @@ end
         @test typeof(oc1) === typeof(oc2)
         @test isempty(JET.get_reports(TestUtils.report_opt(oc1)))
         @test length(JET.get_reports(TestUtils.report_opt(oc2))) == 1
+    end
+
+    @testset "TestCase" begin
+        @test_throws "atlo" TestCase(sin, 1.0; atlo=1e-5)
     end
 
     @testset "has_equal_data" begin
@@ -730,7 +736,7 @@ end
             end
         end
 
-        # A registry row cannot compare the probe stream across harness configurations.
+        # A registry test case cannot compare the probe stream across harness configurations.
         rngs = [StableRNG(123456) for _ in 1:3]
         for (rng, widths) in zip(rngs, ((1,), (1, 4), (1, 8)))
             TestUtils.test_frule(rng, sin, 1.0; sig=Tuple{typeof(sin),Float64}, widths)
@@ -738,7 +744,7 @@ end
         @test randn(rngs[1]) == randn(rngs[2]) == randn(rngs[3])
 
         # `chunk_size === nothing` is "unspecified", not "pin to 1" — `run_rule_test_cases`
-        # passes it for every row, so conflating the two would run every case at width 1.
+        # passes it for every test case, so conflating the two would run every case at width 1.
         @test TestUtils._fwd_widths(false, nothing) == (1, 8)
         @test TestUtils._fwd_widths(true, nothing) == (1,)
         @test TestUtils._fwd_widths(false, 4) == (4,)
