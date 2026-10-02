@@ -624,8 +624,11 @@ end
 function rrule!!(
     f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef{P},<:MemoryRef{V}}
 ) where {P,V}
-    # `_unsetindex!` is a no-op on isbits primals, so there is nothing to save or restore.
-    if isbitstype(P)
+    # `_unsetindex!` leaves isbits unions and pointer-free inline elements in place.
+    arrayelem = Base.datatype_arrayelem(typeof(x.x.mem))
+    if arrayelem == 2 ||
+        (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
+        Base._unsetindex!(x.x) # Preserve the primal's native bounds check.
         Base._unsetindex!(x.dx)
         return x, NoPullback(f, x)
     end
