@@ -862,6 +862,8 @@ tuple_with_union(x::Bool) = (x ? 5.0 : 5, nothing)
 tuple_with_union_2(x::Bool) = (x ? 5.0 : 5, x ? 5 : 5.0)
 tuple_with_union_3(x::Bool, y::Bool) = (x ? 5.0 : (y ? 5 : nothing), nothing)
 
+float_union(x, y, b::Bool) = (b ? x : y) + x
+
 struct NoDefaultCtor{T}
     x::T
     NoDefaultCtor(x::T) where {T} = new{T}(x)
@@ -926,6 +928,8 @@ function generate_test_functions()
         TestCase(const_tester; perf_flag=:allocs),
         TestCase(const_tester_non_differentiable; perf_flag=:allocs),
         TestCase(identity, 5.0; perf_flag=:allocs),
+        TestCase(float_union, 5.0, 4.0f0, true),
+        TestCase(float_union, 5.0, 4.0f0, false),
         TestCase(foo, 5.0; perf_flag=:allocs),
         TestCase(removable_singularity_tester, 0.0),
         TestCase(test_xoshiro_seed_pointer, randn(2); bench=(; lb=0.001, ub=1000)),
