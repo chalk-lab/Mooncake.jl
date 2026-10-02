@@ -885,10 +885,14 @@ const NDAC_VecC64 = NDualArray{
             @test nt.x.partials[1] == 1.0
         end
 
-        # Complex `MemoryRef` (Julia 1.11+): the complex `NDualMemoryRef` `_basis_seed!!`
-        # mirrors the complex `NDualArray` (two dimensions per element — real then imag). Regression
-        # for the missing complex method, which previously `MethodError`d here.
         @static if VERSION >= v"1.11-"
+            # Structural MemoryRefs leave the following scalar at the first basis position.
+            p = (memoryref(Memory{Int}(undef, 0)), 1.0)
+            @test tangent(bl(p, (1,)), 1)[2] == 1.0
+
+            # Complex `MemoryRef` (Julia 1.11+): the complex `NDualMemoryRef` `_basis_seed!!`
+            # mirrors the complex `NDualArray` (two dimensions per element — real then imag). Regression
+            # for the missing complex method, which previously `MethodError`d here.
             let m = Memory{ComplexF64}(undef, 2)
                 m .= [1.0 + 0.0im, 2.0 + 0.0im]
                 b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
