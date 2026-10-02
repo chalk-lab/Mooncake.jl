@@ -224,7 +224,7 @@ end
     @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end
 
-# Memory-owner results need canonical V so lane reads agree with the reverse oracle.
+# Memory-owner results need canonical V so lane reads agree with the reverse reference.
 @static if VERSION >= v"1.11-"
     @testset "jl_genericmemory_owner frule canonical V" begin
         m = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]

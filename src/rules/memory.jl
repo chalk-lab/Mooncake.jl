@@ -1561,7 +1561,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         TestCase(Base._growend!, randn(5), 3; interface_only=true),
         TestCase(Base._growat!, randn(5), 2, 2; interface_only=true),
         TestCase(sizehint!, randn(5), 10),
-        # Complex MemoryRef V must be NDualMemoryRef during array growth; reverse is the oracle.
+        # Complex MemoryRef V must be NDualMemoryRef during array growth in forward mode.
         TestCase(
             (x -> (v=ComplexF64[]; push!(v, x); push!(v, 2x); sum(abs2, v))),
             ComplexF64(1.0, 2.0),

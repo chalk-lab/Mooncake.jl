@@ -507,7 +507,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                     value, deriv = f === maximum ? (3, 40) : (1, 20)
                     opts = (
                         mode=ForwardMode,
-                        oracle=(value=P(value), deriv=P(deriv)),
+                        reference=(value=P(value), deriv=P(deriv)),
                         skip_chunked=true,
                     )
                     values = f === maximum ? P[1, 3, 2, 3] : P[3, 1, 2, 1]

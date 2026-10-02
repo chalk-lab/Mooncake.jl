@@ -233,8 +233,8 @@ const NDAC_VecC64 = NDualArray{
             dm[1] = 1.0
             # The tangents must alias exactly as the primals do; `fm` over one buffer is `2*m[1]`, so
             # the directional derivative is 2.0. Seeding this through `test_rule` instead would not
-            # catch it: the finite-difference oracle perturbs the primal through the same aliasing
-            # machinery the rule uses, so oracle and rule agree on the wrong answer.
+            # catch it: the finite-difference check perturbs the primal through the same
+            # aliasing machinery the rule uses, so both agree on the wrong answer.
             @test Mooncake.value_and_derivative!!(
                 cache, (fm, Mooncake.NoTangent()), (mk(), (dm, Core.memoryref(dm, 1)))
             ) == (2.0, 2.0)
@@ -556,8 +556,8 @@ const NDAC_VecC64 = NDualArray{
         end
 
         @testset "an Array's block windows its backing Memory's" begin
-            # Partial storage must alias with the primal. test_rule's finite-difference oracle
-            # uses the same seeding machinery, so an independent mutation check is needed.
+            # Partial storage must alias with the primal. test_rule's finite-difference
+            # check uses the same seeding machinery; an independent mutation check is needed.
             a = [1.0, 2.0, 3.0]
             v = tangent(zero_lifted(Val(2), (a, a.ref.mem)))
             Mooncake.Nfwd.tangent_view(v[1], 1)[2] = 5.0
@@ -651,8 +651,9 @@ const NDAC_VecC64 = NDualArray{
     # widths 1 and 8, :stability_and_allocs) by the complex group — no bespoke parallel needed.
 
     # performance_patches.jl rules (sum, sum(abs2,·), LinearAlgebra._kron!) are registered in
-    # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V is per-lane
-    # oracle-checkable, so `test_rule` covers value + per-lane partials across widths 1 and 8.
+    # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V supports
+    # comparison with each width-1 result, so `test_rule` covers value + per-lane partials
+    # across widths 1 and 8.
 
     @testset "MutableDualTangentView (NDual field)" begin
         r = LiftedTest_RefF(3.0)
@@ -751,7 +752,7 @@ const NDAC_VecC64 = NDualArray{
         @test tangent(cslot, 1).fields.next.fields.w == 7.0
 
         # A tuple field is a value, so it reads as exactly what reverse gives — and WRITES back,
-        # matching the reverse `set_tangent_field!` oracle the reads were widened to.
+        # matching the reverse `set_tangent_field!` result the reads were widened to.
         tup = LiftedTest_TupleField((1.0, 2.0))
         tv = tangent_view(zero_lifted(Val(2), tup), 1)
         @test tv.t === getfield(zero_tangent(tup).fields, :t) === (0.0, 0.0)

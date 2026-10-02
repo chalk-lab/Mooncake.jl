@@ -84,7 +84,7 @@ end
         perf_flag=:none,
         unsafe_perturb=true,
         mode=ForwardMode,
-        oracle=(value=75.0, deriv=30.0),
+        reference=(value=75.0, deriv=30.0),
     )
 
     # Reverse over a `MistyClosure` evaluation is not supported and must say so.

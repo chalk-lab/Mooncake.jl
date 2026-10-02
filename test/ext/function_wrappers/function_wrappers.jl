@@ -79,7 +79,7 @@ using FunctionWrappers: FunctionWrapper
         test_rule(rng, tc; name)
     end
 
-    # The generic per-lane oracle skips FunctionWrapperTangent's opaque width-N captures.
+    # The comparison against width 1 skips FunctionWrapperTangent's opaque captures.
     # Check each output lane for both zero-seeded wrappers and differentiated captures.
     @testset "chunked forward (width N)" begin
         FW = FunctionWrapper{Float64,Tuple{Float64}}

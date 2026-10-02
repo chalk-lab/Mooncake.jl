@@ -15,7 +15,7 @@
         arr = [1.0, 2.0]
         d = IdDict{Symbol,Any}(:x => arr, :y => arr)
         t = Mooncake.zero_tangent(d)
-        @test t[:x] === t[:y]                       # reverse oracle shares
+        @test t[:x] === t[:y]                       # reverse reference shares
         v = Mooncake.tangent(Mooncake.lift(d, t))
         @test v[:x] === v[:y]                       # forward V shares too
     end

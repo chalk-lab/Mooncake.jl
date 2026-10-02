@@ -537,7 +537,7 @@
         o = Mooncake.rrule!!(map(Mooncake.zero_fcodual, args)...)[1]
         @test all(iszero, primal(o))
 
-        # Ignore NaN outside the selected output. The finite-difference oracle
+        # Ignore NaN outside the selected output. The finite-difference check
         # perturbs every entry (including NaN), so these need bespoke checks.
         @testset "beta gradient ignores a NaN in an unused entry" begin
             xx = randn(StableRNG(5), 3)

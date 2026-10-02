@@ -2755,14 +2755,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # registered test cases run at width 1 only, so this is the width>1 cover.
             grow(v) = (w=copy(v); push!(w, 2 * v[1]); pushfirst!(w, sum(v)); sum(abs2, w))
             v = randn(StableRNG(123), 6)
-            oracle = Mooncake.value_and_gradient!!(
+            width1_result = Mooncake.value_and_gradient!!(
                 Mooncake.prepare_gradient_cache(grow, v), grow, v
             )[2][2]
             @testset "chunk_size $W" for W in (1, 2, 3, 5)
                 cache = Mooncake.prepare_derivative_cache(
                     grow, v; config=Mooncake.Config(; chunk_size=W)
                 )
-                @test Mooncake.value_and_gradient!!(cache, grow, v)[2][2] ≈ oracle
+                @test Mooncake.value_and_gradient!!(cache, grow, v)[2][2] ≈ width1_result
             end
         end
 

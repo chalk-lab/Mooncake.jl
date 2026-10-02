@@ -11,19 +11,19 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
 using Mooncake.TestUtils: TestCase
 
 # Capture harness assertion failures; registry `throws` cases assert rule exceptions instead.
-struct OracleTestSet <: Test.AbstractTestSet
+struct ReferenceTestSet <: Test.AbstractTestSet
     results::Vector{Any}
 end
-OracleTestSet(description) = OracleTestSet(Any[])
-Test.record(ts::OracleTestSet, result) = push!(ts.results, result)
-function Test.finish(ts::OracleTestSet)
+ReferenceTestSet(description) = ReferenceTestSet(Any[])
+Test.record(ts::ReferenceTestSet, result) = push!(ts.results, result)
+function Test.finish(ts::ReferenceTestSet)
     parent = Test.get_testset()
-    parent isa OracleTestSet && Test.record(parent, ts)
+    parent isa ReferenceTestSet && Test.record(parent, ts)
     return ts
 end
-function oracle_result_count(ts, T)
+function reference_result_count(ts, T)
     sum(ts.results; init=0) do result
-        result isa Test.AbstractTestSet ? oracle_result_count(result, T) : result isa T
+        result isa Test.AbstractTestSet ? reference_result_count(result, T) : result isa T
     end
 end
 
@@ -316,7 +316,7 @@ end
     end
 
     @testset "a pinned tangent spreads over distinct lanes" begin
-        # Identical directions would let broadcasting lane 1 pass the per-lane oracle.
+        # Identical directions would let broadcasting lane 1 pass the comparison with each width-1 result.
         lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
         p = lanes(CoDual(2.0, 1.5), 8).partials
         @test p[1] == 1.5                      # lane 1 is the pin exactly
@@ -362,7 +362,7 @@ end
         test_rule(Xoshiro(1), mixed, 10.0, x; is_primitive=false, perf_flag=:none)
     end
 
-    @testset "oracle validation" begin
+    @testset "reference validation" begin
         # A reference that names nothing, or names it wrongly, would leave a case asserting
         # nothing while reading as green — the failure mode a pinned reference exists to avoid.
         f(x, y) = x * y
@@ -374,10 +374,10 @@ end
             is_primitive=false,
             mode=Mooncake.ForwardMode,
             print_results=false,
-            oracle=o,
+            reference=o,
         )
-        for oracle in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
-            @test_throws ArgumentError run(oracle)
+        for reference in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
+            @test_throws ArgumentError run(reference)
         end
         # A value-only reference still validates derivatives by finite differences.
         run((value=6.0,))
@@ -390,7 +390,7 @@ end
             (ReverseMode, (; rrule=bad_rrule, output_tangent=1.0)),
         )
             TestUtils._test_mode_filter() in (nothing, mode) || continue
-            captured = @testset OracleTestSet "partial oracle" begin
+            captured = @testset ReferenceTestSet "partial reference" begin
                 test_rule(
                     Xoshiro(1),
                     x -> x^2,
@@ -399,12 +399,12 @@ end
                     print_results=false,
                     perf_flag=:none,
                     is_primitive=false,
-                    oracle=(value=4.0,),
+                    reference=(value=4.0,),
                     kwargs...,
                 )
             end
-            @test oracle_result_count(captured, Test.Fail) == 1
-            @test oracle_result_count(captured, Test.Error) == 0
+            @test reference_result_count(captured, Test.Fail) == 1
+            @test reference_result_count(captured, Test.Error) == 0
         end
     end
 

@@ -3856,8 +3856,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         A = CoDual(ones(P, 3, 3), ones(P, 3, 3))
         B = zero_codual(fill(bad, 3, 3))
         α, x = zero_codual(zero(P)), zero_codual(ones(P, 3))
-        mat = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3, 3),))
-        vec = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=zeros(P, 3),))
+        mat = (mode=ForwardMode, skip_chunked=true, reference=(deriv=zeros(P, 3, 3),))
+        vec = (mode=ForwardMode, skip_chunked=true, reference=(deriv=zeros(P, 3),))
         if P <: Real
             C = zero_codual(zeros(P, 3, 3))
             push!(test_cases, TestCase(BLAS.gemm!, 'N', 'N', α, A, B, α, C; mat...))

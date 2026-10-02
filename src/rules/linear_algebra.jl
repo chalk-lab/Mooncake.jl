@@ -163,7 +163,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             (CoDual(P(7), zero(P)), CoDual(P(11), zero(P)))
         end
         expected = P(unary ? 21 : 76)
-        opts = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=expected,))
+        opts = (mode=ForwardMode, skip_chunked=true, reference=(deriv=expected,))
         push!(test_cases, TestCase(CoDual(p, dp), args...; perf_flag=:allocs, opts...))
     end
     memory = Any[]
@@ -180,7 +180,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             ]
         end...,
     )
-    # A mutating MulAddMul returns nothing, so its derivative oracle needs a returned array.
+    # A mutating MulAddMul returns nothing; pin its derivative through a returned array.
     test_cases = TestCase[test_cases...]
     for P in (Float64, ComplexF64), integer_beta in (false, true)
         f = function (a, b, x, C)
@@ -189,7 +189,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             )
             return C
         end
-        opts = (mode=ForwardMode, oracle=(deriv=fill(P(integer_beta ? 21 : 76), 1),))
+        opts = (mode=ForwardMode, reference=(deriv=fill(P(integer_beta ? 21 : 76), 1),))
         push!(
             test_cases,
             TestCase(

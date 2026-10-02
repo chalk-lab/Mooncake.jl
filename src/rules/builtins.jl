@@ -2157,13 +2157,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # rule triggers type-system dispatch, making the ratio large. Loose bounds are intentional.
         TestCase(getfield, (Float64, Float64), 1; bench=(lb=1e-3, ub=200)),
         TestCase(getfield, (Float64, Float64), 2, false; bench=(lb=1e-3, ub=250)),
-        # The reverse oracle must convert NoTangent to NoFData via to_fwds.
+        # The reverse reference must convert NoTangent to NoFData via to_fwds.
         # This row checks that conversion, although the derivative is zero.
         TestCase(
             getfield,
             (1, 2),
             1;
-            oracle=(value=1, deriv=(NoRData(), NoRData(), NoRData())),
+            reference=(value=1, deriv=(NoRData(), NoRData(), NoRData())),
             output_tangent=NoTangent(),
             mode=ReverseMode,
         ),
@@ -2269,7 +2269,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         ],
     )
 
-    # Cancellation distinguishes fused rounding only with an exact value oracle.
+    # Cancellation distinguishes fused rounding only with an exact value reference.
     # Pin d/da with CoDual seeds. Forward-only: this checks the inner-value invariant;
     # ordinary test cases above cover reverse.
     let a = 1.0 + 2.0^-27, b = 1.0 + 2.0^-27, z = -((1.0 + 2.0^-27) * (1.0 + 2.0^-27))
@@ -2281,14 +2281,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                     CoDual(a, 1.0),
                     CoDual(b, 0.0),
                     CoDual(z, 0.0);
-                    oracle=(value=fma(a, b, z), deriv=b),
+                    reference=(value=fma(a, b, z), deriv=b),
                     mode=ForwardMode,
                 ),
             )
         end
     end
 
-    # Unlike Base.sqrt, the intrinsics return NaN for negative inputs. Pin the oracle:
+    # Unlike Base.sqrt, the intrinsics return NaN for negative inputs. Pin the reference:
     # finite differences cannot resolve NaN values or the singular derivative at zero.
     # Zero input seeds also check that inactive lanes stay zero in both chunk widths.
     for P in (Float16, Float32, Float64),
@@ -2298,7 +2298,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         y = x < 0 ? P(NaN) : P(0)
         seed = x < 0 ? P(1) : P(0)
         rvs = (NoRData(), x < 0 ? P(NaN) : P(0))
-        opts = (oracle=(value=y, deriv=(fwd=P(0), rvs=rvs)), output_tangent=seed)
+        opts = (reference=(value=y, deriv=(fwd=P(0), rvs=rvs)), output_tangent=seed)
         push!(test_cases, TestCase(f, CoDual(x, P(0)); perf_flag=:stability, opts...))
     end
 
@@ -2317,7 +2317,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                         f,
                         CoDual(av, 1.0),
                         CoDual(bv, db);
-                        oracle=(value=value, deriv=want),
+                        reference=(value=value, deriv=want),
                         mode=ForwardMode,
                     ),
                 )
@@ -2334,7 +2334,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                     f,
                     NaN,
                     1.0;
-                    oracle=(value=NaN, deriv=want),
+                    reference=(value=NaN, deriv=want),
                     output_tangent=1.0,
                     mode=ReverseMode,
                 ),
@@ -2348,7 +2348,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                 IntrinsicsWrappers.min_float_fast,
                 CoDual(1.0, 1.0),
                 CoDual(1.0, 2.0);
-                oracle=(value=1.0, deriv=2.0),
+                reference=(value=1.0, deriv=2.0),
                 mode=ForwardMode,
             ),
         )

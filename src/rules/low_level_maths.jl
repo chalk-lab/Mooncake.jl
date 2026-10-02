@@ -880,7 +880,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 return TestCase(
                     significand,
                     CoDual(x, P(1));
-                    oracle=(value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))),
+                    reference=(
+                        value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))
+                    ),
                     output_tangent=P(1),
                 )
             end,
@@ -923,7 +925,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 rvs = (NoRData(), dy, map(_ -> NoRData(), args)...)
                 output_tangent = f === frexp ? (seed, NoTangent()) : seed
                 opts = (
-                    oracle=(value=y, deriv=(fwd=fwd, rvs=rvs)),
+                    reference=(value=y, deriv=(fwd=fwd, rvs=rvs)),
                     output_tangent=output_tangent,
                 )
                 return TestCase(f, CoDual(seed, seed), args...; opts...)
@@ -938,14 +940,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 TestCase(
                     tan,
                     CoDual(x, x);
-                    oracle=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
+                    reference=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
                     output_tangent=x,
                 )
             end,
             TestCase(
                 asinh,
                 CoDual(Float16(1000), Float16(1));
-                oracle=(
+                reference=(
                     value=asinh(Float16(1000)),
                     deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
                 ),
@@ -954,7 +956,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             TestCase(
                 acosh,
                 CoDual(Float16(1000), Float16(1));
-                oracle=(
+                reference=(
                     value=acosh(Float16(1000)),
                     deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
                 ),
@@ -967,7 +969,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     atan,
                     CoDual(x, 1.0),
                     CoDual(x, 0.0);
-                    oracle=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
+                    reference=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
                     mode=ForwardMode,
                 )
             end,
@@ -978,7 +980,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     atan,
                     CoDual(x, 0.0),
                     CoDual(x, 0.0);
-                    oracle=(
+                    reference=(
                         deriv=(NoRData(), d, -d),
                         cmp=(a, b) ->
                             isequal(a[1], b[1]) &&
@@ -1008,7 +1010,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (sec, Float16(π / 2)),
         ]) do (f, x)
             z = zero(x)
-            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
+            opts = (reference=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
             return TestCase(f, CoDual(x, z); opts...)
         end,
         # At hypot's singular origin, FD cannot pin the zero-derivative convention.
@@ -1017,7 +1019,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             map(Iterators.product([Float16, Float32, Float64], 1:3)) do (P, arity)
                 seeds = ntuple(_ -> CoDual(P(0), P(1)), arity)
                 rvs = (NoRData(), ntuple(_ -> P(0), arity)...)
-                opts = (oracle=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1))
+                opts = (
+                    reference=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1)
+                )
                 return TestCase(hypot, seeds...; opts...)
             end,
         ),
