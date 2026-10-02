@@ -96,9 +96,10 @@ primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tupl
 
 ### The fused exception
 
-A handful of primitives get the value and the derivative factor from one call, and those write the
-arithmetic inline in both rules rather than delegating to the `NDual` overload. The clusters are
-`sin`/`cos`/`tan`, `sind`/`cosd`/`tand` and `sinpi`/`cospi`, each backed by one `sincos`-family call:
+The `sin`/`cos`, `sind`/`cosd`, and `sinpi`/`cospi` rules obtain the value and derivative
+factor from a `sincos`-family call. The `tan` and `tand` rules instead derive their coefficient
+from the computed `tan` or `tand` value. The fused rules inline this arithmetic in `frule!!`
+and `rrule!!`. The following block shows the `NDual` overload and forward rule for `cospi`:
 
 ```julia
 @inline function Base.cospi(a::NDual{T,N}) where {T,N}
