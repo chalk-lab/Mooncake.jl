@@ -182,6 +182,7 @@ function benchmark_rules!!(
     retries=0,
 )
     test_cases = reduce(vcat, map(first, test_case_data))
+    modes = reduce(vcat, map(x -> x[5], test_case_data))
     memory = map(x -> x[2], test_case_data)
     ranges = reduce(vcat, map(x -> x[3], test_case_data))
     tags = reduce(vcat, map(x -> x[4], test_case_data))
@@ -229,8 +230,8 @@ function benchmark_rules!!(
             )
 
             # Benchmark AD via Mooncake (forward), skipping cases that opt out via
-            # `skip_forward` (forward mode cannot represent them; the frule throws when run).
-            if !TestUtils._case_skip_forward(ranges[n])
+            # their selected mode (forward mode cannot represent some reverse cases).
+            if modes[n] !== Mooncake.ReverseMode
                 @info "Mooncake (Forward)"
                 rule = Mooncake.build_frule(args...)
                 lifts = map(
@@ -327,8 +328,7 @@ function combine_results(result, tag, _range, default_range)
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
     fallback_tag = string((result[1][1], map(Mooncake._typeof, result[1][2:end])...))
-    # `_range` (the case opts) may also carry flags like `skip_forward`; take the perf
-    # bounds from it when present, else fall back to the default.
+    # Inter-framework benchmarks leave the bounds unset.
     opts = _range isa NamedTuple ? _range : (;)
     return (
         tag=tag === nothing ? fallback_tag : tag,
@@ -347,13 +347,11 @@ function combine_results(result, tag, _range, default_range)
     )
 end
 
-# These benchmarks time the reverse rule against the primal, so a case that cannot run in
-# reverse has nothing to measure: a guard case must raise, and `skip_reverse` marks a rule
-# reverse mode refuses outright. Both share the registry with ordinary cases.
-function _benchmarkable(case)
-    opts = case[3]
-    isnothing(TestUtils._case_throws(opts)) || return false
-    return !TestUtils._case_skip_reverse(opts)
+# Reverse benchmarks exclude guard cases, forward-only cases and second-order-only cases.
+function _benchmarkable(tc::TestUtils.TestCase)
+    isnothing(get(tc.opts, :throws, nothing)) || return false
+    get(tc.opts, :mode, nothing) === Mooncake.ForwardMode && return false
+    return isnothing(tc.hvp) || (tc.hvp isa NamedTuple && get(tc.hvp, :first_order, false))
 end
 
 function benchmark_hand_written_rrules!!(rng_ctor)
@@ -371,9 +369,10 @@ function benchmark_hand_written_rrules!!(rng_ctor)
     ]) do s
         test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
         test_cases = filter(_benchmarkable, test_cases)
-        ranges = map(x -> x[3], test_cases)
+        ranges = map(tc -> tc.bench, test_cases)
+        modes = map(tc -> get(tc.opts, :mode, nothing), test_cases)
         tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return map(tc -> (tc.f, tc.args...), test_cases), memory, ranges, tags, modes
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03; retries=5)
 end
@@ -382,9 +381,10 @@ function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
         test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
         test_cases = filter(_benchmarkable, test_cases)
-        ranges = map(x -> x[3], test_cases)
+        ranges = map(tc -> tc.bench, test_cases)
+        modes = map(tc -> get(tc.opts, :mode, nothing), test_cases)
         tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return map(tc -> (tc.f, tc.args...), test_cases), memory, ranges, tags, modes
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
@@ -396,7 +396,10 @@ function benchmark_inter_framework_rules()
     memory = []
     ranges = fill(nothing, length(test_cases))
     return benchmark_rules!!(
-        [(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true, 1.0
+        [(test_cases, memory, ranges, tags, fill(nothing, length(test_cases)))],
+        (lb=0.1, ub=200),
+        true,
+        1.0,
     )
 end
 
