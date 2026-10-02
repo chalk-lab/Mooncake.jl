@@ -81,8 +81,8 @@ of real scalars. Structured seeds require isbits nondifferentiable state and dis
 array leaves. Other shapes, including composite `NoDual` state and a differentiable `f`,
 still chunk at width `W` through the generic sweep, which allocates. Cache construction
 stays passive (it transforms IR but does not run the function). `show(cache)` / `repr(cache)`
-report the resolved `chunk_size` and whether a width-`W` chunk rule was built (`chunk=true`
-once `tangent_dim > 1`).
+report the resolved `chunk_size` and set `chunk=true` when a rule with width greater than one
+has been built.
 
 Separately, the Hessian path exposed by `prepare_hessian_cache` /
 `value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient

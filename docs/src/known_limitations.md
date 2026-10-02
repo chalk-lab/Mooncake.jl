@@ -125,11 +125,14 @@ Both modes refuse such a call with an `ArgumentError`, including cached gradient
 the caller's objects before copying them into cache storage. Pass a copy, or read the value through
 an argument instead of a global.
 
-The check is by object identity, so it covers what can actually be shared: arrays, mutable structs,
-and aggregates containing them. A differentiable *immutable* constant that is also passed as an
-argument — `const C = ("a", 1.0)` — is not caught, and neither is a global read behind a call whose
-own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
-compares a rule's constants against that rule's own arguments.
+Each rule compares its recorded constants with its own arguments by identity, at the root only.
+It does not inspect objects nested inside either side. A global array `A` reached through an
+argument `(A,)`, or an array argument reached through a global tuple `(A,)`, can therefore still
+produce incorrect derivatives.
+
+A differentiable immutable constant that is also passed as an argument, such as
+`const C = ("a", 1.0)`, is not caught. Neither is a global read behind a call whose own
+arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`).
 
 In reverse mode, aliased arguments share derivative storage, so both positions report the one
 accumulated gradient. Forward gradients have the restrictions described below.
@@ -234,7 +237,8 @@ rule left behind. Copy them if you intend to retry.
 
 ## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). For globals, the guard and its remaining limitations are described in
+[Passing a global as an argument](@ref).
 
 A `NoTangent` parent:
 
@@ -281,9 +285,6 @@ ERROR: ArgumentError: An argument is the same object as a constant or global rea
 `X` and `x` are the same vector, and their derivative storage is separate, so the contribution
 through `X` would be dropped. Mooncake used to return `[1.0]` silently; it now raises. See
 [Passing a global as an argument](@ref) for the guard.
-
-Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
-`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
 
 ## Passing Differentiable Data as a Type
 
@@ -397,13 +398,15 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
-Not every array operation on a `CuArray` has a rule yet. `maximum`, `minimum`, `diff` and `sort` do
-not, in either their plain or their `f`-mapped form, and the higher-order reductions carry a rule
-only for the operators they were written for — `reduce` for `+` and `*`, `mapreduce` for `+`, and
-`accumulate` for `+`. Anything outside those sets is registered as a primitive whose rule raises an
-`ArgumentError` naming the operation, so you get a clear failure at the call rather than a wrong
-derivative or an obscure error from inside a kernel. Reductions over an array whose element type is
-non-differentiable are unaffected: those correctly give a zero derivative.
+Plain `maximum` and `minimum` on real floating-point `CuArray`s have rules in both modes,
+including dimension-wise reductions. Their mapped forms, `maximum(f, x)` and `minimum(f, x)`,
+remain unsupported. `diff` and `sort` on differentiable `CuArray`s also remain unsupported.
+Higher-order reductions support only specific operators: `reduce` supports `+` and `*`,
+`mapreduce` supports `+`, and `accumulate` supports `+`. Calls outside these sets raise an
+`ArgumentError` naming the operation.
+
+Non-differentiable array elements contribute no derivative. A differentiable `init` can still
+contribute, as in `maximum`, `minimum`, and `accumulate`.
 
 Forward mode over `NNlib.gather` on a GPU array refuses for a related reason: the traced kernel
 launch takes the process down with no catchable exception, so the rule raises instead. The
@@ -513,12 +516,12 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
-### Raw pointers into a nested array, at chunk width above one
+### Raw pointers into differentiable CPU arrays
 
-Forward mode stores an array's `N` lane partials in one element-major block, so a single lane is a
-strided view rather than a dense buffer. That is fine for a flat array — `pointer` and
-`unsafe_copyto!` on a `Vector{Float64}` work at any chunk width — but an array *of arrays* has no
-dense per-lane buffer for a raw pointer to address:
+Raw pointers into differentiable CPU arrays require chunk width one. At wider widths,
+each derivative lane is strided, so the pointer cannot address a dense tangent buffer.
+This restriction applies to flat arrays and arrays of arrays. Use `Config(chunk_size=1)`
+or reverse mode for these pointer-based calls:
 
 ```julia
 f(x, y, n) = (unsafe_copyto!(pointer(x), pointer(y), n); sum(sum, x))
@@ -526,9 +529,6 @@ x = [randn(3) for _ in 1:5]
 y = [randn(4) for _ in 1:6]
 # chunk width 1: fine. Above 1: ArgumentError naming the width.
 ```
-
-The rule refuses rather than dropping the derivative. Differentiate that call at chunk width 1, or
-use reverse mode, which is unaffected.
 
 Wrapping a pointer-to-pointer buffer with `unsafe_wrap` preserves its shadow pointer storage at
 chunk width one. Wider chunks raise `ArgumentError`: the wrapped array interleaves its shadow
@@ -553,7 +553,8 @@ the primal is now `Ptr{Cvoid}`. Re-typing that primal to `Ptr{Float64}` still le
 pointers unchanged; a scalar load then raises `ArgumentError` because the lane representation
 does not match `Ptr{Float64}`.
 
-Thus this example raises in both modes, at re-typing in reverse and at the load in forward:
+Thus this example raises at re-typing in reverse and at the load in forward at chunk width one.
+Wider forward chunks fail earlier, when the pointer is obtained:
 
 ```julia
 f(b::Vector{Float32}) = unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
