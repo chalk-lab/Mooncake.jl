@@ -1275,6 +1275,120 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         end
     end
 
+    for P in (Float32, Float64), bad in (NaN, Inf)
+        A, N, B = P[2 1; 0 3], fill(P(bad), 2, 2), ones(P, 2, 2)
+        cases = Any[
+            (Core.kwcall, (; check=false), LAPACK.getrf!, N),
+            (LAPACK.getri!, N, [1, 2]),
+            (LAPACK.potrf!, 'U', N),
+        ]
+        for lhs in (false, true)
+            append!(
+                cases,
+                [
+                    (LAPACK.trtrs!, 'U', 'N', 'N', lhs ? N : A, lhs ? B : N),
+                    (LAPACK.getrs!, 'N', lhs ? N : A, [1, 2], lhs ? B : N),
+                    (LAPACK.potrs!, 'U', lhs ? N : A, lhs ? B : N),
+                ],
+            )
+        end
+        for args in cases
+            seed = if first(args) === Core.kwcall
+                (zeros(P, 2, 2), fill(NoTangent(), 2), NoTangent())
+            elseif first(args) === LAPACK.potrf!
+                (zeros(P, 2, 2), NoTangent())
+            else
+                zeros(P, 2, 2)
+            end
+            fd = map(args) do x
+                d = fdata(zero_tangent(x))
+                d isa NoFData ? nothing : d
+            end
+            push!(
+                test_cases,
+                TestCase(
+                    args...;
+                    name="zero output cotangents with nonfinite operands",
+                    mode=ReverseMode,
+                    output_tangent=seed,
+                    reference=(
+                        deriv=(rvs=map(_ -> NoRData(), args), fdata=fd),
+                        cmp=TestUtils.isequal_ignoring_signed_zero,
+                    ),
+                ),
+            )
+        end
+    end
+    for P in (Float32, Float64),
+        bad in (NaN, Inf), f in (logdet, det, logabsdet),
+        W in (Symmetric, Hermitian)
+
+        S = W(isnan(bad) ? P[0 bad; bad 1] : P[1 bad; bad bad])
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                S;
+                name="zero seeds for symmetric determinant rules",
+                mode=ReverseMode,
+                output_tangent=f === logabsdet ? (zero(P), zero(P)) : zero(P),
+                reference=(
+                    deriv=(
+                        rvs=(NoRData(), NoRData()), fdata=(nothing, fdata(zero_tangent(S)))
+                    ),
+                    cmp=TestUtils.isequal_ignoring_signed_zero,
+                ),
+            ),
+        )
+    end
+    for P in (ComplexF32, ComplexF64), bad in (NaN, Inf)
+        push!(
+            test_cases,
+            TestCase(
+                Core.kwcall,
+                (; check=false),
+                LAPACK.getrf!,
+                fill(P(bad), 2, 2);
+                name="zero complex LU seed",
+                mode=ReverseMode,
+                output_tangent=(zeros(P, 2, 2), fill(NoTangent(), 2), NoTangent()),
+                reference=(
+                    deriv=(
+                        rvs=ntuple(_ -> NoRData(), 4),
+                        fdata=(nothing, nothing, nothing, zeros(P, 2, 2)),
+                    ),
+                    cmp=TestUtils.isequal_ignoring_signed_zero,
+                ),
+            ),
+        )
+    end
+    @static if VERSION > v"1.11-"
+        for P in (Float32, Float64, ComplexF32, ComplexF64), uplo in ('U', 'L', 'A')
+            A = P[2 1; 1 3]
+            before = fill(P(2), size(A))
+            d = CoDual(A, copy(before))
+            push!(
+                test_cases,
+                TestCase(
+                    LAPACK.lacpy!,
+                    d,
+                    d,
+                    uplo;
+                    name="lacpy! shared cotangent",
+                    mode=ReverseMode,
+                    output_tangent=zeros(P, 2, 2),
+                    reference=(
+                        deriv=(
+                            rvs=ntuple(_ -> NoRData(), 4),
+                            fdata=(nothing, before, before, nothing),
+                        ),
+                        cmp=(==),
+                    ),
+                ),
+            )
+        end
+    end
+
     return test_cases, memory
 end
 
