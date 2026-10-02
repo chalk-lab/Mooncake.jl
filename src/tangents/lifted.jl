@@ -744,6 +744,13 @@ end
     d, lane, IdDict{Any,Any}()
 )
 
+struct NumericStorage end
+struct StructuralStorage end
+
+@foldable @inline function _storage_kind(::Type{T}) where {T}
+    return T <: NDualEltype ? NumericStorage() : StructuralStorage()
+end
+
 """
     dual_type(::Val{N}, ::Type{P}) -> Type
 
@@ -791,26 +798,26 @@ Shapes defined so far:
 @foldable @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}
 end
-@foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return Nfwd._ndual_array_V(Array{T,D}, Val(N))
+@foldable @inline function dual_type(w::Val, ::Type{Array{T,D}}) where {T,D}
+    return _dual_type(_storage_kind(T), w, Array{T,D})
 end
-# `Base.RefValue{P<:NDualEltype}`: the `NDualRef` parallel-partials V (scalar analogue of `NDualArray`). A *distinct*
-# wrapper, so the generic struct recursion never re-lifts it (a bare `RefValue` shadow would be).
-# The generic struct rule below covers `Ref` of non-float / aggregate element types as usual.
-@foldable @inline function dual_type(
-    ::Val{N}, ::Type{<:Base.RefValue{P}}
-) where {N,P<:NDualEltype}
+@foldable @inline function _dual_type(
+    ::NumericStorage, w::Val, ::Type{Array{T,D}}
+) where {T,D}
+    return Nfwd._ndual_array_V(Array{T,D}, w)
+end
+@foldable @inline function _dual_type(
+    ::StructuralStorage, w::Val, ::Type{Array{T,D}}
+) where {T,D}
+    return Array{dual_type(w, T),D}
+end
+@foldable @inline function dual_type(w::Val, ::Type{Base.RefValue{P}}) where {P}
+    return _dual_type(_storage_kind(P), w, Base.RefValue{P})
+end
+@foldable @inline function _dual_type(
+    ::NumericStorage, ::Val{N}, ::Type{Base.RefValue{P}}
+) where {N,P}
     return NDualRef{P,N}
-end
-@foldable @inline function dual_type(
-    ::Val{N}, ::Type{Array{Complex{R},D}}
-) where {N,R<:IEEEFloat,D}
-    return Nfwd._ndual_array_V(Array{Complex{R},D}, Val(N))
-end
-# Arrays never collapse to whole NoDual: reverse always gives an array tangent.
-# Float/complex elements use NDualArray; all others recurse element-wise, including NoDual.
-@foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
-    return :(Array{dual_type(Val($N), $T),$D})
 end
 # Tuple recursion: head/tail cons (via `_dual_tuple_v`). Specialized per concrete tuple type by
 # Julia's normal dispatch, so concrete tuples resolve at compile time without an @generated function.
@@ -904,43 +911,34 @@ end
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
 # an NDualArray over `Memory{T}`: `Memory{T} → NDualArray{T, N, 1, Memory{T}}`.
 @static if VERSION >= v"1.11-rc4"
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{MemoryRef{T}}
-    ) where {N,T<:IEEEFloat}
+    for C in (:Memory, :MemoryRef)
+        @eval @foldable @inline function dual_type(w::Val, ::Type{$C{T}}) where {T}
+            return _dual_type(_storage_kind(T), w, $C{T})
+        end
+        @eval @foldable @inline function _dual_type(
+            ::StructuralStorage, w::Val, ::Type{$C{T}}
+        ) where {T}
+            return $C{dual_type(w, T)}
+        end
+    end
+    @foldable @inline function _dual_type(
+        ::NumericStorage, w::Val, ::Type{Memory{T}}
+    ) where {T}
+        return Nfwd._ndual_array_V(Memory{T}, w)
+    end
+    @foldable @inline function _dual_type(
+        ::NumericStorage, ::Val{N}, ::Type{MemoryRef{T}}
+    ) where {N,T}
         return NDualMemoryRef{T,N,Memory{T}}
-    end
-    @foldable @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T},NDual{T,N},NDualBlock{T,2}}
-    end
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{Memory{Complex{R}}}
-    ) where {N,R<:IEEEFloat}
-        return NDualArray{
-            Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}},NDualBlock{Complex{R},2}
-        }
-    end
-    # Complex `MemoryRef`: the memory.jl frules build/consume `NDualMemoryRef` for any
-    # `P<:NDualEltype` (complex included), so the canonical V must be `NDualMemoryRef`, not the
-    # element-wise `MemoryRef{Complex{NDual}}` the general fallback would give (mismatch ->
-    # MethodError on complex `push!`/grow). Parallels the float `MemoryRef` overload above.
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{MemoryRef{Complex{R}}}
-    ) where {N,R<:IEEEFloat}
-        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}
-    end
-    # Non-float Memory / MemoryRef recurse element-wise, including reverse pullback storage
-    # under forward-over-reverse. Float overloads above provide block-backed Vs.
-    @foldable @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
-        return :(Memory{dual_type(Val($N), $T)})
-    end
-    @foldable @generated function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T}
-        return :(MemoryRef{dual_type(Val($N), $T)})
     end
 end
 
 # Structural fallback: abstract P widens to Any; non-differentiable P gives NoDual.
 # Fields recurse uniformly, with seed factories coercing into the declared backing NamedTuple.
-@foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
+@foldable @inline dual_type(w::Val, P::Type) = _dual_type(StructuralStorage(), w, P)
+@foldable @generated function _dual_type(
+    ::StructuralStorage, ::Val{N}, ::Type{P}
+) where {N,P}
     # Deliberately does NOT distribute over `Union` the way reverse-mode `tangent_type`
     # union-splits: a non-concrete `P` (including any `Union`) widens to `Any`. `Lifted` is
     # invariant in its primal parameter, so a slot annotated `Lifted{Union{A,B},N,V}` cannot
@@ -1098,10 +1096,32 @@ end
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
 end
 
+for C in (Array, Base.RefValue)
+    D = C === Array ? Array : MutableTangent
+    @eval @inline lift(x::$C, dx::$D) = _lift(_storage_kind(eltype(x)), x, dx)
+    @eval @inline function lift(x::$C{T}, dx::$D, c::Union{Nothing,IdDict}) where {T}
+        return _lift(_storage_kind(T), x, dx, c)
+    end
+end
+@inline lift(x::P, dx::MutableTangent, c::Union{Nothing,IdDict}) where {P} = _lift(
+    StructuralStorage(), x, dx, c
+)
+@static if VERSION >= v"1.11-rc4"
+    for C in (Memory, MemoryRef)
+        @eval @inline lift(x::$C, dx::$C) = _lift(_storage_kind(eltype(x)), x, dx)
+        @eval @inline function lift(x::$C, dx::$C, c::Union{Nothing,IdDict})
+            return _lift(_storage_kind(eltype(x)), x, dx, c)
+        end
+        @eval @inline _lift(k::StructuralStorage, x::$C, dx::$C) = _lift(k, x, dx, nothing)
+    end
+end
+@inline _lift(k::StructuralStorage, x::Array, dx::Array) = _lift(k, x, dx, nothing)
+@inline _lift(k, x::Base.RefValue, dx::MutableTangent) = _lift(k, x, dx, nothing)
+
 # lift(primal, tangent_type(P)) is the width-1 user-JVP boundary. Width-N basis seeds
 # are built with basis_lifted!! and Lifted{P,N}.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
-@inline function lift(x::A, ẋ::A) where {E<:NDualEltype,D,A<:Array{E,D}}
+@inline function _lift(::NumericStorage, x::A, ẋ::A) where {E<:NDualEltype,D,A<:Array{E,D}}
     return Lifted{A,1}(x, NDualArray{E,1,D,A}(x, (ẋ,)))
 end
 @inline function lift(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
@@ -1135,7 +1155,9 @@ end
     # values are PACKED into a fresh block (copy semantics, like the `Array` lift): `unlift`
     # reads the result back out of the block via the lane accessor, so the round-trip is
     # consistent even though `ẋ` itself is not aliased.
-    @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:NDualEltype}
+    @inline function _lift(
+        ::NumericStorage, x::MemoryRef{T}, ẋ::MemoryRef{T}
+    ) where {T<:NDualEltype}
         len = length(ẋ.mem)
         block = NDualBlock{T,2}(undef, 1, len)
         copyto!(getfield(block, :parent), 1, ẋ.mem, 1, len)
@@ -1150,8 +1172,8 @@ end
     # Honour the aliasing cache, as the float `Array` overload does and for the same reason: the V
     # packs a fresh block per lift, so without it two aliased primals get distinct V objects and a
     # mutation through one is invisible through the other.
-    @inline function lift(
-        x::MemoryRef{T}, ẋ::MemoryRef{T}, c::Union{Nothing,IdDict}
+    @inline function _lift(
+        ::NumericStorage, x::MemoryRef{T}, ẋ::MemoryRef{T}, c::Union{Nothing,IdDict}
     ) where {T<:NDualEltype}
         c isa IdDict || return lift(x, ẋ)
         haskey(c, x) && return c[x]::Lifted{MemoryRef{T},1}
@@ -1179,11 +1201,11 @@ end
     # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the NDualArray,
     # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
     # field is lifted under forward-over-reverse, or a Memory primal is seeded.
-    @inline function lift(x::A, ẋ::A) where {E<:NDualEltype,A<:Memory{E}}
+    @inline function _lift(::NumericStorage, x::A, ẋ::A) where {E<:NDualEltype,A<:Memory{E}}
         return Lifted{A,1}(x, NDualArray{E,1,1,A}(x, (ẋ,)))
     end
-    @inline function lift(
-        x::A, ẋ::A, c::Union{Nothing,IdDict}
+    @inline function _lift(
+        ::NumericStorage, x::A, ẋ::A, c::Union{Nothing,IdDict}
     ) where {E<:NDualEltype,A<:Memory{E}}
         c isa IdDict || return lift(x, ẋ)
         haskey(c, x) && return c[x]::Lifted{A,1}
@@ -1194,13 +1216,16 @@ end
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
     # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{<:NoTangent}`
     # overload and `dual_type(Memory{T}) = Memory{NoDual}`.
-    @inline lift(x::Memory, ẋ::Memory{<:NoTangent}) = Lifted{typeof(x),1}(
+    @inline _lift(::StructuralStorage, x::Memory, ẋ::Memory{<:NoTangent}) = Lifted{
+        typeof(x),1
+    }(
         x, map(_ -> NoDual(), ẋ)
     )
     # General element-wise `Memory` (differentiable non-float / nested / `Any` element):
     # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
-    @inline lift(x::Memory, ẋ::Memory) = lift(x, ẋ, nothing)
-    @inline function lift(x::Memory, ẋ::Memory, c::Union{Nothing,IdDict})
+    @inline function _lift(
+        ::StructuralStorage, x::Memory, ẋ::Memory, c::Union{Nothing,IdDict}
+    )
         # A top-level call arrives with `c === nothing`; upgrade it to a shared `IdDict` as every
         # other aggregate lift does, or two elements holding one array get independent partials
         # and the JVP is silently wrong. Register before filling — see the `Array` lift — so a
@@ -1217,9 +1242,10 @@ end
     end
     # General element-wise `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
     # element): lift the `.mem` via the Memory lift, then `memoryref` at the
-    # offset. The `MemoryRef{IEEEFloat}` `NDualMemoryRef` overload above is more specific.
-    @inline lift(x::MemoryRef, ẋ::MemoryRef) = lift(x, ẋ, nothing)
-    @inline function lift(x::MemoryRef, ẋ::MemoryRef, c::Union{Nothing,IdDict})
+    # offset. Numeric storage uses the `NDualMemoryRef` methods above.
+    @inline function _lift(
+        ::StructuralStorage, x::MemoryRef, ẋ::MemoryRef, c::Union{Nothing,IdDict}
+    )
         mem_v = tangent(lift(x.mem, ẋ.mem, c))
         ref_v = _memoryref_at(mem_v, Core.memoryrefoffset(x))
         return Lifted{typeof(x),1,typeof(ref_v)}(x, ref_v)
@@ -1253,13 +1279,9 @@ end
     return :(Backing(($(exprs...),)))
 end
 # `Ref{P<:NDualEltype}` (V `NDualRef`): build the parallel partials buffer from the reverse
-# tangent's scalar (its `:x` field is non-always-init, hence `PossiblyUninitTangent`-wrapped). More
-# specific than the generic `MutableTangent` lift below, which would route through `MutableDual`.
-@inline lift(x::Base.RefValue{P}, ẋ::MutableTangent) where {P<:NDualEltype} = lift(
-    x, ẋ, nothing
-)
-@inline function lift(
-    x::Base.RefValue{P}, ẋ::MutableTangent, c::Union{Nothing,IdDict}
+# tangent's scalar (its `:x` field is non-always-init, hence `PossiblyUninitTangent`-wrapped).
+@inline function _lift(
+    ::NumericStorage, x::Base.RefValue{P}, ẋ::MutableTangent, c::Union{Nothing,IdDict}
 ) where {P<:NDualEltype}
     # Register storage-owning leaves so repeated Refs share partials. Build here because
     # the two-argument entry delegates to this method with nothing.
@@ -1281,7 +1303,9 @@ end
     return Lifted{P,1}(x, ImmutableDual(_lift_backing(x, ẋ.fields, backing, d)))
 end
 @inline lift(x::P, ẋ::MutableTangent) where {P} = lift(x, ẋ, nothing)
-@inline function lift(x::P, ẋ::MutableTangent, c::Union{Nothing,IdDict}) where {P}
+@inline function _lift(
+    ::StructuralStorage, x::P, ẋ::MutableTangent, c::Union{Nothing,IdDict}
+) where {P}
     backing = fieldtype(dual_type(Val(1), P), 1)
     LT = Lifted{P,1,MutableDual{backing}}
     # A mutable struct may reference itself (directly or through a cycle), so
@@ -1305,16 +1329,18 @@ end
 # mirrors it element-wise as an `Array{NoDual}` (coherent with `dual_type(Array{T,D}) =
 # Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the
 # element-wise overload below when a cache is threaded.
-@inline lift(x::Array, ẋ::Array{<:NoTangent}) = Lifted{typeof(x),1}(
+@inline _lift(::StructuralStorage, x::Array, ẋ::Array{<:NoTangent}) = Lifted{typeof(x),1}(
     x, map(_ -> NoDual(), ẋ)
 )
-@inline lift(x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = lift(x, ẋ)
+@inline _lift(k::StructuralStorage, x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = _lift(
+    k, x, ẋ
+)
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they match the
 # element-wise overload below by element type. Honor the aliasing cache so two aliased primals
 # share ONE V, matching the reverse invariant: the V's block is a fresh copy per lift, so without
 # the cache aliased arrays get distinct V objects.
-@inline function lift(
-    x::A, ẋ::A, c::Union{Nothing,IdDict}
+@inline function _lift(
+    ::NumericStorage, x::A, ẋ::A, c::Union{Nothing,IdDict}
 ) where {E<:NDualEltype,D,A<:Array{E,D}}
     c isa IdDict || return lift(x, ẋ)
     haskey(c, x) && return c[x]::Lifted{A,1}
@@ -1360,9 +1386,10 @@ end
 end
 # Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
 # built element-wise from the per-element lift (coherent with `dual_type` above).
-# The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
-@inline lift(x::Array{T,D}, ẋ::Array) where {T,D} = lift(x, ẋ, nothing)
-@inline function lift(x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}) where {T,D}
+# Numeric storage uses the block-backed methods above.
+@inline function _lift(
+    ::StructuralStorage, x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}
+) where {T,D}
     # Register in the cache *before* filling, so aliased occurrences of `x` share one V (matching
     # the reverse `zero_tangent_internal(::Array)` aliasing invariant) and self-referential arrays
     # terminate. A top-level call may arrive with `c === nothing` (the 2-arg entry); upgrade it to
@@ -1429,19 +1456,25 @@ end
 # Build an `NDualArray` whose `primal` aliases the user's array and whose lane-partials
 # block is slot-local — no aliasing with the user's array.
 
-@inline function zero_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
+@inline function _zero_dual(
+    ::NumericStorage, ::Val{N}, x::A
+) where {N,E<:NDualEltype,D,A<:Array{E,D}}
     return NDualArray{E,N,D,A}(x)
 end
-@inline function uninit_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
+@inline function _uninit_dual(
+    ::NumericStorage, ::Val{N}, x::A
+) where {N,E<:NDualEltype,D,A<:Array{E,D}}
     return NDualArray{E,N,D,A}(x, NDualBlock{E,D + 1}(undef, N, size(x)...))
 end
 
 # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` factories above): fresh
 # slot-local parallel partials. Zero and uninit coincide (the partials are bits scalars).
-@inline function zero_dual(::Val{N}, ::Base.RefValue{P}) where {N,P<:NDualEltype}
+@inline function _zero_dual(
+    ::NumericStorage, ::Val{N}, ::Base.RefValue{P}
+) where {N,P<:NDualEltype}
     return NDualRef{P,N}()
 end
-@inline uninit_dual(w::Val{N}, r::Base.RefValue{P}) where {N,P<:NDualEltype} = zero_dual(
+@inline _uninit_dual(::NumericStorage, w::Val{N}, r::Base.RefValue{P}) where {N,P<:NDualEltype} = zero_dual(
     w, r
 )
 
@@ -1460,13 +1493,13 @@ end
     return ntuple(_ -> bitcast(fieldtype(V, 1), x), w)
 end
 
-@inline function randn_dual(
-    ::Val{N}, rng::AbstractRNG, x::A
+@inline function _randn_dual(
+    ::NumericStorage, ::Val{N}, rng::AbstractRNG, x::A
 ) where {N,E<:NDualEltype,D,A<:Array{E,D}}
     return NDualArray{E,N,D,A}(x, ntuple(_ -> randn(rng, E, size(x)), Val(N)))
 end
-@inline function randn_dual(
-    ::Val{N}, rng::AbstractRNG, ::Base.RefValue{P}
+@inline function _randn_dual(
+    ::NumericStorage, ::Val{N}, rng::AbstractRNG, ::Base.RefValue{P}
 ) where {N,P<:NDualEltype}
     return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> randn(rng, P), Val(N))))
 end
@@ -1474,9 +1507,22 @@ end
 # Element-wise array seeds skip undefined slots; numeric elements use NDualArray above.
 # Keep dual_type in the caller's world so extension overloads remain visible.
 for factory in (:zero_dual, :uninit_dual, :randn_dual)
+    storage_factory = Symbol(:_, factory)
     rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
     rng_vals = factory === :randn_dual ? (:rng,) : ()
-    @eval @inline function $factory(w::Val{N}, $(rng_args...), x::Array{T,D}) where {N,T,D}
+    containers = @static if VERSION >= v"1.11-rc4"
+        (Array, Base.RefValue, Memory, MemoryRef)
+    else
+        (Array, Base.RefValue)
+    end
+    for C in containers
+        @eval @inline function $factory(w::Val, $(rng_args...), x::$C{T}) where {T}
+            return $storage_factory(_storage_kind(T), w, $(rng_vals...), x)
+        end
+    end
+    @eval @inline function $storage_factory(
+        ::StructuralStorage, w::Val{N}, $(rng_args...), x::Array{T,D}
+    ) where {N,T,D}
         v = similar(x, dual_type(w, T))
         @inbounds for i in eachindex(x)
             isassigned(x, i) && (v[i] = $factory(w, $(rng_vals...), x[i]))
@@ -1548,7 +1594,13 @@ for (f, helper) in (
 )
     rng_args = f === :randn_dual ? (:(rng::AbstractRNG),) : ()
     rng_vals = f === :randn_dual ? (:rng,) : ()
-    @eval @generated function $f(::Val{N}, $(rng_args...), x::P) where {N,P}
+    storage_factory = Symbol(:_, f)
+    @eval @inline $f(w::Val, $(rng_args...), x) = $storage_factory(
+        StructuralStorage(), w, $(rng_vals...), x
+    )
+    @eval @generated function $storage_factory(
+        ::StructuralStorage, ::Val{N}, $(rng_args...), x::P
+    ) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
         # NoDual has no backing to seed. Resolve dual_type at the call world.
         if fieldcount(P) == 0
@@ -1633,9 +1685,24 @@ for (factory, internal) in (
 )
     rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
     rng_vals = factory === :randn_dual ? (:rng,) : ()
+    containers = @static if VERSION >= v"1.11-rc4"
+        (Array, Base.RefValue, Memory, MemoryRef)
+    else
+        (Array, Base.RefValue)
+    end
+    for C in containers
+        @eval @inline function $internal(
+            w::Val, $(rng_args...), x::$C{T}, d::MaybeCache
+        ) where {T}
+            return $internal(_storage_kind(T), w, $(rng_vals...), x, d)
+        end
+    end
+    @eval @inline $internal(w::Val, $(rng_args...), x, d::MaybeCache) = $internal(
+        StructuralStorage(), w, $(rng_vals...), x, d
+    )
     @eval begin
         @generated function $internal(
-            w::Val{N}, $(rng_args...), x::P, d::MaybeCache
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::P, d::MaybeCache
         ) where {N,P}
             # `fieldcount(P) == 0` is world-independent (gen-time); the
             # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
@@ -1674,7 +1741,11 @@ for (factory, internal) in (
         # Assert cache hits to the concrete V or IdDict{Any,Any} poisons inference.
         # Numeric elements cannot cycle; their blocks still share the backing Memory's V.
         function $internal(
-            w::Val{N}, $(rng_args...), x::Array{<:NDualEltype}, d::MaybeCache
+            ::NumericStorage,
+            w::Val{N},
+            $(rng_args...),
+            x::Array{<:NDualEltype},
+            d::MaybeCache,
         ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             # Derive the block from the backing `Memory`'s (see `_derived_array_dual`). Only with a
@@ -1696,7 +1767,9 @@ for (factory, internal) in (
         end
         # Register before filling: nested arrays may alias or cycle. Thread the same cache
         # through children, unlike the deliberately cache-free factories.
-        function $internal(w::Val{N}, $(rng_args...), x::Array, d::MaybeCache) where {N}
+        function $internal(
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::Array, d::MaybeCache
+        ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
             d[x] = shell
@@ -1708,7 +1781,7 @@ for (factory, internal) in (
         # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` branch): build the
         # wrapper directly and register by identity, so the generic struct recursion never re-lifts it.
         function $internal(
-            w::Val{N}, $(rng_args...), x::Base.RefValue{P}, d::MaybeCache
+            ::NumericStorage, w::Val{N}, $(rng_args...), x::Base.RefValue{P}, d::MaybeCache
         ) where {N,P<:NDualEltype}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = $factory(w, $(rng_vals...), x)
@@ -1737,7 +1810,7 @@ for (factory, internal) in (
         # With a cache, MemoryRef must share the backing Memory's partials. Leaf elements
         # window its block; aggregates reference its element-wise shell. NoCache owns a block.
         @eval function $internal(
-            w::Val{N}, $(rng_args...), x::MemoryRef{E}, d::MaybeCache
+            ::NumericStorage, w::Val{N}, $(rng_args...), x::MemoryRef{E}, d::MaybeCache
         ) where {N,E<:NDualEltype}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = if d isa NoCache
@@ -1753,7 +1826,7 @@ for (factory, internal) in (
             return v
         end
         @eval function $internal(
-            w::Val{N}, $(rng_args...), x::MemoryRef, d::MaybeCache
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::MemoryRef, d::MaybeCache
         ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = if d isa NoCache
@@ -1769,20 +1842,23 @@ for (factory, internal) in (
         # way the element-wise `Array` branch does, or two elements holding one array get
         # independent partials: registering `x` alone shares the container, not what is inside it.
         @eval function $internal(
-            w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
         ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            if eltype(x) <: NDualEltype
-                v = $factory(w, $(rng_vals...), x)
-                d[x] = v
-                return v
-            end
             shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
             d[x] = shell
             @inbounds for i in eachindex(x)
                 isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
             end
             return shell
+        end
+        @eval function $internal(
+            ::NumericStorage, w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
+        ) where {N}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            v = $factory(w, $(rng_vals...), x)
+            d[x] = v
+            return v
         end
     end
 end
@@ -2096,31 +2172,39 @@ end
 # `zero_dual` is the canonical MemoryRef seed factory (bits-element dense zero-init).
 
 @static if VERSION >= v"1.11-rc4"
-    # Numeric Memory / MemoryRef seeds must stay more specific than element-wise factories.
+    # Storage dispatch keeps numeric seeds separate from element-wise factories.
     # MemoryRef blocks cover the whole backing Memory, with the ref's column at its offset.
-    @inline function zero_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
+    @inline function _zero_dual(
+        ::NumericStorage, ::Val{N}, p::MemoryRef{E}
+    ) where {N,E<:NDualEltype}
         return NDualMemoryRef{E,N,Memory{E}}(p)
     end
-    @inline function uninit_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
+    @inline function _uninit_dual(
+        ::NumericStorage, ::Val{N}, p::MemoryRef{E}
+    ) where {N,E<:NDualEltype}
         return NDualMemoryRef{E,N,Memory{E}}(
             p, NDualBlock{E,2}(undef, N, length(p.mem)), Core.memoryrefoffset(p)
         )
     end
-    @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, p::MemoryRef{E}
+    @inline function _randn_dual(
+        ::NumericStorage, ::Val{N}, rng::AbstractRNG, p::MemoryRef{E}
     ) where {N,E<:NDualEltype}
         len = length(p.mem)
         block = NDualBlock{E,2}(randn(rng, E, N * len), (N, len))
         return NDualMemoryRef{E,N,Memory{E}}(p, block, Core.memoryrefoffset(p))
     end
-    @inline function zero_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
+    @inline function _zero_dual(
+        ::NumericStorage, ::Val{N}, m::Memory{E}
+    ) where {N,E<:NDualEltype}
         return NDualArray{E,N,1,Memory{E}}(m)
     end
-    @inline function uninit_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
+    @inline function _uninit_dual(
+        ::NumericStorage, ::Val{N}, m::Memory{E}
+    ) where {N,E<:NDualEltype}
         return NDualArray{E,N,1,Memory{E}}(m, NDualBlock{E,2}(undef, N, length(m)))
     end
-    @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, m::Memory{E}
+    @inline function _randn_dual(
+        ::NumericStorage, ::Val{N}, rng::AbstractRNG, m::Memory{E}
     ) where {N,E<:NDualEltype}
         return NDualArray{E,N,1,Memory{E}}(
             m, ntuple(_ -> Memory{E}(randn(rng, E, length(m))), Val(N))
@@ -2129,9 +2213,12 @@ end
     # Non-float Memory seeds recurse element-wise. Plain functions keep extension dual_type
     # overloads visible at the caller's world; foldability preserves concrete element types.
     for factory in (:zero_dual, :uninit_dual, :randn_dual)
+        storage_factory = Symbol(:_, factory)
         rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
         rng_vals = factory === :randn_dual ? (:rng,) : ()
-        @eval @inline function $factory(::Val{N}, $(rng_args...), m::Memory{T}) where {N,T}
+        @eval @inline function $storage_factory(
+            ::StructuralStorage, ::Val{N}, $(rng_args...), m::Memory{T}
+        ) where {N,T}
             v = Memory{dual_type(Val(N), T)}(undef, length(m))
             @inbounds for i in eachindex(m)
                 isassigned(m, i) && (v[i] = $factory(Val(N), $(rng_vals...), m[i]))
@@ -2139,16 +2226,20 @@ end
             return v
         end
     end
-    @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+    @inline function _zero_dual(::StructuralStorage, ::Val{N}, p::MemoryRef{T}) where {N,T}
         return _memoryref_at(zero_dual(Val(N), p.mem), Core.memoryrefoffset(p))
     end
     # `MemoryRef`'s V is built via `memoryref` over the `.mem`'s V (a plain
     # `MemoryRef` can't be constructed field-wise from a raw `Ptr`), so mirror
     # `zero_dual` rather than fall through to the generic struct seed.
-    @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+    @inline function _uninit_dual(
+        ::StructuralStorage, ::Val{N}, p::MemoryRef{T}
+    ) where {N,T}
         return _memoryref_at(uninit_dual(Val(N), p.mem), Core.memoryrefoffset(p))
     end
-    @inline function randn_dual(::Val{N}, rng::AbstractRNG, p::MemoryRef{T}) where {N,T}
+    @inline function _randn_dual(
+        ::StructuralStorage, ::Val{N}, rng::AbstractRNG, p::MemoryRef{T}
+    ) where {N,T}
         return _memoryref_at(randn_dual(Val(N), rng, p.mem), Core.memoryrefoffset(p))
     end
 end
