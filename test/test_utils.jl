@@ -316,7 +316,8 @@ end
     end
 
     @testset "a pinned tangent spreads over distinct lanes" begin
-        # Identical directions would let broadcasting lane 1 pass the comparison with each width-1 result.
+        # Identical directions would let broadcasting lane 1 pass the comparison with each
+        # width-1 result.
         lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
         p = lanes(CoDual(2.0, 1.5), 8).partials
         @test p[1] == 1.5                      # lane 1 is the pin exactly

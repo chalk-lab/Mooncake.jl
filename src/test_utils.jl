@@ -786,7 +786,8 @@ function test_frule_correctness(
 end
 
 # Only allow lane tangents that lift back to width-1 seeds and compare with
-# `has_equal_data`. Other shapes skip the width-1 result comparison, not the invariant check.
+# `has_equal_data`. Other shapes skip the width-1 result comparison, not the invariant
+# check.
 _chunk_lane_checkable(::Mooncake.Nfwd.NDual) = true
 _chunk_lane_checkable(::Mooncake.Nfwd.NDualArray) = true
 _chunk_lane_checkable(::Complex{<:Mooncake.Nfwd.NDual}) = true
@@ -905,7 +906,7 @@ wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadca
 across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
 `.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
 partials match what the width-1 frule produces when seeded with *that lane's* direction — the
-width-1 path being finite-difference-validated above, so it supplies the trusted width-1 result.
+width-1 path being validated by finite differences above, so its result is trusted.
 
 Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
 is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
@@ -923,7 +924,7 @@ function test_frule(
     x::Vararg{Any,P};
     sig,
     frule=Mooncake.frule!!,
-    widths=(1, 8),
+    widths=_fwd_widths(false, nothing),
     is_primitive::Bool=true,
     interface_only::Bool=false,
     perf_flag::Symbol=:none,
@@ -936,19 +937,21 @@ function test_frule(
 ) where {P}
     @nospecialize rng x
     # Share width-1 seeds across checks; CoDual arguments retain their pinned tangents.
-    if 1 in widths
+    if 1 in widths || !isnothing(reference)
         # One cache across the tuple: seeding each argument separately gives two arguments over
         # one array independent partials, so an aliasing rule could not be tested at all.
         x_ẋ = _seed_lifteds(Val(1), rng, x)
-        interface_only || test_frule_reuse(x_ẋ...; frule)
-        test_frule_interface(x_ẋ...; frule, is_primitive)
-        if !interface_only
-            test_frule_correctness(
-                rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step, reference
-            )
-            isnothing(reference) || test_frule_reference(x_ẋ...; frule, reference)
+        if 1 in widths
+            interface_only || test_frule_reuse(x_ẋ...; frule)
+            test_frule_interface(x_ẋ...; frule, is_primitive)
+            if !interface_only
+                test_frule_correctness(
+                    rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step, reference
+                )
+            end
         end
-        test_frule_performance(perf_flag, frule, x_ẋ...)
+        isnothing(reference) || test_frule_reference(x_ẋ...; frule, reference)
+        1 in widths && test_frule_performance(perf_flag, frule, x_ẋ...)
     end
 
     # Derived rules also run chunked checks; only the case's widths control these.
@@ -962,11 +965,16 @@ function test_frule(
     # Chunk checks must not change subsequent finite-difference probes (including reverse mode).
     chunk_rng = copy(rng)
     for N in chunked_widths
+        if !isnothing(reference) && haskey(reference, :lanes)
+            test_frule_reference_lanes(chunk_rng, x, y_true; sig, reference, N, debug_mode)
+            continue
+        end
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
         seeds = _seed_lifteds(Val(N), chunk_rng, _deepcopy_all(x))
         # Direct and width-1 results may reduce in different orders.
         prec = _partials_precision(map(tangent, seeds))
-        # Only liftable lane tangents can form the width-1 result; invariants check all shapes.
+        # Only liftable lane tangents can form the width-1 result; invariants check all
+        # shapes.
         # Equal lane reads carry no direction and must not veto other arguments.
         # Measure relevance: predicting it from V's type can silently bypass an unsupported shape.
         irrelevant = map(
@@ -992,6 +1000,9 @@ function test_frule(
             nothing
         end
         y_ẏ = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
+        if !isnothing(reference) && haskey(reference, :value)
+            _test_reference(primal(y_ẏ), reference.value, reference, "reference.value")
+        end
         @test has_equal_data(y_true, primal(y_ẏ); float_precision=prec)
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
         # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
@@ -1218,8 +1229,10 @@ function _reference_cmp(reference)
     return (a, b) -> _reference_isapprox(a, b; tolerances...)
 end
 
-const _REFERENCE_FIELDS = (:value, :deriv, :cmp, :rtol, :atol)
-function _check_reference(reference, args; mode=nothing)
+const _REFERENCE_FIELDS = (:value, :deriv, :cmp, :rtol, :atol, :lanes)
+function _check_reference(
+    reference, args; mode=nothing, skip_chunked=false, chunk_size=nothing
+)
     reference isa NamedTuple ||
         throw(ArgumentError("`reference` must be a NamedTuple; got $(typeof(reference))."))
     unknown = filter(k -> !(k in _REFERENCE_FIELDS), keys(reference))
@@ -1230,7 +1243,17 @@ function _check_reference(reference, args; mode=nothing)
     )
     haskey(reference, :value) ||
         haskey(reference, :deriv) ||
-        throw(ArgumentError("`reference` asserts nothing: supply `value` or `deriv`."))
+        haskey(reference, :lanes) ||
+        throw(
+            ArgumentError(
+                "`reference` asserts nothing: supply `value`, `deriv` or `lanes`."
+            ),
+        )
+    if mode === ReverseMode
+        haskey(reference, :lanes) && throw(
+            ArgumentError("`reference.lanes` requires forward mode in the test case.")
+        )
+    end
     if haskey(reference, :deriv) && reference.deriv isa NamedTuple
         d = reference.deriv
         isempty(d) && throw(ArgumentError("`reference.deriv` asserts nothing."))
@@ -1264,6 +1287,49 @@ function _check_reference(reference, args; mode=nothing)
                 "partial reverse `reference.deriv`: unpinned $(join(unpinned, ", ")); " *
                 "pin rvs and every argument's fdata (position 1 is the function).",
             ),
+        )
+    end
+    if haskey(reference, :lanes)
+        N = maximum(_fwd_widths(skip_chunked, chunk_size))
+        !skip_chunked && N > 1 || throw(
+            ArgumentError("`reference.lanes` requires a chunk width greater than one.")
+        )
+        lanes = reference.lanes
+        if lanes !== :inactive_zero
+            lanes isa Tuple && length(lanes) > 1 || throw(
+                ArgumentError(
+                    "`reference.lanes` must be `:inactive_zero` or a tuple with one `(seed=..., value=...)` entry per lane.",
+                ),
+            )
+            length(lanes) == N || throw(
+                ArgumentError(
+                    "`reference.lanes` must have $N entries to match `chunk_size`."
+                ),
+            )
+            for (k, lane) in enumerate(lanes)
+                lane isa NamedTuple && Set(keys(lane)) == Set((:seed, :value)) || throw(
+                    ArgumentError(
+                        "`reference.lanes[$k]` needs exactly `seed` and `value`."
+                    ),
+                )
+                lane.seed isa Tuple && length(lane.seed) == length(args) || throw(
+                    ArgumentError(
+                        "`reference.lanes[$k].seed` must be a tuple over `(f, args...)` of length $(length(args)).",
+                    ),
+                )
+            end
+        end
+        slots = try
+            tangent(zero_lifted(Val(1), __get_primals(args)))
+        catch err
+            throw(
+                ArgumentError(
+                    "`reference.lanes` cannot seed these arguments: $(sprint(showerror, err))",
+                ),
+            )
+        end
+        all(_chunk_lane_checkable, slots) || throw(
+            ArgumentError("`reference.lanes` requires `_chunk_lane_checkable` arguments."),
         )
     end
     for key in (:rtol, :atol)
@@ -1354,7 +1420,8 @@ function test_frule_reference(x_ẋ::Vararg{Any,P}; frule, reference) where {P}
     return nothing
 end
 
-# Keep the seeded arguments alive: mutable cotangents live there, not in the pullback return.
+# Keep the seeded arguments alive: mutable cotangents live there, not in the pullback
+# return.
 function test_rrule_reference(
     x_x̄::Vararg{Any,P}; rrule, reference, output_tangent
 ) where {P}
@@ -1386,6 +1453,129 @@ function test_rrule_reference(
             isnothing(expected[i]) && continue
             _test_reference(
                 tangent(seeds[i]), expected[i], reference, "reference.deriv.fdata[$i]"
+            )
+        end
+    end
+    return nothing
+end
+
+# Lane writes reuse the canonical representation's leaf operations; structural wrappers
+# recurse here because their materialised tangents differ from their forward representation.
+_reference_set_lane(v, k, t) = Mooncake._replace_lane_tangent(v, k, t)
+function _reference_set_lane(v::Tuple, k, t::Tuple)
+    map((vi, ti) -> _reference_set_lane(vi, k, ti), v, t)
+end
+function _reference_set_lane(v::NamedTuple{names}, k, t::NamedTuple{names}) where {names}
+    return NamedTuple{names}(_reference_set_lane(values(v), k, values(t)))
+end
+function _reference_set_lane(v::Mooncake.ImmutableDual, k, t::Tangent)
+    return Mooncake.ImmutableDual(_reference_set_lane(v.fields, k, t.fields))
+end
+
+function _reference_lane_seeds(rng, x, reference, ::Val{N}) where {N}
+    base = __get_primals(_deepcopy_all(x))
+    whole = zero_lifted(Val(N), base)
+    lanes = reference.lanes
+    directions = if lanes === :inactive_zero
+        slots = _seed_lifteds(Val(1), rng, _deepcopy_all(x))
+        p = map(primal, slots)
+        first_lane = tangent(Lifted{typeof(p),1}(p, map(tangent, slots)), 1)
+        ntuple(k -> k == 1 ? first_lane : zero_tangent(base), N)
+    else
+        map(lane -> _deepcopy_all(lane.seed), lanes)
+    end
+    rep = tangent(whole)
+    for k in 1:N
+        try
+            Mooncake._check_shared_input_tangents(base, directions[k])
+            rep = _reference_set_lane(rep, k, directions[k])
+        catch err
+            throw(ArgumentError("`reference.lanes[$k].seed`: $(sprint(showerror, err))"))
+        end
+    end
+    return map(base, rep) do p, v
+        Lifted{_typeof(p),N}(p, v)
+    end
+end
+
+# References may explicitly expect Inf/NaN partials. Zero only a copy's partials to reuse
+# the existing inner-value invariant; the real partials are checked against their
+# references.
+function _reference_value_invariant(slot::Lifted{P,N}) where {P,N}
+    p, rep = _deepcopy((primal(slot), tangent(slot)))
+    for k in 1:N
+        rep = _reference_set_lane(rep, k, zero_tangent(p))
+    end
+    return _chunked_v_invariant(p, rep)
+end
+
+function test_frule_reference_lanes(rng, x, y_true; sig, reference, N, debug_mode)
+    seeds = _reference_lane_seeds(rng, x, reference, Val(N))
+    interp = get_interpreter(ForwardMode)
+    prec = _partials_precision(map(tangent, seeds))
+    width1_cmp = (cmp=(a, b) -> has_equal_data(a, b; float_precision=prec),)
+    inactive = reference.lanes === :inactive_zero
+    # Save only lanes that need a width-1 pass before the rule mutates its arguments.
+    lane_seeds = ntuple(inactive ? 1 : N) do k
+        c = IdDict{Any,Any}()
+        copied = _deepcopy_all(seeds)
+        map(s -> lift(primal(s), tangent(s, k), c), copied)
+    end
+    out = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
+    haskey(reference, :value) &&
+        _test_reference(primal(out), reference.value, reference, "reference.value")
+    _chunk_lane_checkable(tangent(out)) ||
+        throw(ArgumentError("`reference.lanes` requires a `_chunk_lane_checkable` output."))
+    @testset "reference.lanes.value" begin
+        @test has_equal_data(y_true, primal(out); float_precision=prec)
+        @test _reference_value_invariant(out)
+        @test all(_reference_value_invariant, seeds)
+    end
+    frule1 = build_frule(interp, sig; chunk_size=1, debug_mode)
+    for k in 1:N
+        if inactive && k > 1
+            exact = (cmp=isequal_ignoring_signed_zero,)
+            _test_reference(
+                tangent(out, k),
+                zero_tangent(primal(out)),
+                exact,
+                "reference.lanes[$k].output",
+            )
+            for i in eachindex(seeds)
+                _test_reference(
+                    tangent(seeds[i], k),
+                    zero_tangent(primal(seeds[i])),
+                    exact,
+                    "reference.lanes[$k].args[$i]",
+                )
+            end
+            continue
+        end
+        single = frule1(lane_seeds[k]...)
+        @testset "reference.lanes[$k].value" begin
+            @test has_equal_data(primal(out), primal(single); float_precision=prec)
+        end
+        if inactive
+            _test_reference(
+                tangent(out, k),
+                tangent(single, 1),
+                width1_cmp,
+                "reference.lanes[$k].output",
+            )
+        else
+            _test_reference(
+                tangent(out, k),
+                reference.lanes[k].value,
+                reference,
+                "reference.lanes[$k].output",
+            )
+        end
+        for i in eachindex(seeds)
+            _test_reference(
+                tangent(seeds[i], k),
+                tangent(lane_seeds[k][i], 1),
+                width1_cmp,
+                "reference.lanes[$k].args[$i]",
             )
         end
     end
@@ -1973,8 +2163,13 @@ struct TestCase
             end
         end
         reference = get(opts, :reference, nothing)
-        isnothing(reference) ||
-            _check_reference(reference, (f, args...); mode=get(opts, :mode, nothing))
+        isnothing(reference) || _check_reference(
+            reference,
+            (f, args...);
+            mode=get(opts, :mode, nothing),
+            skip_chunked=get(opts, :skip_chunked, false),
+            chunk_size=get(opts, :chunk_size, nothing),
+        )
         return new(f, args, name, interface_only, perf_flag, (; opts...), hvp, bench)
     end
 end
@@ -2030,7 +2225,13 @@ function test_rule(
     case_mode in (nothing, ForwardMode, ReverseMode) ||
         throw(ArgumentError("TestCase mode must be nothing, ForwardMode, or ReverseMode"))
     reference = get(opts, :reference, nothing)
-    isnothing(reference) || _check_reference(reference, (tc.f, tc.args...); mode=case_mode)
+    isnothing(reference) || _check_reference(
+        reference,
+        (tc.f, tc.args...);
+        mode=case_mode,
+        skip_chunked=get(opts, :skip_chunked, false),
+        chunk_size=get(opts, :chunk_size, nothing),
+    )
     filter = _test_mode_filter()
     if !isnothing(tc.hvp)
         get(opts, :interface_only, false) &&
@@ -2356,7 +2557,7 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
     both are subgradients, so a disagreement is not evidence of a defect, and an agreement
     is not evidence of correctness.
 
-`reference` closes the first two: a case that supplies a reference derivative has it compared
+`reference` closes the first two: a case supplying a reference derivative is compared
 against that instead of against finite differences, which are inapplicable there by
 definition. See the keyword below.
 
@@ -2378,6 +2579,16 @@ definition. See the keyword below.
     `isequal_ignoring_signed_zero`, `isapprox`, or a two-argument function to change it.
     With `cmp=isapprox`, optional `reference.rtol`/`atol` use `isapprox`'s defaults when
     omitted and are independent of the test case's finite-difference tolerances.
+    `lanes=:inactive_zero` places the test case's seed in lane 1 and asserts exact zero
+    in every output and argument partial in lanes 2:N, ignoring only the sign of zero.
+    Alternatively `lanes=((seed=(df, dx...), value=expected_jvp), ...)` supplies each
+    lane's full input tangent tuple and expected output partial (which may be a
+    zero-argument function), compared with `cmp`. N is `chunk_size` (default 8) and must
+    exceed one; argument and output representations must satisfy `_chunk_lane_checkable`.
+    With an explicit chunk width, only pinned reference checks run at width 1,
+    not the full width-1 battery.
+    Comparisons against width-1 results use the harness's partials precision tolerance,
+    independently of `reference.cmp`.
 - `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
     a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
@@ -2412,7 +2623,7 @@ function test_rule(
     # A case that must fail loudly asserts the raise instead of the correctness battery. The
     # rule is built inside the assertion because some of these throw at build time.
     if !isnothing(reference)
-        _check_reference(reference, x; mode)
+        _check_reference(reference, x; mode, skip_chunked, chunk_size)
         isnothing(throws) ||
             throw(ArgumentError("`reference` cannot assert anything with `throws`."))
         interface_only && throw(
