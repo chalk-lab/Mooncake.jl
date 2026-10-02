@@ -3238,7 +3238,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             mode=ForwardMode,
             reference=(
                 value=(value=2.5, context=Ptr{Any}(0)),
-                deriv=(value=2.0, context=uninit_tangent(Ptr{Any}(0))),
+                deriv=(fwd=(value=2.0, context=uninit_tangent(Ptr{Any}(0))),),
             ),
         ),
     )
