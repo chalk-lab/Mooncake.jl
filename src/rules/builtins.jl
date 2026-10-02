@@ -2353,6 +2353,49 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             ),
         )
     end
+    # Squaring the denominator loses representable derivatives at these magnitudes.
+    for f in (IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast)
+        for b in (1.0f-30, 1.0f30)
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    CoDual(2b, 1.0f0),
+                    CoDual(b, 1.0f0);
+                    chunk_size=1,
+                    output_tangent=1.0f0,
+                    reference=(
+                        deriv=(fwd=(1 - 2) / b, rvs=(NoRData(), 1 / b, -2 / b)),
+                        cmp=isapprox,
+                    ),
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                CoDual(-1.0f0, 3.0f38),
+                CoDual(2.0f0, 3.0f38);
+                mode=ForwardMode,
+                chunk_size=1,
+                reference=(deriv=(fwd=2.25f38,), cmp=isapprox),
+            ),
+        )
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                1.0f30,
+                1.0f10;
+                mode=ReverseMode,
+                output_tangent=1.0f-36,
+                reference=(
+                    deriv=(rvs=(NoRData(), 1.0f-36 / 1.0f10, -1.0f-26),), cmp=isapprox
+                ),
+            ),
+        )
+    end
     throwing_cases, throwing_memory = _builtins_throwing_cases()
     test_cases = vcat(TestCase[test_cases...], throwing_cases)
     memory = vcat(Any[memory...], throwing_memory)

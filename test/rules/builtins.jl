@@ -25,38 +25,6 @@ foo_throws(e) = throw(e)
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
-    # `b^2` under/overflows Float32 while `a / b` and its derivatives are finite.
-    @testset "div_float derivatives at extreme magnitudes: $f, $b" for f in (
-            IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast
-        ),
-        b in (1.0f-30, 1.0f30)
-
-        a = 2b
-        dual = Mooncake.frule!!(
-            Mooncake.lift(f, NoTangent()), Mooncake.lift(a, 1.0f0), Mooncake.lift(b, 1.0f0)
-        )
-        @test tangent(dual, 1) ≈ (1 - 2) / b
-        _, pullback = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(a), zero_fcodual(b))
-        _, da, db = pullback(1.0f0)
-        @test da ≈ 1 / b
-        @test db ≈ -2 / b
-    end
-
-    @testset "div_float with scaled seeds: $f" for f in (
-        IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast
-    )
-        dual = Mooncake.frule!!(
-            Mooncake.lift(f, NoTangent()),
-            Mooncake.lift(-1.0f0, 3.0f38),
-            Mooncake.lift(2.0f0, 3.0f38),
-        )
-        @test tangent(dual, 1) ≈ 2.25f38
-        _, pullback = Mooncake.rrule!!(
-            zero_fcodual(f), zero_fcodual(1.0f30), zero_fcodual(1.0f10)
-        )
-        @test pullback(1.0f-36)[3] ≈ -1.0f-26
-    end
-
     # Unhandled built-in throws an intelligible error.
     @test_throws(
         Mooncake.MissingRuleForBuiltinException,
@@ -221,6 +189,7 @@ end
     end
 end
 
+# Test cases exercise rules, not this prepared-cache API contract.
 @testset "div_float pullback keeps `d/db` in range" begin
     # Squaring b overflows/underflows; dividing twice keeps d/db representable.
     # FD cannot resolve a derivative of -1e-200 against a value of 1.0.
