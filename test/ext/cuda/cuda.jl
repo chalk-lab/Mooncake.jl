@@ -3408,22 +3408,67 @@ end
         @testset "forward-over-reverse (HVP)" begin
             x = _rand(rng, Float32, 8)
             v = _rand(rng, Float32, 8)
-            # sum(x) is linear ⇒ hvp = 0.
-            _, g, h = value_and_hvp!!(prepare_hvp_cache(sum, x), sum, v, x)
-            @test isapprox(Array(g), ones(Float32, 8); rtol=1.0f-4)
-            @test isapprox(Array(h), zeros(Float32, 8); atol=1.0f-5)
-            # dot(x, x) has Hessian 2I ⇒ hvp = 2v.
             dotsq = z -> dot(z, z)
-            _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
-            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
-            sumabs2 = z -> sum(abs2, z)
-            _, _, h = value_and_hvp!!(prepare_hvp_cache(sumabs2, x), sumabs2, v, x)
-            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
-            # Full Hessian: buffers are device-resident, no scalar indexing.
-            hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
-            _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
-            @test H isa CuMatrix{Float32}
-            @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
+            test_cases = TestCase[
+                TestCase(
+                    sum,
+                    x;
+                    name="sum HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(
+                            gradient=(value=ones(Float32, 8), rtol=1.0f-4),
+                            hvp=(value=zeros(Float32, 8), atol=1.0f-5),
+                        ),
+                        cmp=(actual, expected) -> isapprox(
+                            Array(actual),
+                            expected.value;
+                            Base.structdiff(expected, (; value=nothing))...,
+                        ),
+                    ),
+                ),
+                TestCase(
+                    dotsq,
+                    x;
+                    name="dot HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> sum(abs2, z),
+                    x;
+                    name="sum abs2 HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    dotsq,
+                    x;
+                    name="device Hessian",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hessian=2I(8),),
+                        cmp=(actual, expected) ->
+                            actual isa CuMatrix{Float32} &&
+                            isapprox(Array(actual), expected; atol=1.0f-4),
+                    ),
+                ),
+            ]
+            for tc in test_cases
+                test_rule(StableRNG(123), tc)
+            end
             # NDual-based elementwise rules error loudly under forward-over-reverse.
             f = z -> sum(abs2.(z))
             @test_throws r"not yet supported" value_and_hvp!!(

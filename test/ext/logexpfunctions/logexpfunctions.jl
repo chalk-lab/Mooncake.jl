@@ -218,6 +218,27 @@ sr(n::Int) = StableRNG(n)
             return cases
         end...,
     )
+    # First-order checks cannot detect a lost derivative of the structural mask.
+    for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
+        f(x) = logsumexp(T(reshape(x, 2, 2)))
+        v = zeros(4)
+        v[i] = 1.0
+        p = inv(2 + 2exp(1))
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                zeros(4);
+                name="unit-triangular HVP $T",
+                hvp=(
+                    check=:reference,
+                    directions=(zeros(4), v),
+                    reference=(hvp=v -> p * (1-p) * v,),
+                    cmp=isapprox,
+                ),
+            ),
+        )
+    end
     # Allocation checks are a fallback; allocating test cases opt out explicitly.
     for (tc, name) in zip(test_cases, Mooncake.TestUtils._test_case_names(test_cases))
         test_rule(sr(123456), tc; fallbacks=(perf_flag=:allocs,), name)
@@ -329,21 +350,6 @@ sr(n::Int) = StableRNG(n)
                 result = f(x, NDual(y, (one(y),)))
                 @test result.value === f(x, y)
                 @test only(result.partials) == b
-            end
-        end
-    end
-
-    @testset "unit-triangular HVPs" begin
-        # First-order rule checks cannot detect a lost derivative of the structural mask.
-        for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
-            f(x) = logsumexp(T(reshape(x, 2, 2)))
-            x = zeros(4)
-            cache = Mooncake.prepare_hvp_cache(f, x)
-            p = inv(2 + 2exp(1))
-            for a in (0.0, 1.0)
-                v = zeros(4)
-                v[i] = a
-                @test Mooncake.value_and_hvp!!(cache, f, v, x)[3] ≈ p * (1 - p) * v
             end
         end
     end
