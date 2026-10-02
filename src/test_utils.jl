@@ -182,19 +182,21 @@ defining custom behavior.
 """
 test_hook(f, caller, args...; kws...) = f()
 
-function test_opt(x...)
-    test_hook(test_opt, x...) do
-        test_opt_internal(Shim(), x...)
+function test_opt(x...; options...)
+    test_hook(test_opt, x...; options...) do
+        test_opt_internal(Shim(), x...; options...)
     end
 end
-test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
+test_opt_internal(::Any, x...; options...) = throw(error("Load JET to use this function."))
 
-function report_opt(tt)
-    test_hook(report_opt, tt) do
-        report_opt_internal(Shim(), tt)
+function report_opt(x...; options...)
+    test_hook(report_opt, x...; options...) do
+        report_opt_internal(Shim(), x...; options...)
     end
 end
-report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
+function report_opt_internal(::Any, x...; options...)
+    throw(error("Load JET to use this function."))
+end
 
 # Options travel in `visited` to preserve the four-argument extension interface.
 # A fifth argument would lose the option below extension-defined nodes.
