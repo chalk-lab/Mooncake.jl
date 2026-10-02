@@ -24,9 +24,9 @@ end
 (f::WrapperAccumulator)(x::Float64) = (f.a += x)
 function Mooncake.hand_written_rule_test_cases(rng_ctor, ::Val{:function_wrappers})
     fw = FunctionWrapper{Float64,Tuple{Float64}}(WrapperAccumulator(1.0))
-    cases = Any[(false, :none, (;), fw, 2.0)]
+    cases = Any[TestCase(fw, 2.0)]
     for T in (FunctionWrapper{Float64,Tuple{Any}}, FunctionWrapper{Any,Tuple{Float64}})
-        push!(cases, (false, :none, (mode=Mooncake.ForwardMode,), T(WrapperGain(3.0)), 2.0))
+        push!(cases, TestCase(T(WrapperGain(3.0)), 2.0; mode=Mooncake.ForwardMode))
     end
     return cases, Any[]
 end
