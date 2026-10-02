@@ -1495,12 +1495,17 @@ function test_rrule_reference(
             "a reverse-mode `reference.deriv` needs `output_tangent` to pin the cotangent seed.",
         ),
     )
-    # A fresh -0.0 tangent preserves seed signs and matches the output's storage sharing.
-    seed = increment!!(
-        Mooncake._scale(-1.0, set_to_zero!!(zero_tangent(primal(out), tangent(out)))),
-        output_tangent,
-    )
-    Mooncake._copy_to_output!!(tangent(out), Mooncake.fdata(seed))
+    if check_fdata
+        # Input fdata may alias the output, so seeding must preserve its existing state.
+        increment!!(tangent(out), Mooncake.fdata(_deepcopy(output_tangent)))
+    else
+        # A fresh -0.0 tangent preserves seed signs and matches the output's storage sharing.
+        seed = increment!!(
+            Mooncake._scale(-1.0, set_to_zero!!(zero_tangent(primal(out), tangent(out)))),
+            output_tangent,
+        )
+        Mooncake._copy_to_output!!(tangent(out), Mooncake.fdata(seed))
+    end
     result = pb!!(Mooncake.rdata(output_tangent))
     check_rvs && _test_reference(
         result,
