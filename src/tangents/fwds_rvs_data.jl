@@ -742,10 +742,15 @@ end
     end
 end
 
-function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
-    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
-    rdata_type(tangent_type(P)) == NoRData && return NoRData()
-    return NamedTuple{fieldnames(P)}(tuple_map(zero_rdata_from_type, fieldtypes(P)))
+@generated function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
+    has_fields = has_definite_fieldcount(P)
+    zero_exprs = has_fields ? map(_P -> :(zero_rdata_from_type($_P)), fieldtypes(P)) : []
+    names = has_fields ? fieldnames(P) : ()
+    return quote
+        can_produce_zero_rdata_from_type($P) || return CannotProduceZeroRDataFromType()
+        rdata_type(tangent_type($P)) == NoRData && return NoRData()
+        return NamedTuple{$names}($(Expr(:call, :tuple, zero_exprs...)))
+    end
 end
 
 zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)
