@@ -276,7 +276,7 @@ function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
     haskey(d, ExactFloats()) && return isequal(x, y)
-    # Passing `atol` alone defaults `rtol` to zero, making strictness magnitude-dependent.
+    # Passing `atol` alone sets `rtol` to zero, making strictness magnitude-dependent.
     tol = _float_tolerance(P, d)
     return isapprox(x, y; atol=tol, rtol=tol, nans=true)
 end
@@ -1688,15 +1688,129 @@ end
 
 __get_primals(xs) = map(x -> x isa Union{Lifted,CoDual} ? primal(x) : x, xs)
 
-# TEST_MODE restricts rule tests to "forward" or "reverse"; unset/other values run both.
+const _TEST_RULE_OPTIONS = (
+    :is_primitive,
+    :mode,
+    :unsafe_perturb,
+    :output_tangent,
+    :atol,
+    :rtol,
+    :max_fd_step,
+    :skip_chunked,
+    :oracle,
+    :throws,
+    :chunk_size,
+    :primal_throws,
+)
+
+"""
+    TestCase(f, args...; name=nothing, interface_only=nothing, perf_flag=nothing,
+             hvp=nothing, bench=(;), opts...)
+
+Internal API: a rule test case, with test options in `opts` and benchmark bounds (`lb`, `ub`)
+in `bench`. Options must belong to `_TEST_RULE_OPTIONS`; `print_results`, `debug_mode`,
+`frule`, and `rrule` belong at the call site instead. `name` overrides the generated
+`f(argument types)` label. `interface_only` and `perf_flag` default to `nothing` (unset),
+so fallbacks or the keyword API's default values apply. `hvp` reserves second-order settings,
+which are not yet supported.
+"""
+struct TestCase
+    f::Any
+    args::Tuple
+    name::Union{Nothing,String}
+    interface_only::Union{Nothing,Bool}
+    perf_flag::Union{Nothing,Symbol}
+    opts::NamedTuple
+    hvp::Any
+    bench::NamedTuple
+
+    # An automatic field constructor would intercept test cases with seven positional arguments.
+    function TestCase(
+        f,
+        args...;
+        name=nothing,
+        interface_only=nothing,
+        perf_flag=nothing,
+        hvp=nothing,
+        bench=(;),
+        opts...,
+    )
+        @nospecialize f args
+        for key in keys(bench)
+            key in (:lb, :ub) ||
+                throw(ArgumentError("Unknown TestCase benchmark key: $key"))
+        end
+        for key in keys(opts)
+            key in _TEST_RULE_OPTIONS ||
+                throw(ArgumentError("Unknown TestCase option: $key"))
+        end
+        return new(f, args, name, interface_only, perf_flag, (; opts...), hvp, bench)
+    end
+end
+
+# Generate a bounded label from primal argument types, hiding anonymous-function gensyms.
+function _test_case_name(tc::TestCase)
+    isnothing(tc.name) || return tc.name
+    f, args... = __get_primals((tc.f, tc.args...))
+    label = string(nameof(f isa Union{Function,Type} ? f : typeof(f)))
+    startswith(label, "#") && (label = "<anonymous>")
+    name = string(label, "(", join(map(Base._stable_typeof, args), ", "), ")")
+    name = replace(name, r"var\"#[^\"]*\"" => "<anonymous>")
+    return length(name) > 80 ? first(name, 77) * "..." : name
+end
+
+"""
+    test_rule(rng, tc::TestCase; mode=nothing, fallbacks=(;), name=nothing)
+
+Internal API: run a test case through the keyword `test_rule` API. Fallbacks apply only to
+options the test case leaves unset; explicitly set fields and `opts` take precedence.
+Call-site keywords may be supplied through `fallbacks`. First-order modes intersect `mode`,
+the effective test case mode, and `TEST_MODE` (`forward` or `reverse`); excluded modes add no
+tests. `TEST_MODE=hvp` skips first-order test cases. Second-order test cases currently raise
+a "not yet supported" error.
+Each selected mode has a testset prefixed with its mode and labelled by `_test_case_name(tc)`,
+unless the call-site `name` overrides it (for example, to append a collision suffix).
+"""
+function test_rule(
+    rng::AbstractRNG,
+    tc::TestCase;
+    mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
+    fallbacks=(;),
+    name=nothing,
+)
+    isnothing(tc.hvp) || throw(ArgumentError("TestCase hvp checks are not yet supported"))
+    opts = merge(
+        fallbacks,
+        isnothing(tc.interface_only) ? (;) : (; tc.interface_only),
+        isnothing(tc.perf_flag) ? (;) : (; tc.perf_flag),
+        tc.opts,
+    )
+    case_mode = get(opts, :mode, nothing)
+    case_mode in (nothing, ForwardMode, ReverseMode) ||
+        throw(ArgumentError("TestCase mode must be nothing, ForwardMode, or ReverseMode"))
+    filter = _test_mode_filter()
+    primal_throws = get(opts, :primal_throws, false)
+    for m in (ForwardMode, ReverseMode)
+        mode in (nothing, m) && case_mode in (nothing, m) && filter in (nothing, m) ||
+            continue
+        @testset "$m, $(something(name, _test_case_name(tc)))" begin
+            test_rule(rng, tc.f, tc.args...; opts..., primal_throws, mode=m)
+        end
+        primal_throws = false
+    end
+    return nothing
+end
+
+# TEST_MODE selects a mode; :hvp excludes first-order checks. Unset/other values run both.
 function _test_mode_filter()
     m = get(ENV, "TEST_MODE", "")
     m == "forward" && return ForwardMode
     m == "reverse" && return ReverseMode
+    m == "hvp" && return :hvp
     return nothing
 end
 
-# `nothing` means unspecified: every registry row passes it.
+# `nothing` means unspecified: every registry test case passes it.
 # An explicit width above 1 contradicts `skip_chunked` and must be refused.
 function _fwd_widths(skip_chunked::Bool, chunk_size::Union{Nothing,Int})
     isnothing(chunk_size) && return skip_chunked ? (1,) : (1, 8)
@@ -1771,6 +1885,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     allocation-free and type-stable, set this to `:stability_and_allocs`.
 - `mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing`: the mode of AD to
     test. If `mode===nothing` (default), then both forward and reverse mode are tested.
+    `TEST_MODE=forward` or `reverse` further restricts this selection; `TEST_MODE=hvp`
+    skips all first-order checks, including expected primal exceptions.
 - `debug_mode::Bool=false`: whether or not the rule should be tested in debug mode.
     Typically this should be left at its default `false` value, but if you are finding that
     the tests are failing for a given rule, you may wish to temporarily set it to `true` in
@@ -1875,6 +1991,9 @@ function test_rule(
     chunk_size::Union{Nothing,Int}=nothing,
     primal_throws::Bool=false,
 )
+    _filter = _test_mode_filter()
+    _filter === :hvp && return nothing
+
     # A case that must fail loudly asserts the raise instead of the correctness battery. The
     # rule is built inside the assertion because some of these throw at build time.
     isnothing(oracle) || _check_oracle(oracle)
@@ -1900,8 +2019,7 @@ function test_rule(
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
-    # `TEST_MODE` (the CI fwd/rvs split) further restricts which modes run; unset ⇒ both.
-    _filter = _test_mode_filter()
+    # TEST_MODE further restricts which first-order modes run.
     test_fwd = mode in [nothing, ForwardMode] && _filter in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode] && _filter in [nothing, ReverseMode]
     fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
@@ -2017,7 +2135,7 @@ end
 # A case whose derivative finite differences cannot pin carries its reference in `oracle`
 # (see `test_frule_oracle`); a reverse `oracle` with a `deriv` also needs `output_tangent`.
 _case_oracle(opts) = opts isa NamedTuple ? get(opts, :oracle, nothing) : nothing
-# A row carrying `throws` runs through `_test_rule_throws` instead of the correctness battery;
+# A test case carrying `throws` uses `_test_rule_throws` instead of the correctness battery;
 # `mode` restricts it to one mode, and `chunk_size` picks the width its trigger needs.
 _case_throws(opts) = opts isa NamedTuple ? get(opts, :throws, nothing) : nothing
 _case_mode(opts) = opts isa NamedTuple ? get(opts, :mode, nothing) : nothing
@@ -2088,6 +2206,8 @@ function _test_rule_throws(
     primal::Bool=false,
     chunk_size::Int=1,
 )
+    _filter = _test_mode_filter()
+    _filter === :hvp && return nothing
     if isnothing(err) && isnothing(msg)
         throw(
             ArgumentError(
@@ -2099,7 +2219,6 @@ function _test_rule_throws(
     primal && _test_throws(err, msg) do
         f(map(_throws_primal, x)...)
     end
-    _filter = _test_mode_filter()  # `TEST_MODE` fwd/rvs split; unset ⇒ both.
     if mode in [nothing, ReverseMode] && _filter in [nothing, ReverseMode]
         px = map(_throws_primal, x)
         _test_throws(err, msg) do
@@ -2133,6 +2252,7 @@ end
 
 # Hand-written cases require primitives; derived cases exercise the AD transform.
 function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool)
+    _test_mode_filter() in (nothing, mode) || return nothing
     test_cases, memory = if derived
         test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
             Mooncake.derived_rule_test_cases(rng_ctor, v)
@@ -2170,7 +2290,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 end
 
 function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
-    _filter = _test_mode_filter()  # `TEST_MODE` fwd/rvs split; unset ⇒ both.
+    _filter = _test_mode_filter()
     for m in (mode === nothing ? (ForwardMode, ReverseMode) : (mode,))
         (_filter === nothing || _filter === m) || continue
         run_rule_test_cases(rng_ctor, v, m, false)
