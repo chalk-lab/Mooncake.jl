@@ -173,7 +173,7 @@ function _rand_view_cases(primitive::Bool)
             is_primitive =
                 VERSION >= v"1.12" && !isempty(sampler) && sampler[1] isa Random.Sampler
             is_primitive == primitive || continue
-            push!(cases, (true, :none, nothing, rand!, rng, v, sampler...))
+            push!(cases, TestCase(rand!, rng, v, sampler...; interface_only=true))
         end
     end
     return cases
@@ -186,25 +186,28 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
 
         # Random number generator construction.
         # There are some undefined fields at construction, so we cannot run equality tests.
-        (true, :none, nothing, MersenneTwister, 123),
+        TestCase(MersenneTwister, 123; interface_only=true),
 
         # Random number generation.
         map_prod([rand, randn, randexp], all_rngs) do (f, rng)
-            (true, :stability_and_allocs, nothing, f, rng)
+            TestCase(f, rng; interface_only=true, perf_flag=:stability_and_allocs)
         end...,
         map_prod([Float64, Float32], [rand, randn, randexp], all_rngs) do (P, f, rng)
-            (true, :stability_and_allocs, nothing, f, rng, P)
+            TestCase(f, rng, P; interface_only=true, perf_flag=:stability_and_allocs)
         end...,
         map_prod([rand!, randn!, randexp!], vcat(rngs, rng_ctor(123))) do (f, rng)
-            (true, :stability, nothing, f, rng, randn(5))
+            TestCase(f, rng, randn(5); interface_only=true, perf_flag=:stability)
         end...,
         map_prod([rand!, randn!], [Float32, ComplexF64]) do (f, P)
-            (true, :stability, nothing, f, Xoshiro(123), randn(P, 5))
+            TestCase(
+                f, Xoshiro(123), randn(P, 5); interface_only=true, perf_flag=:stability
+            )
         end...,
         [
-            (true, :stability, nothing, rand!, rng, randn(P, 5), sampler) for
-            rng in vcat(rngs, rng_ctor(123)) for P in (Float32, Float64, ComplexF64) for
-            sampler in (P, Random.Sampler(rng, P))
+            TestCase(
+                rand!, rng, randn(P, 5), sampler; interface_only=true, perf_flag=:stability
+            ) for rng in vcat(rngs, rng_ctor(123)) for P in (Float32, Float64, ComplexF64)
+            for sampler in (P, Random.Sampler(rng, P))
         ]...,
     )
     fills = Any[
@@ -222,13 +225,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         fill!(x, 2)
         P = eltype(x)
         for f in (rand!, randn!)
-            push!(test_cases, (true, :stability, nothing, f, rng, x))
+            push!(
+                test_cases, TestCase(f, rng, x; interface_only=true, perf_flag=:stability)
+            )
         end
         for sampler in (P, Random.Sampler(rng, P))
-            push!(test_cases, (true, :stability, nothing, rand!, rng, x, sampler))
+            push!(
+                test_cases,
+                TestCase(rand!, rng, x, sampler; interface_only=true, perf_flag=:stability),
+            )
         end
         if x isa Array{<:IEEEFloat}
-            push!(test_cases, (true, :stability, nothing, randexp!, rng, x))
+            push!(
+                test_cases,
+                TestCase(randexp!, rng, x; interface_only=true, perf_flag=:stability),
+            )
         end
     end
     append!(test_cases, _rand_view_cases(true))
@@ -240,7 +251,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     for x in integers, rng in (Xoshiro(123), TaskLocalRNG())
         push!(
             test_cases,
-            (true, :stability, nothing, rand!, rng, x, Random.Sampler(rng, eltype(x))),
+            TestCase(
+                rand!,
+                rng,
+                x,
+                Random.Sampler(rng, eltype(x));
+                interface_only=true,
+                perf_flag=:stability,
+            ),
         )
     end
     return test_cases, Any[]
@@ -282,42 +300,42 @@ function _rand_fill_cases()
         dest = sub ? (y -> view(y, 2:8)) : identity
         push!(cases, (y -> (rand!(Xoshiro(123), dest(y)); 1.0), ones(T, 9)))
     end
-    return Any[(false, :none, nothing, f, x) for (f, x) in cases]
+    return Any[TestCase(f, x) for (f, x) in cases]
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:random})
-    test_cases = Any[
+    test_cases = TestCase[
 
         # Random number generation.
-        (false, :none, nothing, x -> x * rand(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * randn(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * randexp(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * rand(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x * randn(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x * randexp(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x .* rand!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* rand(Xoshiro(123), size(x)...), randn(9)),
-        (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
-        (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
+        TestCase((x -> x * rand(Xoshiro(123))), 3.0),
+        TestCase((x -> x * randn(Xoshiro(123))), 3.0),
+        TestCase((x -> x * randexp(Xoshiro(123))), 3.0),
+        TestCase((x -> x * rand(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x * randn(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x * randexp(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x .* rand!(Xoshiro(123), x)), randn(9)),
+        TestCase((x -> x .* randn!(Xoshiro(123), x)), randn(9)),
+        TestCase((x -> x .* randexp!(Xoshiro(123), x)), randn(9)),
+        TestCase((x -> x .* rand(Xoshiro(123), size(x)...)), randn(9)),
+        TestCase((x -> x .* randn(Xoshiro(123), size(x)...)), randn(9)),
+        TestCase((x -> x .* randexp(Xoshiro(123), size(x)...)), randn(9)),
 
         # RNG construction.
-        (false, :none, nothing, x -> randn(MersenneTwister(x)), 123),
-        (false, :none, nothing, Xoshiro, 123),
-        (false, :none, nothing, x -> randn(Random.seed!(TaskLocalRNG(), x)), 123),
+        TestCase((x -> randn(MersenneTwister(x))), 123),
+        TestCase(Xoshiro, 123),
+        TestCase((x -> randn(Random.seed!(TaskLocalRNG(), x))), 123),
 
         # It is not possible to make the numbers produced by a `RandomDevice` be
         # deterministic, because it gets its randomness "from the device". As such, we cannot
         # test that the numbers coming out of this are consistent, just that it runs.
-        (true, :none, nothing, () -> randn(RandomDevice())),
+        TestCase(() -> randn(RandomDevice()); interface_only=true),
 
         # Empty Union-element fills must take the derived rules, not the primitives.
         map_prod([rand!, randn!, randexp!], [Union{Float32,Float64}]) do (f, P)
-            (false, :none, nothing, f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
+            TestCase(f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
         end...,
         map_prod([rand!, randn!], [Union{Float64,ComplexF64}]) do (f, P)
-            (false, :none, nothing, f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
+            TestCase(f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
         end...,
         _rand_view_cases(false)...,
         _rand_fill_cases()...,

@@ -196,144 +196,106 @@ _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 
     # Specialised test cases for _new_.
-    specific_test_cases = Any[
-        (false, :stability_and_allocs, nothing, _new_, @NamedTuple{}),
-        (false, :none, nothing, _new_, Base.RefValue{Union{}}),
+    specific_test_cases = TestCase[
+        TestCase(_new_, @NamedTuple{}; perf_flag=:stability_and_allocs),
+        TestCase(_new_, Base.RefValue{Union{}}),
         # `Ref(x)` / `RefValue{P}(x)` construction (real + complex): the canonical V is `NDualRef`.
         # `:none` perf — a mutable `Ref` allocates, so the alloc check does not apply.
-        (false, :none, nothing, _new_, Base.RefValue{Float64}, 5.0),
-        (false, :none, nothing, _new_, Base.RefValue{ComplexF64}, 1.0 + 2.0im),
-        (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Float64}, 5.0),
-        (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Int, x::Int}, 5, 4),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            _new_,
-            @NamedTuple{y::Float64, x::Int},
-            5.0,
-            4,
+        TestCase(_new_, Base.RefValue{Float64}, 5.0),
+        TestCase(_new_, Base.RefValue{ComplexF64}, 1.0 + 2.0im),
+        TestCase(_new_, @NamedTuple{y::Float64}, 5.0; perf_flag=:stability_and_allocs),
+        TestCase(_new_, @NamedTuple{y::Int, x::Int}, 5, 4; perf_flag=:stability_and_allocs),
+        TestCase(
+            _new_, @NamedTuple{y::Float64, x::Int}, 5.0, 4; perf_flag=:stability_and_allocs
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             @NamedTuple{y::Vector{Float64}, x::Int},
             randn(2),
-            4,
+            4;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             @NamedTuple{y::Vector{Float64}},
-            randn(2),
+            randn(2);
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             TestResources.TypeStableStruct{Float64},
             5,
-            4.0,
+            4.0;
+            perf_flag=:stability_and_allocs,
         ),
-        (false, :stability_and_allocs, nothing, _new_, UnitRange{Int64}, 5, 4),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(_new_, UnitRange{Int64}, 5, 4; perf_flag=:stability_and_allocs),
+        TestCase(
             _new_,
             TestResources.TypeStableMutableStruct{Float64},
             5.0,
-            4.0,
+            4.0;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            _new_,
-            TestResources.TypeStableMutableStruct{Any},
-            5.0,
-            4.0,
-        ),
-        (false, :none, nothing, _new_, TestResources.StructFoo, 6.0, [1.0, 2.0]),
-        (false, :none, nothing, _new_, TestResources.StructFoo, 6.0),
-        (false, :none, nothing, _new_, TestResources.MutableFoo, 6.0, [1.0, 2.0]),
-        (false, :none, nothing, _new_, TestResources.MutableFoo, 6.0),
-        (false, :stability_and_allocs, nothing, _new_, TestResources.StructNoFwds, 5.0),
-        (false, :stability_and_allocs, nothing, _new_, TestResources.StructNoRvs, [5.0]),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(_new_, TestResources.TypeStableMutableStruct{Any}, 5.0, 4.0),
+        TestCase(_new_, TestResources.StructFoo, 6.0, [1.0, 2.0]),
+        TestCase(_new_, TestResources.StructFoo, 6.0),
+        TestCase(_new_, TestResources.MutableFoo, 6.0, [1.0, 2.0]),
+        TestCase(_new_, TestResources.MutableFoo, 6.0),
+        TestCase(_new_, TestResources.StructNoFwds, 5.0; perf_flag=:stability_and_allocs),
+        TestCase(_new_, TestResources.StructNoRvs, [5.0]; perf_flag=:stability_and_allocs),
+        TestCase(
             _new_,
             LowerTriangular{Float64,Matrix{Float64}},
-            randn(2, 2),
+            randn(2, 2);
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             UpperTriangular{Float64,Matrix{Float64}},
-            randn(2, 2),
+            randn(2, 2);
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             UnitLowerTriangular{Float64,Matrix{Float64}},
-            randn(2, 2),
+            randn(2, 2);
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _new_,
             UnitUpperTriangular{Float64,Matrix{Float64}},
-            randn(2, 2),
+            randn(2, 2);
+            perf_flag=:stability_and_allocs,
         ),
         # `ht` is `Memory{Any}` on 1.11+ but `Vector{Any}` on 1.10. Omitting the fields
         # entirely leaves `ht` undefined, which segfaults for reasons of its own.
-        (
-            false,
-            :none,
-            nothing,
-            _new_,
-            IdDict{Int,Float64},
-            fieldtype(IdDict{Int,Float64}, :ht)(undef, 0),
-            0,
-            0,
+        TestCase(
+            _new_, IdDict{Int,Float64}, fieldtype(IdDict{Int,Float64}, :ht)(undef, 0), 0, 0
         ),
     ]
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
-        return (interface_only, :none, nothing, _new_, P, args...)
+        return TestCase(_new_, P, args...; interface_only=interface_only)
     end
     # Dedicated containers must report the coherence error and supported primitive.
     # MemoryRef is unavailable before Julia 1.11.
     coherence_cases, coherence_memory = @static if VERSION >= v"1.11-"
         let mem = fill!(Memory{Float64}(undef, 3), 1.0), ref = memoryref(mem)
-            Any[(
-                false,
-                :none,
-                (throws="memoryrefnew", mode=ForwardMode),
+            TestCase[TestCase(
                 _new_,
                 MemoryRef{Float64},
                 zero_lifted(Val(1), ref.ptr_or_offset),
-                mem,
+                mem;
+                throws="memoryrefnew",
+                mode=ForwardMode,
             )],
             Any[mem, ref]
         end
     else
-        Any[], Any[]
+        TestCase[], Any[]
     end
     test_cases = vcat(specific_test_cases, general_test_cases, coherence_cases)
     memory = coherence_memory
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
+derived_rule_test_cases(rng_ctor, ::Val{:new}) = TestCase[], Any[]
