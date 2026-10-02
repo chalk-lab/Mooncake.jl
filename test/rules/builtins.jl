@@ -323,7 +323,8 @@ end
 
 @testset "boxed pointer cast cache reuse" begin
     rows, _ = Mooncake.derived_rule_test_cases(StableRNG, Val(:builtins))
-    for (_, _, _, f, args...) in rows
+    for row in rows
+        f, args = row.f, row.args
         occursin("boxed_pointer_input", string(f)) || continue
         p, v, T = map(x -> x isa CoDual ? primal(x) : x, args)
         g = (p, v, T) -> f(p, sum(v), T)

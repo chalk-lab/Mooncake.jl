@@ -2219,259 +2219,266 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     _range = (lb=1e-3, ub=200.0)
     memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq, cs..., dcs...]
 
-    test_cases = Any[
+    test_cases = TestCase[
 
         # Core.Intrinsics:
-        (false, :stability, nothing, IntrinsicsWrappers.abs_float, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.abs_float, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.add_float, 4.0, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.add_float, 4.0f0, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.add_float_fast, 4.0, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.add_float_fast, 4.0f0, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.add_int, 1, 2),
-        (false, :stability, nothing, IntrinsicsWrappers.and_int, 2, 3),
-        (
-            false,
-            :stability,
-            nothing,
-            IntrinsicsWrappers.ashr_int,
-            123456,
-            0x0000000000000020,
+        TestCase(IntrinsicsWrappers.abs_float, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.abs_float, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.add_float, 4.0, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.add_float, 4.0f0, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.add_float_fast, 4.0, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.add_float_fast, 4.0f0, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.add_int, 1, 2; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.and_int, 2, 3; perf_flag=:stability),
+        TestCase(
+            IntrinsicsWrappers.ashr_int, 123456, 0x0000000000000020; perf_flag=:stability
         ),
         # atomic_fence -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerref,
             CoDual(p, dp),
-            :monotonic,
+            :monotonic;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (
-            true,
-            :stability,
+        TestCase(
             # Reverse-only: raw atomic pointer-element loads lack coherent forward storage.
-            (skip_forward=true,),
             IntrinsicsWrappers.atomic_pointerref,
             CoDual(pointer(c), pointer(dc)),
-            :monotonic,
+            :monotonic;
+            interface_only=true,
+            perf_flag=:stability,
+            mode=ReverseMode,
         ),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerref,
             CoDual(q, dq),
-            :monotonic,
+            :monotonic;
+            interface_only=true,
+            perf_flag=:stability,
         ),
         # Load-only ordering: the pullback's tangent store must not reuse it.
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerref,
             CoDual(p, dp),
-            :acquire,
+            :acquire;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerset,
             CoDual(p, dp),
             1.0,
-            :monotonic,
+            :monotonic;
+            interface_only=true,
+            perf_flag=:stability,
         ),
         # Store-only ordering: the rule's save/restore loads must not reuse it.
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerset,
             CoDual(p, dp),
             1.0,
-            :release,
+            :release;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.atomic_pointerset,
             CoDual(pointer(c), pointer(dc)),
             CoDual(pointer(c_new_val), pointer(dc_new_val)),
-            :monotonic,
+            :monotonic;
+            interface_only=true,
+            perf_flag=:stability,
         ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability, nothing, IntrinsicsWrappers.bitcast, Int64, 5.0),
-        (
-            false,
-            :stability_and_allocs,
-            (mode=ForwardMode, oracle=(value=p, deriv=p)),
+        TestCase(IntrinsicsWrappers.bitcast, Int64, 5.0; perf_flag=:stability),
+        TestCase(
             IntrinsicsWrappers.bitcast,
             Ptr{Float64},
-            p,
+            p;
+            perf_flag=:stability_and_allocs,
+            mode=ForwardMode,
+            oracle=(value=p, deriv=p),
         ),
-        (false, :stability, nothing, IntrinsicsWrappers.bswap_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.ceil_llvm, 4.1),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(IntrinsicsWrappers.bswap_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ceil_llvm, 4.1; perf_flag=:stability),
+        TestCase(
             IntrinsicsWrappers.__cglobal,
             Val{:jl_uv_stdout}(),
-            Ptr{Cvoid},
+            Ptr{Cvoid};
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_sadd_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_sdiv_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_smul_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_srem_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_ssub_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_uadd_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_udiv_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_umul_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_urem_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.checked_usub_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0, -3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, -3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, -3.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0f0, -3.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.ctlz_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.ctpop_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.cttz_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.div_float, 5.0, 3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.div_float_fast, 5.0, 3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.div_float, 5.0f0, 3.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.div_float_fast, 5.0f0, 3.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float, 4.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float, 4.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float_fast, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float_fast, 4.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float_fast, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_float_fast, 4.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.eq_int, 4, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.flipsign_int, 4, -3),
-        (false, :stability, nothing, IntrinsicsWrappers.floor_llvm, 4.1),
-        (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0, 4.0, 3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0f0, 4.0f0, 3.0f0),
+        TestCase(IntrinsicsWrappers.checked_sadd_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_sdiv_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_smul_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_srem_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_ssub_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_uadd_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_udiv_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_umul_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_urem_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.checked_usub_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, 5.0, -3.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, -5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, -5.0, -3.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, 5.0f0, -3.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, -5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.copysign_float, -5.0f0, -3.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ctlz_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ctpop_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.cttz_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.div_float, 5.0, 3.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.div_float_fast, 5.0, 3.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.div_float, 5.0f0, 3.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.div_float_fast, 5.0f0, 3.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float, 4.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float, 4.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float_fast, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float_fast, 4.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float_fast, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_float_fast, 4.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.eq_int, 4, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.flipsign_int, 4, -3; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.floor_llvm, 4.1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fma_float, 5.0, 4.0, 3.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fma_float, 5.0f0, 4.0f0, 3.0f0; perf_flag=:stability),
         # Validate cross-precision derivatives with FD, retaining stability/allocation checks.
-        (false, :stability_and_allocs, nothing, IntrinsicsWrappers.fpext, Float64, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.1, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.0f1, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.fptosi, UInt32, 4.1),
-        (false, :stability, nothing, IntrinsicsWrappers.fptoui, Int32, 4.1),
-        (false, :stability, nothing, IntrinsicsWrappers.fptrunc, Float32, 5.0),
-        (true, :stability, nothing, IntrinsicsWrappers.have_fma, Float64),
-        (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.1, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.0f1, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.le_float_fast, 4.1, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.le_float_fast, 4.0f1, 4.0f0),
+        TestCase(IntrinsicsWrappers.fpext, Float64, 5.0f0; perf_flag=:stability_and_allocs),
+        TestCase(IntrinsicsWrappers.fpiseq, 4.1, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fpiseq, 4.0f1, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fptosi, UInt32, 4.1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fptoui, Int32, 4.1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.fptrunc, Float32, 5.0; perf_flag=:stability),
+        TestCase(
+            IntrinsicsWrappers.have_fma, Float64; interface_only=true, perf_flag=:stability
+        ),
+        TestCase(IntrinsicsWrappers.le_float, 4.1, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.le_float, 4.0f1, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.le_float_fast, 4.1, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.le_float_fast, 4.0f1, 4.0f0; perf_flag=:stability),
         # llvm_call -- NEEDS IMPLEMENTING AND TESTING
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(
             IntrinsicsWrappers.lshr_int,
             1308622848,
-            0x0000000000000018,
+            0x0000000000000018;
+            perf_flag=:stability,
         ),
-        (false, :stability, nothing, IntrinsicsWrappers.lt_float, 4.1, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.lt_float, 4.0f1, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.lt_float_fast, 4.1, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.lt_float_fast, 4.0f1, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.mul_float, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.mul_float, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.mul_float_fast, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.mul_float_fast, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.mul_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.muladd_float, 5.0, 4.0, 3.0),
-        (false, :stability, nothing, IntrinsicsWrappers.muladd_float, 5.0f0, 4.0f0, 3.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_float, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_float, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_float_fast, 5.0, 4.0),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_float_fast, 5.0f0, 4.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.ne_int, 5, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.neg_float, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.neg_float, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.neg_float_fast, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.neg_float_fast, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.neg_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.not_int, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.or_int, 5, 5),
-        (true, :stability, nothing, IntrinsicsWrappers.pointerref, CoDual(p, dp), 2, 1),
-        (true, :stability, nothing, IntrinsicsWrappers.pointerref, CoDual(q, dq), 2, 1),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(IntrinsicsWrappers.lt_float, 4.1, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.lt_float, 4.0f1, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.lt_float_fast, 4.1, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.lt_float_fast, 4.0f1, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.mul_float, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.mul_float, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.mul_float_fast, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.mul_float_fast, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.mul_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.muladd_float, 5.0, 4.0, 3.0; perf_flag=:stability),
+        TestCase(
+            IntrinsicsWrappers.muladd_float, 5.0f0, 4.0f0, 3.0f0; perf_flag=:stability
+        ),
+        TestCase(IntrinsicsWrappers.ne_float, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ne_float, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ne_float_fast, 5.0, 4.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ne_float_fast, 5.0f0, 4.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ne_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ne_int, 5, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.neg_float, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.neg_float, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.neg_float_fast, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.neg_float_fast, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.neg_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.not_int, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.or_int, 5, 5; perf_flag=:stability),
+        TestCase(
+            IntrinsicsWrappers.pointerref,
+            CoDual(p, dp),
+            2,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
+            IntrinsicsWrappers.pointerref,
+            CoDual(q, dq),
+            2,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
             IntrinsicsWrappers.pointerset,
             CoDual(p, dp),
             5.0,
             2,
-            1,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
+            IntrinsicsWrappers.pointerset,
+            CoDual(q, dq),
+            1,
+            2,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
             IntrinsicsWrappers.pointerset,
             CoDual(pointer(c), pointer(dc)),
             CoDual(pointer(c_new_val), pointer(dc_new_val)),
             1,
-            1,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
         ),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
-        (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.sdiv_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.sext_int, Int64, Int32(1308622848)),
-        (
-            false,
-            :stability,
-            nothing,
-            IntrinsicsWrappers.shl_int,
-            1308622848,
-            0xffffffffffffffe8,
+        TestCase(IntrinsicsWrappers.rint_llvm, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sdiv_int, 5, 4; perf_flag=:stability),
+        TestCase(
+            IntrinsicsWrappers.sext_int, Int64, Int32(1308622848); perf_flag=:stability
         ),
-        (false, :stability, nothing, IntrinsicsWrappers.sitofp, Float64, 0),
-        (false, :stability, nothing, IntrinsicsWrappers.sle_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.slt_int, 4, 5),
-        (false, :stability, nothing, IntrinsicsWrappers.sqrt_llvm, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.sqrt_llvm, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.sqrt_llvm_fast, 5.0),
-        (false, :stability, nothing, IntrinsicsWrappers.sqrt_llvm_fast, 5.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.srem_int, 4, 1),
-        (false, :stability, nothing, IntrinsicsWrappers.sub_float, 4.0, 1.0),
-        (false, :stability, nothing, IntrinsicsWrappers.sub_float, 4.0f0, 1.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.sub_float_fast, 4.0, 1.0),
-        (false, :stability, nothing, IntrinsicsWrappers.sub_float_fast, 4.0f0, 1.0f0),
-        (false, :stability, nothing, IntrinsicsWrappers.sub_int, 4, 1),
-        (false, :stability, nothing, IntrinsicsWrappers.trunc_int, UInt8, 78),
-        (false, :stability, nothing, IntrinsicsWrappers.trunc_llvm, 5.1),
-        (false, :stability, nothing, IntrinsicsWrappers.udiv_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.uitofp, Float16, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.ule_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.ult_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.urem_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.xor_int, 5, 4),
-        (false, :stability, nothing, IntrinsicsWrappers.zext_int, Int64, 0xffffffff),
+        TestCase(
+            IntrinsicsWrappers.shl_int, 1308622848, 0xffffffffffffffe8; perf_flag=:stability
+        ),
+        TestCase(IntrinsicsWrappers.sitofp, Float64, 0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sle_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.slt_int, 4, 5; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sqrt_llvm, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sqrt_llvm, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sqrt_llvm_fast, 5.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sqrt_llvm_fast, 5.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.srem_int, 4, 1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sub_float, 4.0, 1.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sub_float, 4.0f0, 1.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sub_float_fast, 4.0, 1.0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sub_float_fast, 4.0f0, 1.0f0; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.sub_int, 4, 1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.trunc_int, UInt8, 78; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.trunc_llvm, 5.1; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.udiv_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.uitofp, Float16, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ule_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.ult_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.urem_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.xor_int, 5, 4; perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.zext_int, Int64, 0xffffffff; perf_flag=:stability),
 
         # Non-intrinsic built-ins:
         # Core._abstracttype -- NEEDS IMPLEMENTING AND TESTING
-        (false, :none, nothing, __vec_to_tuple, [1.0]),
-        (false, :none, nothing, __vec_to_tuple, Any[1.0]),
-        (false, :none, nothing, __vec_to_tuple, Any[[1.0]]),
-        (false, :none, nothing, __vec_to_tuple, [1]),
+        TestCase(__vec_to_tuple, [1.0]),
+        TestCase(__vec_to_tuple, Any[1.0]),
+        TestCase(__vec_to_tuple, Any[[1.0]]),
+        TestCase(__vec_to_tuple, [1]),
         # Core._apply_pure -- NEEDS IMPLEMENTING AND TESTING
         # Core._call_in_world -- NEEDS IMPLEMENTING AND TESTING
         # Core._call_in_world_total -- NEEDS IMPLEMENTING AND TESTING
@@ -2482,168 +2489,170 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # Core._primitivetype -- NEEDS IMPLEMENTING AND TESTING
         # Core._setsuper! -- NEEDS IMPLEMENTING AND TESTING
         # Core._structtype -- NEEDS IMPLEMENTING AND TESTING
-        (false, :none, _range, Core._svec_ref, svec(5, 4), 2),
-        (false, :none, _range, Core._svec_ref, svec(5, 4.0), 2),
-        (false, :none, _range, Core._svec_ref, svec(5, randn(rng_ctor(1234), 2, 3)), 2),
-        (false, :none, (lb=1e-3, ub=500.0), Core.svec, 5, 4.0, randn(rng_ctor(1234), 2, 3)),
+        TestCase(Core._svec_ref, svec(5, 4), 2; bench=_range),
+        TestCase(Core._svec_ref, svec(5, 4.0), 2; bench=_range),
+        TestCase(Core._svec_ref, svec(5, randn(rng_ctor(1234), 2, 3)), 2; bench=_range),
+        TestCase(Core.svec, 5, 4.0, randn(rng_ctor(1234), 2, 3); bench=(lb=1e-3, ub=500.0)),
         # check svec with no arguments
-        (false, :none, _range, Core.svec),
+        TestCase(Core.svec; bench=_range),
         # check svec with an argument that has both fdata and rdata
-        (
-            false,
-            :none,
-            (lb=1e-3, ub=500.0),
-            Core.svec,
-            (5, 4.0, randn(rng_ctor(1234), 2, 3)),
+        TestCase(
+            Core.svec, (5, 4.0, randn(rng_ctor(1234), 2, 3)); bench=(lb=1e-3, ub=500.0)
         ),
         # Core._typebody! -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability, nothing, <:, Float64, Int),
-        (false, :stability, nothing, <:, Any, Float64),
-        (false, :stability, nothing, <:, Float64, Any),
-        (false, :stability, nothing, ===, 5.0, 4.0),
-        (false, :stability, nothing, ===, 5.0, randn(5)),
-        (false, :stability, nothing, ===, randn(5), randn(3)),
-        (false, :stability, nothing, ===, 5.0, 5.0),
-        (true, :stability, nothing, Core._typevar, :T, Union{}, Any),
-        (false, :none, _range, Core.apply_type, Vector, Float64),
-        (false, :none, _range, Core.apply_type, Array, Float64, 2),
-        (false, :none, (lb=1e-3, ub=100), compilerbarrier, :type, 5.0),
+        TestCase(<:, Float64, Int; perf_flag=:stability),
+        TestCase(<:, Any, Float64; perf_flag=:stability),
+        TestCase(<:, Float64, Any; perf_flag=:stability),
+        TestCase(===, 5.0, 4.0; perf_flag=:stability),
+        TestCase(===, 5.0, randn(5); perf_flag=:stability),
+        TestCase(===, randn(5), randn(3); perf_flag=:stability),
+        TestCase(===, 5.0, 5.0; perf_flag=:stability),
+        TestCase(
+            Core._typevar, :T, Union{}, Any; interface_only=true, perf_flag=:stability
+        ),
+        TestCase(Core.apply_type, Vector, Float64; bench=_range),
+        TestCase(Core.apply_type, Array, Float64, 2; bench=_range),
+        TestCase(compilerbarrier, :type, 5.0; bench=(lb=1e-3, ub=100)),
         # Core.const_arrayref -- NEEDS IMPLEMENTING AND TESTING
         # Core.donotdelete -- NEEDS IMPLEMENTING AND TESTING
         # Core.finalizer -- NEEDS IMPLEMENTING AND TESTING
         # Core.get_binding_type -- NEEDS IMPLEMENTING AND TESTING
-        (false, :none, nothing, Core.ifelse, true, randn(5), 1),
-        (false, :none, nothing, Core.ifelse, false, randn(5), 2),
-        (false, :stability, nothing, Core.ifelse, true, 5, 4),
-        (false, :stability, nothing, Core.ifelse, false, true, false),
-        (false, :stability, nothing, Core.ifelse, false, 1.0, 2.0),
-        (false, :stability, nothing, Core.ifelse, true, 1.0, 2.0),
-        (false, :stability, nothing, Core.ifelse, false, randn(5), randn(3)),
-        (false, :stability, nothing, Core.ifelse, true, randn(5), randn(3)),
+        TestCase(Core.ifelse, true, randn(5), 1),
+        TestCase(Core.ifelse, false, randn(5), 2),
+        TestCase(Core.ifelse, true, 5, 4; perf_flag=:stability),
+        TestCase(Core.ifelse, false, true, false; perf_flag=:stability),
+        TestCase(Core.ifelse, false, 1.0, 2.0; perf_flag=:stability),
+        TestCase(Core.ifelse, true, 1.0, 2.0; perf_flag=:stability),
+        TestCase(Core.ifelse, false, randn(5), randn(3); perf_flag=:stability),
+        TestCase(Core.ifelse, true, randn(5), randn(3); perf_flag=:stability),
         # Core.set_binding_type! -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability, nothing, Core.sizeof, Float64),
-        (false, :stability, nothing, Core.sizeof, randn(5)),
-        (false, :stability, nothing, applicable, sin, Float64),
-        (false, :stability, nothing, applicable, sin, Type),
-        (false, :stability, nothing, applicable, +, Type, Float64),
-        (false, :stability, nothing, applicable, +, Float64, Float64),
-        (false, :stability, (lb=1e-3, ub=20.0), fieldtype, StructFoo, :a),
-        (false, :stability, (lb=1e-3, ub=20.0), fieldtype, StructFoo, :b),
-        (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :a),
-        (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :b),
+        TestCase(Core.sizeof, Float64; perf_flag=:stability),
+        TestCase(Core.sizeof, randn(5); perf_flag=:stability),
+        TestCase(applicable, sin, Float64; perf_flag=:stability),
+        TestCase(applicable, sin, Type; perf_flag=:stability),
+        TestCase(applicable, +, Type, Float64; perf_flag=:stability),
+        TestCase(applicable, +, Float64, Float64; perf_flag=:stability),
+        TestCase(fieldtype, StructFoo, :a; perf_flag=:stability, bench=(lb=1e-3, ub=20.0)),
+        TestCase(fieldtype, StructFoo, :b; perf_flag=:stability, bench=(lb=1e-3, ub=20.0)),
+        TestCase(fieldtype, MutableFoo, :a; perf_flag=:stability, bench=(lb=1e-3, ub=20.0)),
+        TestCase(fieldtype, MutableFoo, :b; perf_flag=:stability, bench=(lb=1e-3, ub=20.0)),
         # These primals are tiny builtins, so keep some ratio headroom for timing noise.
-        (true, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0), :a),
-        (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :a),
-        (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :b),
+        TestCase(
+            getfield, StructFoo(5.0), :a; interface_only=true, bench=(lb=1e-3, ub=350)
+        ),
+        TestCase(getfield, StructFoo(5.0, randn(5)), :a; bench=(lb=1e-3, ub=350)),
+        TestCase(getfield, StructFoo(5.0, randn(5)), :b; bench=(lb=1e-3, ub=350)),
         # Tuple-valued type fields need typeof, not _typeof's uninhabitable sharpening.
-        (false, :none, nothing, getfield, Pair(1.0, (Float64, Int)), :second),
-        (false, :none, nothing, getfield, Pair(1.0, (Float64, Int)), :second, true),
+        TestCase(getfield, Pair(1.0, (Float64, Int)), :second),
+        TestCase(getfield, Pair(1.0, (Float64, Int)), :second, true),
         # Integer field lookup still merits a slightly wider bound than symbol lookup.
-        (true, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0), 1),
-        (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 1),
-        (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 2),
-        (true, :none, _range, getfield, MutableFoo(5.0), :a),
-        (false, :none, _range, getfield, MutableFoo(5.0, randn(5)), :b),
-        (false, :stability_and_allocs, nothing, getfield, UnitRange{Int}(5:9), :start),
-        (false, :stability_and_allocs, nothing, getfield, UnitRange{Int}(5:9), :stop),
-        (false, :stability_and_allocs, nothing, getfield, (5.0,), 1),
-        (false, :stability_and_allocs, nothing, getfield, (5.0, 4.0), 1),
-        (false, :stability_and_allocs, nothing, getfield, (5.0,), 1, false),
-        (false, :stability_and_allocs, nothing, getfield, (5.0, 4.0), 1, false),
-        (false, :stability_and_allocs, nothing, getfield, (1,), 1, false),
-        (false, :stability_and_allocs, nothing, getfield, (1, 2), 1),
-        (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 1),
-        (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 2),
+        TestCase(getfield, StructFoo(5.0), 1; interface_only=true, bench=(lb=1e-3, ub=500)),
+        TestCase(getfield, StructFoo(5.0, randn(5)), 1; bench=(lb=1e-3, ub=500)),
+        TestCase(getfield, StructFoo(5.0, randn(5)), 2; bench=(lb=1e-3, ub=500)),
+        TestCase(getfield, MutableFoo(5.0), :a; interface_only=true, bench=_range),
+        TestCase(getfield, MutableFoo(5.0, randn(5)), :b; bench=_range),
+        TestCase(getfield, UnitRange{Int}(5:9), :start; perf_flag=:stability_and_allocs),
+        TestCase(getfield, UnitRange{Int}(5:9), :stop; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (5.0,), 1; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (5.0, 4.0), 1; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (5.0,), 1, false; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (5.0, 4.0), 1, false; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (1,), 1, false; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (1, 2), 1; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (a=5, b=4), 1; perf_flag=:stability_and_allocs),
+        TestCase(getfield, (a=5, b=4), 2; perf_flag=:stability_and_allocs),
         # getfield on Tuple{Type{T},...} with integer index: the primal is trivial but the
         # rule triggers type-system dispatch, making the ratio large. Loose bounds are intentional.
-        (false, :none, (lb=1e-3, ub=200), getfield, (Float64, Float64), 1),
-        (false, :none, (lb=1e-3, ub=250), getfield, (Float64, Float64), 2, false),
+        TestCase(getfield, (Float64, Float64), 1; bench=(lb=1e-3, ub=200)),
+        TestCase(getfield, (Float64, Float64), 2, false; bench=(lb=1e-3, ub=250)),
         # The reverse oracle must convert NoTangent to NoFData via to_fwds.
         # This row checks that conversion, although the derivative is zero.
-        (
-            false,
-            :none,
-            (
-                oracle=(value=1, deriv=(NoRData(), NoRData(), NoRData())),
-                output_tangent=NoTangent(),
-                mode=ReverseMode,
-            ),
+        TestCase(
             getfield,
             (1, 2),
-            1,
+            1;
+            oracle=(value=1, deriv=(NoRData(), NoRData(), NoRData())),
+            output_tangent=NoTangent(),
+            mode=ReverseMode,
         ),
-        (false, :none, _range, getfield, (a=5.0, b=4), 1),
-        (false, :none, _range, getfield, (a=5.0, b=4), 2),
-        (false, :none, _range, getfield, UInt8, :name),
-        (false, :none, _range, getfield, UInt8, :super),
-        (true, :none, _range, getfield, UInt8, :layout),
-        (false, :none, _range, getfield, UInt8, :hash),
-        (false, :none, _range, getfield, UInt8, :flags),
+        TestCase(getfield, (a=5.0, b=4), 1; bench=_range),
+        TestCase(getfield, (a=5.0, b=4), 2; bench=_range),
+        TestCase(getfield, UInt8, :name; bench=_range),
+        TestCase(getfield, UInt8, :super; bench=_range),
+        TestCase(getfield, UInt8, :layout; interface_only=true, bench=_range),
+        TestCase(getfield, UInt8, :hash; bench=_range),
+        TestCase(getfield, UInt8, :flags; bench=_range),
         # getglobal requires compositional testing, because you can't deepcopy a module
         # invoke -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability, nothing, isa, 5.0, Float64),
-        (false, :stability, nothing, isa, 1, Float64),
-        (false, :stability, nothing, isdefined, MutableFoo(5.0, randn(5)), :sim),
-        (false, :stability, nothing, isdefined, MutableFoo(5.0, randn(5)), :a),
+        TestCase(isa, 5.0, Float64; perf_flag=:stability),
+        TestCase(isa, 1, Float64; perf_flag=:stability),
+        TestCase(isdefined, MutableFoo(5.0, randn(5)), :sim; perf_flag=:stability),
+        TestCase(isdefined, MutableFoo(5.0, randn(5)), :a; perf_flag=:stability),
         # modifyfield! -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability, nothing, nfields, MutableFoo),
-        (false, :stability, nothing, nfields, StructFoo),
+        TestCase(nfields, MutableFoo; perf_flag=:stability),
+        TestCase(nfields, StructFoo; perf_flag=:stability),
         # replacefield! -- NEEDS IMPLEMENTING AND TESTING
-        (false, :none, _range, setfield!, MutableFoo(5.0, randn(5)), :a, 4.0),
-        (false, :none, nothing, setfield!, MutableFoo(5.0, randn(5)), :b, randn(5)),
-        (false, :none, _range, setfield!, MutableFoo(5.0, randn(5)), 1, 4.0),
-        (false, :none, _range, setfield!, MutableFoo(5.0, randn(5)), 2, randn(5)),
-        (false, :none, _range, setfield!, NonDifferentiableFoo(5, false), 1, 4),
-        (false, :none, _range, setfield!, NonDifferentiableFoo(5, true), 2, false),
+        TestCase(setfield!, MutableFoo(5.0, randn(5)), :a, 4.0; bench=_range),
+        TestCase(setfield!, MutableFoo(5.0, randn(5)), :b, randn(5)),
+        TestCase(setfield!, MutableFoo(5.0, randn(5)), 1, 4.0; bench=_range),
+        TestCase(setfield!, MutableFoo(5.0, randn(5)), 2, randn(5); bench=_range),
+        TestCase(setfield!, NonDifferentiableFoo(5, false), 1, 4; bench=_range),
+        TestCase(setfield!, NonDifferentiableFoo(5, true), 2, false; bench=_range),
         # runtime-name setfield! on a Ref (V is NDualRef): delegates to the lsetfield! frule.
-        (false, :none, _range, setfield!, Ref(5.0), :x, 4.0),
-        (false, :none, _range, setfield!, Ref(5.0), 1, 4.0),
+        TestCase(setfield!, Ref(5.0), :x, 4.0; bench=_range),
+        TestCase(setfield!, Ref(5.0), 1, 4.0; bench=_range),
         # runtime-name getfield on a Ref (V is NDualRef) — the read counterpart; rebuilds the
         # scalar V via _scalar_ndual. Real + complex element, by name and by index.
-        (false, :none, _range, getfield, Ref(5.0), :x),
-        (false, :none, _range, getfield, Ref(5.0), 1),
-        (false, :none, _range, getfield, Ref(5.0), :x, false),
-        (false, :none, _range, getfield, Ref(1.0 + 2.0im), :x),
+        TestCase(getfield, Ref(5.0), :x; bench=_range),
+        TestCase(getfield, Ref(5.0), 1; bench=_range),
+        TestCase(getfield, Ref(5.0), :x, false; bench=_range),
+        TestCase(getfield, Ref(1.0 + 2.0im), :x; bench=_range),
         # swapfield! -- NEEDS IMPLEMENTING AND TESTING
-        (false, :stability_and_allocs, nothing, tuple, 5.0, 4.0),
-        (false, :stability_and_allocs, nothing, tuple, randn(5), 5.0),
-        (false, :stability_and_allocs, nothing, tuple, randn(5), randn(4)),
-        (false, :stability_and_allocs, nothing, tuple, 5.0, randn(1)),
-        (false, :stability_and_allocs, nothing, tuple),
-        (false, :stability_and_allocs, nothing, tuple, 1),
-        (false, :stability_and_allocs, nothing, tuple, 1, 5),
-        (false, :stability_and_allocs, nothing, tuple, 1.0, (5,)),
-        (false, :stability, nothing, typeassert, 5.0, Float64),
-        (false, :stability, nothing, typeassert, randn(5), Vector{Float64}),
-        (false, :stability, nothing, typeof, 5.0),
-        (false, :stability, nothing, typeof, randn(5)),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(tuple, 5.0, 4.0; perf_flag=:stability_and_allocs),
+        TestCase(tuple, randn(5), 5.0; perf_flag=:stability_and_allocs),
+        TestCase(tuple, randn(5), randn(4); perf_flag=:stability_and_allocs),
+        TestCase(tuple, 5.0, randn(1); perf_flag=:stability_and_allocs),
+        TestCase(tuple; perf_flag=:stability_and_allocs),
+        TestCase(tuple, 1; perf_flag=:stability_and_allocs),
+        TestCase(tuple, 1, 5; perf_flag=:stability_and_allocs),
+        TestCase(tuple, 1.0, (5,); perf_flag=:stability_and_allocs),
+        TestCase(typeassert, 5.0, Float64; perf_flag=:stability),
+        TestCase(typeassert, randn(5), Vector{Float64}; perf_flag=:stability),
+        TestCase(typeof, 5.0; perf_flag=:stability),
+        TestCase(typeof, randn(5); perf_flag=:stability),
+        TestCase(
             unsafe_wrap,
             Array,
             CoDual(Ptr{Union{}}(0), Ptr{Union{}}(0)),
-            0,
+            0;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (true, :stability, nothing, unsafe_wrap, Array, CoDual(p, dp), 1),
-        (true, :stability, nothing, unsafe_wrap, Vector{Float64}, CoDual(p, dp), 1),
-        (
-            false,
-            :none,
-            (
-                throws=(ArgumentError, "cannot preserve tangent aliasing"),
-                mode=ForwardMode,
-                chunk_size=2,
-            ),
+        TestCase(
+            unsafe_wrap, Array, CoDual(p, dp), 1; interface_only=true, perf_flag=:stability
+        ),
+        TestCase(
+            unsafe_wrap,
+            Vector{Float64},
+            CoDual(p, dp),
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
             unsafe_wrap,
             Array,
             Lifted{typeof(pointer(c)),2}(
                 pointer(c), (pointer(dc), pointer(dc) + sizeof(Ptr{Float64}))
             ),
-            1,
+            1;
+            throws=(ArgumentError, "cannot preserve tangent aliasing"),
+            mode=ForwardMode,
+            chunk_size=2,
         ),
-        (true, :stability, nothing, unsafe_wrap, Array, CoDual(q, dq), 3),
+        TestCase(
+            unsafe_wrap, Array, CoDual(q, dq), 3; interface_only=true, perf_flag=:stability
+        ),
     ]
 
     if VERSION > v"1.12-"
@@ -2654,21 +2663,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             IntrinsicsWrappers.max_float_fast,
         ]
         for P in [Float32, Float64], f in fs
-            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(5.0), P(4.0)))
-            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
+            push!(test_cases, TestCase(f, P(5.0), P(4.0); perf_flag=:stability_and_allocs))
+            push!(test_cases, TestCase(f, P(2.0), P(3.1); perf_flag=:stability_and_allocs))
         end
     end
-    flags = (
-        false,
-        :none,
-        (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
-    )
+    flags = (; mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder"))
     append!(
         test_cases,
         [
-            (flags..., IntrinsicsWrappers.pointerref, p, 1, 1),
-            (flags..., IntrinsicsWrappers.pointerset, p, 2.0, 1, 1),
-            (flags..., unsafe_wrap, Array, p, (5,)),
+            TestCase(IntrinsicsWrappers.pointerref, p, 1, 1; flags...),
+            TestCase(IntrinsicsWrappers.pointerset, p, 2.0, 1, 1; flags...),
+            TestCase(unsafe_wrap, Array, p, (5,); flags...),
         ],
     )
 
@@ -2688,7 +2693,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         args = ntuple(i -> i == pos ? v : P(2), n)
         rvs = (NoRData(), ntuple(_ -> P(0), n)...)
         opts = (oracle=(deriv=(fwd=P(0), rvs=rvs),), output_tangent=P(0))
-        push!(test_cases, (false, :stability, opts, f, map(x -> CoDual(x, P(0)), args)...))
+        push!(
+            test_cases,
+            TestCase(f, map(x -> CoDual(x, P(0)), args)...; perf_flag=:stability, opts...),
+        )
     end
 
     # A zero primal coefficient is strong even when the incoming derivative is nonfinite.
@@ -2709,7 +2717,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         end
         rvs = fused ? (NoRData(), P(0), P(0), v) : (NoRData(), P(0), P(0))
         opts = (oracle=(deriv=(fwd=fused ? P(1) : P(0), rvs=rvs),), output_tangent=v)
-        push!(test_cases, (false, :stability, opts, f, args...))
+        push!(test_cases, TestCase(f, args...; perf_flag=:stability, opts...))
     end
 
     for P in (Float16, Float32, Float64),
@@ -2717,7 +2725,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         v in (P(NaN), P(Inf), P(-Inf))
 
         opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), v, P(0))),), output_tangent=v)
-        push!(test_cases, (false, :stability, opts, f, CoDual(P(0), P(0)), CoDual(P(2), v)))
+        push!(
+            test_cases,
+            TestCase(f, CoDual(P(0), P(0)), CoDual(P(2), v); perf_flag=:stability, opts...),
+        )
     end
 
     # The sign coefficients of `abs_float` and `copysign_float` are zero at zero, NaN at NaN.
@@ -2727,31 +2738,38 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s)
         push!(
             test_cases,
-            (false, :stability, opts, IntrinsicsWrappers.abs_float, CoDual(x, s)),
+            TestCase(
+                IntrinsicsWrappers.abs_float, CoDual(x, s); perf_flag=:stability, opts...
+            ),
         )
         opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0), P(0))),), output_tangent=s)
         y = CoDual(P(-1), P(0))
         push!(
             test_cases,
-            (false, :stability, opts, IntrinsicsWrappers.copysign_float, CoDual(x, s), y),
+            TestCase(
+                IntrinsicsWrappers.copysign_float,
+                CoDual(x, s),
+                y;
+                perf_flag=:stability,
+                opts...,
+            ),
         )
     end
 
     # Cancellation distinguishes fused rounding only with an exact value oracle.
     # Pin d/da with CoDual seeds. Forward-only: this checks the inner-value invariant;
-    # ordinary rows above cover reverse.
+    # ordinary test cases above cover reverse.
     let a = 1.0 + 2.0^-27, b = 1.0 + 2.0^-27, z = -((1.0 + 2.0^-27) * (1.0 + 2.0^-27))
         for f in (IntrinsicsWrappers.fma_float, IntrinsicsWrappers.muladd_float)
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    (oracle=(value=fma(a, b, z), deriv=b), skip_reverse=true),
+                TestCase(
                     f,
                     CoDual(a, 1.0),
                     CoDual(b, 0.0),
-                    CoDual(z, 0.0),
+                    CoDual(z, 0.0);
+                    oracle=(value=fma(a, b, z), deriv=b),
+                    mode=ForwardMode,
                 ),
             )
         end
@@ -2768,7 +2786,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         seed = x < 0 ? P(1) : P(0)
         rvs = (NoRData(), x < 0 ? P(NaN) : P(0))
         opts = (oracle=(value=y, deriv=(fwd=P(0), rvs=rvs)), output_tangent=seed)
-        push!(test_cases, (false, :stability, opts, f, CoDual(x, P(0))))
+        push!(test_cases, TestCase(f, CoDual(x, P(0)); perf_flag=:stability, opts...))
     end
 
     # NaN selection must carry the returned operand's partials, not an ordering result.
@@ -2782,13 +2800,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             )
                 push!(
                     test_cases,
-                    (
-                        false,
-                        :none,
-                        (oracle=(value=value, deriv=want), skip_reverse=true),
+                    TestCase(
                         f,
                         CoDual(av, 1.0),
-                        CoDual(bv, db),
+                        CoDual(bv, db);
+                        oracle=(value=value, deriv=want),
+                        mode=ForwardMode,
                     ),
                 )
             end
@@ -2800,13 +2817,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         )
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    (oracle=(value=NaN, deriv=want), output_tangent=1.0, mode=ReverseMode),
+                TestCase(
                     f,
                     NaN,
-                    1.0,
+                    1.0;
+                    oracle=(value=NaN, deriv=want),
+                    output_tangent=1.0,
+                    mode=ReverseMode,
                 ),
             )
         end
@@ -2814,13 +2831,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # Within FastMath's contract (NaN excluded), max selections agree on ties.
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (oracle=(value=1.0, deriv=2.0), skip_reverse=true),
+            TestCase(
                 IntrinsicsWrappers.min_float_fast,
                 CoDual(1.0, 1.0),
-                CoDual(1.0, 2.0),
+                CoDual(1.0, 2.0);
+                oracle=(value=1.0, deriv=2.0),
+                mode=ForwardMode,
             ),
         )
     end
@@ -2829,21 +2845,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     push!(memory, children, dchildren)
     push!(
         test_cases,
-        (
-            true,
-            :stability,
-            (mode=ReverseMode,),
+        TestCase(
             IntrinsicsWrappers.pointerref,
             CoDual(
                 Ptr{typeof(children)}(pointer_from_objref(children)),
                 Ptr{typeof(dchildren)}(pointer_from_objref(dchildren)),
             ),
             1,
-            1,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+            mode=ReverseMode,
         ),
     )
-    throwing_rows, throwing_memory = _builtins_throwing_rows()
-    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    throwing_cases, throwing_memory = _builtins_throwing_cases()
+    test_cases = vcat(TestCase[test_cases...], throwing_cases)
     memory = vcat(Any[memory...], throwing_memory)
     return test_cases, memory
 end
@@ -2992,50 +3008,38 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         return GC.@preserve r (pointer_from_objref(r) === C_NULL ? 0.0 : x)
     end
 
-    test_cases = Any[
-        (true, :none, nothing, narrow_through_cvoid, [1.0, 2.0], 2.0),
+    test_cases = TestCase[
+        TestCase(narrow_through_cvoid, [1.0, 2.0], 2.0; interface_only=true),
         # `skip_chunked`: takes a raw pointer to a float array (see the `unsafe_copyto_tester`
         # rows in `foreigncall.jl`); the lane stride leaves no buffer a pointer can address.
-        (false, :none, (skip_chunked=true,), shift_through_cvoid, [1.0, 2.0], 2.0),
-        (
-            false,
-            :none,
-            (skip_chunked=true,),
+        TestCase(shift_through_cvoid, [1.0, 2.0], 2.0; skip_chunked=true),
+        TestCase(
             v -> GC.@preserve(v, 3unsafe_load(Ptr{Float64}(_pointer_cvoid(v)), 2)),
-            [1.0, 2.0],
+            [1.0, 2.0];
+            skip_chunked=true,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            x -> (a=[1, 2, 3]; GC.@preserve a x * unsafe_load(_pointer_int(a), 2)),
-            2.0,
+        TestCase(
+            x -> (a=[1, 2, 3]; GC.@preserve a x * unsafe_load(_pointer_int(a), 2)), 2.0
         ),
-        (false, :none, nothing, objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
+        TestCase(objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
+        TestCase(
+            typed_objref_roundtrip,
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0);
+            mode=ReverseMode,
+        ),
+        TestCase(
             typed_objref_roundtrip,
             TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
+            TestResources.TypeUnstableMutableStruct;
+            mode=ReverseMode,
         ),
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
-            typed_objref_roundtrip,
-            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
-            TestResources.TypeUnstableMutableStruct,
-        ),
-        ((
-            false,
-            :none,
-            (mode=ReverseMode,),
+        (TestCase(
             objref_narrowed_roundtrip,
             TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
-            T,
+            T;
+            mode=ReverseMode,
         ) for T in (TestResources.NonDifferentiableFoo, String))...,
-        ((false, :none, (mode=ReverseMode,), objref_child_copy, r) for r in (
+        (TestCase(objref_child_copy, r; mode=ReverseMode) for r in (
             Ref(TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0)),
             Ref([1.0, 2.0]),
             Ref{Tuple{Vararg{Vector{Float64}}}}(([1.0, 2.0], [3.0, 4.0])),
@@ -3051,188 +3055,146 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
                 TestResources.MaybePointerChild([3.0, 4.0]),
             ),
         ))...,
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0], (4.0,)),
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 3, (4.0,)),
-        (
-            # 33 arguments is the critical length at which splatting gives up on inferring,
-            # and backs off to `Core._apply_iterate`. It's important to check this in order
-            # to verify that we don't wind up in an infinite recursion.
-            false,
-            :none,
-            nothing,
-            _apply_iterate_equivalent,
-            Base.iterate,
-            +,
-            randn(33),
-        ),
-        (
+        TestCase(_apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
+        TestCase(_apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
+        TestCase(_apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
+        TestCase(_apply_iterate_equivalent, Base.iterate, *, [5.0], (4.0,)),
+        TestCase(_apply_iterate_equivalent, Base.iterate, *, 3, (4.0,)),
+        TestCase(_apply_iterate_equivalent, Base.iterate, +, randn(33)),
+        TestCase(
             # Check that Core._apply_iterate gets lifted to _apply_iterate_equivalent.
-            false,
-            :none,
-            nothing,
             x -> +(x...),
             randn(33),
         ),
         # Forward refuses own-address reads because the optimiser can elide the primal
         # Ref store. Reverse remains supported and needs a separate correctness row.
-        (
-            false,
-            :none,
-            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+        TestCase(
             ref_objref_roundtrip,
-            5.0,
+            5.0;
+            throws=(ArgumentError, "invisible to the optimiser"),
+            mode=ForwardMode,
         ),
-        ((false, :none, (mode=ReverseMode,), ref_objref_roundtrip, x) for
+        (TestCase(ref_objref_roundtrip, x; mode=ReverseMode) for
          x in (5.0, 5.0f0, 1.0 + 2.0im, (1.0f0, 2.0f0)))...,
-        (
+        TestCase(
             # skip_chunked: raw pointers cannot address stride-N lanes of a float array's
             # partials block (as in foreigncall.jl's unsafe_copyto_tester).
-            false,
-            :none,
-            (skip_chunked=true,),
             (v, x) -> (pointerset(pointer(x), v, 2, 1); x),
             3.0,
-            randn(5),
+            randn(5);
+            skip_chunked=true,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            x -> (pointerset(pointer(x), UInt8(3), 2, 1); x),
-            rand(UInt8, 5),
-        ),
+        TestCase((x -> (pointerset(pointer(x), UInt8(3), 2, 1); x)), rand(UInt8, 5)),
         # Reverse-only: pointer stores into pointer arrays have an element-wise
         # forward layout that cannot accept bare lane pointers.
-        (
-            true,
-            :none,
-            (skip_forward=true,),
+        TestCase(
             (x, v) ->
                 unsafe_wrap(Array, pointerset(pointer(x), pointer(v), 1, 1), length(x)),
             CoDual(c, dc),
-            CoDual(c_new_val, dc_new_val),
+            CoDual(c_new_val, dc_new_val);
+            interface_only=true,
+            mode=ReverseMode,
         ),
-        (
-            true,
-            :none,
-            (skip_forward=true,),
+        TestCase(
             (x, v) -> unsafe_wrap(
                 Array,
                 Core.Intrinsics.atomic_pointerset(pointer(x), pointer(v), :monotonic),
                 length(x),
             ),
             CoDual(c, dc),
-            CoDual(c_new_val, dc_new_val),
+            CoDual(c_new_val, dc_new_val);
+            interface_only=true,
+            mode=ReverseMode,
         ),
         # Reverse-only for the same pointer-store layout restriction above.
         # test/rules/builtins.jl also checks explicit value_and_gradient!! results.
-        (true, :none, (skip_forward=true,), f_pointerset, CoDual(3.0, 1.0)),
-        (true, :none, (skip_forward=true,), f_atomic_pointerset, CoDual(3.0, 1.0)),
-        (
-            false,
-            :none,
-            nothing,
-            x -> (GC.@preserve x Tuple(unsafe_wrap(Array, pointer(x), length(x)))),
-            [1, 2],
+        TestCase(f_pointerset, CoDual(3.0, 1.0); interface_only=true, mode=ReverseMode),
+        TestCase(
+            f_atomic_pointerset, CoDual(3.0, 1.0); interface_only=true, mode=ReverseMode
         ),
-        (false, :none, nothing, getindex, randn(5), [1, 1]),
-        (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
-        (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
-        (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
-        (
-            false,
-            :none,
-            (mode=ReverseMode, throws=(ArgumentError, "no tangent storage")),
-            x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,)),
-            zeros(UInt8, 8),
+        TestCase(
+            (x -> (GC.@preserve x Tuple(unsafe_wrap(Array, pointer(x), length(x))))), [1, 2]
         ),
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
-            x -> sum(unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (0,))),
-            zeros(UInt8, 8),
+        TestCase(getindex, randn(5), [1, 1]),
+        TestCase(getindex, randn(5), [1, 2, 2]),
+        TestCase(setindex!, randn(5), [4.0, 5.0], [1, 1]),
+        TestCase(setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
+        TestCase(
+            (x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,))),
+            zeros(UInt8, 8);
+            mode=ReverseMode,
+            throws=(ArgumentError, "no tangent storage"),
+        ),
+        TestCase(
+            (x -> sum(unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (0,)))),
+            zeros(UInt8, 8);
+            mode=ReverseMode,
         ),
     ]
     # Repeated arguments must share one tangent to accumulate the full 2x gradient.
     let x = randn(rng_ctor(1), 3)
-        push!(test_cases, (false, :none, nothing, (a, b) -> sum(a .* b), x, x))
+        push!(test_cases, TestCase((a, b) -> sum(a .* b), x, x))
     end
     @static if VERSION >= v"1.11"
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (skip_chunked=true,),
+            TestCase(
                 v -> GC.@preserve(v, 3unsafe_load(Ptr{Float64}(_ref_cvoid(v.ref)), 2)),
-                [1.0, 2.0],
+                [1.0, 2.0];
+                skip_chunked=true,
             ),
         )
     end
     for atomic in (false, true), nondiff in (false, true), route in (:direct, :byte, :void)
-        push!(
-            test_cases, (false, :none, nothing, boxed_store, 1.25, atomic, nondiff, route)
-        )
+        push!(test_cases, TestCase(boxed_store, 1.25, atomic, nondiff, route))
     end
     boxed_nondiff = Any[1]
     for atomic in (false, true)
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (
-                    mode=ForwardMode,
-                    skip_chunked=true,
-                    throws=(ArgumentError, "known boxed shadow"),
-                ),
+            TestCase(
                 boxed_store_nondiff,
                 lift(pointer(boxed_nondiff), pointer(boxed_nondiff)),
                 lift(1.25, 1.0),
-                atomic,
+                atomic;
+                mode=ForwardMode,
+                skip_chunked=true,
+                throws=(ArgumentError, "known boxed shadow"),
             ),
         )
     end
-    push!(test_cases, (false, :none, nothing, boxed_store_inline, 2.0))
+    push!(test_cases, TestCase(boxed_store_inline, 2.0))
     for N in (1, 8), atomic in (false, true)
         push!(
             test_cases,
-            (false, :none, (mode=ForwardMode, chunk_size=N), _boxed_store_gc, 1.25, atomic),
+            TestCase(_boxed_store_gc, 1.25, atomic; mode=ForwardMode, chunk_size=N),
         )
     end
     for T in (Ptr{Any}, Ptr{Cvoid}, Ptr{UInt8}), wrap in (identity, tuple)
         p = wrap(Ptr{Any}(0))
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (mode=ForwardMode, skip_chunked=true, oracle=(value=2.5, deriv=2.0)),
+            TestCase(
                 boxed_pointer_input,
                 CoDual(p, p),
                 CoDual(1.25, 1.0),
-                T,
+                T;
+                mode=ForwardMode,
+                skip_chunked=true,
+                oracle=(value=2.5, deriv=2.0),
             ),
         )
     end
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (
-                mode=ForwardMode,
-                oracle=(
-                    value=(value=2.5, context=Ptr{Any}(0)),
-                    deriv=(value=2.0, context=uninit_tangent(Ptr{Any}(0))),
-                ),
-            ),
+        TestCase(
             boxed_pointer_output,
-            CoDual(1.25, 1.0),
+            CoDual(1.25, 1.0);
+            mode=ForwardMode,
+            oracle=(
+                value=(value=2.5, context=Ptr{Any}(0)),
+                deriv=(value=2.0, context=uninit_tangent(Ptr{Any}(0))),
+            ),
         ),
     )
     Base.@noinline pointer_passthrough(p) = p
@@ -3291,20 +3253,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         for hop in (width == 0 ? (:direct, :void, :noinline) : (:erased,))
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    opts,
-                    byte_buffer_pointer_address,
-                    collect(1.0:8.0),
-                    Val(hop),
-                ),
+                TestCase(byte_buffer_pointer_address, collect(1.0:8.0), Val(hop); opts...),
             )
         end
         for memory in (VERSION < v"1.11-rc4" ? (false,) : (false, true))
             push!(
                 test_cases,
-                (false, :none, opts, nondiff_pointer_wrap, collect(1.0:8.0), memory),
+                TestCase(nondiff_pointer_wrap, collect(1.0:8.0), memory; opts...),
             )
         end
         width == 0 && continue
@@ -3312,26 +3267,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             for element in (TestResources.OneField(1), nothing)
                 push!(
                     test_cases,
-                    (
-                        false,
-                        :none,
-                        opts,
-                        nondiff_memory_pointer_address,
-                        collect(1.0:8.0),
-                        element,
+                    TestCase(
+                        nondiff_memory_pointer_address, collect(1.0:8.0), element; opts...
                     ),
                 )
             end
             for wrap in (false, true)
                 push!(
                     test_cases,
-                    (
-                        false,
-                        :none,
-                        opts,
+                    TestCase(
                         numeric_memory_pointer_consumer,
                         collect(1.0:8.0),
-                        Val(wrap),
+                        Val(wrap);
+                        opts...,
                     ),
                 )
             end
@@ -3351,16 +3299,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
 
         push!(
             test_cases,
-            (false, :none, (; mode=ReverseMode), typed_pointer_load, [1.0, 3.0], T, erased),
+            TestCase(typed_pointer_load, [1.0, 3.0], T, erased; mode=ReverseMode),
         )
     end
     for a in ([(Int32(1), Int32(2), 3.0)], [(3.0,)], [Ptr{Float64}(0)])
-        push!(test_cases, (true, :none, (; mode=ForwardMode, chunk_size=1), pointer, a))
+        push!(
+            test_cases,
+            TestCase(pointer, a; interface_only=true, mode=ForwardMode, chunk_size=1),
+        )
     end
     return test_cases, Any[boxed_nondiff]
 end
 
-function _builtins_throwing_rows()
+function _builtins_throwing_cases()
     # atomic_pointerset through a differentiable element with an element-wise (incoherent)
     # per-lane V must hit the loud guard, mirroring pointerset.
     xv = [1.0]
@@ -3561,48 +3512,60 @@ function _builtins_throwing_rows()
         end
     end
     cases = Any[
-        (
-            ArgumentError,
+        TestCase(
             IntrinsicsWrappers.pointerref,
-            (ndstructslot, 1, 1),
-            (; mode=ForwardMode),
+            ndstructslot,
+            1,
+            1;
+            throws=ArgumentError,
+            mode=ForwardMode,
         ),
-        (
-            ArgumentError,
+        TestCase(
             IntrinsicsWrappers.bitcast,
-            (Ptr{TestResources.OneField{Float64}}, ndslot),
-            (; mode=ForwardMode),
+            Ptr{TestResources.OneField{Float64}},
+            ndslot;
+            throws=ArgumentError,
+            mode=ForwardMode,
         ),
-        (
-            (ArgumentError, "cannot load from or store to"),
+        TestCase(
             unsafe_wrap,
-            (Array{Float64,1}, phslot, 1),
-            (; mode=ForwardMode),
+            Array{Float64,1},
+            phslot,
+            1;
+            throws=(ArgumentError, "cannot load from or store to"),
+            mode=ForwardMode,
         ),
-        (
-            (ArgumentError, "placeholder"),
+        TestCase(
             load_through_bare_ptr,
-            (ptr,),
-            (; mode=ReverseMode),
+            ptr;
+            throws=(ArgumentError, "placeholder"),
+            mode=ReverseMode,
         ),
         # Int/UInt -> Ptr must refuse in both modes: there is no derivative storage.
-        (ArgumentError, IntrinsicsWrappers.bitcast, (Ptr{Float64}, UInt(pointer(xv))), (;)),
-        (
-            ArgumentError,
+        TestCase(
+            IntrinsicsWrappers.bitcast,
+            Ptr{Float64},
+            UInt(pointer(xv));
+            throws=ArgumentError,
+        ),
+        TestCase(
             IntrinsicsWrappers.atomic_pointerset,
-            (pslot, 2.0, :monotonic),
-            (; mode=ForwardMode),
+            pslot,
+            2.0,
+            :monotonic;
+            throws=ArgumentError,
+            mode=ForwardMode,
         ),
         # Forward `throw` rule must re-raise (the reverse rule is covered by the `throw` rrule cases).
-        (ArgumentError, throw, (ArgumentError("hello"),), (;)),
-        (AssertionError, throw, (AssertionError("hello"),), (;)),
+        TestCase(throw, ArgumentError("hello"); throws=ArgumentError),
+        TestCase(throw, AssertionError("hello"); throws=AssertionError),
         # A DERIVED rule must re-raise what the primal threw, not just the primitive.
-        (ArgumentError, rethrows_its_argument, (ArgumentError("hello"),), (;)),
-        (AssertionError, rethrows_its_argument, (AssertionError("hmmm"),), (;)),
+        TestCase(rethrows_its_argument, ArgumentError("hello"); throws=ArgumentError),
+        TestCase(rethrows_its_argument, AssertionError("hmmm"); throws=AssertionError),
         # `bitcast` to a differentiable type, and an integer reinterpreted as a pointer: neither
         # has a tangent that means anything, so both must refuse.
-        (ArgumentError, IntrinsicsWrappers.bitcast, (Float64, 5), (;)),
-        (ArgumentError, IntrinsicsWrappers.bitcast, (Ptr{Float64}, 5), (;)),
+        TestCase(IntrinsicsWrappers.bitcast, Float64, 5; throws=ArgumentError),
+        TestCase(IntrinsicsWrappers.bitcast, Ptr{Float64}, 5; throws=ArgumentError),
     ]
     # NoDual and non-NULL placeholder slots must both fail at each raw load/store.
     for (slot, err) in (
@@ -3616,33 +3579,36 @@ function _builtins_throwing_rows()
             (IntrinsicsWrappers.atomic_pointerset, (2.0, :monotonic)),
         )
 
-        push!(cases, (err, f, (slot, args...), (; mode=ForwardMode)))
+        push!(cases, TestCase(f, slot, args...; throws=err, mode=ForwardMode))
     end
     @static if VERSION >= v"1.11"
         for (T, v) in ((Float64, Float32[1, 2, 3, 4]), (Float32, [1.0, 2.0]))
             push!(
                 cases,
-                (
-                    (ArgumentError, "to another element type is not supported"),
+                TestCase(
                     v -> sum(reinterpret(T, v)),
-                    (v,),
-                    (; mode=ForwardMode),
+                    v;
+                    throws=(ArgumentError, "to another element type is not supported"),
+                    mode=ForwardMode,
                 ),
             )
         end
     else
         push!(
             cases,
-            (
-                (ArgumentError, "cannot take `pointer_from_objref` of a `Ref{ComplexF64}`"),
+            TestCase(
                 v -> begin
                     r = Ref(complex(v[1], v[2]))
                     GC.@preserve r unsafe_load(
                         Ptr{Float64}(Base.unsafe_convert(Ptr{ComplexF64}, r))
                     )
                 end,
-                ([1.0, 2.0],),
-                (; mode=ForwardMode),
+                [1.0, 2.0];
+                throws=(
+                    ArgumentError,
+                    "cannot take `pointer_from_objref` of a `Ref{ComplexF64}`",
+                ),
+                mode=ForwardMode,
             ),
         )
     end
@@ -3650,116 +3616,124 @@ function _builtins_throwing_rows()
     # consuming it as differentiable storage must refuse.
     push!(
         cases,
-        (
-            (ArgumentError, "no tangent storage"),
+        TestCase(
             atomic_load_retyped_bytes,
-            (zeros(UInt8, 8), 2.0),
-            (; mode=ReverseMode),
+            zeros(UInt8, 8),
+            2.0;
+            throws=(ArgumentError, "no tangent storage"),
+            mode=ReverseMode,
         ),
         # The same re-typing reached through `unsafe_wrap` must refuse.
-        (
-            (ArgumentError, "no tangent storage"),
+        TestCase(
             unsafe_wrap_retyped_bytes,
-            (zeros(UInt8, 8), 2.0),
-            (; mode=ReverseMode),
+            zeros(UInt8, 8),
+            2.0;
+            throws=(ArgumentError, "no tangent storage"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "from `Ptr{Float32}`"),
+        TestCase(
             laundered_retyped_load,
-            (Float32[1, 2, 3, 4], 2.0),
-            (;),
+            Float32[1, 2, 3, 4],
+            2.0;
+            throws=(ArgumentError, "from `Ptr{Float32}`"),
         ),
-        (
-            (ArgumentError, "from `Ptr{Vector{Float64}}`"),
+        TestCase(
             laundered_retyped_load,
-            ([[1.0], [2.0]], 2.0),
-            (; mode=ReverseMode),
+            [[1.0], [2.0]],
+            2.0;
+            throws=(ArgumentError, "from `Ptr{Vector{Float64}}`"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             int_float_load,
-            ([1.0, 2.0],),
-            (;),
+            [1.0, 2.0];
+            throws=(ArgumentError, "to another element type is not supported"),
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             complexf32_as_float64_load,
-            (Float32[1, 2, 3, 4],),
-            (;),
+            Float32[1, 2, 3, 4];
+            throws=(ArgumentError, "to another element type is not supported"),
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             objref_retyped_load,
-            (Float32[1, 2],),
-            (; mode=ReverseMode),
+            Float32[1, 2];
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             objref_complex_retyped_load,
-            ([1.5, 2.0],),
-            (; mode=ReverseMode),
+            [1.5, 2.0];
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             objref_field_load,
-            (TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),),
-            (; mode=ReverseMode),
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0);
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=ReverseMode,
         ),
         (
-            (
-                (ArgumentError, "copying a mutable struct"),
+            TestCase(
                 objref_copy_load,
-                (r,),
-                (; mode=ReverseMode),
+                r;
+                throws=(ArgumentError, "copying a mutable struct"),
+                mode=ReverseMode,
             ) for r in (
                 TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
                 TestResources.PointerInteger(1.0),
             )
         )...,
-        (
-            (ArgumentError, "copying a mutable struct"),
+        TestCase(
             objref_primitive_copy,
-            (Ref(reinterpret(TestResources.PointerPrimitiveInteger, 1.0)),),
-            (; mode=ReverseMode),
+            Ref(reinterpret(TestResources.PointerPrimitiveInteger, 1.0));
+            throws=(ArgumentError, "copying a mutable struct"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "copying a mutable struct"),
+        TestCase(
             objref_inline_array_load,
-            ([1.0],),
-            (; mode=ReverseMode),
+            [1.0];
+            throws=(ArgumentError, "copying a mutable struct"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "copying a mutable struct"),
+        TestCase(
             objref_copy_store,
-            (TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),),
-            (; mode=ReverseMode),
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0);
+            throws=(ArgumentError, "copying a mutable struct"),
+            mode=ReverseMode,
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             one_tuple_load,
-            ([1.0, 2.0],),
-            (;),
+            [1.0, 2.0];
+            throws=(ArgumentError, "to another element type is not supported"),
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             v -> GC.@preserve(v, abs2(unsafe_load(Ptr{ComplexF64}(pointer(v))))),
-            ([1.0, 2.0],),
-            (; mode=VERSION < v"1.11" ? ReverseMode : nothing),
+            [1.0, 2.0];
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=if VERSION < v"1.11"
+                ReverseMode
+            else
+                nothing
+            end,
         ),
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             tuple_layout_copy,
-            ([1.0, 2.0],),
-            (; mode=ForwardMode),
+            [1.0, 2.0];
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=ForwardMode,
         ),
-        (
-            (ArgumentError, "from `Ptr{$(TestResources.PointerPair{Int32,Float32})}`"),
+        TestCase(
             shared_tangent_pointer_load,
-            (Float32[1, 2],),
-            (; mode=ReverseMode),
+            Float32[1, 2];
+            throws=(
+                ArgumentError, "from `Ptr{$(TestResources.PointerPair{Int32,Float32})}`"
+            ),
+            mode=ReverseMode,
         ),
-        (
-            (
+        TestCase(
+            shared_tangent_reinterpret,
+            Float32[1, 2, 3, 4];
+            throws=(
                 ArgumentError,
                 if VERSION < v"1.11"
                     "Cannot take `pointer_from_objref` of a `$(Base.RefValue{TestResources.PointerPair{Float32,NTuple{3,Int32}}})`"
@@ -3767,68 +3741,73 @@ function _builtins_throwing_rows()
                     "from `Ptr{$(TestResources.PointerPair{Float32,Int32})}`"
                 end,
             ),
-            shared_tangent_reinterpret,
-            (Float32[1, 2, 3, 4],),
-            (; mode=ReverseMode),
+            mode=ReverseMode,
         ),
     )
     push!(
         cases,
-        (
-            ArgumentError,
+        TestCase(
             unsafe_wrap,
-            (Array, incoherent_slot, (2,)),
-            (; mode=ForwardMode, chunk_size=2),
+            Array,
+            incoherent_slot,
+            (2,);
+            throws=ArgumentError,
+            mode=ForwardMode,
+            chunk_size=2,
         ),
     )
     push!(
         cases,
-        (
-            (ArgumentError, "to another element type is not supported"),
+        TestCase(
             tuple_layout_copy,
-            ([1.0, 2.0], true),
-            (; mode=ForwardMode),
+            [1.0, 2.0],
+            true;
+            throws=(ArgumentError, "to another element type is not supported"),
+            mode=ForwardMode,
         ),
     )
     push!(
         cases,
-        (
-            (ArgumentError, "Cannot store or copy"),
+        TestCase(
             narrowed_objref_store,
-            ([1.0, 2.0],),
-            (; mode=ReverseMode),
+            [1.0, 2.0];
+            throws=(ArgumentError, "Cannot store or copy"),
+            mode=ReverseMode,
         ),
     )
     for T in (UInt8, Int), erased in (0, 1, 2)
         for atomic in (false, true)
             push!(
                 cases,
-                (
-                    (ArgumentError, "Cannot store or copy"),
+                TestCase(
                     narrowed_store,
-                    ([1.0, 2.0], T, erased, atomic),
-                    (;),
+                    [1.0, 2.0],
+                    T,
+                    erased,
+                    atomic;
+                    throws=(ArgumentError, "Cannot store or copy"),
                 ),
             )
         end
         push!(
             cases,
-            (
-                (ArgumentError, "Cannot store or copy"),
+            TestCase(
                 narrowed_copy,
-                ([1.0, 2.0], T, erased),
-                (;),
+                [1.0, 2.0],
+                T,
+                erased;
+                throws=(ArgumentError, "Cannot store or copy"),
             ),
         )
     end
     for T in (Any, UInt8, Cvoid)
         push!(
             cases,
-            (
-                (ArgumentError, "to another element type is not supported"),
+            TestCase(
                 a -> Ptr{Float64}(Ptr{T}(pointer(a))),
-                (Any[1],),
-                (; mode=ForwardMode),
+                Any[1];
+                throws=(ArgumentError, "to another element type is not supported"),
+                mode=ForwardMode,
             ),
         )
     end
@@ -3844,11 +3823,11 @@ function _builtins_throwing_rows()
         end
         push!(
             cases,
-            (
-                (ArgumentError, "through a non-differentiable pointer re-typed"),
+            TestCase(
                 f,
-                (Any[1],),
-                (; mode=ForwardMode),
+                Any[1];
+                throws=(ArgumentError, "through a non-differentiable pointer re-typed"),
+                mode=ForwardMode,
             ),
         )
     end
@@ -3874,11 +3853,12 @@ function _builtins_throwing_rows()
         args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
         push!(
             cases,
-            (
-                (ArgumentError, "known boxed shadow"),
+            TestCase(
                 f,
-                args,
-                (; mode=ForwardMode, chunk_size=N),
+                args...;
+                throws=(ArgumentError, "known boxed shadow"),
+                mode=ForwardMode,
+                chunk_size=N,
             ),
         )
         if T === Any
@@ -3887,11 +3867,12 @@ function _builtins_throwing_rows()
             args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
             push!(
                 cases,
-                (
-                    (ArgumentError, "known boxed shadow"),
+                TestCase(
                     f,
-                    args,
-                    (; mode=ForwardMode, chunk_size=N),
+                    args...;
+                    throws=(ArgumentError, "known boxed shadow"),
+                    mode=ForwardMode,
+                    chunk_size=N,
                 ),
             )
         end
@@ -3903,22 +3884,27 @@ function _builtins_throwing_rows()
             for T in (UInt8, Int), erased in (0, 1, 2)
                 push!(
                     cases,
-                    (
-                        (ArgumentError, "Cannot store or copy"),
+                    TestCase(
                         narrowed_copy,
-                        ([1.0, 2.0], T, erased, true),
-                        opts,
+                        [1.0, 2.0],
+                        T,
+                        erased,
+                        true;
+                        throws=(ArgumentError, "Cannot store or copy"),
+                        opts...,
                     ),
                 )
             end
             for T in (TestResources.OneField{Float64}, ComplexF64), integer in (false, true)
                 push!(
                     cases,
-                    (
-                        (ArgumentError, "to another element type"),
+                    TestCase(
                         numeric_memory_pointer_address,
-                        (collect(1.0:8.0), T, integer),
-                        opts,
+                        collect(1.0:8.0),
+                        T,
+                        integer;
+                        throws=(ArgumentError, "to another element type"),
+                        opts...,
                     ),
                 )
             end
@@ -3926,22 +3912,26 @@ function _builtins_throwing_rows()
         for erased in (false, true, :integer), width in (1, 8)
             push!(
                 cases,
-                (
-                    ArgumentError,
+                TestCase(
                     retyped_struct_memory_pointer_load,
-                    (collect(1.0:8.0), erased),
-                    (; mode=ForwardMode, chunk_size=width),
+                    collect(1.0:8.0),
+                    erased;
+                    throws=ArgumentError,
+                    mode=ForwardMode,
+                    chunk_size=width,
                 ),
             )
         end
         for shifted in (false, true), width in (1, 8)
             push!(
                 cases,
-                (
-                    ArgumentError,
+                TestCase(
                     memory_pointer_load,
-                    ([1.0, 3.0], shifted),
-                    (; mode=ForwardMode, chunk_size=width),
+                    [1.0, 3.0],
+                    shifted;
+                    throws=ArgumentError,
+                    mode=ForwardMode,
+                    chunk_size=width,
                 ),
             )
         end
@@ -3950,11 +3940,18 @@ function _builtins_throwing_rows()
         message = !memory && width > 1 ? "width 8 > 1" : "Cannot store or copy"
         push!(
             cases,
-            (
-                (ArgumentError, message),
+            TestCase(
                 narrowed_wrap,
-                (collect(1.0:8.0), memory),
-                width == 0 ? (; mode=ReverseMode) : (; mode=ForwardMode, chunk_size=width),
+                collect(1.0:8.0),
+                memory;
+                throws=(ArgumentError, message),
+                (
+                    if width == 0
+                        (; mode=ReverseMode)
+                    else
+                        (; mode=ForwardMode, chunk_size=width)
+                    end
+                )...,
             ),
         )
     end
@@ -3964,21 +3961,21 @@ function _builtins_throwing_rows()
 
         push!(
             cases,
-            (
-                (ArgumentError, "Ptr{$T}"),
+            TestCase(
                 shifted_pair_load,
-                (fieldtype(T, 2)[1, 2, 3, 4], T, erased),
-                (;),
+                fieldtype(T, 2)[1, 2, 3, 4],
+                T,
+                erased;
+                throws=(ArgumentError, "Ptr{$T}"),
             ),
         )
     end
     push!(
         cases,
-        (
-            (ArgumentError, "VecElement{Float32}"),
+        TestCase(
             shifted_vec_load,
-            (Float32[1, 2, 3, 4],),
-            (;),
+            Float32[1, 2, 3, 4];
+            throws=(ArgumentError, "VecElement{Float32}"),
         ),
     )
     for erased in (VERSION < v"1.11-rc4" ? (false, true) : (false, true, :field)),
@@ -3986,11 +3983,12 @@ function _builtins_throwing_rows()
 
         push!(
             cases,
-            (
-                (ArgumentError, "different storage stride"),
+            TestCase(
                 shifted_pair_copy,
-                ([1.0, 3.0, 5.0, 7.0], Val(erased), Val(shifted_dest)),
-                (;),
+                [1.0, 3.0, 5.0, 7.0],
+                Val(erased),
+                Val(shifted_dest);
+                throws=(ArgumentError, "different storage stride"),
             ),
         )
     end

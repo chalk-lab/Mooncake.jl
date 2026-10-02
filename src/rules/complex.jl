@@ -369,79 +369,65 @@ end
 # Register primitives separately for chunked checks (derived cases use is_primitive=false).
 function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
     cases = Any[
-        (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:re)),
-        (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:im)),
-        (false, :stability_and_allocs, nothing, _new_, ComplexF64, 1.5, -0.5),
+        TestCase(lgetfield, 1.5 - 0.5im, Val(:re); perf_flag=:stability_and_allocs),
+        TestCase(lgetfield, 1.5 - 0.5im, Val(:im); perf_flag=:stability_and_allocs),
+        TestCase(_new_, ComplexF64, 1.5, -0.5; perf_flag=:stability_and_allocs),
     ]
     a = view(reinterpret(reshape, Float64, ComplexF64[1, 2]), :, :)
-    push!(
-        cases,
-        (false, :none, (; unsafe_perturb=true), getindex, reinterpret(ComplexF64, a), 1, 2),
-    )
+    push!(cases, TestCase(getindex, reinterpret(ComplexF64, a), 1, 2; unsafe_perturb=true))
     for T in (Float32, Float64), (E, S) in ((T, Complex{T}), (Complex{T}, T))
         x = reinterpret(E, S[1, 2, 3, 4])
         for inds in ((1,), (1, 2))
             a = length(inds) == 1 ? x : reinterpret(E, reshape(parent(x), 2, 2))
-            push!(cases, (false, :none, (unsafe_perturb=true,), getindex, a, inds...))
+            push!(cases, TestCase(getindex, a, inds...; unsafe_perturb=true))
             push!(
                 cases,
-                (
-                    false,
-                    :none,
-                    (unsafe_perturb=true,),
-                    Base._getindex_ra,
-                    a,
-                    first(inds),
-                    Base.tail(inds),
+                TestCase(
+                    Base._getindex_ra, a, first(inds), Base.tail(inds); unsafe_perturb=true
                 ),
             )
         end
         for v in (E(2), T === Float32 ? 2.5 : 2.0f0, 2)
-            push!(cases, (false, :none, (unsafe_perturb=true,), setindex!, x, v, 1))
-            push!(
-                cases,
-                (false, :none, (unsafe_perturb=true,), Base._setindex_ra!, x, v, 1, ()),
-            )
+            push!(cases, TestCase(setindex!, x, v, 1; unsafe_perturb=true))
+            push!(cases, TestCase(Base._setindex_ra!, x, v, 1, (); unsafe_perturb=true))
         end
         for (a, b) in ((x, ones(E, length(x))), (ones(E, length(x)), x), (x, x))
-            push!(cases, (false, :none, (unsafe_perturb=true,), dot, a, b))
+            push!(cases, TestCase(dot, a, b; unsafe_perturb=true))
         end
         push!(
             cases,
-            (
-                false,
-                :none,
-                (unsafe_perturb=true, mode=ForwardMode),
+            TestCase(
                 _reinterpret_dot_add!,
                 x,
                 ones(E, length(x)),
-                E(2),
+                E(2);
+                unsafe_perturb=true,
+                mode=ForwardMode,
             ),
         )
     end
     # Reads must project structural constants instead of using writable lane wrappers.
     push!(
         cases,
-        (
-            false,
-            :none,
-            (unsafe_perturb=true, mode=ForwardMode),
+        TestCase(
             getindex,
             reinterpret(Float64, UnitUpperTriangular(ComplexF64[2+3im 4+5im; 6+7im 8+9im])),
             1,
-            1,
+            1;
+            unsafe_perturb=true,
+            mode=ForwardMode,
         ),
     )
     return cases, Any[]
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:complex})
-    test_cases = Any[
-        (false, :none, nothing, real, 1.0 + 2.0im),
-        (false, :none, nothing, imag, 1.0 + 2.0im),
-        (false, :none, nothing, z -> z.re * z.im, 1.5 - 0.5im),
-        (false, :none, nothing, (a, b) -> Complex(a, b), 1.0, 2.0),
-        (false, :none, nothing, (a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
+    test_cases = TestCase[
+        TestCase(real, 1.0 + 2.0im),
+        TestCase(imag, 1.0 + 2.0im),
+        TestCase((z -> z.re * z.im), 1.5 - 0.5im),
+        TestCase((a, b) -> Complex(a, b), 1.0, 2.0),
+        TestCase((a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
     ]
     for T in (Float32, Float64), (E, S) in ((T, Complex{T}), (Complex{T}, T))
         x = S[1, 2, 3, 4]
@@ -458,13 +444,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             v -> sum(abs2.(reinterpret(E, v))),
             v -> sum(abs2, reinterpret(S, view(reinterpret(E, v), :))),
         )
-            push!(test_cases, (false, :none, nothing, f, x))
+            push!(test_cases, TestCase(f, x))
         end
         @static if VERSION >= v"1.11-"
-            push!(
-                test_cases,
-                (false, :none, nothing, v -> sum(abs2, reinterpret(E, v)), Memory{S}(x)),
-            )
+            push!(test_cases, TestCase(v -> sum(abs2, reinterpret(E, v)), Memory{S}(x)))
         end
     end
     # Half-precision rounding defeats infinitesimal finite differences; use exact seeds.
@@ -478,7 +461,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             sum(abs2, r) + (op === :alias ? real(sum(p)) : Float16(0))
         end
         opts = (oracle=(deriv=(fwd=d, rvs=(NoRData(), d)),), output_tangent=Float16(1))
-        push!(test_cases, (false, :none, opts, f, CoDual(Float16(2), Float16(1))))
+        push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))
     end
     for E in (Float16, ComplexF16), memory in (false, true)
         memory && VERSION < v"1.11-" && continue
@@ -493,7 +476,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             oracle=(deriv=(fwd=Float16(4), rvs=(NoRData(), Float16(4))),),
             output_tangent=Float16(1),
         )
-        push!(test_cases, (false, :none, opts, f, CoDual(Float16(2), Float16(1))))
+        push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))
     end
     for E in (Float16, ComplexF16)
         f = x -> begin
@@ -509,18 +492,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
             oracle=(deriv=(fwd=Float16(2), rvs=(NoRData(), Float16(2))),),
             output_tangent=Float16(1),
         )
-        push!(test_cases, (false, :none, opts, f, CoDual(Float16(2), Float16(1))))
+        push!(test_cases, TestCase(f, CoDual(Float16(2), Float16(1)); opts...))
     end
     for wrap in (x -> view(x, :), x -> reshape(x, 2, 1))
         f = v -> sum(abs2, reinterpret(ComplexF64, wrap(reinterpret(Float64, v))))
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "getindex on ReinterpretArray requires matching"),),
+            TestCase(
                 f,
-                Float32[1, 2, 3, 4],
+                Float32[1, 2, 3, 4];
+                throws=(ArgumentError, "getindex on ReinterpretArray requires matching"),
             ),
         )
     end
@@ -528,16 +509,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
         z -> sum(reinterpret(Float64, z) * [2.0 0.0; 0.0 3.0]),
         z -> sum(cholesky(Symmetric(reinterpret(Float64, z))).U),
     )
-        push!(test_cases, (false, :none, nothing, f, ComplexF64[2+0im 0+3im]))
+        push!(test_cases, TestCase(f, ComplexF64[2+0im 0+3im]))
     end
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (throws=(ArgumentError, "BLAS does not support operand"),),
+        TestCase(
             z -> sum(abs2, BLAS.scal!(2.0, reinterpret(Float64, z))),
-            ComplexF64[1 + 2im, 3 + 4im],
+            ComplexF64[1 + 2im, 3 + 4im];
+            throws=(ArgumentError, "BLAS does not support operand"),
         ),
     )
     for (E, x) in (
@@ -557,24 +536,22 @@ function derived_rule_test_cases(rng_ctor, ::Val{:complex})
         end
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, msg), mode=mode, chunk_size=w),
+            TestCase(
                 v -> sum(abs2, reinterpret(reshape, E, v)),
-                x,
+                x;
+                throws=(ArgumentError, msg),
+                mode=mode,
+                chunk_size=w,
             ),
         )
     end
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (throws="BLAS does not support operand",),
+        TestCase(
             (w, z) -> dot(w, view(reinterpret(Float64, z), 2:2:4)),
             ones(2),
-            ComplexF64[1 + 2im, 3 + 4im],
+            ComplexF64[1 + 2im, 3 + 4im];
+            throws="BLAS does not support operand",
         ),
     )
     return test_cases, Any[]

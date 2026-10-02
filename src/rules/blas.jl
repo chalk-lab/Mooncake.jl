@@ -3941,9 +3941,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     rng = rng_ctor(123456)
-    # A float scalar of a DIFFERENT precision from `P`, for the short-form `axpy!` rows below.
+    # A float scalar of a DIFFERENT precision from `P`, for the short-form `axpy!` test
+    # cases below.
     Q = real(P) === Float64 ? Float32 : Float64
-    plain = (false, :none, nothing)
 
     test_cases = vcat(
 
@@ -3958,39 +3958,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             view(P[1, 7, -2, 8, 0], 5:-2:1),
             P[],
         )) do x
-            (false, :stability_and_allocs, nothing, BLAS.asum, x)
+            TestCase(BLAS.asum, x; perf_flag=:stability_and_allocs)
         end...,
         map_prod((0, 3), (-1, 0, 1, 2)) do (n, incx)
-            (false, :stability_and_allocs, nothing, BLAS.asum, n, randn(rng, P, 6), incx)
+            TestCase(BLAS.asum, n, randn(rng, P, 6), incx; perf_flag=:stability_and_allocs)
         end,
-        (plain..., BLAS.asum, 3, view(randn(rng, P, 6), 1:2:6), 2),
+        TestCase(BLAS.asum, 3, view(randn(rng, P, 6), 1:2:6), 2),
         map((view(randn(rng, P, 8), 1:2:7), view(randn(rng, P, 6, 8), 2, 1:2:7))) do x
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "does not support operand"),),
-                BLAS.asum,
-                3,
-                x,
-                1,
+            TestCase(
+                BLAS.asum, 3, x, 1; throws=(ArgumentError, "does not support operand")
             )
         end...,
         map((BLAS.asum, BLAS.nrm2)) do f
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "does not support operand"),),
+            TestCase(
                 f,
                 2,
                 view(randn(rng, P, 24), StepRangeLen(5, 0, 4)),
-                1,
+                1;
+                throws=(ArgumentError, "does not support operand"),
             )
         end...,
         map((BLAS.asum, BLAS.nrm2)) do f
-            (plain..., f, 3, view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3), 10)
+            TestCase(f, 3, view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3), 10)
         end...,
-        (
-            plain...,
+        TestCase(
             BLAS.axpy!,
             3,
             P(2),
@@ -4004,16 +3995,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 map((BLAS.dotc, BLAS.dotu)) do f
                     # The padded backing keeps even the refused primal walk inside allocated memory.
                     x = reinterpret(P, view(randn(rng, real(P), 256), 44:-1:27))
-                    (
-                        false,
-                        :none,
-                        (throws=(ArgumentError, "reinterpret"),),
-                        f,
-                        10,
-                        x,
-                        1,
-                        ones(P, 10),
-                        1,
+                    TestCase(
+                        f, 10, x, 1, ones(P, 10), 1; throws=(ArgumentError, "reinterpret")
                     )
                 end
             else
@@ -4026,27 +4009,34 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             view(reinterpret(P, randn(rng, P <: Real ? Complex{P} : real(P), 24)), 2:2:10),
             reinterpret(P, view(randn(rng, P <: Real ? Complex{P} : real(P), 24), 20:-1:3)),
         )) do x
-            flags = (false, :none, (throws=(ArgumentError, "reinterpret"),))
+            flags = (; throws=(ArgumentError, "reinterpret"))
             y = randn(rng, P, length(x))
             dots = P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu)
             vcat(
-                [(flags..., f, x) for f in (BLAS.nrm2, BLAS.asum, BLAS.iamax)],
+                [TestCase(f, x; flags...) for f in (BLAS.nrm2, BLAS.asum, BLAS.iamax)],
                 [
-                    (flags..., f, n, x, inc) for f in (BLAS.nrm2, BLAS.asum, BLAS.iamax) for
+                    TestCase(f, n, x, inc; flags...) for
+                    f in (BLAS.nrm2, BLAS.asum, BLAS.iamax) for
                     (n, inc) in ((0, 1), (1, 1), (3, 2))
                 ],
-                [(flags..., f, a, b) for f in dots for (a, b) in ((x, y), (y, x))],
+                [TestCase(f, a, b; flags...) for f in dots for (a, b) in ((x, y), (y, x))],
                 [
-                    (flags..., f, 3, a, inc, b, 1) for f in dots for
+                    TestCase(f, 3, a, inc, b, 1; flags...) for f in dots for
                     (a, b) in ((x, y), (y, x)) for inc in (-2, 0, 1, 2)
                 ],
                 [
-                    (flags..., BLAS.axpy!, n, P(2), a, inc, b, 1) for
+                    TestCase(BLAS.axpy!, n, P(2), a, inc, b, 1; flags...) for
                     (a, b) in ((x, y), (y, x)) for (n, inc) in ((1, 1), (3, 0))
                 ],
-                [(flags..., BLAS.axpy!, P(2), a, b) for (a, b) in ((x, y), (y, x))],
-                [(flags..., BLAS.axpby!, P(2), a, P(3), b) for (a, b) in ((x, y), (y, x))],
-                [(flags..., BLAS.scal!, P(2), x), (flags..., BLAS.scal!, 1, P(2), x, 1)],
+                [TestCase(BLAS.axpy!, P(2), a, b; flags...) for (a, b) in ((x, y), (y, x))],
+                [
+                    TestCase(BLAS.axpby!, P(2), a, P(3), b; flags...) for
+                    (a, b) in ((x, y), (y, x))
+                ],
+                [
+                    TestCase(BLAS.scal!, P(2), x; flags...),
+                    TestCase(BLAS.scal!, 1, P(2), x, 1; flags...),
+                ],
             )
         end...,
         (
@@ -4060,7 +4050,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                         (P[], P[]),
                     ),
                 ) do (f, xy)
-                    (false, :stability_and_allocs, nothing, f, xy...)
+                    TestCase(f, xy...; perf_flag=:stability_and_allocs)
                 end
             else
                 []
@@ -4072,37 +4062,38 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             view(P[1, 7, -2, 8, 2], 5:-2:1),
             P[],
         )) do x
-            (false, :stability_and_allocs, nothing, BLAS.iamax, x)
+            TestCase(BLAS.iamax, x; perf_flag=:stability_and_allocs)
         end...,
         map_prod((0, 3), (-1, 0, 1, 2)) do (n, incx)
-            (false, :stability_and_allocs, nothing, BLAS.iamax, n, randn(rng, P, 6), incx)
+            TestCase(
+                BLAS.iamax, n, randn(rng, P, 6), incx; perf_flag=:stability_and_allocs
+            )
         end,
         (
             if P <: Complex
-                [(
-                    false,
-                    :stability_and_allocs,
-                    (oracle=(value=BLAS.BlasInt(2),),),
-                    BLAS.iamax,
-                    P[3, 2 + 2im, -2 - 2im],
-                )]
+                [
+                    TestCase(
+                        BLAS.iamax,
+                        P[3, 2 + 2im, -2 - 2im];
+                        perf_flag=:stability_and_allocs,
+                        oracle=(value=BLAS.BlasInt(2),),
+                    ),
+                ]
             else
                 []
             end
         )...,
         map_prod((0, 1, 3), (-1, 0)) do (n, inc)
-            (
-                false,
-                :stability,
-                (throws=(ArgumentError, "positive increment"),),
+            TestCase(
                 BLAS.nrm2,
                 n,
                 randn(rng, P, 3),
-                inc,
+                inc;
+                perf_flag=:stability,
+                throws=(ArgumentError, "positive increment"),
             )
         end,
-        (
-            plain...,
+        TestCase(
             BLAS.axpy!,
             4,
             P(2),
@@ -4117,11 +4108,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             x = wrap(view(randn(rng, P, 7), 1:2:7))
             y = randn(rng, P, 3)
             args = input ? (x, 0, y, 1) : (y, 1, x, 0)
-            (plain..., BLAS.axpy!, 3, P(2), args...)
+            TestCase(BLAS.axpy!, 3, P(2), args...)
         end...,
         map((-1, 1)) do inc
-            (
-                plain...,
+            TestCase(
                 BLAS.axpy!,
                 3,
                 P(2),
@@ -4131,82 +4121,69 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 1,
             )
         end...,
-        (
-            false,
-            :stability_and_allocs,
-            (mode=ForwardMode,),
+        TestCase(
             BLAS.axpy!,
             3,
             P(2),
             view(randn(rng, P, 8, 3), 1:4, :),
             1,
             view(randn(rng, P, 8, 3), 1:4, :),
-            1,
+            1;
+            perf_flag=:stability_and_allocs,
+            mode=ForwardMode,
         ),
-        (plain..., BLAS.axpy!, Int32(4), P(2), randn(rng, P, 4), 1, randn(rng, P, 4), 1),
-        (
-            plain...,
-            BLAS.axpy!,
-            4,
-            P(2),
-            randn(rng, P, 4),
-            Int32(1),
-            randn(rng, P, 4),
-            Int32(1),
+        TestCase(BLAS.axpy!, Int32(4), P(2), randn(rng, P, 4), 1, randn(rng, P, 4), 1),
+        TestCase(
+            BLAS.axpy!, 4, P(2), randn(rng, P, 4), Int32(1), randn(rng, P, 4), Int32(1)
         ),
-        (plain..., BLAS.scal!, Int32(4), P(2), randn(rng, P, 4), Int32(1)),
-        (plain..., BLAS.nrm2, Int32(4), randn(rng, P, 4), Int32(1)),
+        TestCase(BLAS.scal!, Int32(4), P(2), randn(rng, P, 4), Int32(1)),
+        TestCase(BLAS.nrm2, Int32(4), randn(rng, P, 4), Int32(1)),
         map([-1, 0]) do inc
-            (
-                false,
-                :stability,
-                (throws=(ArgumentError, "does not support operand"),),
+            TestCase(
                 BLAS.scal!,
                 3,
                 P(2),
                 randn(rng, P, 3),
-                inc,
+                inc;
+                perf_flag=:stability,
+                throws=(ArgumentError, "does not support operand"),
             )
         end,
         map_prod((-1, 0), (-1, 0, 1)) do (incx, incy)
-            (
-                false,
-                :stability,
-                nothing,
+            TestCase(
                 BLAS.axpy!,
                 3,
                 P(2),
                 randn(rng, P, 3),
                 incx,
                 randn(rng, P, 3),
-                incy,
+                incy;
+                perf_flag=:stability,
             )
         end,
         let x = randn(rng, P, 3)
-            (false, :none, (throws=ArgumentError,), BLAS.axpy!, 3, P(2), x, 0, x, 0)
+            TestCase(BLAS.axpy!, 3, P(2), x, 0, x, 0; throws=ArgumentError)
         end,
 
         # nrm2(n, x, incx)
         map_prod([5, 3], [1, 2]) do (n, incx)
             return map([randn(rng, P, 105)]) do x
-                (false, :stability, nothing, BLAS.nrm2, n, x, incx)
+                TestCase(BLAS.nrm2, n, x, incx; perf_flag=:stability)
             end
         end...,
 
         # Dense/strided long and short forms; width > 1 catches lane-stride misreads.
-        Any[
-            (plain..., BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
-            (plain..., BLAS.axpy!, 5, P(2), randn(rng, P, 5), 1, randn(rng, P, 5), 1),
-            (
-                plain...,
+        TestCase[
+            TestCase(BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
+            TestCase(BLAS.axpy!, 5, P(2), randn(rng, P, 5), 1, randn(rng, P, 5), 1),
+            TestCase(
                 BLAS.axpy!,
                 P(2),
                 view(randn(rng, P, 10), 1:2:10),
                 view(randn(rng, P, 10), 1:2:10),
             ),
-            (plain..., BLAS.axpby!, P(2), randn(rng, P, 5), P(3), randn(rng, P, 5)),
-            (
-                plain...,
+            TestCase(BLAS.axpby!, P(2), randn(rng, P, 5), P(3), randn(rng, P, 5)),
+            TestCase(
                 BLAS.axpby!,
                 P(2),
                 view(randn(rng, P, 10), 1:2:10),
@@ -4214,9 +4191,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 view(randn(rng, P, 10), 1:2:10),
             ),
             # Number scalars: NoTangent Int and mixed-precision floating tangents.
-            (plain..., BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
-            (plain..., BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
-            (plain..., BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
+            TestCase(BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
+            TestCase(BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
+            TestCase(BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
         ]...,
 
         # Short wrappers accept reversed and vector-like matrix layouts.
@@ -4225,68 +4202,52 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             x = view(randn(rng, P, 6), inds)
             row && (x = transpose(x))
             Any[
-                (plain..., BLAS.axpy!, P(2), x, randn(rng, P, length(x))),
-                (plain..., BLAS.axpy!, P(2), randn(rng, P, length(x)), x),
-                (plain..., BLAS.nrm2, x),
-                (plain..., BLAS.scal!, P(2), x),
+                TestCase(BLAS.axpy!, P(2), x, randn(rng, P, length(x))),
+                TestCase(BLAS.axpy!, P(2), randn(rng, P, length(x)), x),
+                TestCase(BLAS.nrm2, x),
+                TestCase(BLAS.scal!, P(2), x),
             ]
         end...,
-        (
-            false,
-            :none,
-            (throws=DimensionMismatch, primal_throws=true),
+        TestCase(
             BLAS.axpy!,
             P(2),
             ones(P, 2),
-            ones(P, 3),
+            ones(P, 3);
+            throws=DimensionMismatch,
+            primal_throws=true,
         ),
         map((view(ones(P, 4, 4), 1:2, :), view(ones(P, 3), StepRangeLen(1, 0, 3)))) do x
-            flags = (false, :none, (throws=ArgumentError, primal_throws=true))
+            flags = (; throws=ArgumentError, primal_throws=true)
             Any[
-                (flags..., BLAS.axpy!, P(2), ones(P, length(x)), x),
-                (flags..., BLAS.nrm2, x),
-                (flags..., BLAS.scal!, P(2), x),
+                TestCase(BLAS.axpy!, P(2), ones(P, length(x)), x; flags...),
+                TestCase(BLAS.nrm2, x; flags...),
+                TestCase(BLAS.scal!, P(2), x; flags...),
             ]
         end...,
-        (plain..., BLAS.axpy!, P(2), view(ones(P, 3), StepRangeLen(1, 0, 3)), ones(P, 3)),
+        TestCase(BLAS.axpy!, P(2), view(ones(P, 3), StepRangeLen(1, 0, 3)), ones(P, 3)),
         map((
             (randn(rng, P, 2, 3), randn(rng, P, 6)),
             (randn(rng, P, 6), randn(rng, P, 2, 3)),
             (transpose(view(randn(rng, P, 6), 6:-2:2)), randn(rng, P, 3)),
         )) do (x, y)
-            (plain..., BLAS.axpby!, P(2), x, P(3), y)
+            TestCase(BLAS.axpby!, P(2), x, P(3), y)
         end...,
         map((
             (ones(P, 2), ones(P, 3), DimensionMismatch),
             (ones(P, 8), view(ones(P, 4, 4), 1:2, :), ArgumentError),
             (ones(P, 3), view(ones(P, 3), StepRangeLen(1, 0, 3)), ArgumentError),
         )) do (x, y, err)
-            (
-                false,
-                :none,
-                (throws=err, primal_throws=true),
-                BLAS.axpby!,
-                P(2),
-                x,
-                P(3),
-                y,
-            )
+            TestCase(BLAS.axpby!, P(2), x, P(3), y; throws=err, primal_throws=true)
         end...,
 
         # Convenience forms need their own boundary above width 1; cover strides too.
         Any[
-            (plain..., BLAS.scal!, P(2), randn(rng, P, 5)),
-            (plain..., BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
-            (
-                plain...,
-                BLAS.scal!,
-                1,
-                P(2),
-                view(randn(rng, P, 24), StepRangeLen(5, 0, 4)),
-                1,
+            TestCase(BLAS.scal!, P(2), randn(rng, P, 5)),
+            TestCase(BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
+            TestCase(
+                BLAS.scal!, 1, P(2), view(randn(rng, P, 24), StepRangeLen(5, 0, 4)), 1
             ),
-            (
-                plain...,
+            TestCase(
                 BLAS.scal!,
                 3,
                 P(2),
@@ -4297,16 +4258,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         (
             if P <: Real
                 Any[
-                    (plain..., BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
-                    (plain..., BLAS.dot, randn(rng, P, 2, 3), randn(rng, P, 6)),
-                    (
-                        plain...,
+                    TestCase(BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                    TestCase(BLAS.dot, randn(rng, P, 2, 3), randn(rng, P, 6)),
+                    TestCase(
                         BLAS.dot,
                         transpose(view(randn(rng, P, 6), 6:-2:2)),
                         randn(rng, P, 3),
                     ),
-                    (
-                        plain...,
+                    TestCase(
                         BLAS.dot,
                         view(randn(rng, P, 10), 1:2:10),
                         view(randn(rng, P, 10), 1:2:10),
@@ -4320,34 +4279,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         # Strided operands whose stride divides `incx`, which BLAS's raw walk maps onto the
         # operand's own elements one step at a time. `norm(view(A, 1, :))` is the ordinary form of
         # this: the one-argument `nrm2` passes `incx = stride`, giving a step of 1.
-        Any[
-            (false, :none, nothing, BLAS.nrm2, 5, view(randn(rng, P, 12), 1:2:12), 2),
-            (false, :none, nothing, BLAS.nrm2, 4, view(randn(rng, P, 12), 1:3:12), 3),
-            (false, :none, nothing, BLAS.nrm2, view(randn(rng, P, 12), 1:2:12)),
-            (false, :none, nothing, BLAS.nrm2, 6, view(randn(rng, P, 6, 6), 1, :), 6),
-            (
-                false,
-                :none,
-                nothing,
-                BLAS.scal!,
-                5,
-                P(2),
-                view(randn(rng, P, 12), 1:2:12),
-                2,
-            ),
+        TestCase[
+            TestCase(BLAS.nrm2, 5, view(randn(rng, P, 12), 1:2:12), 2),
+            TestCase(BLAS.nrm2, 4, view(randn(rng, P, 12), 1:3:12), 3),
+            TestCase(BLAS.nrm2, view(randn(rng, P, 12), 1:2:12)),
+            TestCase(BLAS.nrm2, 6, view(randn(rng, P, 6, 6), 1, :), 6),
+            TestCase(BLAS.scal!, 5, P(2), view(randn(rng, P, 12), 1:2:12), 2),
         ]...,
 
         # Length 40 exceeds norm2's threshold (32) for the inlined nrm2(x) boundary.
         map([randn(rng, P, 40)]) do x
-            (false, :stability, nothing, BLAS.nrm2, x)
+            TestCase(BLAS.nrm2, x; perf_flag=:stability)
         end...,
 
         # Empty dot exercises gemv's quick return without β scaling.
         (
             if P <: BlasRealFloat
                 map([0, 3, 5]) do n
-                    return (
-                        false, :stability, nothing, dot, randn(rng, P, n), randn(rng, P, n)
+                    return TestCase(
+                        dot, randn(rng, P, n), randn(rng, P, n); perf_flag=:stability
                     )
                 end
             else
@@ -4355,29 +4305,36 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         )...,
         map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
-            flags = (false, :stability, nothing)
-            return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
+            return TestCase(
+                BLAS.scal!,
+                n,
+                randn(rng, P),
+                randn(rng, P, n * incx),
+                incx;
+                perf_flag=:stability,
+            )
         end,
 
-        # Forward primitives; derived rows cover reverse. Keep the direct chunk-width
-        # sweep and stability checks for boxed block accumulators; and the strided operand exercises the per-lane fallback.
+        # Forward primitives; derived test cases cover reverse. Keep the direct chunk-width
+        # sweep and stability checks for boxed block accumulators; the strided operand
+        # exercises the per-lane fallback.
         (
             map(P <: BlasRealFloat ? [BLAS.dot] : [BLAS.dotc, BLAS.dotu]) do f
-                flags = (false, :stability, (; skip_reverse=true))
+                flags = (; perf_flag=:stability, mode=ForwardMode)
                 return [
-                    (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
+                    TestCase(f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2; flags...),
                     # Negative increments: BLAS walks the same elements backwards from
                     # `(-n+1)*inc + 1`, so the value matches `inc = +1`, but the block loop's
                     # `1 + (t-1)*inc` would run off the front. Takes the per-lane fallback.
-                    (flags..., f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1),
-                    (
-                        flags...,
+                    TestCase(f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1; flags...),
+                    TestCase(
                         f,
                         3,
                         randn(rng, P, 3),
                         1,
                         view(randn(rng, P, 12), 1:2:12),
-                        2,
+                        2;
+                        flags...,
                     ),
                 ]
             end
@@ -4385,16 +4342,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
         # axpy!(n, a, x, incx, y, incy)
         map_prod([1, 3, 11], [1, 2], [1, 2]) do (n, incx, incy)
-            flags = (false, :stability, nothing)
-            return (
-                flags...,
+            return TestCase(
                 BLAS.axpy!,
                 n,
                 randn(rng, P),
                 randn(rng, P, n * incx),
                 incx,
                 randn(rng, P, n * incy),
-                incy,
+                incy;
+                perf_flag=:stability,
             )
         end,
 
@@ -4407,30 +4363,38 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         # `blas_vectors`' one non-contiguous entry.
         let xs = blas_vectors(rng, P, 5; only_contiguous=true)
             map(xs, circshift(xs, 1)) do x, y
-                (false, :stability, nothing, BLAS.axpy!, 5, randn(rng, P), x, 1, y, 1)
+                TestCase(BLAS.axpy!, 5, randn(rng, P), x, 1, y, 1; perf_flag=:stability)
             end
         end...,
 
         # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
         map_prod([1, 3, 11], [1, 2]) do (n, incx)
-            opts =
-                P <: Complex ? (throws=(ArgumentError, "overlapping complex"),) : nothing
-            flags = (false, :stability, opts)
+            opts = P <: Complex ? (throws=(ArgumentError, "overlapping complex"),) : (;)
             x = randn(rng, P, n * incx)
-            return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
+            return TestCase(
+                BLAS.axpy!,
+                n,
+                randn(rng, P),
+                x,
+                incx,
+                x,
+                incx;
+                perf_flag=:stability,
+                opts...,
+            )
         end,
         (
             if P <: Complex
                 x = randn(rng, P, 4)
-                [(
-                    false,
-                    :none,
-                    (throws=(ArgumentError, "overlapping complex"),),
-                    BLAS.axpy!,
-                    P(2),
-                    view(x, 1:3),
-                    view(x, 2:4),
-                )]
+                [
+                    TestCase(
+                        BLAS.axpy!,
+                        P(2),
+                        view(x, 1:3),
+                        view(x, 2:4);
+                        throws=(ArgumentError, "overlapping complex"),
+                    ),
+                ]
             else
                 []
             end
@@ -4442,7 +4406,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
         # gemv!
         map_prod(t_flags, [1, 3], [1, 2], αs, βs) do (tA, M, N, α, β)
-            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return TestCase[]
 
             As = [
                 blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
@@ -4450,59 +4414,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ]
             xs = [blas_vectors(rng, P, N); blas_vectors(rng, P, tA == 'N' ? 1 : M)]
             ys = [blas_vectors(rng, P, M); blas_vectors(rng, P, tA == 'N' ? M : 1)]
-            flags = (false, :stability, (lb=1e-3, ub=30.0))
             return map(As, xs, ys) do A, x, y
-                (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
+                TestCase(
+                    BLAS.gemv!,
+                    tA,
+                    P(α),
+                    A,
+                    x,
+                    P(β),
+                    y;
+                    perf_flag=:stability,
+                    bench=(lb=1e-3, ub=30.0),
+                )
             end
         end...,
-        [(
-            false,
-            :none,
-            (; unsafe_perturb=true),
-            BLAS.gemv!,
-            'N',
-            P(1),
-            view(reinterpret(
-                reshape,
-                P,
-                if P <: Real
-                    Complex{P}[1 + 2im, 3 + 4im]
-                else
-                    reshape(real(P).(1:8), 2, 2, 2)
-                end,
-            ), :, :),
-            P[1, 2],
-            P(0),
-            zeros(P, 2),
-        )],
-
-        # Zero-length x quick-returns without β scaling; the size sweep above is nonempty.
-        map(βs) do β
-            P <: BlasRealFloat && imag(β) != 0 && return []
-            return [(
-                false,
-                :none,
-                nothing,
+        [
+            TestCase(
                 BLAS.gemv!,
                 'N',
                 P(1),
-                randn(rng, P, 3, 0),
-                P[],
-                P(β),
-                randn(rng, P, 3),
-            )]
+                view(reinterpret(
+                    reshape,
+                    P,
+                    if P <: Real
+                        Complex{P}[1 + 2im, 3 + 4im]
+                    else
+                        reshape(real(P).(1:8), 2, 2, 2)
+                    end,
+                ), :, :),
+                P[1, 2],
+                P(0),
+                zeros(P, 2);
+                unsafe_perturb=true,
+            ),
+        ],
+
+        # Zero-length x quick-returns without β scaling; the size sweep above is nonempty.
+        map(βs) do β
+            P <: BlasRealFloat && imag(β) != 0 && return TestCase[]
+            return [
+                TestCase(
+                    BLAS.gemv!, 'N', P(1), randn(rng, P, 3, 0), P[], P(β), randn(rng, P, 3)
+                ),
+            ]
         end...,
 
         # symv!, hemv!
         map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], αs, βs) do (f, uplo, α, β)
-            P <: BlasRealFloat && f == BLAS.hemv! && return []
-            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+            P <: BlasRealFloat && f == BLAS.hemv! && return TestCase[]
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return TestCase[]
 
             As = blas_matrices(rng, P, 5, 5)
             ys = blas_vectors(rng, P, 5)
             xs = blas_vectors(rng, P, 5)
             return map(As, xs, ys) do A, x, y
-                (false, :stability, nothing, f, uplo, P(α), A, x, P(β), y)
+                TestCase(f, uplo, P(α), A, x, P(β), y; perf_flag=:stability)
             end
         end...,
 
@@ -4511,7 +4477,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             As = blas_matrices(rng, P, N, N)
             bs = blas_vectors(rng, P, N)
             return map(As, bs) do A, b
-                (false, :stability, nothing, BLAS.trmv!, ul, tA, dA, A, b)
+                TestCase(BLAS.trmv!, ul, tA, dA, A, b; perf_flag=:stability)
             end
         end...,
 
@@ -4523,7 +4489,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 As = blas_matrices(rng, P, N, N)
                 bs = blas_vectors(rng, P, N)
                 return map(As, bs) do A, b
-                    (false, :stability, nothing, BLAS.trsv!, ul, tA, dA, A, b)
+                    TestCase(BLAS.trsv!, ul, tA, dA, A, b; perf_flag=:stability)
                 end
             end
         end...,
@@ -4567,7 +4533,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                    TestCase(
+                        BLAS.gemm!, tA, tB, a_da, A, B, b_db, C; perf_flag=perf_flag
+                    )
                 end
             end
         end...,
@@ -4579,7 +4547,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         let
             rng = rng_ctor(123457)
             map_prod(t_flags, αβs, dαβs) do (tA, (α, β), (dα, dβ))
-                P <: BlasRealFloat && tA == 'C' && return []
+                P <: BlasRealFloat && tA == 'C' && return TestCase[]
 
                 As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
                 Bs = blas_vectors(rng, P, 4; only_contiguous=true)
@@ -4588,8 +4556,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (
-                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    TestCase(
+                        BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C; perf_flag=perf_flag
                     )
                 end
             end
@@ -4602,7 +4570,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         let
             rng = rng_ctor(123458)
             map_prod(['T', 'C'], t_flags, αβs, dαβs) do (tA, tB, (α, β), (dα, dβ))
-                P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
+                P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return TestCase[]
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
                 Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
@@ -4611,7 +4579,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                    TestCase(
+                        BLAS.gemm!, tA, tB, a_da, A, B, b_db, C; perf_flag=perf_flag
+                    )
                 end
             end
         end...,
@@ -4623,7 +4593,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         let
             rng = rng_ctor(123459)
             map_prod(['T', 'C'], αβs, dαβs) do (tA, (α, β), (dα, dβ))
-                P <: BlasRealFloat && tA == 'C' && return []
+                P <: BlasRealFloat && tA == 'C' && return TestCase[]
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
                 Bs = blas_vectors(rng, P, 3; only_contiguous=true)
@@ -4632,8 +4602,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (
-                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    TestCase(
+                        BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C; perf_flag=perf_flag
                     )
                 end
             end
@@ -4660,7 +4630,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Cs) do A, C
                     a_da = CoDual(ra, rda)
                     b_db = CoDual(rb, rdb)
-                    (false, perf_flag, nothing, f, ul, t, a_da, A, b_db, C)
+                    TestCase(f, ul, t, a_da, A, b_db, C; perf_flag=perf_flag)
                 end
             end
         end...,
@@ -4682,7 +4652,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(vs, Cs) do v, C
                     a_da = CoDual(ra, rda)
                     b_db = CoDual(rb, rdb)
-                    (false, perf_flag, nothing, f, ul, 'N', a_da, v, b_db, C)
+                    TestCase(f, ul, 'N', a_da, v, b_db, C; perf_flag=perf_flag)
                 end
             end
         end...,
@@ -4696,15 +4666,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], dαs
             ) do (side, ul, tA, dA, M, N, dα)
-                P <: BlasRealFloat && imag(dα) != 0 && return []
+                P <: BlasRealFloat && imag(dα) != 0 && return TestCase[]
 
                 R = side == 'L' ? M : N
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
                     α_dα = CoDual(randn(rng, P), P(dα))
-                    (
-                        false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
+                    TestCase(
+                        BLAS.trmm!, side, ul, tA, dA, α_dα, A, B; perf_flag=perf_flag
                     )
                 end
             end
@@ -4719,18 +4689,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         B = blas_matrices(rng, P, 3, 2)[1]
         push!(
             test_cases,
-            (
-                false,
-                perf_flag,
-                nothing,
-                BLAS.trmm!,
-                'L',
-                'U',
-                'n',
-                'u',
-                randn(rng, P),
-                A,
-                B,
+            TestCase(
+                BLAS.trmm!, 'L', 'U', 'n', 'u', randn(rng, P), A, B; perf_flag=perf_flag
             ),
         )
     end
@@ -4751,89 +4711,85 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 end
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    (false, perf_flag, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+                    TestCase(BLAS.trsm!, side, ul, tA, dA, a, A, B; perf_flag=perf_flag)
                 end
             end
         end...,
     )
 
-    flags = (false, :stability, (mode=ReverseMode,))
-    both_modes = (false, :stability, nothing)
+    flags = (; perf_flag=:stability, mode=ReverseMode)
+    both_modes = (; perf_flag=:stability)
     for n in (0, 1)
         x, y = view(P[3], 1:2:1), view(P[2], 1:2:1)
         append!(
             test_cases,
             [
-                (both_modes..., BLAS.nrm2, n, x, 1),
-                (flags..., BLAS.scal!, n, P(2), x, 1),
-                (flags..., BLAS.axpy!, n, P(2), x, 1, y, 1),
+                TestCase(BLAS.nrm2, n, x, 1; both_modes...),
+                TestCase(BLAS.scal!, n, P(2), x, 1; flags...),
+                TestCase(BLAS.axpy!, n, P(2), x, 1, y, 1; flags...),
             ],
         )
     end
     append!(
         test_cases,
         [
-            (both_modes..., BLAS.nrm2, 2, zeros(P, 2), 1),
-            (
-                false,
-                :stability_and_allocs,
-                nothing,
-                BLAS.nrm2,
-                3,
-                transpose(P[1 2; 3 4]),
-                1,
+            TestCase(BLAS.nrm2, 2, zeros(P, 2), 1; both_modes...),
+            TestCase(
+                BLAS.nrm2, 3, transpose(P[1 2; 3 4]), 1; perf_flag=:stability_and_allocs
             ),
-            (flags..., BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1),
-            (
-                false,
-                :stability_and_allocs,
-                nothing,
+            TestCase(
+                BLAS.axpy!, 3, P(2), transpose(P[1 2; 3 4]), 1, zeros(P, 3), 1; flags...
+            ),
+            TestCase(
                 BLAS.nrm2,
                 2,
                 view(P[3 0; 4 0; 9 0], 1:2, :),
-                1,
+                1;
+                perf_flag=:stability_and_allocs,
             ),
-            (flags..., BLAS.nrm2, 2, view(P[9 9; 3 4; 9 9], 2:-1:1, :), 3),
-            (flags..., BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1),
-            (
-                flags...,
+            TestCase(BLAS.nrm2, 2, view(P[9 9; 3 4; 9 9], 2:-1:1, :), 3; flags...),
+            TestCase(BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 1; flags...),
+            TestCase(
                 BLAS.axpy!,
                 2,
                 P(2),
                 view(P[3 0; 4 0; 9 0], 1:2, :),
                 1,
                 view(zeros(P, 3, 2), 1:2, :),
-                1,
+                1;
+                flags...,
             ),
-            (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
-            (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
-            (both_modes..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
-            (both_modes..., BLAS.gemv!, 'n', P(2), P[1 2; 3 4], P[1, 2], P(3), P[3, 4]),
-            (
-                both_modes...,
+            TestCase(BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2; flags...),
+            TestCase(BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2; flags...),
+            TestCase(
+                BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2); both_modes...
+            ),
+            TestCase(
+                BLAS.gemv!, 'n', P(2), P[1 2; 3 4], P[1, 2], P(3), P[3, 4]; both_modes...
+            ),
+            TestCase(
                 BLAS.gemv!,
                 'n',
                 P(2),
                 view(P[1 2; 3 4], :, 2:-1:1),
                 P[1, 2],
                 P(3),
-                P[3, 4],
+                P[3, 4];
+                both_modes...,
             ),
         ],
     )
     for f in (BLAS.trmm!, BLAS.trsm!)
         push!(
             test_cases,
-            (flags..., f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2)),
+            TestCase(f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2); flags...),
         )
     end
-    flags = (
-        false, :none, (mode=ReverseMode, throws=(ArgumentError, "does not support operand"))
-    )
+    flags = (; mode=ReverseMode, throws=(ArgumentError, "does not support operand"))
     push!(
         test_cases,
-        (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 1),
-        (flags..., BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 0),
+        TestCase(BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 1; flags...),
+        TestCase(BLAS.scal!, 2, P(2), view(P[3 0; 4 0; 9 0], 1:2, :), 0; flags...),
     )
     append!(test_cases, _blas_flag_test_cases(P))
     # The unscaled solve overflows, but the scaled primal and JVP are finite. Pin dα=0
@@ -4845,7 +4801,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         opts = (mode=ForwardMode,)
         push!(
             test_cases,
-            (false, :none, opts, BLAS.trsm!, 'L', 'U', 'N', 'N', CoDual(α, zero(P)), A, B),
+            TestCase(BLAS.trsm!, 'L', 'U', 'N', 'N', CoDual(α, zero(P)), A, B; opts...),
         )
     end
 
@@ -4861,7 +4817,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             Ainv[diagind(Ainv)] .+= 1
             B = randn(rng, P, 2, 2)
             [
-                (false, :none, nothing, f, 'L', 'U', 'N', 'N', zero(P), M, copy(B)) for
+                TestCase(f, 'L', 'U', 'N', 'N', zero(P), M, copy(B)) for
                 (f, M) in ((BLAS.trmm!, A), (BLAS.trsm!, Ainv))
             ]
         end,
@@ -4878,7 +4834,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             map_prod(
                 fs, ['L', 'R'], uplos, [1, 3], [1, 2], dαs
             ) do (f, side, ul, M, N, dα)
-                P <: BlasRealFloat && imag(dα) != 0 && return []
+                P <: BlasRealFloat && imag(dα) != 0 && return TestCase[]
                 R = side == 'L' ? M : N
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
@@ -4886,7 +4842,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     α_dα = CoDual(randn(rng, P), P(dα))
                     β_dβ = CoDual(randn(rng, P), randn(rng, P))
-                    (false, perf_flag, nothing, f, side, ul, α_dα, A, B, β_dβ, C)
+                    TestCase(f, side, ul, α_dα, A, B, β_dβ, C; perf_flag=perf_flag)
                 end
             end
         end...,
@@ -4902,17 +4858,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         for t in ('n', 't', 'c')
             push!(
                 test_cases,
-                (
-                    false,
-                    :stability,
-                    nothing,
+                TestCase(
                     BLAS.gemv!,
                     t,
                     P(0.7),
                     copy(A),
                     copy(x),
                     P(0.3),
-                    copy(y),
+                    copy(y);
+                    perf_flag=:stability,
                 ),
             )
         end
@@ -4920,10 +4874,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         for f in fs, side in ('l', 'r')
             push!(
                 test_cases,
-                (
-                    false,
-                    perf_flag,
-                    nothing,
+                TestCase(
                     f,
                     side,
                     'U',
@@ -4931,7 +4882,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     copy(A),
                     copy(B),
                     P(0.3),
-                    copy(C),
+                    copy(C);
+                    perf_flag=perf_flag,
                 ),
             )
         end
@@ -4939,24 +4891,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         for t in ('n', P <: BlasComplexFloat ? 'c' : 't')
             push!(
                 test_cases,
-                (
-                    false,
-                    perf_flag,
-                    nothing,
+                TestCase(
                     f,
                     'U',
                     t,
                     real(P)(0.7),
                     copy(A),
                     real(P)(0.3),
-                    copy(C),
+                    copy(C);
+                    perf_flag=perf_flag,
                 ),
             )
         end
     end
 
-    throwing_rows, throwing_memory = _blas_throwing_rows(P)
-    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    throwing_cases, throwing_memory = _blas_throwing_cases(P)
+    test_cases = vcat(TestCase[test_cases...], throwing_cases)
     append!(test_cases, _blas_alias_test_cases(P))
     append!(test_cases, _blas_matrix_layout_test_cases(P))
     memory = throwing_memory
@@ -4968,7 +4918,7 @@ _blas_test_copy(f, args...) = f(deepcopy(args)...)
 function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     rng = rng_ctor(123)
-    test_cases = Any[]
+    test_cases = TestCase[]
     for cols in (1:2, 1:2:3)
         output = cols == 1:2 ? (7:8) : (3:4)
         f =
@@ -4980,17 +4930,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                 one(P),
                 view(v, output),
             )
-        push!(test_cases, (false, :none, nothing, f, P.(1:8)))
+        push!(test_cases, TestCase(f, P.(1:8)))
     end
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            nothing,
-            A -> BLAS.gemm!('N', 'N', one(P), A, A, zero(P), A),
-            zeros(P, 0, 0),
-        ),
+        TestCase((A -> BLAS.gemm!('N', 'N', one(P), A, A, zero(P), A)), zeros(P, 0, 0)),
     )
 
     # BLAS walks past the logical one-row view into its retained parent.
@@ -5000,36 +4944,27 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         return sum(abs2, parent)
     end
     throws = (ArgumentError, "matrix column stride smaller than its row count")
-    push!(test_cases, (false, :none, (; throws), physical_row!, ones(P, 4, 4)))
+    push!(test_cases, TestCase(physical_row!, ones(P, 4, 4); throws))
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (; throws, mode=ForwardMode, chunk_size=8),
-            physical_row!,
-            ones(P, 4, 4),
-        ),
+        TestCase(physical_row!, ones(P, 4, 4); throws, mode=ForwardMode, chunk_size=8),
     )
     for wrap in (transpose, adjoint, Symmetric, Hermitian, UpperTriangular, LowerTriangular)
         f = (A, B, C) -> mul!(C, wrap(A), B)
         A = view(Matrix{P}(I, 5, 5), 2:3, 2:3)
-        push!(test_cases, (false, :none, nothing, f, A, ones(P, 2, 2), ones(P, 2, 2)))
+        push!(test_cases, TestCase(f, A, ones(P, 2, 2), ones(P, 2, 2)))
     end
 
     #
     # BLAS LEVEL 1
     #
 
-    push!(test_cases, (false, :none, (mode=ReverseMode,), x -> dot(x, x), P[]))
+    push!(test_cases, TestCase((x -> dot(x, x)), P[]; mode=ReverseMode))
 
     # Abstract operand types must defer reinterpret refusal until concrete dispatch.
     for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
         barrier_dot = (x, y) -> f(3, Base.inferencebarrier(x)::AbstractVector{P}, 1, y, 1)
-        push!(
-            test_cases,
-            (false, :none, nothing, barrier_dot, randn(rng, P, 5), randn(rng, P, 3)),
-        )
+        push!(test_cases, TestCase(barrier_dot, randn(rng, P, 5), randn(rng, P, 3)))
     end
     if P === Float64
         # Bypass array-level rules to exercise reinterpret refusal on foreign-call roots.
@@ -5046,13 +4981,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
             )
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (mode=ReverseMode, throws=(ArgumentError, "reinterpret")),
+            TestCase(
                 rooted_dot,
                 reinterpret(Float64, view(reinterpret(UInt64, randn(rng, P, 6)), :)),
-                randn(rng, P, 3),
+                randn(rng, P, 3);
+                mode=ReverseMode,
+                throws=(ArgumentError, "reinterpret"),
             ),
         )
     end
@@ -5060,51 +4994,58 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     append!(
         test_cases,
         map_prod(P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu), (-1, 0)) do (f, inc)
-            (false, :none, nothing, f, 3, randn(rng, P, 3), inc, randn(rng, P, 3), 1)
+            TestCase(f, 3, randn(rng, P, 3), inc, randn(rng, P, 3), 1)
         end,
     )
 
+    flags = (;)
     # dot (real types only)
     if P <: BlasRealFloat
-        flags = (false, :none, nothing)
-        dot_flags = (false, :none, nothing)
+        dot_flags = (;)
         append!(
             test_cases,
             [
-                (dot_flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (dot_flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                TestCase(
+                    BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1; dot_flags...
+                ),
+                TestCase(
+                    BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1; dot_flags...
+                ),
+                TestCase(
+                    BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3; dot_flags...
+                ),
+                TestCase(
+                    BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2; dot_flags...
+                ),
             ],
         )
     end
 
     # dotc, dotu (complex types only)
     if !(P <: BlasRealFloat)
-        flags = (false, :none, nothing)
         for f in [BLAS.dotc, BLAS.dotu]
             append!(
                 test_cases,
                 [
-                    (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                    (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                    (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                    (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                    TestCase(f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                    TestCase(f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                    TestCase(f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                    TestCase(f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
                     # Differently-typed pair (dense Vector + strided SubArray): the @is_primitive
                     # binds the two array args to independent type vars, so the pair stays a forward
                     # primitive. A strided operand is read out of view order by the block loop, so
                     # this hits the per-lane BLAS fallback (correct at all widths, less efficient).
-                    (flags..., f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
+                    TestCase(f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
                     # Walk running past the view into its parent: BLAS reads raw memory, so the
                     # elements beyond the view belong to the parent and carry partials.
-                    (
-                        flags...,
+                    TestCase(
                         f,
                         30,
                         view(randn(rng, P, 40), 1:4),
                         1,
                         view(randn(rng, P, 40), 1:4),
-                        1,
+                        1;
+                        flags...,
                     ),
                 ],
             )
@@ -5114,27 +5055,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # nrm2
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
-            A -> BLAS.nrm2(2, view(A, 1:2, :), 1),
-            P[3 0; 4 0; 9 0],
+        TestCase(
+            (A -> BLAS.nrm2(2, view(A, 1:2, :), 1)), P[3 0; 4 0; 9 0]; mode=ReverseMode
         ),
     )
     for dims in ((2, 6), (12,)), n in (4, 6)
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                n == 4 ? nothing : (throws=(ArgumentError, "does not support operand"),),
+            TestCase(
                 A -> BLAS.nrm2(n, reshape(view(A, :, 1:2:5), dims), 1),
-                reshape(P.(1:24), 4, 6),
+                reshape(P.(1:24), 4, 6);
+                (n == 4 ? (;) : (throws=(ArgumentError, "does not support operand"),))...,
             ),
         )
     end
-    push!(test_cases, (false, :none, nothing, BLAS.nrm2, randn(rng, P, 105)))
+    push!(test_cases, TestCase(BLAS.nrm2, randn(rng, P, 105)))
 
     #
     # BLAS LEVEL 3
@@ -5144,18 +5079,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # level-1/2 tests above.
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     rng_gemm = rng_ctor(123)
-    append!(
-        test_cases,
-        map_prod(t_flags, t_flags) do (tA, tB)
-            As = blas_matrices(rng_gemm, P, 5, 5)
-            Bs = blas_matrices(rng_gemm, P, 5, 5)
-            a = randn(rng_gemm, P)
-            b = randn(rng_gemm, P)
-            return map_prod(As, Bs) do (A, B)
-                (false, :none, nothing, aliased_gemm!, tA, tB, a, b, A, B)
-            end
-        end...,
-    )
+    append!(test_cases, map_prod(t_flags, t_flags) do (tA, tB)
+        As = blas_matrices(rng_gemm, P, 5, 5)
+        Bs = blas_matrices(rng_gemm, P, 5, 5)
+        a = randn(rng_gemm, P)
+        b = randn(rng_gemm, P)
+        return map_prod(As, Bs) do (A, B)
+            TestCase(aliased_gemm!, tA, tB, a, b, A, B)
+        end
+    end...)
 
     # Build the view inside the call: the direct numerical harness copies immutable
     # view arguments separately, losing their shared primal storage.
@@ -5165,7 +5097,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         return x
     end
     for b in (0, 3)
-        push!(test_cases, (false, :none, nothing, self_axpby!, P(2), P[1, 2, 3, 4], P(b)))
+        push!(test_cases, TestCase(self_axpby!, P(2), P[1, 2, 3, 4], P(b)))
     end
 
     # The mutated arrays are dead: their zero cotangent must survive infinite coefficients.
@@ -5186,14 +5118,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         )
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                opts,
+            TestCase(
                 unused_axpby,
                 CoDual(P(a), zero(P)),
                 CoDual(P(b), zero(P)),
-                CoDual(P(2), one(P)),
+                CoDual(P(2), one(P));
+                opts...,
             ),
         )
     end
@@ -5221,7 +5151,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         R = real(P)
         deriv = (NoRData(), map(P, dcoefficients)..., map(P, dvw)...)
         opts = (mode=ReverseMode, output_tangent=one(R), oracle=(value=R(Inf), deriv=deriv))
-        push!(test_cases, (false, :none, opts, f, map(P, coefficients)..., P(2), P(3)))
+        push!(test_cases, TestCase(f, map(P, coefficients)..., P(2), P(3); opts...))
     end
 
     # Summing the coefficients first overflows, although each scaled cotangent is finite.
@@ -5232,7 +5162,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         BLAS.axpby!(a, y, a, y)
         return real(first(y)) / real(a)
     end
-    push!(test_cases, (false, :none, (mode=ReverseMode,), scaled_self_axpby, zeros(P, 2)))
+    push!(test_cases, TestCase(scaled_self_axpby, zeros(P, 2); mode=ReverseMode))
     cancelled_self_axpby = x -> begin
         R = real(eltype(x))
         a = eltype(x)(2)
@@ -5241,8 +5171,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
         return (R(0.75) * floatmax(R)) * real(first(y))
     end
     push!(
-        test_cases,
-        (false, :none, (output_tangent=one(real(P)),), cancelled_self_axpby, zeros(P, 2)),
+        test_cases, TestCase(cancelled_self_axpby, zeros(P, 2); output_tangent=one(real(P)))
     )
 
     memory = Any[]
@@ -5250,7 +5179,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     if P <: Complex
         push!(
             test_cases,
-            (false, :allocs, (; mode=ForwardMode), x -> real(dot(x, x)), randn(rng, P, 16)),
+            TestCase(
+                x -> real(dot(x, x)), randn(rng, P, 16); perf_flag=:allocs, mode=ForwardMode
+            ),
         )
     end
     # Inactive lanes beside a nonfinite operand stay exactly zero.
@@ -5264,33 +5195,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
             C = zero_codual(zeros(P, 3, 3))
             push!(
                 test_cases,
-                (false, :none, mat, _blas_test_copy, BLAS.gemm!, 'N', 'N', α, A, B, α, C),
+                TestCase(_blas_test_copy, BLAS.gemm!, 'N', 'N', α, A, B, α, C; mat...),
             )
         end
         push!(
             test_cases,
-            (false, :none, mat, _blas_test_copy, BLAS.trmm!, 'L', 'U', 'N', 'U', α, A, B),
+            TestCase(_blas_test_copy, BLAS.trmm!, 'L', 'U', 'N', 'U', α, A, B; mat...),
         )
         for f in (BLAS.trmv!, BLAS.trsv!)
-            push!(test_cases, (false, :none, vec, _blas_test_copy, f, 'U', 'N', 'U', B, x))
+            push!(test_cases, TestCase(_blas_test_copy, f, 'U', 'N', 'U', B, x; vec...))
         end
         one_α, A0 = zero_codual(one(P)), zero_codual(primal(A))
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                mat,
-                _blas_test_copy,
-                BLAS.trsm!,
-                'L',
-                'U',
-                'N',
-                'U',
-                one_α,
-                B,
-                A0,
-            ),
+            TestCase(_blas_test_copy, BLAS.trsm!, 'L', 'U', 'N', 'U', one_α, B, A0; mat...),
         )
     end
 
@@ -5301,20 +5219,20 @@ end
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     # Removable singularity at the zero vector: the nrm2 frule (`s/y`) and reverse pullback
     # (`X*(dy/y)`) are both 0/0 there, so every lane's partial and the gradient must be 0, not NaN.
-    return Any[(false, :none, nothing, BLAS.nrm2, 3, zeros(3), 1)], Any[]
+    return TestCase[TestCase(BLAS.nrm2, 3, zeros(3), 1)], Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    test_cases = Any[
-        (false, :stability, nothing, BLAS.get_num_threads),
-        (false, :stability, nothing, BLAS.lbt_get_num_threads),
-        (false, :stability, nothing, BLAS.set_num_threads, 1),
-        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
-        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng_ctor(123), 5, 5)),
+    test_cases = TestCase[
+        TestCase(BLAS.get_num_threads; perf_flag=:stability),
+        TestCase(BLAS.lbt_get_num_threads; perf_flag=:stability),
+        TestCase(BLAS.set_num_threads, 1; perf_flag=:stability),
+        TestCase(BLAS.lbt_set_num_threads, 1; perf_flag=:stability),
+        TestCase((x -> sum(complex(x) * x)), rand(rng_ctor(123), 5, 5)),
     ]
     return test_cases, Any[]
 end
 
-function _blas_throwing_rows(P::Type{<:BlasFloat})
+function _blas_throwing_cases(P::Type{<:BlasFloat})
     # Nondivisible stride: BLAS walks elements outside the view. Divisible strides
     # and nrm2's one-argument form are covered as working cases.
     x = view(P[i for i in 1:10], 1:2:10)
@@ -5322,11 +5240,15 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
     # Widening cannot support a walk that also leaves the parent.
     short = view(P[i for i in 1:40], 36:39)
-    cases = Any[
-        ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
-        ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
-        ((ArgumentError, "does not support operand"), BLAS.nrm2, (6, m, 1), (;)),
-        ((ArgumentError, "does not support operand"), BLAS.nrm2, (5, x, 1), (;)),
+    cases = TestCase[
+        TestCase(
+            BLAS.scal!, 5, P(2), x, 1; throws=(ArgumentError, "does not support operand")
+        ),
+        TestCase(
+            BLAS.scal!, 6, P(2), m, 1; throws=(ArgumentError, "does not support operand")
+        ),
+        TestCase(BLAS.nrm2, 6, m, 1; throws=(ArgumentError, "does not support operand")),
+        TestCase(BLAS.nrm2, 5, x, 1; throws=(ArgumentError, "does not support operand")),
     ]
     # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
     # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
@@ -5341,10 +5263,12 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
     append!(
         cases,
         Any[
-            (placeholder, BLAS.nrm2, (3, pointer(xs), 1), (;)),
-            (placeholder, BLAS.scal!, (3, P(2), pointer(xs), 1), (;)),
-            (placeholder, BLAS.axpy!, (3, P(2), pointer(xs), 1, pointer(ys), 1), (;)),
-            ((placeholder, f, (3, pointer(xs), 1, pointer(ys), 1), opts) for
+            TestCase(BLAS.nrm2, 3, pointer(xs), 1; throws=placeholder),
+            TestCase(BLAS.scal!, 3, P(2), pointer(xs), 1; throws=placeholder),
+            TestCase(
+                BLAS.axpy!, 3, P(2), pointer(xs), 1, pointer(ys), 1; throws=placeholder
+            ),
+            (TestCase(f, 3, pointer(xs), 1, pointer(ys), 1; throws=placeholder, opts...) for
              (f, opts) in two_operand)...,
         ],
     )
@@ -5352,8 +5276,8 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
     append!(
         cases,
         Any[
-            ((ArgumentError, "tangent storage"), f, (30, short, 1, short, 1), (;)) for
-            f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+            TestCase(f, 30, short, 1, short, 1; throws=(ArgumentError, "tangent storage"))
+            for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
         ],
     )
 
@@ -5374,71 +5298,71 @@ end
 
 # Aliases are intentional: the registry seeds and copies them with shared caches.
 function _blas_alias_test_cases(P)
-    rows = Any[]
+    test_cases = TestCase[]
     for b in (0, 3)
         x = P[1, 2, 3, 4]
         a = P <: Complex ? P(2 + im) : P(2)
-        push!(rows, (false, :stability, nothing, BLAS.axpby!, a, x, P(b), x))
+        push!(test_cases, TestCase(BLAS.axpby!, a, x, P(b), x; perf_flag=:stability))
     end
-    flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
+    flags = (; throws=(ArgumentError, "overlapping input and output"))
     x = P[1, 2, 3]
-    P <: Real && push!(rows, (flags..., BLAS.axpy!, P(2), view(x, 1:2), view(x, 2:3)))
-    push!(rows, (flags..., BLAS.axpby!, P(2), view(x, 1:2), P(3), view(x, 2:3)))
+    P <: Real &&
+        push!(test_cases, TestCase(BLAS.axpy!, P(2), view(x, 1:2), view(x, 2:3); flags...))
+    push!(
+        test_cases, TestCase(BLAS.axpby!, P(2), view(x, 1:2), P(3), view(x, 2:3); flags...)
+    )
     A = P[2 1; 1 3]
     v = P[1, 2]
     for f in (BLAS.gemv!, BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
         flag = f === BLAS.gemv! ? 'N' : 'U'
-        push!(rows, (flags..., f, flag, P(2), A, v, P(3), v))
-        push!(rows, (flags..., f, flag, P(2), A, v, P(3), view(A, :, 1)))
+        push!(test_cases, TestCase(f, flag, P(2), A, v, P(3), v; flags...))
+        push!(test_cases, TestCase(f, flag, P(2), A, v, P(3), view(A, :, 1); flags...))
     end
     for f in (BLAS.gemm!, BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
         chars = f === BLAS.gemm! ? ('N', 'N') : ('L', 'U')
         B = copy(A)
         for C in (A, B)
-            push!(rows, (flags..., f, chars..., P(2), A, B, P(3), C))
+            push!(test_cases, TestCase(f, chars..., P(2), A, B, P(3), C; flags...))
         end
     end
     for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
         Q = f === BLAS.herk! ? real(P) : P
-        push!(rows, (flags..., f, 'U', 'N', Q(2), A, Q(3), A))
+        push!(test_cases, TestCase(f, 'U', 'N', Q(2), A, Q(3), A; flags...))
     end
     for f in (BLAS.trmv!, BLAS.trsv!)
-        push!(rows, (flags..., f, 'U', 'N', 'N', A, view(A, :, 1)))
+        push!(test_cases, TestCase(f, 'U', 'N', 'N', A, view(A, :, 1); flags...))
     end
     for f in (BLAS.trmm!, BLAS.trsm!)
-        push!(rows, (flags..., f, 'L', 'U', 'N', 'N', P(2), A, A))
+        push!(test_cases, TestCase(f, 'L', 'U', 'N', 'N', P(2), A, A; flags...))
     end
-    return rows
+    return test_cases
 end
 
 function _blas_flag_test_cases(P)
     A = P[2 1; 0 3]
     B = P[1 2; 3 4]
     x = P[1, 2]
-    flags = (false, :none, (throws=(ArgumentError, "uplo argument must be"),))
-    rows = Any[]
+    flags = (; throws=(ArgumentError, "uplo argument must be"))
+    test_cases = TestCase[]
     for f in (BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
-        push!(rows, (flags..., f, 'u', P(2), A, x, P(3), copy(x)))
+        push!(test_cases, TestCase(f, 'u', P(2), A, x, P(3), copy(x); flags...))
     end
     for f in (BLAS.trmv!, BLAS.trsv!)
-        push!(rows, (flags..., f, 'u', 'N', 'N', A, x))
+        push!(test_cases, TestCase(f, 'u', 'N', 'N', A, x; flags...))
     end
     for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
-        push!(rows, (flags..., f, 'L', 'u', P(2), A, B, P(3), copy(B)))
+        push!(test_cases, TestCase(f, 'L', 'u', P(2), A, B, P(3), copy(B); flags...))
     end
     for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
         Q = f === BLAS.herk! ? real(P) : P
-        push!(rows, (flags..., f, 'u', 'N', Q(2), A, Q(3), copy(B)))
+        push!(test_cases, TestCase(f, 'u', 'N', Q(2), A, Q(3), copy(B); flags...))
     end
     for f in (BLAS.trmm!, BLAS.trsm!)
-        push!(rows, (flags..., f, 'L', 'u', 'N', 'N', P(2), A, B))
+        push!(test_cases, TestCase(f, 'L', 'u', 'N', 'N', P(2), A, B; flags...))
     end
     push!(
-        rows,
-        (
-            false,
-            :none,
-            (mode=ForwardMode, throws=(ArgumentError, "uplo argument must be")),
+        test_cases,
+        TestCase(
             BLAS.trsm!,
             'L',
             'u',
@@ -5446,14 +5370,15 @@ function _blas_flag_test_cases(P)
             'N',
             zero_lifted(Val(1), zero(P)),
             A,
-            B,
+            B;
+            mode=ForwardMode,
+            throws=(ArgumentError, "uplo argument must be"),
         ),
     )
-    flags = (false, :none, (throws=DimensionMismatch,))
+    flags = (; throws=DimensionMismatch)
     push!(
-        rows,
-        (
-            flags...,
+        test_cases,
+        TestCase(
             BLAS.gemm!,
             'n',
             'N',
@@ -5461,49 +5386,58 @@ function _blas_flag_test_cases(P)
             ones(P, 2, 3),
             ones(P, 3, 4),
             P(1),
-            ones(P, 2, 4),
+            ones(P, 2, 4);
+            flags...,
         ),
     )
     for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
-        push!(rows, (flags..., f, 'l', 'U', P(2), A, ones(P, 2, 3), P(1), ones(P, 2, 3)))
+        push!(
+            test_cases,
+            TestCase(f, 'l', 'U', P(2), A, ones(P, 2, 3), P(1), ones(P, 2, 3); flags...),
+        )
     end
     for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
         Q = f === BLAS.herk! ? real(P) : P
-        push!(rows, (flags..., f, 'U', 'n', Q(2), ones(P, 2, 3), Q(1), copy(A)))
+        push!(
+            test_cases, TestCase(f, 'U', 'n', Q(2), ones(P, 2, 3), Q(1), copy(A); flags...)
+        )
     end
     for f in (BLAS.trmm!, BLAS.trsm!)
-        push!(rows, (flags..., f, 'l', 'U', 'N', 'N', P(2), A, ones(P, 2, 3)))
+        push!(test_cases, TestCase(f, 'l', 'U', 'N', 'N', P(2), A, ones(P, 2, 3); flags...))
     end
-    flags = (false, :stability, nothing)
+    flags = (; perf_flag=:stability)
     for trans in ('n', 't', 'c')
-        push!(rows, (flags..., BLAS.gemm!, trans, trans, P(2), A, B, P(3), copy(B)))
+        push!(
+            test_cases,
+            TestCase(BLAS.gemm!, trans, trans, P(2), A, B, P(3), copy(B); flags...),
+        )
         for f in (BLAS.trmv!, BLAS.trsv!)
-            push!(rows, (flags..., f, 'U', trans, 'u', A, copy(x)))
+            push!(test_cases, TestCase(f, 'U', trans, 'u', A, copy(x); flags...))
         end
         for f in (BLAS.trmm!, BLAS.trsm!), side in ('l', 'r')
             # Julia 1.10 cannot infer the triangular pullback's matrix product.
             perf_flag = VERSION < v"1.11-" ? :none : :stability
             push!(
-                rows,
-                (false, perf_flag, nothing, f, side, 'U', trans, 'u', P(2), A, copy(B)),
+                test_cases,
+                TestCase(f, side, 'U', trans, 'u', P(2), A, copy(B); perf_flag=perf_flag),
             )
         end
     end
     for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...), side in ('l', 'r')
-        push!(rows, (flags..., f, side, 'U', P(2), A, B, P(3), copy(B)))
+        push!(test_cases, TestCase(f, side, 'U', P(2), A, B, P(3), copy(B); flags...))
     end
     for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
         Q = f === BLAS.herk! ? real(P) : P
         for trans in ('n', f === BLAS.herk! ? 'c' : 't')
-            push!(rows, (flags..., f, 'U', trans, Q(2), A, Q(3), copy(B)))
+            push!(test_cases, TestCase(f, 'U', trans, Q(2), A, Q(3), copy(B); flags...))
         end
     end
-    return rows
+    return test_cases
 end
 
 function _blas_matrix_layout_test_cases(P)
     rows = Any[]
-    flags = (false, :none, nothing)
+    flags = (;)
     for (m, n) in ((3, 2), (1, 2), (3, 1))
         A, B, C = Matrix{P}(I, m, m), ones(P, m, n), ones(P, m, n)
         x, y = ones(P, m), ones(P, m)
@@ -5541,19 +5475,26 @@ function _blas_matrix_layout_test_cases(P)
         A = view(ones(P, 4, 4), 2:2, cols)
         push!(
             rows,
-            (flags..., BLAS.gemm!, 'N', 'N', P(2), A, ones(P, 1, 1), P(3), ones(P, 1, 1)),
+            TestCase(
+                BLAS.gemm!, 'N', 'N', P(2), A, ones(P, 1, 1), P(3), ones(P, 1, 1); flags...
+            ),
         )
     end
     for (m, k, n) in ((0, 2, 3), (3, 2, 0))
         A = view(ones(P, m + 2, k + 2), 2:(m + 1), StepRangeLen(2, 0, k))
         push!(
             rows,
-            (flags..., BLAS.gemm!, 'N', 'N', P(2), A, ones(P, k, n), P(3), ones(P, m, n)),
+            TestCase(
+                BLAS.gemm!, 'N', 'N', P(2), A, ones(P, k, n), P(3), ones(P, m, n); flags...
+            ),
         )
     end
     A = view(ones(P, 3, 4), 2:1, StepRangeLen(2, 0, 3))
     push!(
-        rows, (flags..., BLAS.gemm!, 'T', 'N', P(2), A, ones(P, 0, 2), P(3), ones(P, 3, 2))
+        rows,
+        TestCase(
+            BLAS.gemm!, 'T', 'N', P(2), A, ones(P, 0, 2), P(3), ones(P, 3, 2); flags...
+        ),
     )
     A = zeros(P, 3, 0)
     append!(
@@ -5563,7 +5504,7 @@ function _blas_matrix_layout_test_cases(P)
         )),
     )
     A = view(ones(P, 4, 4), 2:3, 3:-1:2)
-    push!(rows, (flags..., BLAS.gemv!, 'N', P(2), A, ones(P, 2), P(3), ones(P, 2)))
+    push!(rows, TestCase(BLAS.gemv!, 'N', P(2), A, ones(P, 2), P(3), ones(P, 2); flags...))
     return rows
 end
 
@@ -5579,8 +5520,8 @@ function _blas_layout_refusal_rows(args)
             stride(bad, 2) < m || continue
             call = Base.setindex(args, bad, pos)
             throws = (ArgumentError, "matrix column stride smaller than its row count")
-            push!(rows, (false, :none, (; throws), call...))
-            push!(rows, (false, :none, (; throws, mode=ForwardMode, chunk_size=8), call...))
+            push!(rows, TestCase(call...; throws))
+            push!(rows, TestCase(call...; throws, mode=ForwardMode, chunk_size=8))
         end
     end
     return rows

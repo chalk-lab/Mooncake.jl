@@ -909,74 +909,100 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     _a, _da = randn(5), randn(5)
     _b, _db = randn(4), randn(4)
 
-    test_cases = Any[
+    test_cases = TestCase[
 
         # Old foreigncall wrappers.
-        (true, :stability, nothing, Array{Float64,0}, undef),
-        (true, :stability, nothing, Array{Float64,1}, undef, 5),
-        (true, :stability, nothing, Vector{Union{}}, undef, 0),
-        (true, :stability, nothing, Array{Float64,2}, undef, 5, 4),
-        (true, :stability, nothing, Array{Float64,3}, undef, 5, 4, 3),
-        (true, :stability, nothing, Array{Float64,4}, undef, 5, 4, 3, 2),
-        (true, :stability, nothing, Array{Float64,5}, undef, 5, 4, 3, 2, 1),
-        (true, :stability, nothing, Array{Float64,0}, undef, ()),
-        (true, :stability, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
-        (true, :stability, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
-        (false, :stability, nothing, copy, randn(5, 4)),
-        (false, :stability, nothing, copy, randn(Xoshiro(123456), ComplexF64, 5)),
-        (false, :stability, nothing, Base._deletebeg!, randn(5), 0),
-        (false, :stability, nothing, Base._deletebeg!, randn(5), 2),
-        (false, :stability, nothing, Base._deletebeg!, randn(5), 5),
-        (false, :stability, nothing, Base._deleteend!, randn(5), 2),
-        (false, :stability, nothing, Base._deleteend!, randn(5), 5),
-        (false, :stability, nothing, Base._deleteend!, randn(5), 0),
-        (false, :stability, nothing, Base._deleteat!, randn(5), 2, 2),
-        (false, :stability, nothing, Base._deleteat!, randn(5), 1, 5),
-        (false, :stability, nothing, Base._deleteat!, randn(5), 5, 1),
-        (false, :stability, nothing, fill!, rand(Int8, 5), Int8(2)),
-        (false, :stability, nothing, fill!, rand(UInt8, 5), UInt8(2)),
-        (true, :stability, nothing, Base._growbeg!, randn(5), 3),
-        (true, :stability, nothing, Base._growend!, randn(5), 3),
-        (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
-        (false, :stability, nothing, sizehint!, randn(5), 10),
+        TestCase(Array{Float64,0}, undef; interface_only=true, perf_flag=:stability),
+        TestCase(Array{Float64,1}, undef, 5; interface_only=true, perf_flag=:stability),
+        TestCase(Vector{Union{}}, undef, 0; interface_only=true, perf_flag=:stability),
+        TestCase(Array{Float64,2}, undef, 5, 4; interface_only=true, perf_flag=:stability),
+        TestCase(
+            Array{Float64,3}, undef, 5, 4, 3; interface_only=true, perf_flag=:stability
+        ),
+        TestCase(
+            Array{Float64,4}, undef, 5, 4, 3, 2; interface_only=true, perf_flag=:stability
+        ),
+        TestCase(
+            Array{Float64,5},
+            undef,
+            5,
+            4,
+            3,
+            2,
+            1;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(Array{Float64,0}, undef, (); interface_only=true, perf_flag=:stability),
+        TestCase(
+            Array{Float64,4}, undef, (2, 3, 4, 5); interface_only=true, perf_flag=:stability
+        ),
+        TestCase(
+            Array{Float64,5},
+            undef,
+            (2, 3, 4, 5, 6);
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(copy, randn(5, 4); perf_flag=:stability),
+        TestCase(copy, randn(Xoshiro(123456), ComplexF64, 5); perf_flag=:stability),
+        TestCase(Base._deletebeg!, randn(5), 0; perf_flag=:stability),
+        TestCase(Base._deletebeg!, randn(5), 2; perf_flag=:stability),
+        TestCase(Base._deletebeg!, randn(5), 5; perf_flag=:stability),
+        TestCase(Base._deleteend!, randn(5), 2; perf_flag=:stability),
+        TestCase(Base._deleteend!, randn(5), 5; perf_flag=:stability),
+        TestCase(Base._deleteend!, randn(5), 0; perf_flag=:stability),
+        TestCase(Base._deleteat!, randn(5), 2, 2; perf_flag=:stability),
+        TestCase(Base._deleteat!, randn(5), 1, 5; perf_flag=:stability),
+        TestCase(Base._deleteat!, randn(5), 5, 1; perf_flag=:stability),
+        TestCase(fill!, rand(Int8, 5), Int8(2); perf_flag=:stability),
+        TestCase(fill!, rand(UInt8, 5), UInt8(2); perf_flag=:stability),
+        TestCase(Base._growbeg!, randn(5), 3; interface_only=true, perf_flag=:stability),
+        TestCase(Base._growend!, randn(5), 3; interface_only=true, perf_flag=:stability),
+        TestCase(Base._growat!, randn(5), 2, 2; interface_only=true, perf_flag=:stability),
+        TestCase(sizehint!, randn(5), 10; perf_flag=:stability),
         # Complex vectors (`NDualArray` V `Complex{NDual}` inner) exercise the broad `@is_primitive`
         # against a matching frule; a `T<:IEEEFloat`-only frule would leave it uncovered -> MethodError.
-        (false, :stability, nothing, Base._deletebeg!, randn(ComplexF64, 5), 2),
-        (false, :stability, nothing, Base._deleteend!, randn(ComplexF64, 5), 2),
-        (false, :stability, nothing, Base._deleteat!, randn(ComplexF64, 5), 2, 2),
-        (true, :stability, nothing, Base._growbeg!, randn(ComplexF64, 5), 3),
-        (true, :stability, nothing, Base._growend!, randn(ComplexF64, 5), 3),
-        (true, :stability, nothing, Base._growat!, randn(ComplexF64, 5), 2, 2),
-        (false, :stability, nothing, sizehint!, randn(ComplexF64, 5), 10),
-        (false, :stability, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
+        TestCase(Base._deletebeg!, randn(ComplexF64, 5), 2; perf_flag=:stability),
+        TestCase(Base._deleteend!, randn(ComplexF64, 5), 2; perf_flag=:stability),
+        TestCase(Base._deleteat!, randn(ComplexF64, 5), 2, 2; perf_flag=:stability),
+        TestCase(
+            Base._growbeg!,
+            randn(ComplexF64, 5),
+            3;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
+            Base._growend!,
+            randn(ComplexF64, 5),
+            3;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(
+            Base._growat!,
+            randn(ComplexF64, 5),
+            2,
+            2;
+            interface_only=true,
+            perf_flag=:stability,
+        ),
+        TestCase(sizehint!, randn(ComplexF64, 5), 10; perf_flag=:stability),
+        TestCase(unsafe_copyto!, randn(4), 2, randn(3), 1, 2; perf_flag=:stability),
         # Mismatched dest/src dimensionality (0-dim source into a Vector).
-        (false, :none, nothing, unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
+        TestCase(
             unsafe_copyto!,
             [rand(3) for _ in 1:5],
             2,
             [rand(4) for _ in 1:4],
             1,
-            3,
+            3;
+            perf_flag=:stability,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            unsafe_copyto!,
-            Vector{Any}(undef, 5),
-            2,
-            Any[rand() for _ in 1:4],
-            1,
-            3,
-        ),
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(unsafe_copyto!, Vector{Any}(undef, 5), 2, Any[rand() for _ in 1:4], 1, 3),
+        TestCase(
             unsafe_copyto!,
             fill!(Vector{Any}(undef, 3), 4.0),
             1,
@@ -984,79 +1010,60 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
             1,
             2,
         ),
-        (
+        TestCase(
             # A lane of the element-major block is stride-`N`, so no dense per-lane buffer exists
             # for a raw pointer to address above width 1; the frule throws there (covered by
-            # the `:foreigncall` guard rows). The width-1 path is correct.
-            true,
-            :none,
-            (skip_chunked=true,),
+            # the `:foreigncall` guard test cases). The width-1 path is correct.
             _foreigncall_,
             Val(:jl_array_ptr),
             Val(Ptr{Float64}),
             (Val(Any),),
-            Val(0), # nreq
-            Val(:ccall), # calling convention
-            randn(5),
+            Val(0),
+            Val(:ccall),
+            randn(5);
+            interface_only=true,
+            skip_chunked=true,
         ),
 
         # Old builtins.
-        (false, :stability, nothing, IntrinsicsWrappers.arraylen, randn(10)),
-        (false, :stability, nothing, IntrinsicsWrappers.arraylen, randn(10, 7)),
-        (false, :stability, nothing, Base.arrayref, true, randn(5), 1),
-        (false, :stability, nothing, Base.arrayref, false, randn(4), 1),
-        (false, :stability, nothing, Base.arrayref, true, randn(5, 4), 1, 1),
-        (false, :stability, nothing, Base.arrayref, false, randn(5, 4), 5, 4),
-        (false, :stability, nothing, Base.arrayref, true, randn(5, 4), 1),
-        (false, :stability, nothing, Base.arrayref, false, randn(5, 4), 5),
-        (false, :stability, nothing, Base.arrayref, false, [1, 2, 3], 1),
-        (false, :stability, nothing, Base.arrayset, false, [1, 2, 3], 4, 2),
-        (false, :stability, nothing, Base.arrayset, false, randn(5), 4.0, 3),
-        (false, :stability, nothing, Base.arrayset, false, randn(5, 4), 3.0, 1, 3),
-        (false, :stability, nothing, Base.arrayset, true, randn(5), 4.0, 3),
-        (false, :stability, nothing, Base.arrayset, true, randn(5, 4), 3.0, 1, 3),
-        (
-            false,
-            :stability,
-            nothing,
-            Base.arrayset,
-            false,
-            [randn(3) for _ in 1:5],
-            randn(4),
-            1,
+        TestCase(IntrinsicsWrappers.arraylen, randn(10); perf_flag=:stability),
+        TestCase(IntrinsicsWrappers.arraylen, randn(10, 7); perf_flag=:stability),
+        TestCase(Base.arrayref, true, randn(5), 1; perf_flag=:stability),
+        TestCase(Base.arrayref, false, randn(4), 1; perf_flag=:stability),
+        TestCase(Base.arrayref, true, randn(5, 4), 1, 1; perf_flag=:stability),
+        TestCase(Base.arrayref, false, randn(5, 4), 5, 4; perf_flag=:stability),
+        TestCase(Base.arrayref, true, randn(5, 4), 1; perf_flag=:stability),
+        TestCase(Base.arrayref, false, randn(5, 4), 5; perf_flag=:stability),
+        TestCase(Base.arrayref, false, [1, 2, 3], 1; perf_flag=:stability),
+        TestCase(Base.arrayset, false, [1, 2, 3], 4, 2; perf_flag=:stability),
+        TestCase(Base.arrayset, false, randn(5), 4.0, 3; perf_flag=:stability),
+        TestCase(Base.arrayset, false, randn(5, 4), 3.0, 1, 3; perf_flag=:stability),
+        TestCase(Base.arrayset, true, randn(5), 4.0, 3; perf_flag=:stability),
+        TestCase(Base.arrayset, true, randn(5, 4), 3.0, 1, 3; perf_flag=:stability),
+        TestCase(
+            Base.arrayset, false, [randn(3) for _ in 1:5], randn(4), 1; perf_flag=:stability
         ),
-        (
-            false,
-            :stability,
-            nothing,
-            Base.arrayset,
-            true,
-            [(5.0, rand(1))],
-            (4.0, rand(1)),
-            1,
+        TestCase(
+            Base.arrayset, true, [(5.0, rand(1))], (4.0, rand(1)), 1; perf_flag=:stability
         ),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(
             Base.arrayset,
             false,
             setindex!(Vector{Vector{Float64}}(undef, 3), randn(3), 1),
             randn(4),
-            1,
+            1;
+            perf_flag=:stability,
         ),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(
             Base.arrayset,
             false,
             setindex!(Vector{Vector{Float64}}(undef, 3), randn(3), 2),
             randn(4),
-            1,
+            1;
+            perf_flag=:stability,
         ),
-        (false, :stability, nothing, Core.arraysize, randn(5, 4, 3), 2),
-        (false, :stability, nothing, Core.arraysize, randn(5, 4, 3, 2, 1), 100),
+        TestCase(Core.arraysize, randn(5, 4, 3), 2; perf_flag=:stability),
+        TestCase(Core.arraysize, randn(5, 4, 3, 2, 1), 100; perf_flag=:stability),
     ]
     for a in (
         [2.0],
@@ -1066,7 +1073,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         [TestResources.Mixed(2.0, [3.0])],
         Vector{Any}(undef, 1),
     )
-        push!(test_cases, (false, :none, nothing, Base._unsetindex!, a, 1))
+        push!(test_cases, TestCase(Base._unsetindex!, a, 1))
     end
     memory = Any[_x, _dx, _a, _da, _b, _db]
     return test_cases, memory
@@ -1075,24 +1082,19 @@ end
 function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     # `skip_chunked`: an element-wise dual array reached through a raw pointer -- the N lanes are
     # interleaved in one array, so no per-lane buffer exists for a pointer to address.
-    test_cases = Any[(
-        false,
-        :none,
-        (skip_chunked=true,),
+    test_cases = TestCase[TestCase(
         Base._unsafe_copyto!,
         fill!(Matrix{Real}(undef, 5, 4), 1.0),
         3,
         randn(10),
         2,
-        4,
+        4;
+        skip_chunked=true,
     ),]
     for P in (Union{Float64,Int}, Union{Float64,Nothing}), nested in (false, true)
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                nothing,
+            TestCase(
                 (P, nested, x) -> begin
                     v = TestResources.OneField{P}(x)
                     a = [nested ? TestResources.OneField(v) : v]
@@ -1118,18 +1120,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
 
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (
-                    throws="its tangent storage is shared with another array header",
-                    mode=ForwardMode,
-                    chunk_size=N,
-                ),
+            TestCase(
                 (f, x, args) -> f(vec(reshape(x, 1, 2)), args...),
                 f,
                 [2.0, 3.0],
-                args,
+                args;
+                throws="its tangent storage is shared with another array header",
+                mode=ForwardMode,
+                chunk_size=N,
             ),
         )
     end
@@ -1146,10 +1144,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         )
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    (mode=ForwardMode, chunk_size=N),
+                TestCase(
                     (f, inds, x) -> begin
                         a = Union{Float32,Float64}[x, 2x]
                         f(a, inds)
@@ -1157,22 +1152,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
                     end,
                     f,
                     inds,
-                    2.0,
+                    2.0;
+                    mode=ForwardMode,
+                    chunk_size=N,
                 ),
             )
         end
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (mode=ForwardMode, chunk_size=N),
+            TestCase(
                 x -> begin
                     a = Union{Float32,Float64}[x, 2x]
                     filter!(>(3), a)
                     only(a)
                 end,
-                2.0,
+                2.0;
+                mode=ForwardMode,
+                chunk_size=N,
             ),
         )
     end
@@ -1196,26 +1192,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         )
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    refusal,
+                TestCase(
                     (f, x, arg) -> f(vec(reshape(x, 1, 2)), arg),
                     f,
                     [2.0, 3.0],
-                    arg,
+                    arg;
+                    refusal...,
                 ),
             )
         end
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                refusal,
-                x -> filter!(>(2.0), vec(reshape(x, 1, 2))),
-                [2.0, 3.0],
-            ),
+            TestCase(x -> filter!(>(2.0), vec(reshape(x, 1, 2))), [2.0, 3.0]; refusal...),
         )
         for route in (
             x -> (reshape(x, 1, 2); x),
@@ -1224,55 +1212,44 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         )
             push!(
                 test_cases,
-                (
-                    false,
-                    :none,
-                    refusal,
+                TestCase(
                     (route, x) -> begin
                         push!(route(x), 0.0)
                         sum(x)
-                    end,
-                    route,
-                    [2.0, 3.0],
+                    end, route, [2.0, 3.0]; refusal...
                 ),
             )
         end
         push!(
-            test_cases,
-            (false, :none, refusal, x -> begin
+            test_cases, TestCase(x -> begin
                 y = sum(reshape(x, 1, 2))
                 push!(x, 0.0)
                 y
-            end, [2.0, 3.0]),
+            end, [2.0, 3.0]; refusal...)
         )
         x = [2.0, 3.0]
         sizehint!(x, 100)
-        push!(test_cases, (false, :none, refusal, x -> begin
+        push!(test_cases, TestCase(x -> begin
             b = reshape(x, 1, 2)
             sizehint!(x, 100)
             sum(b)
-        end, x))
+        end, x; refusal...))
         x = [2.0, 3.0]
         y = unsafe_wrap(Vector{Float64}, pointer(x), 2)
         push!(memory, x)
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                refusal,
-                xs -> (push!(xs[1], 0.0); xs[1][1] *= 2; sum(xs[2])),
-                (x, y),
+            TestCase(
+                xs -> (push!(xs[1], 0.0); xs[1][1] *= 2; sum(xs[2])), (x, y); refusal...
             ),
         )
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (mode=ForwardMode, chunk_size=N),
+            TestCase(
                 x -> (push!(x, 0.0); sum(x)),
-                vec(reshape([2.0, 3.0], 1, 2)),
+                vec(reshape([2.0, 3.0], 1, 2));
+                mode=ForwardMode,
+                chunk_size=N,
             ),
         )
     end
@@ -1289,10 +1266,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
 
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (mode=ForwardMode, chunk_size=N),
+            TestCase(
                 (f, x, inds, shared) -> begin
                     a = shared ? vec(reshape(x, 1, 2)) : x
                     f(a, inds)
@@ -1301,7 +1275,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
                 f,
                 [2.0, 3.0],
                 inds,
-                shared,
+                shared;
+                mode=ForwardMode,
+                chunk_size=N,
             ),
         )
     end
