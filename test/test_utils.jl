@@ -1,4 +1,50 @@
+struct JETTestSet <: Test.AbstractTestSet
+    description::String
+    results::Vector{Any}
+end
+JETTestSet(description; kws...) = JETTestSet(description, Any[])
+Test.record(ts::JETTestSet, result) = push!(ts.results, result)
+Test.finish(ts::JETTestSet) = ts
+
+jet_cache_target(x::Vector{Any}) = x[1](1)
+
 @testset "test_utils" begin
+    @testset "JET report cache" begin
+        tt = Tuple{typeof(jet_cache_target),Vector{Any}}
+        report = TestUtils.report_opt(tt)
+        @test report === TestUtils.report_opt(tt)
+        failures = @testset JETTestSet "cached instability" begin
+            TestUtils.test_opt(jet_cache_target, (Vector{Any},))
+            TestUtils.test_opt(tt)
+        end
+        @test typeof.(failures.results) == [JET.JETTestFailure, JET.JETTestFailure]
+        @test failures.results[1].result === report
+        @test failures.results[2].result === report
+
+        filtered = TestUtils.report_opt(tt; ignored_modules=(Main,))
+        @test filtered !== report
+        @test isempty(JET.get_reports(filtered))
+        @test filtered === TestUtils.report_opt(tt; ignored_modules=(Main,))
+        @test report === TestUtils.report_opt(jet_cache_target, (Vector{Any},))
+
+        @eval jet_cache_target(x::Vector{Any}) = 1
+        updated = Base.invokelatest(TestUtils.report_opt, tt)
+        @test updated !== report
+        @test isempty(JET.get_reports(updated))
+        @test updated === Base.invokelatest(TestUtils.report_opt, tt)
+        passes = @testset JETTestSet "redefined method" begin
+            Base.invokelatest(TestUtils.test_opt, tt)
+            Base.invokelatest(TestUtils.test_opt, tt)
+        end
+        @test typeof.(passes.results) == [Test.Pass, Test.Pass]
+
+        oc1 = Base.Experimental.@opaque (f::Any) -> 1
+        oc2 = Base.Experimental.@opaque (f::Any) -> (f(1); 1)
+        @test typeof(oc1) === typeof(oc2)
+        @test isempty(JET.get_reports(TestUtils.report_opt(oc1)))
+        @test length(JET.get_reports(TestUtils.report_opt(oc2))) == 1
+    end
+
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
         # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s
