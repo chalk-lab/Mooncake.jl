@@ -714,6 +714,18 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
+# Tangent memory whose elements take up no space (e.g. `Memory{NoTangent}`) has no storage, so
+# there is nothing a pointer into it could point at. For `MemoryRef`s, `ptr_or_offset` is then
+# an index rather than an address. Use a null pointer for these, which the pointer intrinsic
+# rules treat as "no tangent".
+function _tangent_data_ptr(ptr::Ptr, ::Memory{V}) where {V}
+    return if Base.elsize(Memory{V}) == 0
+        Ptr{NoTangent}(C_NULL)
+    else
+        bitcast(Ptr{NoTangent}, ptr)
+    end
+end
+
 function frule!!(
     ::Dual{typeof(lgetfield)},
     x::Dual{<:Memory,<:Memory},
@@ -722,7 +734,7 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
+    dy = wants_length ? NoTangent() : _tangent_data_ptr(tangent(x).ptr, tangent(x))
     return Dual(y, dy)
 end
 function rrule!!(
@@ -733,7 +745,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : bitcast(Ptr{NoTangent}, x.dx.ptr)
+    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -745,7 +757,8 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
+    dx = tangent(x)
+    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -756,7 +769,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1182,6 +1195,77 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
+
+        # Loads and stores through pointers into arrays whose elements have no tangent, so
+        # there is no tangent storage behind the pointer. See `_tangent_data_ptr`.
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                p = Ptr{Ptr{Cvoid}}(pointer(v, 2))
+                GC.@preserve v Core.Intrinsics.atomic_pointerset(p, C_NULL, :monotonic)
+                return x * length(v)
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                GC.@preserve v pointerset(Ptr{Ptr{Cvoid}}(pointer(v, 2)), C_NULL, 1, 1)
+                return x * length(v)
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                p = Ptr{Ptr{Cvoid}}(pointer(v, 2))
+                q = GC.@preserve v Core.Intrinsics.atomic_pointerref(p, :monotonic)
+                return q == C_NULL ? x : 2x
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                q = GC.@preserve v unsafe_load(Ptr{Ptr{Cvoid}}(pointer(v, 2)))
+                return q == C_NULL ? x : 2x
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                m = Memory{String}(undef, 2)
+                m[1] = "a"
+                m[2] = "b"
+                p = Ptr{Ptr{Cvoid}}(pointer(m, 2))
+                GC.@preserve m Core.Intrinsics.atomic_pointerset(p, C_NULL, :monotonic)
+                return x * length(m)
+            end),
+            2.0,
+        ),
+        (false, :none, nothing, x -> (v=["a", "b"]; pop!(v); x * length(v)), 2.0),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (d=Dict("a" => x, "b" => 2x); delete!(d, "b"); d["a"]^2),
+            2.0,
+        ),
     ]
     memory = Any[]
     return test_cases, memory
