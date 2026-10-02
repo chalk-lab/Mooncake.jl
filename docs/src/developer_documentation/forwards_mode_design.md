@@ -30,16 +30,21 @@ z_dz = rule_for_f(lift(f, df), lift(x, dx), lift(y, dy))::Lifted
 ```
 where:
 1. `rule_for_f` is a callable. It might be written by-hand, or derived algorithmically.
-1. `df`, `dx`, and `dy` are tangents for `f`, `x`, and `y` respectively. They are the inputs to the derivative of `(f, x, y)`; the tangent carried by `z_dz` is the output.
-1. `z_dz` is a `Lifted` containing the primal `z` and the component of the derivative of `(f, x, y)` in the direction `(df, dx, dy)` associated with `z`.
+1. The input slots carry the initial directions `df`, `dx`, and `dy` for `f`, `x`, and `y`.
+   The result slot `z_dz` carries the primal `z` and its derivative in those directions.
+   If the call mutates an argument or captured field, the rule must also update its tangent
+   storage to represent the derivative of the resulting state.
 1. running `rule_for_f` leaves `f`, `x`, and `y` in the same state that running `f` does.
+
+The independently constructed slots above assume unaliased storage. Shared inputs require
+jointly constructed compatible seeds; see [Conflicting forward tangents for one shared storage](@ref).
 
 We refer readers to [Algorithmic Differentiation](@ref) to explain what we mean when we talk about the "derivative" above.
 
 Note that `rule_for_f` is an as-yet-unspecified callable which we introduced purely to specify the interface that a forwards-rule must satisfy.
 In [Hand-Written Rules](@ref) and [Derived Rules](@ref) below, we introduce two concrete ways to produce rules for `f`.
 
-### The `Lifted` slot and the forward value `V`
+### The `Lifted` slot and its representation type `V`
 
 A forwards-mode argument is a [`Mooncake.Lifted`](@ref) slot:
 ```julia
@@ -48,24 +53,31 @@ struct Lifted{P, N, V}
     rep::V
 end
 ```
-`P` is the primal type, `N` is the *chunk width* (the number of derivative directions propagated at once — `N == 1` for a standard single-direction rule, `N > 1` for batched mode), and `V` is the *forward value*: the representation of `N` tangents of `P` packed together.
+`P` is the primal type. The chunk width `N` is the number of derivative directions
+propagated together; each direction occupies one lane. `V` is the type of the forward
+representation stored in `rep`. `dual_type(Val(N), P)` determines its canonical type.
 
 For a concrete `P` it must always hold that `V === dual_type(Val(N), P)`.
 `dual_type` plays the same role for forwards-mode that [`tangent_type`](@ref) plays for reverse-mode, and it is *recursively coherent* with it: where the reverse representation of a component is `tangent_type(component)`, the forward representation is `dual_type(Val(N), component)`, mirroring each other shape-for-shape. Concretely:
 
 - an IEEE floating-point scalar `P` → `NDual{P, N}` (a value plus an `NTuple{N}` of per-lane partials);
 - an array `Array{T, D}` with `T <: NDualEltype` (`IEEEFloat` or `Complex{<:IEEEFloat}`) → `NDualArray{T, N, D, ...}`, a wrapper holding the primal array (a genuine `Array{T, D}` usable directly in a `ccall`, aliasing the user's storage) and the `N` lane partials in one slot-local *element-major* block of shape `(N, size...)`, so each element's partials form a contiguous column (per-lane access is a strided view, `tangent_view(a, k)`);
-- a `MemoryRef{T}` with `T <: NDualEltype` (Julia 1.11+) → `NDualMemoryRef{T, N, ...}`, holding the primal ref plus the *backing* `MemoryRef` of the enclosing `Memory`/`Array` V's element-major block (not a reshaped copy of it), the number of block columns, and the column that pairs with the referenced element. Storing the backing ref keeps the `array.ref` projection a pure field read — no reshape, no header allocation — even for a rank-`D > 1` array (its block's flat storage is still a plain `Vector{T}`, whose backing ref is a plain `MemoryRef{T}`, so the ref V's type stays coherent regardless of the source's rank). The backing is shared with the enclosing V, so mutations through any V land in one storage, mirroring the primal aliasing;
+- a `MemoryRef{T}` with `T <: NDualEltype` (Julia 1.11+) → `NDualMemoryRef{T, N, ...}`, holding the primal ref plus the *backing* `MemoryRef` of the enclosing `Memory`/`Array` representation's element-major block (not a reshaped copy of it), the number of block columns, and the column that pairs with the referenced element. Storing the backing ref keeps the `array.ref` projection a pure field read — no reshape, no header allocation — even for a rank-`D > 1` array (its block's flat storage is still a plain `Vector{T}`, whose backing ref is a plain `MemoryRef{T}`, so the reference representation's type stays coherent regardless of the source's rank). The backing is shared with the enclosing representation, so mutations through either representation land in one storage, mirroring the primal aliasing;
 - for other element types, arrays recurse as `Array{dual_type(Val(N), T), D}`; `Memory{T}` and `MemoryRef{T}` likewise recurse through `T`. Thus `Vector{Int}` maps to `Vector{NoDual}`, and `Vector{Vector{Float64}}` to a vector of `NDualArray`s;
-- a struct → `ImmutableDual` / `MutableDual` wrapping the per-field forward values;
+- a struct with the default structural representation → `ImmutableDual` / `MutableDual`
+  wrapping the per-field forward representations; specialised types, such as numeric `Ref`s,
+  have their own representations;
 - tuples / named-tuples → element-wise recursion;
 - a non-differentiable `P` (integers, `Symbol`, `Module`, types, …) → [`Mooncake.NoDual`](@ref), the forwards-mode analogue of reverse-mode's `NoTangent`.
 
-Rules read and write slots through the accessors rather than touching the fields directly: `primal(slot)`, `tangent(slot)` (the whole `V`), `tangent(slot, lane)` and `tangent_view(slot, lane)`. This keeps rule bodies independent of the inner-`V` shape — see [Hand-Written Rules](@ref). The last two differ in ownership, and the distinction matters for every aggregate `V`: `tangent(slot, lane)` *materialises* lane `lane`'s derivative as a reverse tangent of type `tangent_type(P)`, so it composes inside a container and can be handed to reverse-mode tangent arithmetic; `tangent_view(slot, lane)` gives *writable* access to the same lane's storage (a strided view into an array's block, a `MutableDualTangentView` proxy over a mutable struct's `MutableDual`), so a write lands in the slot.
+Rules read and write slots through the accessors rather than touching the fields directly: `primal(slot)`, `tangent(slot)` (the whole representation), `tangent(slot, lane)` and `tangent_view(slot, lane)`. This keeps rule bodies independent of the inner representation — see [Hand-Written Rules](@ref). The last two differ in ownership, and the distinction matters for every aggregate representation: `tangent(slot, lane)` *materialises* lane `lane`'s derivative as a reverse tangent of type `tangent_type(P)`, so it composes inside a container and can be handed to reverse-mode tangent arithmetic; `tangent_view(slot, lane)` gives *writable* access to the same lane's storage (a strided view into an array's block, a `MutableDualTangentView` proxy over a mutable struct's `MutableDual`), so a write lands in the slot.
 
 ### Block layout across backends, and performance
 
-Keeping an array's `N` per-lane partials in a *separate* block (rather than interleaving `NDual`s into the primal container) is what lets the primal stay a genuine `Array`/`CuArray` usable directly in a `ccall`, and lets each lane be handed to BLAS/LAPACK as a strided operand. The *orientation* of that block is chosen per backend to keep the hot path allocation-free: `_block_type`/`_block_dims` give the block's type and `undef` dimensions, and a backend whose block is laid out differently overrides `tangent_view`/`_lane_views`, which is where rule bodies read lanes from:
+Separate primal and partial storage preserves the primal array's concrete type.
+On the CPU, an individual lane has stride `N`; pointer-based BLAS/LAPACK wrappers cannot
+consume it directly when `N > 1`. Their rules operate on the full partial block or gather
+a lane into dense scratch storage. The orientation of that block is chosen per backend to keep the hot path allocation-free: `_block_type`/`_block_dims` give the block's type and `undef` dimensions, and a backend whose block is laid out differently overrides `tangent_view`/`_lane_views`, which is where rule bodies read lanes from:
 
 - **CPU (every supported Julia):** an `NDualBlock{T, D+1}` of shape `(N, size...)` — *element-major*, so scalar `getindex`/`setindex!` (the dominant cost in element-wise forward AD) touches one contiguous per-element column, while BLAS still gets the whole `(N, len)` lane matrix. `NDualBlock` is a `DenseArray` header over a flat `Vector{T}`: the flat parent grows in place (a shaped `Array` cannot, and `Base.reshape` of an `Array` marks its buffer shared, which then blocks the resize primitives on 1.10), and reshaping the block is a new header over the same parent. Subtyping `DenseArray` puts it in the `StridedArray` union, so `mul!` and friends still dispatch to BLAS.
 - **CUDA:** *lane-major* `(size..., N)`, so each lane is a contiguous last-dim slice — a GPU never scalar-indexes, but the low-level CUDA primitives (`unsafe_copyto!`, batched cuBLAS) require contiguous per-lane buffers.
@@ -103,7 +115,10 @@ The declaration must stay in lockstep with the `frule!!` method coverage: a broa
 ### `frule!!`
 
 Methods of `frule!!` do the actual differentiation, and must satisfy the [Forwards-Rule Interface](@ref) discussed above.
-A `frule!!` must return the canonical `dual_type(Val(N), typeof(result))` shape (use `zero_dual` / `zero_lifted` for a zero derivative); it must never pair a `NoDual` with a differentiable result, nor double-wrap a `Lifted`.
+A `frule!!` returns a `Lifted` slot. Its inner representation has the canonical type
+`dual_type(Val(N), typeof(result))`. For a zero derivative, return
+`zero_lifted(Val(N), result)`; `zero_dual(Val(N), result)` constructs only the inner
+representation. Never pair a `NoDual` with a differentiable result or double-wrap a `Lifted`.
 
 In what follows, we will refer to `frule!!`s for signatures.
 For example, the `frule!!` for signature `Tuple{typeof(sin), Float64}` is the rule which would differentiate calls like `sin(5.0)`.
@@ -124,7 +139,7 @@ Note that the primal `sin(x)` is read out of `dy.value` rather than recomputed �
 #### Pre-allocated Matrix-Matrix Multiply
 
 Recall that for ``Z = X Y`` we have that ``\dot{Z} = X \dot{Y} + \dot{X} Y``.
-Because the forward value of an array is an `NDualArray` (the primal is a genuine `Array`, and the lane partials live in one element-major block accessed per lane as `tangent_view(tangent(·), k)`, a strided view), we can apply the primal `mul!` once and then a per-lane `mul!` over the lane partials — writes through the views land in the slot's block:
+Because the forward representation of an array is an `NDualArray` (the primal is a genuine `Array`, and the lane partials live in one element-major block accessed per lane as `tangent_view(tangent(·), k)`, a strided view), we can apply the primal `mul!` once and then a per-lane `mul!` over the lane partials — writes through the views land in the slot's block:
 ```julia
 function frule!!(
     ::Lifted{typeof(mul!), N},
@@ -141,6 +156,7 @@ function frule!!(
 end
 ```
 The in-place primal update is hoisted out of the per-lane loop: repeating it would corrupt the shared primal seen by later lanes.
+These illustrative `mul!` calls use the general array interface.
 (In practice we would implement a rule for a lower-level function like `LinearAlgebra.BLAS.gemm!`, rather than `mul!`. The actual BLAS/LAPACK rules go one step further: a single lane of the element-major block is a stride-`N` view, which the pointer-based BLAS wrappers cannot consume, so those rules operate on the dense block itself — a lane-invariant linear map applies to all `N` lanes in *one* wide BLAS call by right-multiplying the `(N, len)` lane matrix by the map's transpose. See `_partials_block` and the per-rule comments in `src/rules/blas.jl`.)
 
 
@@ -213,7 +229,10 @@ In the following we show how to derive `rule_for_f`, and show how `rule_for_g` a
 Equipped with some intuition about what a derived rule ought to look like, we examine how we go about producing it algorithmically.
 
 Rule derivation is implemented via the function `Mooncake.build_frule`.
-This function accepts a context and a signature / `Base.MethodInstance` / `MistyClosure` (plus a `chunk_size` keyword, see [Batch Mode](@ref)) and, roughly speaking, does the following:
+The low-level `build_frule(interp, sig_or_mi; chunk_size=N)` accepts a `MooncakeInterpreter`
+and a signature, `Base.MethodInstance`, or `MistyClosure` to differentiate.
+The convenience `build_frule(f, args...; chunk_size=N)` constructs the interpreter and signature
+from values. See [Batch Mode](@ref) for chunk widths. Rule derivation proceeds as follows:
 1. Look up the optimised `Compiler.IRCode`.
 1. Apply a series of standardising transformations to the `IRCode`.
 1. Transform each statement according to a set of rules to produce a new `IRCode`.
@@ -247,8 +266,8 @@ The purpose of converting `Expr(:foreigncall...)`, `Expr(:new, ...)` and `Expr(:
 The purpose of translating `Expr(:call, ::IntrinsicFunction, ...)` is to do with type stability -- see the docstring for the [Mooncake.IntrinsicsWrappers](@ref) module for more info.
 
 Native `gc_preserve_begin` / `gc_preserve_end` scopes are retained in forwards-mode AD.
-The preserved owners are mapped to `Dual` values, keeping both primal and tangent storage alive throughout the scope.
-The end expression still consumes the native begin token, not a `Dual`.
+The preserved owners are mapped to `Lifted` values, keeping both primal and tangent storage alive throughout the scope.
+The end expression consumes the native begin token.
 Preserving raw pointers alone does not keep their owning Julia objects alive.
 
 #### Statement Transformation
@@ -359,13 +378,13 @@ _This_ is the "rule" that users get.
 So far, we have mostly assumed that we would only apply forwards-mode to a single tangent vector at a time (chunk width `N == 1`).
 However, in practice, it is typically best to pass a collection of tangents through at a time — for example, computing a gradient or a Jacobian via forwards-mode requires one derivative direction per input degree of freedom, and propagating them in chunks amortises the cost of the primal computation.
 
-No separate "batched" transformation is needed: the forward value `V = dual_type(Val(N), P)` is *already* parameterised by the chunk width `N`. Every statement transformation above threads the width (`Val(info.width)`) into the constant `zero_lifted`s and the `lifted_type` annotations, and the hand-written `frule!!`s loop over the `N` lanes (`tangent(slot, k)`) as shown in the matrix-multiply example. A width-`N` rule is obtained simply by passing `chunk_size = N` to `Mooncake.build_frule`; the `NDual` / `NDualArray` forward values then carry `N` partials per primal instead of one.
+No separate "batched" transformation is needed: the forward representation type `V = dual_type(Val(N), P)` is already parameterised by the chunk width `N`. Every statement transformation above threads the width (`Val(info.width)`) into the constant `zero_lifted`s and the `lifted_type` annotations, and the hand-written `frule!!`s loop over the `N` lanes (`tangent(slot, k)`) as shown in the matrix-multiply example. A width-`N` rule is obtained simply by passing `chunk_size = N` to `Mooncake.build_frule`; the `NDual` / `NDualArray` forward representations then carry `N` partials per primal instead of one.
 
 ## Forwards vs Reverse Implementation
 
 The implementation of forwards-mode AD is quite dramatically simpler than that of reverse-mode AD.
 Some notable technical differences include:
-1. forwards-mode AD only makes use of the (forward) tangent system — the `Lifted` slot and its `dual_type` forward value — whereas reverse-mode also makes use of the fdata / rdata system.
+1. forwards-mode AD only makes use of the (forward) tangent system — the `Lifted` slot and the representation specified by `dual_type` — whereas reverse-mode also makes use of the fdata / rdata system.
 1. forwards-mode AD comprises only line-by-line transformations of the `IRCode`. In particular, it does not require the insertion of additional basic blocks, nor the modification of the successors / predecessors of any given basic block (the `GotoIfNot` rewrite inserts a node within the same block). Consequently, there is no need to make use of the `CFGBlock` infrastructure built up for reverse-mode AD -- everything can be straightforwardly done at the `Compiler.IRCode` level.
 
 ## Comparison with ForwardDiff.jl
@@ -374,7 +393,7 @@ With reference to [the limitations of ForwardDiff.jl](https://juliadiff.org/Forw
 1. `:foreigncall`s pose much less of a problem for Mooncake's forward-mode than for ForwardDiff.jl, because we can write a rule for any method of any function. In essence, you can only (reliably) write rules for ForwardDiff.jl via dispatch on `ForwardDiff.Dual`.
 1. the target function can be of any arity in Mooncake.jl, but must be unary in ForwardDiff.jl.
 1. there are no limitations on the argument type constraints that Mooncake.jl can handle, while ForwardDiff.jl requires that argument type constraints be `<:Real` or arrays of `<:Real`.
-1. No special storage types are required with Mooncake.jl, while ForwardDiff.jl requires that any container you write to is able to contain `ForwardDiff.Dual`s. (Mooncake's array forward value, `NDualArray`, keeps the partials in a *separate* element-major block rather than interleaving them into the primal container.)
+1. No special storage types are required with Mooncake.jl, while ForwardDiff.jl requires that any container you write to is able to contain `ForwardDiff.Dual`s. (Mooncake's array forward representation, `NDualArray`, keeps the partials in a *separate* element-major block rather than interleaving them into the primal container.)
 
 The split representation is not what makes mutation work.
 ForwardDiff.jl handles mutation perfectly well: a `similar(x)` buffer holds `ForwardDiff.Dual`s, and `ForwardDiff.jacobian(f!, y, x)` is an in-place API.
