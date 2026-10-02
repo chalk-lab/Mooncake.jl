@@ -701,8 +701,11 @@ end
     im_nd = NDual{R,Nw}(imag(y), map(imag, dys))
     return Lifted{Complex{R},Nw}(y, Complex{NDual{R,Nw}}(re_nd, im_nd))
 end
+@inline function _lift_from_lanes(y::A, dys::NTuple{Nw,A}) where {E,D,A<:Array{E,D},Nw}
+    return _lift_from_lanes(_storage_kind(E), y, dys)
+end
 @inline function _lift_from_lanes(
-    y::A, dys::NTuple{Nw,A}
+    ::NumericStorage, y::A, dys::NTuple{Nw,A}
 ) where {E<:NDualEltype,D,A<:Array{E,D},Nw}
     return Lifted{A,Nw}(y, NDualArray{E,Nw,D,A}(y, dys))
 end
@@ -724,7 +727,8 @@ end
 end
 # Width 1's generic `lift` accepts more shapes; unsupported wider results must raise
 # a clear ArgumentError instead of a MethodError.
-@noinline function _lift_from_lanes(y, dys::Tuple)
+@noinline _lift_from_lanes(y, dys::Tuple) = _lift_from_lanes(StructuralStorage(), y, dys)
+@noinline function _lift_from_lanes(::StructuralStorage, y, dys::Tuple)
     msg =
         "`@from_chainrules` forward rules at chunk width > 1 support results that are real or " *
         "complex IEEE-float scalars, dense `Array`s of those, tuples of those, or fully " *
@@ -736,7 +740,7 @@ end
 # against the NoTangent catch-all at Nw == 0 for Aqua.
 @noinline _lift_from_lanes(::IEEEFloat, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Complex{<:IEEEFloat}, ::Tuple{}) = _zero_lanes_error()
-@noinline _lift_from_lanes(::Array{<:NDualEltype}, ::Tuple{}) = _zero_lanes_error()
+@noinline _lift_from_lanes(::Array, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Tuple, ::Tuple{}) = _zero_lanes_error()
 _zero_lanes_error() = error("_lift_from_lanes: zero lanes (chunk width 0) is invalid")
 

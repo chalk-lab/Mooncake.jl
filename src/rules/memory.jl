@@ -957,8 +957,13 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-function frule!!(
-    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+@inline function frule!!(
+    f::Lifted{Type{Memory{P}},Nw}, u::Lifted{UndefInitializer,Nw}, n::Lifted
+) where {Nw,P}
+    return _memory_constructor_frule(_storage_kind(P), f, u, n)
+end
+function _memory_constructor_frule(
+    ::NumericStorage, ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
     # Zero-initialized partials block covering the fresh memory (column j ↔ mem slot j).
@@ -976,8 +981,11 @@ end
 # The NDualEltype overload handles floats/complex; other elements use element-wise V.
 # Readable isbits slots need coherent zero duals to avoid copying garbage partials; reference
 # slots stay #undef until the parallel memoryrefset! writes them.
-@generated function frule!!(
-    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+@generated function _memory_constructor_frule(
+    ::StructuralStorage,
+    ::Lifted{Type{Memory{P}},Nw},
+    ::Lifted{UndefInitializer,Nw},
+    n::Lifted,
 ) where {Nw,P}
     # isbitstype is structural, but dual_type must resolve in the returned expression at the
     # call world so later extension overloads apply (e.g. pullback closures capturing CuArrays).
