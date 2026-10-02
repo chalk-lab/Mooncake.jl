@@ -74,6 +74,16 @@ The default comparator is `isequal`. Use `cmp=Mooncake.TestUtils.isequal_ignorin
 to equate signed zeros while retaining NaN equality, or `cmp=isapprox` with `rtol`/`atol`
 inside `reference`. These tolerances are independent of finite-difference tolerances.
 
+For chunked forward rules, `reference.lanes=:inactive_zero` uses the test case's seed in
+lane 1 and checks exact zeros in all other output and argument partials. To pin individual
+lanes, use `reference=(lanes=((seed=(Mooncake.NoTangent(), 1.0), value=2.0),
+(seed=(Mooncake.NoTangent(), 3.0), value=6.0)),)` for `x -> 2x`, with `chunk_size=2`.
+Each seed includes the function position. The default width is 8; unsupported lane
+representations and mismatched lane counts are refused. Comparisons with width-1 results
+use the harness's partials precision tolerance; `cmp` applies to pinned expected values.
+With an explicit `chunk_size`, only the pinned reference checks run at width 1, not
+the full width-1 battery.
+
 ## Second-order registry checks
 
 The internal, unexported `Mooncake.TestUtils.TestCase` also lets a registry test case
