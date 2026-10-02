@@ -3883,35 +3883,130 @@ end
         @testset "forward-over-reverse (HVP)" begin
             x = _rand(rng, Float32, 8)
             v = _rand(rng, Float32, 8)
-            # sum(x) is linear ⇒ hvp = 0.
-            _, g, h = value_and_hvp!!(prepare_hvp_cache(sum, x), sum, v, x)
-            @test isapprox(Array(g), ones(Float32, 8); rtol=1.0f-4)
-            @test isapprox(Array(h), zeros(Float32, 8); atol=1.0f-5)
-            expected = zeros(Float32, 8)
-            w = argmax(Array(x))
-            expected[w] = 2 * Array(v)[w]
-            for f in (z -> maximum(z)^2, z -> maximum(z; init=(-Inf32))^2)
-                _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                @test isapprox(Array(h), expected; rtol=1.0f-4)
-            end
-            # dot(x, x) has Hessian 2I ⇒ hvp = 2v.
             dotsq = z -> dot(z, z)
-            _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
-            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
-            sumabs2 = z -> sum(abs2, z)
-            _, _, h = value_and_hvp!!(prepare_hvp_cache(sumabs2, x), sumabs2, v, x)
-            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
-            # Full Hessian: buffers are device-resident, no scalar indexing.
-            hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
-            _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
-            @test H isa CuMatrix{Float32}
-            @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
-            f = z -> mean(z)^2
-            _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-            @test isapprox(Array(h), fill(2 * sum(v) / length(x)^2, size(x)); rtol=1.0f-4)
-            for f in (z -> mean(abs2, z), z -> sum(mean(abs2, z; dims=1)))
-                _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                @test isapprox(Array(h), 2 .* Array(v) ./ length(x); rtol=1.0f-4)
+            # maximum's Hessian is 2 at the winner of maximum(z)^2 and zero elsewhere.
+            max_hvp = zeros(Float32, 8)
+            w = argmax(Array(x))
+            max_hvp[w] = 2 * Array(v)[w]
+            test_cases = TestCase[
+                TestCase(
+                    sum,
+                    x;
+                    name="sum HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(
+                            gradient=(value=ones(Float32, 8), rtol=1.0f-4),
+                            hvp=(value=zeros(Float32, 8), atol=1.0f-5),
+                        ),
+                        cmp=(actual, expected) -> isapprox(
+                            Array(actual),
+                            expected.value;
+                            Base.structdiff(expected, (; value=nothing))...,
+                        ),
+                    ),
+                ),
+                TestCase(
+                    z -> maximum(z)^2,
+                    x;
+                    name="maximum HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=max_hvp,),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> maximum(z; init=(-Inf32))^2,
+                    x;
+                    name="maximum HVP, init",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=max_hvp,),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    dotsq,
+                    x;
+                    name="dot HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> sum(abs2, z),
+                    x;
+                    name="sum abs2 HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    dotsq,
+                    x;
+                    name="device Hessian",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hessian=2I(8),),
+                        cmp=(actual, expected) ->
+                            actual isa CuMatrix{Float32} &&
+                            isapprox(Array(actual), expected; atol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> mean(z)^2,
+                    x;
+                    name="mean HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=fill(2 * sum(v) / length(x)^2, size(x)),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> mean(abs2, z),
+                    x;
+                    name="mean abs2 HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v) ./ length(x),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+                TestCase(
+                    z -> sum(mean(abs2, z; dims=1)),
+                    x;
+                    name="mean abs2 dims HVP",
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(hvp=2 .* Array(v) ./ length(x),),
+                        cmp=(actual, expected) ->
+                            isapprox(Array(actual), expected; rtol=1.0f-4),
+                    ),
+                ),
+            ]
+            for tc in test_cases
+                test_rule(StableRNG(123), tc)
             end
             f = z -> mean(sin, z)
             @test_throws r"not yet supported" value_and_hvp!!(

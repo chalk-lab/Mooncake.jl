@@ -79,6 +79,20 @@ end
         end...,
         TestCase(logfactorial, 3; perf_flag=:stability_and_allocs),
     )
+    push!(
+        test_cases,
+        TestCase(
+            a -> first(beta_inc(a, 2.0, 0.5)),
+            1.0;
+            name="beta_inc shape HVP",
+            hvp=(
+                check=:reference,
+                directions=(1.0,),
+                reference=(hvp=3log(2)^2/4-log(2)/2,),
+                cmp=isapprox,
+            ),
+        ),
+    )
     for (tc, name) in zip(test_cases, Mooncake.TestUtils._test_case_names(test_cases))
         test_rule(StableRNG(123456), tc; name)
     end
@@ -233,9 +247,6 @@ end
                 map(Mooncake.zero_fcodual, (beta_inc, a, b, 0.5))...
             )
         end
-        f(a) = first(beta_inc(a, 2.0, 0.5))
-        cache = Mooncake.prepare_hvp_cache(f, 1.0)
-        @test Mooncake.value_and_hvp!!(cache, f, 1.0, 1.0)[3] ≈ 3log(2)^2/4-log(2)/2
     end
 
     @testset "gamma_inc" begin
