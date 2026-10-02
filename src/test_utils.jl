@@ -196,6 +196,11 @@ Determine if two objects `x` and `y` have equivalent data. If `equal_undefs`
 is `true`, undefined elements in arrays or unassigned fields in structs are 
 considered equal.
 
+By default, floating-point components are compared approximately, with matching NaNs
+considered equal. This is not bitwise equality: NaN payloads and the sign of zero need not
+match. Complex numbers are compared componentwise, so a NaN in one component does not hide
+changes in the other.
+
 The main logic is implemented in `has_equal_data_internal`, which is a recursive function
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
