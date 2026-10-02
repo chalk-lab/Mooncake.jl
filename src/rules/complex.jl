@@ -88,22 +88,22 @@ end
 # Register primitives separately for chunked checks (derived cases use is_primitive=false).
 function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
     (
-        Any[
-            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:re)),
-            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:im)),
-            (false, :stability_and_allocs, nothing, _new_, ComplexF64, 1.5, -0.5),
+        TestCase[
+            TestCase(lgetfield, 1.5 - 0.5im, Val(:re); perf_flag=:stability_and_allocs),
+            TestCase(lgetfield, 1.5 - 0.5im, Val(:im); perf_flag=:stability_and_allocs),
+            TestCase(_new_, ComplexF64, 1.5, -0.5; perf_flag=:stability_and_allocs),
         ],
         Any[],
     )
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:complex})
-    test_cases = Any[
-        (false, :none, nothing, real, 1.0 + 2.0im),
-        (false, :none, nothing, imag, 1.0 + 2.0im),
-        (false, :none, nothing, z -> z.re * z.im, 1.5 - 0.5im),
-        (false, :none, nothing, (a, b) -> Complex(a, b), 1.0, 2.0),
-        (false, :none, nothing, (a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
+    test_cases = TestCase[
+        TestCase(real, 1.0 + 2.0im),
+        TestCase(imag, 1.0 + 2.0im),
+        TestCase((z -> z.re * z.im), 1.5 - 0.5im),
+        TestCase((a, b) -> Complex(a, b), 1.0, 2.0),
+        TestCase((a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
     ]
     return test_cases, Any[]
 end

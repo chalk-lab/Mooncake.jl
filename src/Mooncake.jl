@@ -194,10 +194,8 @@ end
 
 include("tools_for_rules.jl")
 
-# Convert (expectation, f, args, opts) to a registry row; throws accepts a type/message/both.
-_throwing_row(case) = (false, :none, (throws=case[1], case[4]...), case[2], case[3]...)
-
 @unstable include("test_utils.jl")
+using .TestUtils: TestCase
 @unstable include("test_resources.jl")
 include("interface.jl")
 

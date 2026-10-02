@@ -1759,6 +1759,15 @@ function _test_case_name(tc::TestCase)
     return length(name) > 80 ? first(name, 77) * "..." : name
 end
 
+function _test_case_names(test_cases)
+    names = map(_test_case_name, test_cases)
+    counts = Dict{String,Int}()
+    for name in names
+        counts[name] = get(counts, name, 0) + 1
+    end
+    return [counts[name] > 1 ? "$name [$i]" : name for (i, name) in enumerate(names)]
+end
+
 """
     test_rule(rng, tc::TestCase; mode=nothing, fallbacks=(;), name=nothing)
 
@@ -2120,31 +2129,6 @@ function test_rule(
     return ts
 end
 
-# A NamedTuple in the third registry field carries per-case test_rule options.
-# skip_forward/skip_reverse allow cases representable or primitive in only one mode.
-_case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
-# Fold mode into skip predicates so every consumer, including benchmarks, honours it.
-function _case_skip_forward(opts)
-    opts isa NamedTuple || return false
-    return get(opts, :skip_forward, false) || _case_mode(opts) === ReverseMode
-end
-function _case_skip_reverse(opts)
-    opts isa NamedTuple || return false
-    return get(opts, :skip_reverse, false) || _case_mode(opts) === ForwardMode
-end
-# A case whose derivative finite differences cannot pin carries its reference in `oracle`
-# (see `test_frule_oracle`); a reverse `oracle` with a `deriv` also needs `output_tangent`.
-_case_oracle(opts) = opts isa NamedTuple ? get(opts, :oracle, nothing) : nothing
-# A test case carrying `throws` uses `_test_rule_throws` instead of the correctness battery;
-# `mode` restricts it to one mode, and `chunk_size` picks the width its trigger needs.
-_case_throws(opts) = opts isa NamedTuple ? get(opts, :throws, nothing) : nothing
-_case_mode(opts) = opts isa NamedTuple ? get(opts, :mode, nothing) : nothing
-_case_chunk_size(opts) = opts isa NamedTuple ? get(opts, :chunk_size, nothing) : nothing
-_case_primal_throws(opts) = opts isa NamedTuple ? get(opts, :primal, false) : false
-function _case_output_tangent(opts)
-    opts isa NamedTuple ? get(opts, :output_tangent, nothing) : nothing
-end
-
 """
     _test_rule_throws(
         rng::AbstractRNG, f, x...;
@@ -2264,28 +2248,10 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
     end
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$mode, $f, $(_typeof(x))" for (
-        interface_only, perf_flag, opts, f, x...
-    ) in test_cases
-
-        mode === ForwardMode && _case_skip_forward(opts) && continue
-        mode === ReverseMode && _case_skip_reverse(opts) && continue
-        skip_chunked = _case_skip_chunked(opts)
-        test_rule(
-            rng_ctor(123),
-            f,
-            x...;
-            interface_only,
-            perf_flag,
-            is_primitive=(!derived),
-            mode,
-            skip_chunked,
-            oracle=_case_oracle(opts),
-            output_tangent=_case_output_tangent(opts),
-            throws=_case_throws(opts),
-            chunk_size=_case_chunk_size(opts),
-            primal_throws=_case_primal_throws(opts),
-        )
+    names = _test_case_names(test_cases)
+    # Registry kind supplies a fallback; a test case may select its own primitive check.
+    GC.@preserve memory for (tc, name) in zip(test_cases, names)
+        test_rule(rng_ctor(123), tc; mode, fallbacks=(is_primitive=(!derived),), name)
     end
 end
 

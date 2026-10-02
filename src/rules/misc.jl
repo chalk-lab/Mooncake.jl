@@ -581,185 +581,180 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     _dx = Ref(4.0)
     memory = Any[_x, _dx]
 
-    specific_test_cases = Any[
+    specific_test_cases = TestCase[
         # stop_gradient: value passes through, gradients are zeroed out.
         # interface_only=true because the rule intentionally returns zero gradient,
         # which does not match the finite-difference Jacobian of the primal (identity).
-        (true, :none, nothing, stop_gradient, 5.0),
-        (true, :none, nothing, stop_gradient, randn(4)),
-        (true, :none, nothing, stop_gradient, (3.0, 4.0)),
+        TestCase(stop_gradient, 5.0; interface_only=true),
+        TestCase(stop_gradient, randn(4); interface_only=true),
+        TestCase(stop_gradient, (3.0, 4.0); interface_only=true),
 
         # Rules to avoid pointer type conversions.
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(
             +,
             CoDual(
                 bitcast(Ptr{Float64}, pointer_from_objref(_x)),
                 bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
             ),
-            2,
+            2;
+            interface_only=true,
+            perf_flag=:stability,
         ),
 
         # Lack of activity-analysis rules:
-        (false, :stability_and_allocs, nothing, Base.elsize, randn(5, 4)),
-        (false, :stability_and_allocs, nothing, Base.elsize, view(randn(5, 4), 1:2, 1:2)),
-        (false, :stability_and_allocs, nothing, Core.Compiler.sizeof_nothrow, Float64),
-        (false, :stability_and_allocs, nothing, Base.datatype_haspadding, Float64),
+        TestCase(Base.elsize, randn(5, 4); perf_flag=:stability_and_allocs),
+        TestCase(Base.elsize, view(randn(5, 4), 1:2, 1:2); perf_flag=:stability_and_allocs),
+        TestCase(Core.Compiler.sizeof_nothrow, Float64; perf_flag=:stability_and_allocs),
+        TestCase(Base.datatype_haspadding, Float64; perf_flag=:stability_and_allocs),
 
         # Performance-rules that would ideally be completely removed.
-        (false, :stability_and_allocs, nothing, in, 5.0, randn(4)),
-        (false, :stability_and_allocs, nothing, iszero, 5.0),
-        (false, :stability_and_allocs, nothing, isempty, randn(5)),
-        (false, :stability_and_allocs, nothing, isbitstype, Float64),
-        (false, :stability_and_allocs, nothing, sizeof, Float64),
-        (false, :stability_and_allocs, nothing, promote_type, Float64, Float64),
-        (false, :stability_and_allocs, nothing, LinearAlgebra.chkstride1, randn(3, 3)),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(in, 5.0, randn(4); perf_flag=:stability_and_allocs),
+        TestCase(iszero, 5.0; perf_flag=:stability_and_allocs),
+        TestCase(isempty, randn(5); perf_flag=:stability_and_allocs),
+        TestCase(isbitstype, Float64; perf_flag=:stability_and_allocs),
+        TestCase(sizeof, Float64; perf_flag=:stability_and_allocs),
+        TestCase(promote_type, Float64, Float64; perf_flag=:stability_and_allocs),
+        TestCase(LinearAlgebra.chkstride1, randn(3, 3); perf_flag=:stability_and_allocs),
+        TestCase(
             LinearAlgebra.chkstride1,
             randn(3, 3),
-            randn(2, 2),
+            randn(2, 2);
+            perf_flag=:stability_and_allocs,
         ),
-        (false, :allocs, nothing, Threads.nthreads),
-        (false, :none, nothing, Base.eltype, randn(1)),
-        (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}),
-        (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}, 1),
+        TestCase(Threads.nthreads; perf_flag=:allocs),
+        TestCase(Base.eltype, randn(1)),
+        TestCase(Base.padding, @NamedTuple{a::Float64}),
+        TestCase(Base.padding, @NamedTuple{a::Float64}, 1),
 
         # Literal replacement for setfield!.
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             lsetfield!,
             MutableFoo(5.0, [1.0, 2.0]),
             Val(:a),
-            4.0,
+            4.0;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             lsetfield!,
             FullyInitMutableStruct(5.0, [1.0, 2.0]),
             Val(:y),
-            [1.0, 3.0, 4.0],
+            [1.0, 3.0, 4.0];
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             lsetfield!,
             NonDifferentiableFoo(5, false),
             Val(:x),
-            4,
+            4;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             lsetfield!,
             NonDifferentiableFoo(5, false),
             Val(:y),
-            true,
+            true;
+            perf_flag=:stability_and_allocs,
         ),
         # Foo.x::Real requires converting the merged backing NamedTuple; abstract fields
         # legitimately box, so use :none rather than asserting stability/allocations.
-        (false, :none, nothing, lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
+        TestCase(lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
         # Positional access on a single-field Ref: setfield!(r, 1, v) === setfield!(r, :x, v), so the
         # lsetfield! frule must accept Val(1) as well as Val(:x).
-        (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
-        (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
-        (false, :stability, (; mode=ForwardMode), sort, Union{}[]),
+        TestCase(lsetfield!, Ref(5.0), Val(1), 4.0),
+        TestCase(lsetfield!, Ref(5.0), Val(:x), 4.0),
+        TestCase(sort, Union{}[]; mode=ForwardMode, perf_flag=:stability),
     ]
 
     for T in (Float16, Float32, Float64), f in (sort, sortperm)
         # Float16 needs small inputs for the finite-difference step grid.
         x = T === Float16 ? T[0.01, -0.01] : T[3, 1, 11, 2, 10, 4, 9, 5, 8, 6, 7]
-        push!(specific_test_cases, (false, :stability, nothing, f, x))
+        push!(specific_test_cases, TestCase(f, x; perf_flag=:stability))
     end
 
     # Some specific test cases for lgetfield to test the basics.
-    specific_lgetfield_test_cases = Any[
+    lgetfield_cases(args...; kw...) = TestCase[
+        TestCase(lgetfield, args..., order...; kw...) for order in ((), (Val(false),))
+    ]
+    specific_lgetfield_test_cases = [
 
         # Tuple
-        (false, :stability_and_allocs, nothing, lgetfield, (5.0, 4), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (5.0, 4), Val(2)),
-        (false, :stability_and_allocs, nothing, lgetfield, (1, 4), Val(2)),
-        (false, :stability_and_allocs, nothing, lgetfield, ((), 4), Val(2)),
-        (false, :stability_and_allocs, nothing, lgetfield, (randn(2),), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (randn(2), 5), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (randn(2), 5), Val(2)),
+        lgetfield_cases((5.0, 4), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((5.0, 4), Val(2); perf_flag=:stability_and_allocs),
+        lgetfield_cases((1, 4), Val(2); perf_flag=:stability_and_allocs),
+        lgetfield_cases(((), 4), Val(2); perf_flag=:stability_and_allocs),
+        lgetfield_cases((randn(2),), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((randn(2), 5), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((randn(2), 5), Val(2); perf_flag=:stability_and_allocs),
 
         # NamedTuple
-        (false, :stability_and_allocs, nothing, lgetfield, (a=5.0, b=4), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (a=5.0, b=4), Val(2)),
-        (false, :stability_and_allocs, nothing, lgetfield, (a=5.0, b=4), Val(:a)),
-        (false, :stability_and_allocs, nothing, lgetfield, (a=5.0, b=4), Val(:b)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2),), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2),), Val(:y)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2), x=5), Val(1)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2), x=5), Val(2)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2), x=5), Val(:y)),
-        (false, :stability_and_allocs, nothing, lgetfield, (y=randn(2), x=5), Val(:x)),
+        lgetfield_cases((a=5.0, b=4), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((a=5.0, b=4), Val(2); perf_flag=:stability_and_allocs),
+        lgetfield_cases((a=5.0, b=4), Val(:a); perf_flag=:stability_and_allocs),
+        lgetfield_cases((a=5.0, b=4), Val(:b); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2),), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2),), Val(:y); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2), x=5), Val(1); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2), x=5), Val(2); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2), x=5), Val(:y); perf_flag=:stability_and_allocs),
+        lgetfield_cases((y=randn(2), x=5), Val(:x); perf_flag=:stability_and_allocs),
 
         # structs
-        (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:start)),
-        (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:stop)),
+        lgetfield_cases(1:5, Val(:start); perf_flag=:stability_and_allocs),
+        lgetfield_cases(1:5, Val(:stop); perf_flag=:stability_and_allocs),
         # `getfield` primal is ~1–2 ns; rule overhead is ~100–500 ns. ub=750 gives margin.
-        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(:a)),
-        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(:a)),
-        (false, :none, (lb=1e-3, ub=200), lgetfield, StructFoo(5.0, randn(5)), Val(:b)),
-        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(1)),
-        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(1)),
-        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
+        lgetfield_cases(
+            StructFoo(5.0), Val(:a); interface_only=true, bench=(lb=1e-3, ub=750)
+        ),
+        lgetfield_cases(StructFoo(5.0, randn(5)), Val(:a); bench=(lb=1e-3, ub=750)),
+        lgetfield_cases(StructFoo(5.0, randn(5)), Val(:b); bench=(lb=1e-3, ub=200)),
+        lgetfield_cases(
+            StructFoo(5.0), Val(1); interface_only=true, bench=(lb=1e-3, ub=750)
+        ),
+        lgetfield_cases(StructFoo(5.0, randn(5)), Val(1); bench=(lb=1e-3, ub=750)),
+        lgetfield_cases(StructFoo(5.0, randn(5)), Val(2); bench=(lb=1e-3, ub=750)),
 
         # mutable structs
-        (true, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0), Val(:a)),
-        (false, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
-        (false, :none, nothing, lgetfield, UInt8, Val(:name)),
-        (false, :none, nothing, lgetfield, UInt8, Val(:super)),
-        (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
-        (false, :none, nothing, lgetfield, UInt8, Val(:hash)),
-        (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
+        lgetfield_cases(
+            MutableFoo(5.0), Val(:a); interface_only=true, bench=(lb=1e-3, ub=350)
+        ),
+        lgetfield_cases(MutableFoo(5.0, randn(5)), Val(:b); bench=(lb=1e-3, ub=350)),
+        lgetfield_cases(UInt8, Val(:name)),
+        lgetfield_cases(UInt8, Val(:super)),
+        lgetfield_cases(UInt8, Val(:layout); interface_only=true),
+        lgetfield_cases(UInt8, Val(:hash)),
+        lgetfield_cases(UInt8, Val(:flags)),
 
         # NDualRef reads by name and position, with both arities from the order loop.
-        (false, :none, nothing, lgetfield, Ref(5.0), Val(:x)),
-        (false, :none, nothing, lgetfield, Ref(5.0), Val(1)),
+        lgetfield_cases(Ref(5.0), Val(:x)),
+        lgetfield_cases(Ref(5.0), Val(1)),
     ]
 
     # Create `lgetfield` tests for each type in TestTypes for broader coverage.
     general_lgetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         _, primal = TestTypes.instantiate((interface_only, P, args))
         names = fieldnames(P)[1:length(args)] # only query fields which get initialised
-        return Any[
-            (interface_only, :none, nothing, lgetfield, primal, Val(name)) for name in names
+        return TestCase[
+            TestCase(lgetfield, primal, Val(name), order...; interface_only) for
+            name in names for order in ((), (Val(false),))
         ]
     end
 
-    # lgetfield has both 3 and 4 argument forms. Create test cases for both scenarios.
-    all_lgetfield_test_cases = Any[
-        (case..., order...) for
-        case in vcat(specific_lgetfield_test_cases, general_lgetfield_test_cases...) for
-        order in Any[(), (Val(false),)]
-    ]
-
     # Create `lsetfield!` tests for each type in TestTypes for broader coverage.
     general_lsetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
-        ismutabletype(P) || return Any[]
+        ismutabletype(P) || return TestCase[]
         _, primal = TestTypes.instantiate((interface_only, P, args))
         names = fieldnames(P)[1:length(args)] # only query fields which get initialised
-        return Any[
-            (interface_only, :none, nothing, lsetfield!, primal, Val(name), args[n]) for
+        return TestCase[
+            TestCase(lsetfield!, primal, Val(name), args[n]; interface_only) for
             (n, name) in enumerate(names)
         ]
     end
 
     test_cases = vcat(
-        specific_test_cases, all_lgetfield_test_cases..., general_lsetfield_test_cases...
+        specific_test_cases,
+        specific_lgetfield_test_cases...,
+        general_lgetfield_test_cases...,
+        general_lsetfield_test_cases...,
     )
     @static if VERSION >= v"1.11-"
         sv = Base.ScopedValues.ScopedValue(2.0)
@@ -767,12 +762,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         write_opts = (throws=(UnhandledLanguageFeatureException, "Writing a ScopedValue"),)
         append!(
             test_cases,
-            Any[
-                (false, :none, read_opts, Base.ScopedValues.get, sv),
-                (false, :none, read_opts, isassigned, sv),
-                (false, :none, write_opts, Scope, nothing, sv => 1.5),
-                (false, :none, write_opts, Scope, nothing, sv => 1.5, sv => 3.0),
-                (false, :none, write_opts, Scope, nothing, sv, 1.5),
+            TestCase[
+                TestCase(Base.ScopedValues.get, sv; read_opts...),
+                TestCase(isassigned, sv; read_opts...),
+                TestCase(Scope, nothing, sv => 1.5; write_opts...),
+                TestCase(Scope, nothing, sv => 1.5, sv => 3.0; write_opts...),
+                TestCase(Scope, nothing, sv, 1.5; write_opts...),
             ],
         )
     end
@@ -780,22 +775,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:misc})
-    test_cases = Any[
-        (false, :none, nothing, x -> copy(Dict("A" => x[1], "B" => x[2]))["A"], (5.0, 5.0)),
-        (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
-        (false, :none, nothing, () -> copy(Set())),
+    test_cases = TestCase[
+        TestCase((x -> copy(Dict("A" => x[1], "B" => x[2]))["A"]), (5.0, 5.0)),
+        TestCase(copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
+        TestCase(() -> copy(Set())),
     ]
     @static if VERSION >= v"1.11-"
         sv = Base.ScopedValues.ScopedValue(2.0)
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                (throws=(UnhandledLanguageFeatureException, "Reading a ScopedValue"),),
+            TestCase(
                 (sv, x) -> x * sv[],
                 sv,
-                1.5,
+                1.5;
+                throws=(UnhandledLanguageFeatureException, "Reading a ScopedValue"),
             ),
         )
         for mode in (ForwardMode, ReverseMode)
@@ -807,22 +800,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:misc})
             opts = (mode=mode, throws=(err, "Writing a ScopedValue"))
             append!(
                 test_cases,
-                Any[
-                    (
-                        false,
-                        :none,
-                        opts,
+                TestCase[
+                    TestCase(
                         (sv, x) -> Base.ScopedValues.with(() -> x^2, sv => x),
                         sv,
-                        1.5,
+                        1.5;
+                        opts...,
                     ),
-                    (
-                        false,
-                        :none,
-                        opts,
-                        (sv, x) -> Base.ScopedValues.@with(sv => x, x^2),
-                        sv,
-                        1.5,
+                    TestCase(
+                        (sv, x) -> Base.ScopedValues.@with(sv => x, x^2), sv, 1.5; opts...
                     ),
                 ],
             )

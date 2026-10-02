@@ -657,100 +657,100 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     ptr_a, ptr_da = pointer(_a), pointer(_da)
     ptr_b, ptr_db = pointer(_b), pointer(_db)
 
-    test_cases = Any[
-        (false, :stability, nothing, Base.allocatedinline, Float64),
-        (false, :stability, nothing, Base.allocatedinline, Vector{Float64}),
-        (false, :stability, nothing, objectid, 5.0),
-        (true, :stability, nothing, objectid, randn(5)),
+    test_cases = TestCase[
+        TestCase(Base.allocatedinline, Float64; perf_flag=:stability),
+        TestCase(Base.allocatedinline, Vector{Float64}; perf_flag=:stability),
+        TestCase(objectid, 5.0; perf_flag=:stability),
+        TestCase(objectid, randn(5); interface_only=true, perf_flag=:stability),
         # Refused in forward mode: a read through the address is invisible to the optimiser,
         # which may elide the store into the primal `Ref`. Reverse keeps its ordinary test.
-        (
-            true,
-            :stability,
-            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+        TestCase(
             pointer_from_objref,
-            _x,
+            _x;
+            interface_only=true,
+            perf_flag=:stability,
+            throws=(ArgumentError, "invisible to the optimiser"),
+            mode=ForwardMode,
         ),
-        (true, :stability, (mode=ReverseMode,), pointer_from_objref, _x),
-        (
-            # _dx is a reverse tangent, not canonical forward V, so skip_forward is required.
-            true,
-            :none, # primal is unstable
-            (lb=1e-3, ub=250, skip_forward=true),
+        TestCase(
+            pointer_from_objref,
+            _x;
+            interface_only=true,
+            perf_flag=:stability,
+            mode=ReverseMode,
+        ),
+        TestCase(
+            # _dx is a reverse tangent, not canonical forward V, so mode=ReverseMode is
+            # required.
+            # primal is unstable
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x), VoidPtrTangent(pointer_from_objref(_dx), Nothing)
-            ),
+            );
+            interface_only=true,
+            mode=ReverseMode,
+            bench=(lb=1e-3, ub=250),
         ),
-        (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
-        (
-            false,
-            :none,
-            (lb=1e-3, ub=100.0),
-            Core.Compiler.return_type,
-            Tuple{typeof(sin),Float64},
+        TestCase(Core.Compiler.return_type, sin, Tuple{Float64}),
+        TestCase(
+            Core.Compiler.return_type, Tuple{typeof(sin),Float64}; bench=(lb=1e-3, ub=100.0)
         ),
-        (false, :stability, nothing, Threads.threadid),
-        (false, :stability, nothing, typeintersect, Float64, Int),
-        (
-            true,
-            :stability,
-            nothing,
+        TestCase(Threads.threadid; perf_flag=:stability),
+        TestCase(typeintersect, Float64, Int; perf_flag=:stability),
+        TestCase(
             unsafe_copyto!,
             CoDual(ptr_a, ptr_da),
             CoDual(ptr_b, ptr_db),
-            4,
+            4;
+            interface_only=true,
+            perf_flag=:stability,
         ),
-        (false, :stability, nothing, deepcopy, 5.0),
-        (false, :stability, nothing, deepcopy, randn(5)),
-        (false, :none, nothing, deepcopy, TestResources.MutableFoo(5.0, randn(5))),
-        (false, :none, nothing, deepcopy, TestResources.StructFoo(5.0, randn(5))),
-        (false, :stability, nothing, deepcopy, (5.0, randn(5))),
-        (false, :stability, nothing, deepcopy, (a=5.0, b=randn(5))),
-        (false, :none, nothing, fieldoffset, @NamedTuple{a::Float64, b::Int}, 1),
-        (false, :none, nothing, fieldoffset, @NamedTuple{a::Float64, b::Int}, 2),
-        (false, :none, nothing, UnionAll, TypeVar(:a), Real),
-        (false, :none, nothing, hash, "5", UInt(3)),
-        (false, :none, nothing, hash, Float64, UInt(5)),
-        (false, :none, nothing, hash, Float64),
+        TestCase(deepcopy, 5.0; perf_flag=:stability),
+        TestCase(deepcopy, randn(5); perf_flag=:stability),
+        TestCase(deepcopy, TestResources.MutableFoo(5.0, randn(5))),
+        TestCase(deepcopy, TestResources.StructFoo(5.0, randn(5))),
+        TestCase(deepcopy, (5.0, randn(5)); perf_flag=:stability),
+        TestCase(deepcopy, (a=5.0, b=randn(5)); perf_flag=:stability),
+        TestCase(fieldoffset, @NamedTuple{a::Float64, b::Int}, 1),
+        TestCase(fieldoffset, @NamedTuple{a::Float64, b::Int}, 2),
+        TestCase(UnionAll, TypeVar(:a), Real),
+        TestCase(hash, "5", UInt(3)),
+        TestCase(hash, Float64, UInt(5)),
+        TestCase(hash, Float64),
         # A threading foreigncall whose result is a non-differentiable `Cint`: its V must be
         # `NoDual`. The ABI mirrors the normalized call, which carries no call arguments.
         # Forward only: reverse refuses these outright, which the throwing case below pins.
-        (
-            false,
-            :none,
-            (skip_reverse=true,),
+        TestCase(
             _foreigncall_,
             Val(:jl_in_threaded_region),
             Val{Cint}(),
             (),
             Val{0}(),
-            Val{:ccall}(),
+            Val{:ccall}();
+            mode=ForwardMode,
         ),
     ]
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
+        TestCase(
             unsafe_copyto!,
             ptr_a,
             ptr_b,
-            2,
+            2;
+            mode=ReverseMode,
+            throws=(ArgumentError, "tangent is the placeholder"),
         ),
-        (
-            true,
-            :none,
-            (mode=ReverseMode,),
+        TestCase(
             unsafe_copyto!,
             zero_fcodual(ptr_a),
             zero_fcodual(ptr_b),
-            0,
+            0;
+            interface_only=true,
+            mode=ReverseMode,
         ),
     )
-    throwing_rows, throwing_memory = _foreigncall_throwing_rows()
-    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    throwing_cases, throwing_memory = _foreigncall_throwing_cases()
+    test_cases = vcat(TestCase[test_cases...], throwing_cases)
     memory = vcat(Any[_x, _dx, _a, _da, _b, _db], throwing_memory)
     return test_cases, memory
 end
@@ -777,87 +777,74 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     memory = Any[_x, _a, _da, _b, _db]
 
     test_cases = [
-        (false, :none, nothing, reshape, randn(5, 4), (4, 5)),
-        (false, :none, nothing, reshape, randn(5, 4), (2, 10)),
-        (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
-        (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
-        (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
-        (false, :none, (skip_chunked=true,), x -> unsafe_copyto_tester(x, x, 2), randn(5)),
-        (false, :none, nothing, function (::Val{p}, a) where {p}
+        TestCase(reshape, randn(5, 4), (4, 5)),
+        TestCase(reshape, randn(5, 4), (2, 10)),
+        TestCase(reshape, randn(5, 4), (10, 2)),
+        TestCase(reshape, randn(5, 4), (5, 4, 1)),
+        TestCase(reshape, randn(5, 4), (2, 10, 1)),
+        TestCase((x -> unsafe_copyto_tester(x, x, 2)), randn(5); skip_chunked=true),
+        TestCase(function (::Val{p}, a) where {p}
             unsafe_copyto!(p, p, 1)
             return a * a
         end, Val(ptr_a), 3.0),
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
-            x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x),
-            [2.0, 3.0, 4.0],
+        TestCase(
+            (x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x)),
+            [2.0, 3.0, 4.0];
+            mode=ReverseMode,
         ),
-        (
-            false,
-            :none,
-            (mode=ReverseMode,),
-            x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x),
-            [2.0, 3.0, 4.0],
+        TestCase(
+            (x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x)),
+            [2.0, 3.0, 4.0];
+            mode=ReverseMode,
         ),
         # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
         # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
         # `jl_reshape_array` foreigncall, which the frule must handle for complex element types too.
-        (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
+        TestCase(reshape, randn(ComplexF64, 5, 4), (4, 5)),
         # Reshape of an array of differentiable struct / tuple elements (Array{FloatPair},
         # Array{Tuple{Float64,Float64}}): forward mode must reshape primal and V in lockstep.
-        (
-            false,
-            :none,
-            nothing,
-            x -> (
-                v=[TestResources.FloatPair(x, 2x), TestResources.FloatPair(3x, 4x)];
-                r=reshape(v, 2, 1);
-                r[1, 1].a + r[2, 1].b
+        TestCase(
+            (
+                x -> (
+                    v=[TestResources.FloatPair(x, 2x), TestResources.FloatPair(3x, 4x)];
+                    r=reshape(v, 2, 1);
+                    r[1, 1].a + r[2, 1].b
+                )
             ),
             1.0,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            x -> (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2]),
-            1.0,
+        TestCase(
+            (x -> (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2])), 1.0
         ),
         # `skip_chunked`: these take a raw pointer to a float array, whose element-major partials
         # block stores each lane with stride N, so no dense per-lane buffer exists for a pointer to
         # address. The guard fires loudly at width > 1; the width-1 path is correct.
-        (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(3), 2),
-        (false, :none, (skip_chunked=true,), unsafe_self_copy_tester, randn(5), 3),
-        (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(6), 4),
-        (
+        TestCase(unsafe_copyto_tester, randn(5), randn(3), 2; skip_chunked=true),
+        TestCase(unsafe_self_copy_tester, randn(5), 3; skip_chunked=true),
+        TestCase(unsafe_copyto_tester, randn(5), randn(6), 4; skip_chunked=true),
+        TestCase(
             # Nested duals have no dense per-lane pointer buffer at width > 1. The guard
             # throws (missing frule on 1.10); width 1 remains supported.
-            false,
-            :none,
-            (skip_chunked=true,),
             unsafe_copyto_tester,
             [randn(3) for _ in 1:5],
             [randn(4) for _ in 1:6],
-            4,
+            4;
+            skip_chunked=true,
         ),
-        (
+        TestCase(
             # Abstract elements occupy reference slots; the pointer guard must not call
             # sizeof(Any), which throws instead of checking storage.
-            false,
-            :none,
-            (skip_chunked=true,),
             unsafe_copyto_tester,
             Any[randn(3) for _ in 1:5],
             Any[randn(4) for _ in 1:6],
-            4,
+            4;
+            skip_chunked=true,
         ),
         # Forward also refuses sound object round-trips: distinguishing raw byte reads
         # would require an objref tag outside the canonical NTuple{N,Ptr{T}} contract.
         # This conservative refusal is intentional until that representation changes.
         (
-            (false, :none, opts, f, _x) for f in (
+            TestCase(f, _x; opts...) for f in (
                 x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
                 # Writes through the recovered alias must reach the original partials storage.
                 x -> (
@@ -867,45 +854,33 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
                 ),
             ) for opts in (
                 (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
-                (lb=0.1, ub=150, mode=ReverseMode),
+                (bench=(lb=0.1, ub=150), mode=ReverseMode),
             )
         )...,
-        (false, :none, nothing, isassigned, randn(5), 4),
-        (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
-        (false, :none, nothing, x -> (Base._growbeg!(x, 2); x[1:2].=2.0), randn(5)),
-        (
-            false,
-            :none,
-            nothing,
-            (t, v) -> ccall(:jl_type_unionall, Any, (Any, Any), t, v),
-            TypeVar(:a),
-            Real,
+        TestCase(isassigned, randn(5), 4),
+        TestCase(copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
+        TestCase((x -> (Base._growbeg!(x, 2); x[1:2].=2.0)), randn(5)),
+        TestCase(
+            (t, v) -> ccall(:jl_type_unionall, Any, (Any, Any), t, v), TypeVar(:a), Real
         ),
-        (false, :none, nothing, Base.has_free_typevars, Float64),
-        (false, :none, nothing, Base.has_free_typevars, Vector{Float64}),
-        (
-            true,
-            :none,
-            nothing,
+        TestCase(Base.has_free_typevars, Float64),
+        TestCase(Base.has_free_typevars, Vector{Float64}),
+        TestCase(
             unsafe_copyto!,
             CoDual(ptr_a, ptr_da),
             CoDual(ptr_b, ptr_db),
-            4,
+            4;
+            interface_only=true,
         ),
-        (
-            true,
-            :none,
-            nothing,
+        TestCase(
             unsafe_copyto!,
             CoDual(ptr_a, ptr_da),
             CoDual(ptr_b, ptr_db),
-            4,
+            4;
+            interface_only=true,
         ),
-        (false, :none, nothing, Base.get_world_counter), # jl_get_world_counter
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(Base.get_world_counter), # jl_get_world_counter
+        TestCase(
             Base._methods_by_ftype, # jl_matching_methods
             Tuple{typeof(sin),Float64},
             -1,
@@ -928,20 +903,22 @@ mutable struct MismatchedLayout
     b::Float64
 end
 
-function _foreigncall_throwing_rows()
+function _foreigncall_throwing_cases()
     # pointer_from_objref of a value whose forward V is immutable but differentiable
     # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
     # emit NULL lanes that silently drop the derivative downstream.
-    cases = Any[(ArgumentError, pointer_from_objref, ([1.0],), (; mode=ForwardMode))]
+    cases = TestCase[TestCase(
+        pointer_from_objref, [1.0]; throws=ArgumentError, mode=ForwardMode
+    )]
     memory = Any[]
     # Tangent-object loads use primal offsets; a non-differentiable field shifts them.
     push!(
         cases,
-        (
-            (ArgumentError, "does not share that layout"),
+        TestCase(
             pointer_from_objref,
-            (MismatchedLayout(7, 3.0),),
-            (; mode=ReverseMode),
+            MismatchedLayout(7, 3.0);
+            throws=(ArgumentError, "does not share that layout"),
+            mode=ReverseMode,
         ),
     )
     # A ready-made slot expresses the uninit_* placeholder: recovering the primal's own
@@ -952,11 +929,11 @@ function _foreigncall_throwing_rows()
         p = Ptr{P}(pointer_from_objref(objref_target))
         push!(
             cases,
-            (
-                (ArgumentError, "the lane pointer is the primal's own address"),
+            TestCase(
                 Base.unsafe_pointer_to_objref,
-                (Lifted{typeof(p),1}(p, (p,)),),
-                (; mode=ForwardMode),
+                Lifted{typeof(p),1}(p, (p,));
+                throws=(ArgumentError, "the lane pointer is the primal's own address"),
+                mode=ForwardMode,
             ),
         )
     end
@@ -967,11 +944,12 @@ function _foreigncall_throwing_rows()
     end
     push!(
         cases,
-        (
-            (ArgumentError, "no tangent storage"),
+        TestCase(
             zero_payload_objref_load,
-            (Base.RefValue(ntuple(_ -> 0, Val(8))), 2.0),
-            (; mode=ReverseMode),
+            Base.RefValue(ntuple(_ -> 0, Val(8))),
+            2.0;
+            throws=(ArgumentError, "no tangent storage"),
+            mode=ReverseMode,
         ),
     )
     @static if VERSION >= v"1.11-rc4"
@@ -981,22 +959,27 @@ function _foreigncall_throwing_rows()
         push!(memory, nested)
         push!(
             cases,
-            (
-                ArgumentError,
+            TestCase(
                 lgetfield,
-                (getfield(nested, :ref), Val(:ptr_or_offset)),
-                (; mode=ForwardMode, chunk_size=2),
+                getfield(nested, :ref),
+                Val(:ptr_or_offset);
+                throws=ArgumentError,
+                mode=ForwardMode,
+                chunk_size=2,
             ),
         )
         # Dynamic Symbol names avoid rewriting to lgetfield; exercise both arities.
         for extra in ((), (false,))
             push!(
                 cases,
-                (
-                    ArgumentError,
+                TestCase(
                     getfield,
-                    (getfield(nested, :ref), :ptr_or_offset, extra...),
-                    (; mode=ForwardMode, chunk_size=2),
+                    getfield(nested, :ref),
+                    :ptr_or_offset,
+                    extra...;
+                    throws=ArgumentError,
+                    mode=ForwardMode,
+                    chunk_size=2,
                 ),
             )
         end
@@ -1004,7 +987,10 @@ function _foreigncall_throwing_rows()
         # Julia 1.10 has no `MemoryRef`; the same guard sits on the legacy-array raw pointer
         # (`jl_array_ptr`), and must fail loudly at width > 1 for the same reason.
         push!(
-            cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
+            cases,
+            TestCase(
+                pointer, randn(2); throws=ArgumentError, mode=ForwardMode, chunk_size=2
+            ),
         )
     end
     copy_bytes = zeros(UInt8, 24)
@@ -1013,21 +999,23 @@ function _foreigncall_throwing_rows()
     # re-typed off a non-differentiable buffer, which the `bitcast` rrule refuses on every version.
     push!(
         cases,
-        (
-            (ArgumentError, "no tangent storage"),
+        TestCase(
             unsafe_copyto_retyped_bytes,
-            (randn(3), copy_bytes),
-            (; mode=ReverseMode),
+            randn(3),
+            copy_bytes;
+            throws=(ArgumentError, "no tangent storage"),
+            mode=ReverseMode,
         ),
     )
     # Mixed V: real destination partials but NoDual source, on every Julia version.
     push!(
         cases,
-        (
-            (ArgumentError, "forward representation is `NoDual`"),
+        TestCase(
             unsafe_copyto_retyped_bytes,
-            (randn(3), copy_bytes),
-            (; mode=ForwardMode),
+            randn(3),
+            copy_bytes;
+            throws=(ArgumentError, "forward representation is `NoDual`"),
+            mode=ForwardMode,
         ),
     )
     # Ready-made slots express a coherent destination and an uninit_* source placeholder
@@ -1036,25 +1024,27 @@ function _foreigncall_throwing_rows()
     append!(memory, (cp_dest, cp_dest_t, cp_src))
     push!(
         cases,
-        (
-            (ArgumentError, "forward representation is `NoDual`"),
+        TestCase(
             unsafe_copyto!,
-            (
-                Lifted{Ptr{Float64},1}(pointer(cp_dest), (pointer(cp_dest_t),)),
-                Lifted{Ptr{Float64},1}(pointer(cp_src), (pointer(cp_src),)),
-                3,
-            ),
-            (; mode=ForwardMode),
+            Lifted{Ptr{Float64},1}(pointer(cp_dest), (pointer(cp_dest_t),)),
+            Lifted{Ptr{Float64},1}(pointer(cp_src), (pointer(cp_src),)),
+            3;
+            throws=(ArgumentError, "forward representation is `NoDual`"),
+            mode=ForwardMode,
         ),
     )
     # Reverse refuses threading rather than returning an incorrect gradient.
     push!(
         cases,
-        (
-            (ErrorException, "Differentiating through threading is not safe"),
+        TestCase(
             _foreigncall_,
-            (Val(:jl_in_threaded_region), Val{Cint}(), (), Val{0}(), Val{:ccall}()),
-            (; mode=ReverseMode),
+            Val(:jl_in_threaded_region),
+            Val{Cint}(),
+            (),
+            Val{0}(),
+            Val{:ccall}();
+            throws=(ErrorException, "Differentiating through threading is not safe"),
+            mode=ReverseMode,
         ),
     )
     for name in [
@@ -1083,11 +1073,10 @@ function _foreigncall_throwing_rows()
     ]
         push!(
             cases,
-            (
-                (ErrorException, "AD has hit a :($name) ccall"),
+            TestCase(
                 _foreigncall_,
-                (Val(name),),
-                (;),
+                Val(name);
+                throws=(ErrorException, "AD has hit a :($name) ccall"),
             ),
         )
     end

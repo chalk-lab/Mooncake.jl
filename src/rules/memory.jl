@@ -1343,107 +1343,111 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         @static(
             if VERSION >= v"1.12-"
                 [
-                    (true, :stability, nothing, Core.memorynew, Memory{Float64}, 5),
-                    (true, :stability, nothing, Core.memorynew, Memory{Float64}, 10),
-                    (true, :stability, nothing, Core.memorynew, Memory{Int}, 5),
+                    TestCase(
+                        Core.memorynew,
+                        Memory{Float64},
+                        5;
+                        interface_only=true,
+                        perf_flag=:stability,
+                    ),
+                    TestCase(
+                        Core.memorynew,
+                        Memory{Float64},
+                        10;
+                        interface_only=true,
+                        perf_flag=:stability,
+                    ),
+                    TestCase(
+                        Core.memorynew,
+                        Memory{Int},
+                        5;
+                        interface_only=true,
+                        perf_flag=:stability,
+                    ),
                 ]
             else
-                []
+                TestCase[]
             end
         ),
 
         # Rules for `Memory`
-        (true, :stability, nothing, Memory{Float64}, undef, 5),
-        (true, :stability, nothing, Memory{Union{}}, undef, 0),
-        (true, :stability, nothing, Memory{Memory{Float64}}, undef, 5),
+        TestCase(Memory{Float64}, undef, 5; interface_only=true, perf_flag=:stability),
+        TestCase(Memory{Union{}}, undef, 0; interface_only=true, perf_flag=:stability),
+        TestCase(
+            Memory{Memory{Float64}}, undef, 5; interface_only=true, perf_flag=:stability
+        ),
         # Non-scalar isbits element: exercises the generic `Memory{P}(undef, n)` constructor rule
         # for a struct/tuple eltype (the `bitstype` branch of `_dot_internal`).
-        (true, :stability, nothing, Memory{Tuple{Float64,Int}}, undef, 4),
-        [(false, :stability_and_allocs, nothing, lgetfield, m, Val(:length)) for m in mems],
-        [(false, :stability_and_allocs, nothing, lgetfield, m, Val(1)) for m in mems],
-        [(false, :none, nothing, getfield, m, :length) for m in mems],
-        [(false, :none, nothing, getfield, m, 1) for m in mems],
+        TestCase(
+            Memory{Tuple{Float64,Int}}, undef, 4; interface_only=true, perf_flag=:stability
+        ),
+        [
+            TestCase(lgetfield, m, Val(:length); perf_flag=:stability_and_allocs) for
+            m in mems
+        ],
+        [TestCase(lgetfield, m, Val(1); perf_flag=:stability_and_allocs) for m in mems],
+        [TestCase(getfield, m, :length) for m in mems],
+        [TestCase(getfield, m, 1) for m in mems],
 
         # Rules for `MemoryRef`
         [
-            (false, :none, nothing, memoryref_isassigned, mem_ref, :not_atomic, bc) for
-            mem_ref in mem_refs for bc in [false, true]
+            TestCase(memoryref_isassigned, mem_ref, :not_atomic, bc) for mem_ref in
+                                                                         mem_refs for
+            bc in [false, true]
         ],
         [
-            (false, :none, nothing, memoryrefget, mem_ref, :not_atomic, bc) for
+            TestCase(memoryrefget, mem_ref, :not_atomic, bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [false, true]
         ],
         [
-            (false, :none, nothing, lmemoryrefget, mem_ref, Val(:not_atomic), bc) for
+            TestCase(lmemoryrefget, mem_ref, Val(:not_atomic), bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [Val(false), Val(true)]
         ],
-        [(false, :none, nothing, memoryrefnew, mem) for mem in mems],
+        [TestCase(memoryrefnew, mem) for mem in mems],
         [
-            (false, :none, nothing, memoryrefnew, mem, 1) for
+            TestCase(memoryrefnew, mem, 1) for
             mem in filter(x -> length(x.mem) > Core.memoryrefoffset(x), mem_refs)
         ],
         [
-            (false, :none, nothing, memoryrefnew, mem, 1, bc) for
+            TestCase(memoryrefnew, mem, 1, bc) for
             mem in filter(x -> length(x.mem) > Core.memoryrefoffset(x), mem_refs) for
             bc in [false, true]
         ],
         if VERSION >= v"1.13-"
             [
-                (false, :none, nothing, memoryrefnew, mem, length(mem), bc...) for
+                TestCase(memoryrefnew, mem, length(mem), bc...) for
                 mem in filter(!isempty, mems) for bc in ((), (false,), (true,))
             ]
         else
-            []
+            TestCase[]
         end,
-        [(false, :none, nothing, memoryrefoffset, mem_ref) for mem_ref in mem_refs],
+        [TestCase(memoryrefoffset, mem_ref) for mem_ref in mem_refs],
         [
-            (
-                false,
-                :none,
-                nothing,
-                lmemoryrefset!,
-                mem_ref,
-                sample_value,
-                Val(:not_atomic),
-                bc,
-            ) for (mem_ref, sample_value) in assignable_refs for
-            bc in [Val(false), Val(true)]
+            TestCase(lmemoryrefset!, mem_ref, sample_value, Val(:not_atomic), bc) for
+            (mem_ref, sample_value) in assignable_refs for bc in [Val(false), Val(true)]
         ],
         [
-            (false, :none, nothing, memoryrefset!, mem_ref, sample_value, :not_atomic, bc)
-            for (mem_ref, sample_value) in assignable_refs for bc in [false, true]
+            TestCase(memoryrefset!, mem_ref, sample_value, :not_atomic, bc) for
+            (mem_ref, sample_value) in assignable_refs for bc in [false, true]
         ],
-        (
-            false,
-            :stability,
-            nothing,
-            unsafe_copyto!,
-            randn(rng, 10).ref,
-            randn(rng, 8).ref,
-            5,
+        TestCase(
+            unsafe_copyto!, randn(rng, 10).ref, randn(rng, 8).ref, 5; perf_flag=:stability
         ),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(
             unsafe_copyto!,
             memoryref(randn(rng, 10).ref, 2),
             memoryref(randn(rng, 8).ref, 3),
-            4,
+            4;
+            perf_flag=:stability,
         ),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(
             unsafe_copyto!,
             [randn(rng, 10), randn(rng, 5)].ref,
             [randn(rng, 10), randn(rng, 3)].ref,
-            2,
+            2;
+            perf_flag=:stability,
         ),
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             unsafe_copyto!,
             memoryref(fill!(Memory{Any}(undef, 3), 4.0), 1),
             memoryref(Memory{Any}(undef, 2)),
@@ -1451,83 +1455,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         ),
 
         # Rules for `Array`
-        (false, :stability, nothing, _new_, Vector{Float64}, randn(rng, 10).ref, (10,)),
-        (
-            false,
-            :stability,
-            nothing,
+        TestCase(_new_, Vector{Float64}, randn(rng, 10).ref, (10,); perf_flag=:stability),
+        TestCase(
             _new_,
             Vector{Vector{Float64}},
             [randn(rng, 10), randn(rng, 5)].ref,
-            (2,),
+            (2,);
+            perf_flag=:stability,
         ),
-        (false, :none, nothing, _new_, Vector{Any}, [1, randn(rng, 5)].ref, (2,)),
-        (false, :stability, nothing, _new_, Matrix{Float64}, randn(rng, 12).ref, (4, 3)),
-        (
-            false,
-            :stability,
-            nothing,
-            _new_,
-            Array{Float64,3},
-            randn(rng, 12).ref,
-            (4, 1, 3),
+        TestCase(_new_, Vector{Any}, [1, randn(rng, 5)].ref, (2,)),
+        TestCase(_new_, Matrix{Float64}, randn(rng, 12).ref, (4, 3); perf_flag=:stability),
+        TestCase(
+            _new_, Array{Float64,3}, randn(rng, 12).ref, (4, 1, 3); perf_flag=:stability
         ),
         [
-            (false, :stability, nothing, lgetfield, randn(rng, 10), f) for
+            TestCase(lgetfield, randn(rng, 10), f; perf_flag=:stability) for
             f in [Val(:ref), Val(:size), Val(1), Val(2)]
         ],
-        [(false, :none, nothing, getfield, randn(rng, 10), f) for f in [:ref, :size, 1, 2]],
+        [TestCase(getfield, randn(rng, 10), f) for f in [:ref, :size, 1, 2]],
         # Element-wise V parent (non-NDualEltype elements): the Symbol AND Int field forms
         # must both project through `_get_lifted_field(::Array, ...)`.
-        [
-            (false, :none, nothing, getfield, [randn(rng, 2) for _ in 1:3], f) for
-            f in [:ref, :size, 1, 2]
-        ],
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        [TestCase(getfield, [randn(rng, 2) for _ in 1:3], f) for f in [:ref, :size, 1, 2]],
+        TestCase(
             lsetfield!,
             randn(rng, 10),
             Val(:ref),
-            randn(rng, 10).ref,
+            randn(rng, 10).ref;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             lsetfield!,
             randn(rng, 10),
             Val(1),
-            randn(rng, 10).ref,
+            randn(rng, 10).ref;
+            perf_flag=:stability_and_allocs,
         ),
         # Element-wise V must thread the tangent ref for integer field aliases too.
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             lsetfield!,
             [randn(rng, 2) for _ in 1:3],
             Val(1),
             [randn(rng, 2) for _ in 1:3].ref,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            lsetfield!,
-            randn(rng, 10),
-            Val(:size),
-            (10,),
+        TestCase(
+            lsetfield!, randn(rng, 10), Val(:size), (10,); perf_flag=:stability_and_allocs
         ),
-        (false, :stability_and_allocs, nothing, lsetfield!, randn(rng, 10), Val(2), (10,)),
-        (false, :none, nothing, setfield!, randn(rng, 10), :ref, randn(rng, 10).ref),
-        (false, :none, nothing, setfield!, randn(rng, 10), 1, randn(rng, 10).ref),
-        (false, :none, nothing, setfield!, randn(rng, 10), :size, (10,)),
-        (false, :none, nothing, setfield!, randn(rng, 10), 2, (10,)),
-        (false, :stability, nothing, copy, randn(10)),
-        (false, :stability, nothing, fill!, fill!(Memory{Int8}(undef, 5), 0), Int8(1)),
-        (false, :stability, nothing, fill!, fill!(Memory{UInt8}(undef, 5), 0), UInt8(1)),
+        TestCase(
+            lsetfield!, randn(rng, 10), Val(2), (10,); perf_flag=:stability_and_allocs
+        ),
+        TestCase(setfield!, randn(rng, 10), :ref, randn(rng, 10).ref),
+        TestCase(setfield!, randn(rng, 10), 1, randn(rng, 10).ref),
+        TestCase(setfield!, randn(rng, 10), :size, (10,)),
+        TestCase(setfield!, randn(rng, 10), 2, (10,)),
+        TestCase(copy, randn(10); perf_flag=:stability),
+        TestCase(fill!, fill!(Memory{Int8}(undef, 5), 0), Int8(1); perf_flag=:stability),
+        TestCase(fill!, fill!(Memory{UInt8}(undef, 5), 0), UInt8(1); perf_flag=:stability),
     )
     memory = Any[]
     return test_cases, memory
@@ -1536,89 +1518,61 @@ end
 function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
-    test_cases = Any[
-        (
-            false,
-            :none,
-            (
-                mode=ForwardMode,
-                chunk_size=8,
-                throws=(ArgumentError, "lifted element-wise storage"),
-            ),
+    test_cases = TestCase[
+        TestCase(
             pointer,
-            Union{}[],
+            Union{}[];
+            mode=ForwardMode,
+            chunk_size=8,
+            throws=(ArgumentError, "lifted element-wise storage"),
         ),
-        (
-            false,
-            :none,
-            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
-            x -> unsafe_load(Ptr{Float64}(pointer(x, 9))),
-            zeros(UInt8, 16),
+        TestCase(
+            (x -> unsafe_load(Ptr{Float64}(pointer(x, 9)))),
+            zeros(UInt8, 16);
+            mode=ReverseMode,
+            throws=(ArgumentError, "tangent pointer is NULL"),
         ),
-        (true, :none, nothing, Array{Float64,0}, undef),
-        (true, :none, nothing, Array{Float64,1}, undef, 5),
-        (true, :none, nothing, Array{Float64,2}, undef, 5, 4),
-        (true, :none, nothing, Array{Float64,3}, undef, 5, 4, 3),
-        (true, :none, nothing, Array{Float64,4}, undef, 5, 4, 3, 2),
-        (true, :none, nothing, Array{Float64,5}, undef, 5, 4, 3, 2, 1),
-        (true, :none, nothing, Array{Float64,0}, undef, ()),
-        (true, :none, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
-        (true, :none, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
-        (false, :none, nothing, copy, Memory{Float64}(randn(5))),
-        (false, :none, nothing, copy, Memory{Any}([randn(5), 5.0])),
-        (false, :none, nothing, copy, randn(5, 4)),
-        (false, :none, nothing, Base._deletebeg!, randn(5), 0),
-        (false, :none, nothing, Base._deletebeg!, randn(5), 2),
-        (false, :none, nothing, Base._deletebeg!, randn(5), 5),
-        (false, :none, nothing, Base._deleteend!, randn(5), 2),
-        (false, :none, nothing, Base._deleteend!, randn(5), 5),
-        (false, :none, nothing, Base._deleteend!, randn(5), 0),
-        (false, :none, nothing, Base._deleteat!, randn(5), 2, 2),
-        (false, :none, nothing, Base._deleteat!, randn(5), 1, 5),
-        (false, :none, nothing, Base._deleteat!, randn(5), 5, 1),
-        (false, :none, nothing, fill!, rand(Int8, 5), Int8(2)),
-        (false, :none, nothing, fill!, rand(UInt8, 5), UInt8(2)),
-        (false, :none, nothing, fill!, Memory{Int8}(rand(Int8, 5)), Int8(3)),
-        (false, :none, nothing, fill!, Memory{UInt8}(rand(UInt8, 5)), UInt8(5)),
-        (true, :none, nothing, Base._growbeg!, randn(5), 3),
-        (true, :none, nothing, Base._growend!, randn(5), 3),
-        (true, :none, nothing, Base._growat!, randn(5), 2, 2),
-        (false, :none, nothing, sizehint!, randn(5), 10),
+        TestCase(Array{Float64,0}, undef; interface_only=true),
+        TestCase(Array{Float64,1}, undef, 5; interface_only=true),
+        TestCase(Array{Float64,2}, undef, 5, 4; interface_only=true),
+        TestCase(Array{Float64,3}, undef, 5, 4, 3; interface_only=true),
+        TestCase(Array{Float64,4}, undef, 5, 4, 3, 2; interface_only=true),
+        TestCase(Array{Float64,5}, undef, 5, 4, 3, 2, 1; interface_only=true),
+        TestCase(Array{Float64,0}, undef, (); interface_only=true),
+        TestCase(Array{Float64,4}, undef, (2, 3, 4, 5); interface_only=true),
+        TestCase(Array{Float64,5}, undef, (2, 3, 4, 5, 6); interface_only=true),
+        TestCase(copy, Memory{Float64}(randn(5))),
+        TestCase(copy, Memory{Any}([randn(5), 5.0])),
+        TestCase(copy, randn(5, 4)),
+        TestCase(Base._deletebeg!, randn(5), 0),
+        TestCase(Base._deletebeg!, randn(5), 2),
+        TestCase(Base._deletebeg!, randn(5), 5),
+        TestCase(Base._deleteend!, randn(5), 2),
+        TestCase(Base._deleteend!, randn(5), 5),
+        TestCase(Base._deleteend!, randn(5), 0),
+        TestCase(Base._deleteat!, randn(5), 2, 2),
+        TestCase(Base._deleteat!, randn(5), 1, 5),
+        TestCase(Base._deleteat!, randn(5), 5, 1),
+        TestCase(fill!, rand(Int8, 5), Int8(2)),
+        TestCase(fill!, rand(UInt8, 5), UInt8(2)),
+        TestCase(fill!, Memory{Int8}(rand(Int8, 5)), Int8(3)),
+        TestCase(fill!, Memory{UInt8}(rand(UInt8, 5)), UInt8(5)),
+        TestCase(Base._growbeg!, randn(5), 3; interface_only=true),
+        TestCase(Base._growend!, randn(5), 3; interface_only=true),
+        TestCase(Base._growat!, randn(5), 2, 2; interface_only=true),
+        TestCase(sizehint!, randn(5), 10),
         # Complex MemoryRef V must be NDualMemoryRef during array growth; reverse is the oracle.
-        (
-            false,
-            :none,
-            nothing,
-            x -> (v=ComplexF64[]; push!(v, x); push!(v, 2x); sum(abs2, v)),
+        TestCase(
+            (x -> (v=ComplexF64[]; push!(v, x); push!(v, 2x); sum(abs2, v))),
             ComplexF64(1.0, 2.0),
         ),
-        (false, :none, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
-        (
-            false,
-            :none,
-            nothing,
-            unsafe_copyto!,
-            [rand(3) for _ in 1:5],
-            2,
-            [rand(4) for _ in 1:4],
-            1,
-            3,
-        ),
-        (
-            false,
-            :none,
-            nothing,
-            unsafe_copyto!,
-            Vector{Any}(undef, 5),
-            2,
-            Any[rand() for _ in 1:4],
-            1,
-            3,
-        ),
-        (false, :none, nothing, x -> unsafe_copyto!(memoryref(x, 1), memoryref(x), 3), x),
-        (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x), 3), x),
-        (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3), x),
-        (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
+        TestCase(unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
+        TestCase(unsafe_copyto!, [rand(3) for _ in 1:5], 2, [rand(4) for _ in 1:4], 1, 3),
+        TestCase(unsafe_copyto!, Vector{Any}(undef, 5), 2, Any[rand() for _ in 1:4], 1, 3),
+        TestCase((x -> unsafe_copyto!(memoryref(x, 1), memoryref(x), 3)), x),
+        TestCase((x -> unsafe_copyto!(memoryref(x), memoryref(x), 3)), x),
+        TestCase((x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3)), x),
+        TestCase((x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3)), x),
     ]
     # A `memoryref` reaching past the partials block must refuse rather than read slack.
     slack_v = Float64[]
@@ -1628,12 +1582,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     end
     push!(
         test_cases,
-        (
-            false,
-            :none,
-            (throws=(ArgumentError, "past the 3 partials columns"), mode=ForwardMode),
+        TestCase(
             memoryref_into_capacity_slack,
-            slack_v,
+            slack_v;
+            throws=(ArgumentError, "past the 3 partials columns"),
+            mode=ForwardMode,
         ),
     )
     for (perf, f) in (
@@ -1642,7 +1595,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (:none, memoryref_mem_projected_then_realloc),
         (:allocs, memoryref_mem_sum),
     )
-        push!(test_cases, (false, perf, (mode=ForwardMode,), f, collect(1.0:4.0)))
+        push!(test_cases, TestCase(f, collect(1.0:4.0); perf_flag=perf, mode=ForwardMode))
     end
     memory = Any[slack_v]
     return test_cases, memory

@@ -381,70 +381,50 @@ function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
-    test_cases = Any[
-        (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
-        (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
-        (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
+    test_cases = TestCase[
+        TestCase(Base.rehash!, IdDict(true => 5.0, false => 4.0), 10; perf_flag=:stability),
+        TestCase(setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
+        TestCase(setindex!, IdDict(true => 5.0), 3.0, false),
         # type-mismatched stores (typeof(val) ≠ V): non-diff/diff slots, mutable & abstract
         # values (aliasing), and a floating-point width change (fpext/fptrunc).
-        (false, :none, nothing, setindex!, IdDict(:a => 1.0), 2, :b),
+        TestCase(setindex!, IdDict(:a => 1.0), 2, :b),
         # interface_only: the finite-difference perturbation would break `convert(Int, ...)`.
-        (true, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
-        (
-            false,
-            :none,
-            nothing,
-            setindex!,
-            IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
-            [3.0, 4.0],
-            :b,
+        TestCase(setindex!, IdDict(:a => 1), 3.0, :b; interface_only=true),
+        TestCase(
+            setindex!, IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]), [3.0, 4.0], :b
         ),
-        (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
-        (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
-        (false, :none, nothing, setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
+        TestCase(setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
+        TestCase(setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
+        TestCase(setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
         # the same width change for an array, where the gradient rides fdata, not rdata
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             setindex!,
             IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
             Float32[3.0, 4.0],
             :b,
         ),
-        (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
-        (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
+        TestCase(get, IdDict(true => 5.0, false => 4.0), false, 2.0),
+        TestCase(get, IdDict(true => 5.0), false, 2.0),
         # Absent key with a default whose type differs from the dict value type V:
         # the frule must return the `default` slot, not force `Lifted{V}` (regression).
-        (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0f0),
+        TestCase(get, IdDict(true => 5.0), false, 2.0f0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.
-        (
-            false,
-            :none,
-            nothing,
-            get,
-            IdDict{Symbol,Vector{Float64}}(:a => [1.0]),
-            :b,
-            [2.0, 3.0],
-        ),
+        TestCase(get, IdDict{Symbol,Vector{Float64}}(:a => [1.0]), :b, [2.0, 3.0]),
         # interface_only: the non-differentiable default carries no derivative.
-        (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
-        (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
+        TestCase(get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2; interface_only=true),
+        TestCase(getindex, IdDict(true => 5.0, false => 4.0), true),
         # Abstract V must still return a concretely typed slot.
-        (false, :none, nothing, getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
-        (false, :none, nothing, get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
+        TestCase(getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
+        TestCase(get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
         # Mutable structs exercise recursive lane materialisation, unlike leaf values.
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             getindex,
             IdDict{Symbol,TestResources.TypeStableMutableStruct{Float64}}(
                 :a => TestResources.TypeStableMutableStruct{Float64}(5.0, 4.0)
             ),
             :a,
         ),
-        (false, :none, nothing, IdDict{Any,Any}),
+        TestCase(IdDict{Any,Any}),
     ]
     memory = Any[]
     return test_cases, memory
@@ -459,8 +439,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:iddict})
         d[1][1] += 1.0
         return sum(d[1])
     end
-    test_cases = Any[(
-        false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]
-    )]
+    test_cases = TestCase[TestCase(converting_store_then_mutate, Float32[3.0, 4.0])]
     return test_cases, Any[]
 end

@@ -149,95 +149,86 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
     _x = Ref(5.0)
     _dx = Ref(4.0)
     test_cases = vcat(
-        Any[
+        TestCase[
             # Rules to avoid pointer type conversions.
-            (
-                true,
-                :stability_and_allocs,
-                nothing,
+            TestCase(
                 +,
                 CoDual(
                     bitcast(Ptr{Float64}, pointer_from_objref(_x)),
                     bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
                 ),
-                2,
+                2;
+                interface_only=true,
+                perf_flag=:stability_and_allocs,
             ),
 
             # Rules for handling Atomic read operations.
-            (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
-            (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),
-            (false, :stability_and_allocs, nothing, getindex, Atomic{Int16}(rand(1:100))),
+            TestCase(getindex, Atomic{Int64}(rand(1:100)); perf_flag=:stability_and_allocs),
+            TestCase(getindex, Atomic{Int32}(rand(1:100)); perf_flag=:stability_and_allocs),
+            TestCase(getindex, Atomic{Int16}(rand(1:100)); perf_flag=:stability_and_allocs),
         ],
 
         # Rules in order to avoid introducing determinism.
         reduce(
             vcat,
             map([Xoshiro(1), TaskLocalRNG()]) do rng
-                return Any[
-                    (true, :stability_and_allocs, nothing, randn, rng),
-                    (true, :stability, nothing, randn, rng, 2),
-                    (true, :stability, nothing, randn, rng, 3, 2),
+                return TestCase[
+                    TestCase(
+                        randn, rng; interface_only=true, perf_flag=:stability_and_allocs
+                    ),
+                    TestCase(randn, rng, 2; interface_only=true, perf_flag=:stability),
+                    TestCase(randn, rng, 3, 2; interface_only=true, perf_flag=:stability),
                 ]
             end,
         ),
 
         # Rules to make string-related functionality work properly.
-        (false, :stability, nothing, string, 'H'),
-        (false, :stability, nothing, Base.normpath, "/home/user/../folder/./file.txt"),
-        (
-            false,
-            :stability,
-            nothing,
-            Base._replace_init,
-            "hello world",
-            ("hello" => "hi",),
-            1,
+        TestCase(string, 'H'; perf_flag=:stability),
+        TestCase(Base.normpath, "/home/user/../folder/./file.txt"; perf_flag=:stability),
+        TestCase(
+            Base._replace_init, "hello world", ("hello" => "hi",), 1; perf_flag=:stability
         ),
 
         # non-kwargs sprint rule test
-        (false, :stability, nothing, sprint, show, "Testing sprint"),
+        TestCase(sprint, show, "Testing sprint"; perf_flag=:stability),
 
         # Rules to make Symbol-related functionality work properly.
-        (false, :stability_and_allocs, nothing, Symbol, "hello"),
-        (false, :stability_and_allocs, nothing, Symbol, UInt8[1, 2]),
+        TestCase(Symbol, "hello"; perf_flag=:stability_and_allocs),
+        TestCase(Symbol, UInt8[1, 2]; perf_flag=:stability_and_allocs),
 
         # Julia Base functions have type stability issues in version 1.12
-        (
-            false,
-            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
-            nothing,
+        TestCase(
             Float64,
             π,
-            RoundDown,
+            RoundDown;
+            perf_flag=VERSION >= v"1.12-" ? :none : :stability_and_allocs,
         ),
-        (
-            false,
-            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
-            nothing,
+        TestCase(
             Float64,
             π,
-            RoundUp,
+            RoundUp;
+            perf_flag=VERSION >= v"1.12-" ? :none : :stability_and_allocs,
         ),
-        (
-            true,
-            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
-            nothing,
+        TestCase(
             Float32,
             π,
-            RoundDown,
+            RoundDown;
+            interface_only=true,
+            perf_flag=VERSION >= v"1.12-" ? :none : :stability_and_allocs,
         ),
-        (
-            true,
-            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
-            nothing,
+        TestCase(
             Float32,
             π,
-            RoundUp,
+            RoundUp;
+            interface_only=true,
+            perf_flag=VERSION >= v"1.12-" ? :none : :stability_and_allocs,
         ),
 
         # F16 works fine even in 1.12
-        (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
-        (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+        TestCase(
+            Float16, π, RoundDown; interface_only=true, perf_flag=:stability_and_allocs
+        ),
+        TestCase(Float16, π, RoundUp; interface_only=true, perf_flag=:stability_and_allocs),
     )
     memory = Any[_x, _dx]
     return test_cases, memory
@@ -282,62 +273,48 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
     end
 
     test_cases = vcat(
-        Any[
-            (
-                false,
-                :none,
-                (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
-                x -> unsafe_load(Ptr{Float64}(pointer(x)) + 8),
-                zeros(UInt8, 16),
+        TestCase[
+            TestCase(
+                (x -> unsafe_load(Ptr{Float64}(pointer(x)) + 8)),
+                zeros(UInt8, 16);
+                mode=ReverseMode,
+                throws=(ArgumentError, "tangent pointer is NULL"),
             ),
             # Package loading internals: Module can't be deepcopied, so test via closures
             # that capture the module and take a differentiable Float64 arg instead.
-            (false, :none, nothing, (x) -> (Base.PkgId(Base); x), 1.0),
-            (
-                false,
-                :none,
-                nothing,
-                (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
-                1.0,
+            TestCase((x) -> (Base.PkgId(Base); x), 1.0),
+            TestCase(
+                (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x), 1.0
             ),
 
             # Matrix wrappers exercise utf8proc-backed char dispatch. A barrier keeps direct
             # predicate tests from constant-folding away before AD sees them.
             map(((X, Y) -> Symmetric(X) * Y, (X, Y) -> Hermitian(X) * Y)) do f
-                return (
-                    false,
-                    :none,
-                    nothing,
-                    f,
-                    randn(rng_ctor(123), 4, 4),
-                    randn(rng_ctor(124), 4, 3),
+                return TestCase(
+                    f, randn(rng_ctor(123), 4, 4), randn(rng_ctor(124), 4, 3)
                 )
             end...,
             map((
                 isuppercase, islowercase, isletter, isnumeric, ispunct, isprint
             )) do pred
-                return (
-                    false,
-                    :none,
-                    nothing,
-                    x -> (pred(Base.inferencebarrier('U')::Char) ? 2.0 : 3.0) * x,
-                    1.0,
+                return TestCase(
+                    (x -> (pred(Base.inferencebarrier('U')::Char) ? 2.0 : 3.0) * x), 1.0
                 )
             end...,
 
             # Tests for Base.CoreLogging, @show macros and string related functions.
-            (false, :none, nothing, (x) -> print(x), "Testing print"),
-            (false, :none, nothing, (x) -> println(x), "Testing println"),
-            (false, :none, nothing, (x) -> show(x), "Testing show"),
-            (false, :none, nothing, testloggingmacro1, rand(1:100)),
-            (false, :none, nothing, testloggingmacro2, rand(1:100)),
-            (false, :none, nothing, testloggingmacro3, rand(1:100)),
-            (false, :none, nothing, testloggingmacro4, rand(1:100)),
-            (false, :none, nothing, testloggingmacro5, rand(1:100)),
-            (false, :none, nothing, testloggingmacro6, rand(1:100)),
-            (false, :none, nothing, testloggingmacro7, rand(1:100)),
-            (false, :none, nothing, testloggingmacro8, rand(1:100)),
-            (false, :none, nothing, testloggingmacro9, rand(1:100)),
+            TestCase((x) -> print(x), "Testing print"),
+            TestCase((x) -> println(x), "Testing println"),
+            TestCase((x) -> show(x), "Testing show"),
+            TestCase(testloggingmacro1, rand(1:100)),
+            TestCase(testloggingmacro2, rand(1:100)),
+            TestCase(testloggingmacro3, rand(1:100)),
+            TestCase(testloggingmacro4, rand(1:100)),
+            TestCase(testloggingmacro5, rand(1:100)),
+            TestCase(testloggingmacro6, rand(1:100)),
+            TestCase(testloggingmacro7, rand(1:100)),
+            TestCase(testloggingmacro8, rand(1:100)),
+            TestCase(testloggingmacro9, rand(1:100)),
         ],
     )
     return test_cases, Any[]

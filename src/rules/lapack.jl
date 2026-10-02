@@ -1055,13 +1055,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         map_prod(Ps) do (P,)
             As = blas_matrices(rng, P, 5, 5)
             return map(As) do A
-                (false, :stability, nothing, getrf!, A)
+                TestCase(getrf!, A; perf_flag=:stability)
             end
         end...,
         map_prod(bools, complexPs) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
             return map(As) do A
-                (false, :stability, nothing, Core.kwcall, (; check), getrf!, A)
+                TestCase(Core.kwcall, (; check), getrf!, A; perf_flag=:stability)
             end
         end...,
 
@@ -1073,7 +1073,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             Bs = Nrhs == -1 ? blas_vectors(rng, P, N) : blas_matrices(rng, P, N, Nrhs)
             Bs = filter(B -> stride(B, 1) == 1, Bs)
             return map_prod(As, Bs) do (A, B)
-                (false, :none, nothing, trtrs!, ul, tA, diag, A, B)
+                TestCase(trtrs!, ul, tA, diag, A, B)
             end
         end...,
 
@@ -1083,7 +1083,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             Bs = Nrhs == -1 ? [randn(rng, P, N)] : blas_matrices(rng, P, N, Nrhs)
             return map_prod(As, Bs) do ((A, _), B)
                 ipiv = fill(N, N)
-                (false, :none, nothing, getrs!, trans, A, ipiv, B)
+                TestCase(getrs!, trans, A, ipiv, B)
             end
         end...,
 
@@ -1092,7 +1092,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             As = map(LAPACK.getrf!, invertible_blas_matrices(rng, P, N))
             return map(As) do (A, _)
                 ipiv = fill(N, N)
-                (false, :none, nothing, getri!, A, ipiv)
+                TestCase(getri!, A, ipiv)
             end
         end...,
 
@@ -1103,7 +1103,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 return A
             end
             return map_prod(['L', 'U'], As) do (uplo, A)
-                return (false, :stability, nothing, potrf!, uplo, A)
+                return TestCase(potrf!, uplo, A; perf_flag=:stability)
             end
         end...,
 
@@ -1114,7 +1114,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             Bs = Nrhs == -1 ? blas_vectors(rng, P, N) : blas_matrices(rng, P, N, Nrhs)
             return map_prod(['L', 'U'], Bs) do (uplo, B)
                 tmp = potrf!(uplo, copy(A))[1]
-                (false, :none, nothing, potrs!, uplo, tmp, copy(B))
+                TestCase(potrs!, uplo, tmp, copy(B))
             end
         end...,
 
@@ -1124,7 +1124,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 As = blas_matrices(rng, P, 5, 5)
                 Bs = blas_matrices(rng, P, 5, 5)
                 return map_prod(As, Bs) do (A, B)
-                    (false, :none, nothing, LAPACK.lacpy!, B, A, uplo)
+                    TestCase(LAPACK.lacpy!, B, A, uplo)
                 end
             end
         else
@@ -1146,9 +1146,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             # Float32 logdet/logabsdet pass full FD checks using the same accumulator.
             det_interface_only = P == Float32
             return vcat(
-                map(S -> (false, :none, nothing, logdet, S), Ss),
-                map(S -> (det_interface_only, :none, nothing, det, S), Ss),
-                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+                map(S -> TestCase(logdet, S), Ss),
+                map(S -> TestCase(det, S; interface_only=det_interface_only), Ss),
+                map(S -> TestCase(logabsdet, S), Ss),
             )
         end...,
 
@@ -1163,8 +1163,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             # Same Float32 FD limitations as positive-definite above — use interface_only.
             det_interface_only = P == Float32
             return vcat(
-                map(S -> (det_interface_only, :none, nothing, det, S), Ss),
-                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+                map(S -> TestCase(det, S; interface_only=det_interface_only), Ss),
+                map(S -> TestCase(logabsdet, S), Ss),
             )
         end...,
 
@@ -1179,8 +1179,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             # Float32 det keeps interface-only checks because finite differences cancel;
             # logabsdet still receives full Float32 correctness checks.
             return vcat(
-                map(S -> (P == Float32, :none, nothing, det, S), Ss),
-                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+                map(S -> TestCase(det, S; interface_only=P == Float32), Ss),
+                map(S -> TestCase(logabsdet, S), Ss),
             )
         end...,
 
@@ -1193,7 +1193,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             A = v * v'
             S = Symmetric(A, Symbol(uplo))
             return [
-                (true, :none, nothing, logabsdet, S), (P == Float32, :none, nothing, det, S)
+                TestCase(logabsdet, S; interface_only=true),
+                TestCase(det, S; interface_only=P == Float32),
             ]
         end...,
     )
@@ -1201,47 +1202,38 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     # through `value_and_gradient!!`, which refuses `getrf!`'s tuple return before any rule runs.
     tall = Float64[1 1 1; 1 2 1; 1 1 3; 1 1 1; 9 1 1]
     wide = collect(transpose(tall))
-    # `vcat` above types the opts slot from rows that all carry `nothing`, so a row with a
-    # `NamedTuple` there needs an `Any` element type rather than `push!`.
     test_cases = vcat(
-        Any[test_cases...],
-        Any[
-            (
-                false,
-                :none,
-                (throws=(DimensionMismatch, "matrix is not square"), mode=ForwardMode),
+        TestCase[test_cases...],
+        TestCase[
+            TestCase(
                 LAPACK.getrf!,
-                A,
+                A;
+                throws=(DimensionMismatch, "matrix is not square"),
+                mode=ForwardMode,
             ) for A in (tall, wide)
         ],
     )
     for P in complexPs, dims in ((3, 2), (2, 3)), kw in (false, true)
         f = kw ? A -> sum(first(getrf!(A; check=false))) : A -> sum(first(getrf!(A)))
         opts = (throws=(DimensionMismatch, "getrf! derivatives: matrix is not square"),)
-        push!(test_cases, (false, :none, opts, f, randn(rng, P, dims...)))
+        push!(test_cases, TestCase(f, randn(rng, P, dims...); opts...))
     end
     for P in complexPs
         append!(test_cases, _lapack_alias_test_cases(P))
     end
     @static if VERSION > v"1.11-"
         for P in complexPs
-            flags = (false, :none, (throws=(DimensionMismatch, nothing),))
+            flags = (; throws=(DimensionMismatch, nothing))
             for (uplo, dims) in (('u', (2, 1)), ('l', (1, 2)))
                 push!(
                     test_cases,
-                    (flags..., LAPACK.lacpy!, zeros(P, 1, 1), ones(P, dims), uplo),
+                    TestCase(LAPACK.lacpy!, zeros(P, 1, 1), ones(P, dims), uplo; flags...),
                 )
             end
             push!(
                 test_cases,
-                (
-                    false,
-                    :stability,
-                    nothing,
-                    LAPACK.lacpy!,
-                    zeros(P, 2, 2),
-                    P[1 2; 3 4],
-                    'u',
+                TestCase(
+                    LAPACK.lacpy!, zeros(P, 2, 2), P[1 2; 3 4], 'u'; perf_flag=:stability
                 ),
             )
         end
@@ -1259,7 +1251,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
         map_prod([false, true], complexPs) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
             return map(As) do A
-                (false, :none, nothing, getrf_wrapper!, A, check)
+                TestCase(getrf_wrapper!, A, check)
             end
         end...,
 
@@ -1267,7 +1259,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
         map([Float64, Float32]) do P
             As = positive_definite_blas_matrices(rng, P, 3)
             return map(As) do A
-                (false, :none, nothing, logdet, A)
+                TestCase(logdet, A)
             end
         end...,
 
@@ -1275,7 +1267,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
         map(complexPs) do P
             As = blas_matrices(rng, P, 3, 3)
             return map(As) do A
-                (false, :none, nothing, real ∘ logdet ∘ complex, A)
+                TestCase(real ∘ logdet ∘ complex, A)
             end
         end...,
     )
@@ -1285,24 +1277,27 @@ end
 
 function _lapack_alias_test_cases(P)
     A = P[2 1; 1 3]
-    flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
-    rows = Any[]
+    flags = (; throws=(ArgumentError, "overlapping input and output"))
+    test_cases = TestCase[]
     if P <: Real
         append!(
-            rows,
+            test_cases,
             [
-                (flags..., LAPACK.trtrs!, 'U', 'N', 'N', A, A),
-                (flags..., LAPACK.getrs!, 'N', A, [1, 2], A),
-                (flags..., LAPACK.potrs!, 'U', A, A),
+                TestCase(LAPACK.trtrs!, 'U', 'N', 'N', A, A; flags...),
+                TestCase(LAPACK.getrs!, 'N', A, [1, 2], A; flags...),
+                TestCase(LAPACK.potrs!, 'U', A, A; flags...),
             ],
         )
     end
     @static if VERSION > v"1.11-"
         for uplo in ('U', 'L', 'A')
-            push!(rows, (false, :stability, nothing, LAPACK.lacpy!, A, A, uplo))
+            push!(test_cases, TestCase(LAPACK.lacpy!, A, A, uplo; perf_flag=:stability))
         end
         B = P[1 2; 3 4; 5 6]
-        push!(rows, (flags..., LAPACK.lacpy!, view(B, 1:2, :), view(B, 2:3, :), 'A'))
+        push!(
+            test_cases,
+            TestCase(LAPACK.lacpy!, view(B, 1:2, :), view(B, 2:3, :), 'A'; flags...),
+        )
     end
-    return rows
+    return test_cases
 end

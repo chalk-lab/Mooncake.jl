@@ -87,23 +87,12 @@ end
         end
     end
 
-    test_cases = collect(enumerate(TestResources.generate_test_functions()))
-    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
-        @info "$n: $(_typeof(fx))"
-        TestUtils._case_skip_forward(opts) && continue
-        rng = Xoshiro(123546)
-        mode = ForwardMode
-        skip_chunked = TestUtils._case_skip_chunked(opts)
+    test_cases = TestResources.generate_test_functions()
+    # Interpreter cases fall back to exercising the transform.
+    for (tc, name) in zip(test_cases, TestUtils._test_case_names(test_cases))
+        @info name
         TestUtils.test_rule(
-            rng,
-            fx...;
-            perf_flag=pf,
-            interface_only=int_only,
-            is_primitive=false,
-            mode,
-            skip_chunked,
-            throws=TestUtils._case_throws(opts),
-            primal_throws=TestUtils._case_primal_throws(opts),
+            Xoshiro(123546), tc; mode=ForwardMode, fallbacks=(is_primitive=false,), name
         )
     end
 

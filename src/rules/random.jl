@@ -66,57 +66,51 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
 
         # Random number generator construction.
         # There are some undefined fields at construction, so we cannot run equality tests.
-        (true, :none, nothing, MersenneTwister, 123),
+        TestCase(MersenneTwister, 123; interface_only=true),
 
         # Random number generation.
         map_prod([rand, randn, randexp], all_rngs) do (f, rng)
-            (true, :stability_and_allocs, nothing, f, rng)
+            TestCase(f, rng; interface_only=true, perf_flag=:stability_and_allocs)
         end...,
         map_prod([Float64, Float32], [rand, randn, randexp], all_rngs) do (P, f, rng)
-            (true, :stability_and_allocs, nothing, f, rng, P)
+            TestCase(f, rng, P; interface_only=true, perf_flag=:stability_and_allocs)
         end...,
         map_prod([rand!, randn!, randexp!], rngs) do (f, rng)
-            (true, :stability, nothing, f, rng, randn(5))
+            TestCase(f, rng, randn(5); interface_only=true, perf_flag=:stability)
         end...,
     )
     return test_cases, Any[]
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:random})
-    test_cases = Any[
+    test_cases = TestCase[
 
         # Random number generation.
-        (false, :none, nothing, x -> x * rand(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * randn(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * randexp(Xoshiro(123)), 3.0),
-        (false, :none, nothing, x -> x * rand(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x * randn(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x * randexp(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x .* rand!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
+        TestCase((x -> x * rand(Xoshiro(123))), 3.0),
+        TestCase((x -> x * randn(Xoshiro(123))), 3.0),
+        TestCase((x -> x * randexp(Xoshiro(123))), 3.0),
+        TestCase((x -> x * rand(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x * randn(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x * randexp(Xoshiro(123), Float32)), 3.0),
+        TestCase((x -> x .* rand!(Xoshiro(123), x)), randn(9)),
+        TestCase((x -> x .* randn!(Xoshiro(123), x)), randn(9)),
+        TestCase((x -> x .* randexp!(Xoshiro(123), x)), randn(9)),
         # `skip_chunked`: `rand`'s array fill writes through a raw pointer, which the
         # element-major partials block cannot serve at width > 1. `randn`/`randexp` below take a
         # different path and pass, so they are left on.
-        (
-            false,
-            :none,
-            (skip_chunked=true,),
-            x -> x .* rand(Xoshiro(123), size(x)...),
-            randn(9),
-        ),
-        (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
-        (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
+        TestCase((x -> x .* rand(Xoshiro(123), size(x)...)), randn(9); skip_chunked=true),
+        TestCase((x -> x .* randn(Xoshiro(123), size(x)...)), randn(9)),
+        TestCase((x -> x .* randexp(Xoshiro(123), size(x)...)), randn(9)),
 
         # RNG construction.
-        (false, :none, nothing, x -> randn(MersenneTwister(x)), 123),
-        (false, :none, nothing, Xoshiro, 123),
-        (false, :none, nothing, x -> randn(Random.seed!(TaskLocalRNG(), x)), 123),
+        TestCase((x -> randn(MersenneTwister(x))), 123),
+        TestCase(Xoshiro, 123),
+        TestCase((x -> randn(Random.seed!(TaskLocalRNG(), x))), 123),
 
         # It is not possible to make the numbers produced by a `RandomDevice` be
         # deterministic, because it gets its randomness "from the device". As such, we cannot
         # test that the numbers coming out of this are consistent, just that it runs.
-        (true, :none, nothing, () -> randn(RandomDevice())),
+        TestCase(() -> randn(RandomDevice()); interface_only=true),
     ]
     return test_cases, Any[]
 end

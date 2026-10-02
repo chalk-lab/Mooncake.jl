@@ -143,15 +143,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     test_cases = if Base.get_extension(Mooncake, :MooncakeChainRulesExt) === nothing
-        Any[]
+        TestCase[]
     else
         vcat(
             map_prod([3, 7], Ps) do (N, P)
-                return (false, :none, nothing, exp, randn(rng, P, N, N))
+                return TestCase(exp, randn(rng, P, N, N))
             end,
         )
     end
-    test_cases = Any[test_cases...]
+    test_cases = TestCase[test_cases...]
     # Pinned struct seeds cannot be replicated by the chunked registry harness.
     for P in (Float64, ComplexF64), a in (1, 2, Inf), b in (0, 2), unary in (false, true)
         (a == 1 || (!unary && b == 0)) || continue
@@ -164,7 +164,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         end
         expected = P(unary ? 21 : 76)
         opts = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=expected,))
-        push!(test_cases, (false, :allocs, opts, CoDual(p, dp), args...))
+        push!(test_cases, TestCase(CoDual(p, dp), args...; perf_flag=:allocs, opts...))
     end
     memory = Any[]
     return test_cases, memory
@@ -175,14 +175,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     Ps = [Float64, Float32]
     test_cases = vcat(
         map_prod([3, 7], Ps) do (N, P)
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., inv, randn(rng, P, N, N)), (flags..., det, randn(rng, P, N, N))
+            TestCase[
+                TestCase(inv, randn(rng, P, N, N)), TestCase(det, randn(rng, P, N, N))
             ]
         end...,
     )
     # A mutating MulAddMul returns nothing, so its derivative oracle needs a returned array.
-    test_cases = Any[test_cases...]
+    test_cases = TestCase[test_cases...]
     for P in (Float64, ComplexF64), integer_beta in (false, true)
         f = function (a, b, x, C)
             LinearAlgebra._modify!(
@@ -193,15 +192,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         opts = (mode=ForwardMode, oracle=(deriv=fill(P(integer_beta ? 21 : 76), 1),))
         push!(
             test_cases,
-            (
-                false,
-                :allocs,
-                opts,
+            TestCase(
                 f,
                 CoDual(one(P), P(3)),
                 integer_beta ? 0 : CoDual(zero(P), P(5)),
                 CoDual(P(7), zero(P)),
-                fill(P(11), 1),
+                fill(P(11), 1);
+                perf_flag=:allocs,
+                opts...,
             ),
         )
     end
