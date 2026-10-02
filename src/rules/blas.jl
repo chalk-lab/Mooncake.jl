@@ -3406,6 +3406,13 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
+function _add_blas_hvp!(cases, f, x, name, directions, reference; options...)
+    push!(
+        cases,
+        TestCase(f, x; name, hvp=(; check=:reference, directions, reference, options...)),
+    )
+end
+
 # BLAS tests are split by element type so that arrays for each precision can be GC'd
 # before the next precision's arrays are allocated.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
@@ -4114,6 +4121,318 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     test_cases = vcat(TestCase[test_cases...], throwing_cases)
     append!(test_cases, _blas_alias_test_cases(P))
     memory = throwing_memory
+    if P === Float64
+        let
+            fscal(a) = (BLAS.scal!(1, a, [2.0], 1)[1] - 2.0)^2
+            fgemv(a) = (BLAS.gemv!('N', a, ones(1, 1), ones(1), 0.0, zeros(1))[1] - 1.0)^2
+            for (f, h) in ((fscal, 8.0), (fgemv, 2.0))
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    1.0,
+                    "BLAS zero cotangents",
+                    (1.0,),
+                    (value=0.0, gradient=0.0, hvp=h);
+                    cmp=(==),
+                )
+            end
+        end
+        let
+            function f(a)
+                B = fill(a, 2, 2)
+                BLAS.gemm!('N', 'N', 1.0, fill(NaN, 2, 2), B, 0.0, zeros(2, 2))
+                C = BLAS.gemm!('N', 'N', 1.0, ones(2, 2), B, 0.0, zeros(2, 2))
+                return (C[1, 1] - 2.0)^2
+            end
+            _add_blas_hvp!(
+                test_cases,
+                f,
+                1.0,
+                "live seed direction",
+                (1.0,),
+                (value=0.0, gradient=0.0, hvp=8.0);
+                cmp=(==),
+            )
+        end
+        let
+            fgemm(b) =
+                only(BLAS.gemm!('N', 'N', 2.0, ones(1, 1), ones(1, 1), b, ones(1, 1)))^2
+            fsymm(a) =
+                only(BLAS.symm!('L', 'U', a, ones(1, 1), ones(1, 1), 1.0, ones(1, 1)))^2
+
+            for (f, value, gradient) in ((fgemm, 4.0, 4.0), (fsymm, 1.0, 2.0))
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    0.0,
+                    "BLAS zero coefficients",
+                    (1.0,),
+                    (value=value, gradient=gradient, hvp=2.0);
+                    cmp=(==),
+                )
+            end
+        end
+        # Regression for #1246: triangular-solve Hessian.
+        let
+            L = LowerTriangular([2.0 0.0; 1.0 3.0])
+            f(x) = sum(abs2, L \ x)
+            x = [1.0, 2.0]
+
+            _add_blas_hvp!(
+                test_cases,
+                f,
+                x,
+                "triangular solve",
+                ([1.0, 0.0],),
+                (value=1/2, gradient=[1/3, 1/3], hessian=[5/9 -1/9; -1/9 2/9]);
+                cmp=isapprox,
+            )
+        end
+        let
+            for (A, B, seed, da) in
+                ((1e-200, 1e200, 1e200, 1e-300), (1e-100, 1e-200, 1e-200, 1e300))
+                f(x) =
+                    seed * only(
+                        BLAS.gemm!(
+                            'N',
+                            'N',
+                            x[1],
+                            fill(x[2], 1, 1),
+                            fill(B, 1, 1),
+                            0.0,
+                            zeros(1, 1),
+                        ),
+                    )
+                x = [0.0, A]
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    x,
+                    "zero alpha extreme HVP",
+                    ([da, 0.0],),
+                    (hvp=v -> only(da * fill(seed, 1, 1) * fill(B, 1, 1)),);
+                    cmp=(actual, expected) -> isequal(actual[2], expected),
+                )
+            end
+        end
+        let
+            for (big, small) in ((1e200, 1e-200), (1e-200, 1e200))
+                f(x) =
+                    small * only(
+                        BLAS.gemm!(
+                            'N',
+                            'N',
+                            x[1],
+                            fill(big, 1, 1),
+                            fill(x[2], 1, 1),
+                            0.0,
+                            zeros(1, 1),
+                        ),
+                    )
+                x = [0.0, small]
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    x,
+                    "zero alpha coefficient direction HVP",
+                    ([big, 0.0],),
+                    (hvp=[0.0, big],);
+                    cmp=isequal,
+                )
+            end
+        end
+        let
+            f(x) =
+                x[4] * only(
+                    BLAS.gemm!(
+                        'N', 'N', x[1], fill(x[2], 1, 1), fill(x[3], 1, 1), 0.0, zeros(1, 1)
+                    ),
+                )
+            x = [2.0, 1.0, 1.0, 1.0]
+            v = [1e308, 0.0, -5e307, 5e307]
+            _add_blas_hvp!(
+                test_cases,
+                f,
+                x,
+                "mixed extreme HVP directions",
+                (v,),
+                (hvp=[0.0, 1e308, Inf, 0.0],);
+                cmp=isequal,
+            )
+        end
+        _add_blas_hvp!(
+            test_cases,
+            x -> dot(x, x),
+            [2.0, 3.0, 4.0],
+            "dot quadratic HVP",
+            ([1.0, 0.0, 0.0],),
+            (value=29.0, gradient=[4.0, 6.0, 8.0], hvp=[2.0, 0.0, 0.0]);
+            cmp=isapprox,
+        )
+        # Raw-pointer BLAS pullbacks must retain per-lane V in `Ptr{NoTangent}` fdata.
+        let
+            A = [2.0 0.5 0.0; 0.5 3.0 0.1; 0.0 0.1 4.0]
+            f(x) = dot(x, A*x)/2
+            x = [0.5, -0.2, 0.9]
+            _add_blas_hvp!(
+                test_cases,
+                f,
+                x,
+                "BLAS quadratic form (dot)",
+                ([1.0, 0.0, 0.0],),
+                (gradient=A*x, hessian=A);
+                cmp=isapprox,
+            )
+        end
+    elseif P === ComplexF64
+        let
+            fhemm(a) =
+                real(
+                    only(
+                        BLAS.hemm!(
+                            'L',
+                            'U',
+                            complex(a),
+                            ones(ComplexF64, 1, 1),
+                            ones(ComplexF64, 1, 1),
+                            1.0 + 0im,
+                            ones(ComplexF64, 1, 1),
+                        ),
+                    ),
+                )^2
+            _add_blas_hvp!(
+                test_cases,
+                fhemm,
+                0.0,
+                "BLAS zero coefficients",
+                (1.0,),
+                (value=1.0, gradient=2.0, hvp=2.0);
+                cmp=(==),
+            )
+        end
+    end
+
+    if P in (Float64, ComplexF64)
+        # First-order registry checks cannot detect lost perturbations in a pullback.
+        let
+            for (op, p, flags, a) in (
+                (BLAS.axpy!, 1.0, (), 0.0),
+                (BLAS.gemv!, 1.0, ('N',), 0.0),
+                (BLAS.gemm!, 1.0, ('N', 'N'), 1.0),
+                (BLAS.symm!, 1.0, ('L', 'U'), 1.0),
+                (BLAS.symv!, 1.0, ('U',), 1.0),
+                (BLAS.hemm!, 1.0 + 0im, ('L', 'U'), 1.0),
+                (BLAS.hemv!, 1.0 + 0im, ('U',), 1.0),
+                (BLAS.trmm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+                (BLAS.trsm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+            )
+                p isa P || continue
+                function f(x)
+                    A = fill(oftype(p, x[2]), 1, 1)
+                    dims = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? (1,) : (1, 1)
+                    args = if op === BLAS.axpy!
+                        (1, x[1], [x[2]], 1, [x[3]], 1)
+                    elseif op in (BLAS.trmm!, BLAS.trsm!)
+                        (oftype(p, x[1]), A, fill(p, dims))
+                    else
+                        (oftype(p, x[1]), A, fill(p, dims), oftype(p, x[3]), fill(p, dims))
+                    end
+                    return sum(abs2, op(flags..., args...))
+                end
+                push!(
+                    test_cases,
+                    TestCase(
+                        f,
+                        [a, 3.0, 0.0];
+                        name="BLAS coefficient HVP $op",
+                        hvp=(
+                            check=:hvp,
+                            directions=(ones(3),),
+                            fd_step=1e-5,
+                            rtol=1e-7,
+                            atol=1e-7,
+                        ),
+                    ),
+                )
+            end
+        end
+        let
+            for unit in (1.0, 1.0 + 0.0im), (a, seed) in ((1e200, 1e-200), (1e-200, 1e200))
+                unit isa P || continue
+                function f(x)
+                    A = fill(oftype(unit, x[1]), 1, 1)
+                    B = fill(oftype(unit, x[2]), 1, 1)
+                    C = fill(zero(unit), 1, 1)
+                    return seed * real(
+                        only(BLAS.gemm!('N', 'N', oftype(unit, a), A, B, zero(unit), C))
+                    )
+                end
+                x = [1e-200, 1e-200]
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    x,
+                    "nonzero alpha extreme HVP",
+                    ([a, 0.0],),
+                    (value=:finite, hvp=[0.0, a]);
+                    cmp=(actual, expected) -> if expected === :finite
+                        isfinite(actual)
+                    else
+                        isapprox(actual, expected)
+                    end,
+                )
+            end
+        end
+        let
+            for unit in (1.0, 1.0 + 0im, 1.0 + 1im), sign in (1.0, -1.0)
+                unit isa P || continue
+                f(x) =
+                    x[4] * real(
+                        only(
+                            BLAS.gemv!(
+                                'N',
+                                unit * x[1],
+                                fill(unit * x[2], 1, 1),
+                                [unit * x[3]],
+                                zero(unit),
+                                zeros(typeof(unit), 1),
+                            ),
+                        ),
+                    )
+                x = [2.0, 1.0, 2.0, 1.0]
+                v = sign .* [1e308, 0.0, 0.0, -5e307]
+                # The reference pullback uses a plain broadcast for dA. Keep its BLAS calls too:
+                # their complex overflow/accumulation order depends on the platform.
+                project(z) = real(unit) * real(z) + imag(unit) * imag(z)
+                function reference_gradient(x)
+                    a, A, b = unit * x[1], fill(unit * x[2], 1, 1), [unit * x[3]]
+                    seed = [oftype(unit, x[4])]
+                    da = sum(conj.(BLAS.gemv('N', one(unit), A, b)) .* seed)
+                    dA = only(a' .* seed .* b')
+                    db = only(BLAS.gemv('C', a', A, seed))
+                    ds = real(only(BLAS.gemv('N', a, A, b)))
+                    return [project(da), project(dA), project(db), ds]
+                end
+                expected(v) = last(
+                    Mooncake.unlift(
+                        build_frule(reference_gradient, x)(
+                            zero_dual(reference_gradient), Mooncake.lift(x, v)
+                        ),
+                    ),
+                )
+                _add_blas_hvp!(
+                    test_cases,
+                    f,
+                    x,
+                    "vector mixed extreme HVP directions",
+                    (v,),
+                    (hvp=expected,);
+                    cmp=isequal,
+                )
+            end
+        end
+    end
+
     return test_cases, memory
 end
 

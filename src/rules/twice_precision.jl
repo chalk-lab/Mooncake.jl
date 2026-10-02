@@ -668,5 +668,26 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         push!(test_cases, TestCase(Base._logrange_extra, 1.1, 3.5, 5; perf_flag=:allocs))
         push!(test_cases, TestCase(logrange, 5.0, 10.0, 11; perf_flag=:allocs))
     end
+    # Regression for #1328: TwicePrecision cotangent accumulation.
+    let
+        f(x) = abs2(typeof(x)(TwicePrecision(x)))
+        for x in (0.5f0, 0.5)
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    x;
+                    name="TwicePrecision cotangent accumulation",
+                    hvp=(
+                        check=:reference,
+                        directions=(one(x), -one(x)),
+                        reference=(value=abs2(x), gradient=2x, hvp=v -> 2v),
+                        cmp=(==),
+                    ),
+                ),
+            )
+        end
+    end
+
     return test_cases, Any[]
 end

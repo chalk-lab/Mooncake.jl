@@ -1239,6 +1239,42 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         end
     end
     memory = Any[tall, wide]
+    let
+        # Factorisations and restoring copies must remain rule boundaries in nested AD.
+        x, v = [2.0, 3.0, 5.0], [1.0, 0.0, 0.0]
+        for (f, name, value, gradient, h) in (
+            (
+                x -> logdet(cholesky(diagm(x))),
+                "cholesky",
+                sum(log, x),
+                1 ./ x,
+                (-1 ./ x .^ 2) .* v,
+            ),
+            (
+                (f, "symmetric determinants", () -> f(x), g, h) for (f, g, h) in (
+                    (x -> logdet(Symmetric(diagm(x))), 1 ./ x, -v ./ x .^ 2),
+                    (x -> logabsdet(Symmetric(diagm(x)))[1], 1 ./ x, -v ./ x .^ 2),
+                    (x -> det(Symmetric(diagm(x))), prod(x) ./ x, [0.0, 5.0, 3.0]),
+                )
+            )...,
+        )
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    x;
+                    name,
+                    hvp=(
+                        check=:reference,
+                        directions=(v,),
+                        reference=(value=value, gradient=gradient, hvp=h),
+                        cmp=isapprox,
+                    ),
+                ),
+            )
+        end
+    end
+
     return test_cases, memory
 end
 

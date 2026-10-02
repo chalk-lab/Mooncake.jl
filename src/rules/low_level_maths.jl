@@ -1023,6 +1023,58 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         ),
     )
     memory = Any[]
+    let
+        for (f, x, h) in (
+            (x -> (exp(x) - 1)^2, 0.0, 2.0),
+            (x -> sin(x)^2, 0.0, 2.0),
+            (x -> expm1(x)^2, 0.0, 2.0),
+            (x -> first(sincos(x))^2, 0.0, 2.0),
+            (x -> abs2(exp(complex(x)) - 1), 0.0, 2.0),
+            (x -> (sqrt(x) - 1)^2, 1.0, 0.5),
+            (x -> (IntrinsicsWrappers.sqrt_llvm(x) - 1)^2, 1.0, 0.5),
+            (x -> (Base.FastMath.sqrt_fast(x) - 1)^2, 1.0, 0.5),
+            (x -> hypot(x, 1.0), 0.0, 1.0),
+            (x -> x^2.0, 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, 2), 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, Val(2)), 0.0, 2.0),
+            (x -> (Base.FastMath.pow_fast(x, Val(2)) - 1)^2, 1.0, 8.0),
+        )
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    x;
+                    name="scalar removable coefficients",
+                    hvp=(
+                        check=:reference,
+                        directions=(1.0,),
+                        reference=(hvp=h,),
+                        cmp=isapprox,
+                    ),
+                ),
+            )
+        end
+    end
+    for (f, x, name, direction, gradient, h) in (
+        (x -> x[1]^4.0, [2.0], "vector fourth power", [1.0], [32.0], [48.0]),
+        (x -> x^4, 2.0, "scalar fourth power", 1.0, 32.0, 48.0),
+    )
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                x;
+                name,
+                hvp=(
+                    check=:reference,
+                    directions=(direction,),
+                    reference=(value=16.0, gradient=gradient, hvp=h),
+                    cmp=isapprox,
+                ),
+            ),
+        )
+    end
+
     return test_cases, memory
 end
 

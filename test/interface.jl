@@ -887,8 +887,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test y == e
             @test size(J) == (0, 0)
         end
-        hc = Mooncake.prepare_hessian_cache(sum, e)
-        @test Mooncake.value_gradient_and_hessian!!(hc, sum, e) == (0.0, e, zeros(0, 0))
 
         # Forward stores partials per element, so an `NDualArray` element type must be concrete.
         # Reverse builds a plain array and is unaffected — refusing there would remove working
@@ -3081,17 +3079,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                             cache, (f, Mooncake.zero_tangent(f)), (a, [0.3, -0.7])
                         )
                     end
-                    # Coherent sharing within a single input must remain usable.
-                    for (f, expected) in (
-                        (t -> t[1][1] * t[2][1] + t[1][2] * t[2][2], [0.6, -1.4]),
-                        (t -> t[1][1]^2 * t[2][1] + t[1][2]^2 * t[2][2], [1.8, -8.4]),
-                    )
-                        v = [0.3, -0.7]
-                        x, dx = (a, a.ref.mem), (v, v.ref.mem)
-                        _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, dx, x)
-                        @test hv[1] ≈ expected
-                        @test hv[2] ≈ expected
-                    end
                 end
             end
 
@@ -3187,33 +3174,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     cache, f, reshape([1.0, 0.0], 2, 1), reshape([1.0, 2.0], 2, 1)
                 )
             end
-
-            # Width-1 HVPs must preserve partials through array `.ref` projection and through
-            # shared forward/reverse capture stacks. Either loss silently zeroes the HVP.
-            @testset "HVP value correctness" begin
-                # Scalar: hvp = f''(x)·v is distinct from the gradient f'(x).
-                let f = x -> x^4, x = 2.0, v = 1.0
-                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                    @test val ≈ x^4
-                    @test g ≈ 4x^3          # 32
-                    @test hv ≈ 12x^2 * v    # 48 — would be 0 if a partial were dropped
-                end
-                # Broadcast and BLAS paths both have Hessian 2I. The `dot` pullback
-                # threads tangent pointers through forward-over-reverse.
-                for f in (x -> sum(x .* x), x -> dot(x, x))
-                    let x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
-                        val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                        @test val ≈ f(x)
-                        @test g ≈ 2 .* x
-                        @test hv ≈ 2 .* v
-                    end
-                end
-                # Fused-primitive path (`sum(abs2, ·)`), same Hessian.
-                let f = x -> sum(abs2, x), x = [2.0, 3.0, 4.0], v = [0.0, 1.0, 0.0]
-                    _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                    @test hv ≈ 2 .* v
-                end
-            end
         end
     end
 
@@ -3226,48 +3186,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 return [h11 h12; h12 200.0]
             end
             rosen_g(z) = [-2*(1 - z[1]) - 400*z[1]*(z[2] - z[1]^2), 200*(z[2] - z[1]^2)]
-
-            @testset "Rosenbrock Float64" begin
-                z = [1.2, 1.2]
-                cache = prepare_hessian_cache(rosen, z)
-                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
-                @test v ≈ rosen(z)
-                @test g ≈ rosen_g(z) rtol = 1e-10
-                @test H ≈ rosen_H(z) rtol = 1e-10
-            end
-
-            @testset "Rosenbrock Float32" begin
-                z = Float32[1.2, 1.2]
-                cache = prepare_hessian_cache(rosen, z)
-                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
-                @test v isa Float32
-                @test g isa Vector{Float32}
-                @test H isa Matrix{Float32}
-                @test v ≈ rosen(z) rtol = 1e-4
-                @test H ≈ rosen_H(Float64[1.2, 1.2]) rtol = 1e-4
-            end
-
-            @testset "quadratic (diagonal Hessian)" begin
-                f(x) = sum(x .^ 2)
-                x = [1.0, 2.0, 3.0]
-                cache = prepare_hessian_cache(f, x)
-                v, g, H = value_gradient_and_hessian!!(cache, f, x)
-                @test v ≈ 14.0
-                @test g ≈ [2.0, 4.0, 6.0]
-                @test H ≈ 2 * I
-            end
-
-            @testset "BLAS quadratic form (dot)" begin
-                # `dot(x, A*x)/2` has gradient `A*x` and Hessian `A`; its reverse rule runs through
-                # BLAS on raw pointers, so forward-over-reverse threads `Ptr{NoTangent}` fdata pointers
-                # that must keep their per-lane V. Previously untested (all other cases are elementwise).
-                A = [2.0 0.5 0.0; 0.5 3.0 0.1; 0.0 0.1 4.0]  # symmetric ⇒ Hessian is exactly A
-                f(x) = dot(x, A * x) / 2
-                x = [0.5, -0.2, 0.9]
-                v, g, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
-                @test g ≈ A * x
-                @test H ≈ A
-            end
 
             @testset "chunked Hessian == width-1 (chunk_size $W)" for W in (1, 2, 3, 5)
                 # The Hessian sweep batches W forward-over-reverse columns per pass; results must
@@ -3347,16 +3265,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
                 @test v ≈ rosen(z)
                 @test H ≈ rosen_H(z) rtol = 1e-10
-            end
-
-            @testset "n=0 edge case" begin
-                f(x) = 0.0
-                x = Float64[]
-                cache = prepare_hessian_cache(f, x)
-                v, g, H = value_gradient_and_hessian!!(cache, f, x)
-                @test v == 0.0
-                @test g == Float64[]
-                @test H == zeros(0, 0)
             end
 
             @testset "n=0 edge case with cache reuse" begin

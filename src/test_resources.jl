@@ -849,8 +849,24 @@ end
 # this returned NaN for both value and derivative, where the primal is 1.0 and the derivative 0.
 removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
 
+struct _RefCaptureWrap{F}
+    f::F
+end
+(w::_RefCaptureWrap)(x) = w.f(x)
+Mooncake.tangent_type(::Type{<:_RefCaptureWrap}) = Mooncake.NoTangent
+
+const _EMPTY_FDATA_EXCEPTION = ErrorException("x")
+_throw_empty_fdata_exception(x) = x < 0 ? throw(_EMPTY_FDATA_EXCEPTION) : x^2
+
+function _add_hvp_case!(cases, f, x, name, directions, reference; options...)
+    push!(
+        cases,
+        TestCase(f, x; name, hvp=(; check=:reference, directions, reference, options...)),
+    )
+end
+
 function generate_test_functions()
-    return TestCase[
+    test_cases = TestCase[
         TestCase(const_tester; perf_flag=:allocs),
         TestCase(const_tester_non_differentiable; perf_flag=:allocs),
         TestCase(identity, 5.0; perf_flag=:allocs),
@@ -1060,6 +1076,132 @@ function generate_test_functions()
         ),
         TestCase(regression_319, randn(3)),
     ]
+    # The closure-captured variant follows a separate failing path tracked in #1286.
+    _add_hvp_case!(
+        test_cases,
+        _throw_empty_fdata_exception,
+        1.0,
+        "empty structural fdata",
+        (1.0,),
+        (value=1.0, gradient=2.0, hvp=2.0);
+        cmp=(==),
+    )
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .* x),
+        [1.0, 2.0, 3.0],
+        "HVP cache reuse",
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        (hvp=v -> 2.0 .* v,);
+        cmp=isapprox,
+        rtol=1e-10,
+    )
+    # Regression for #1193: Ref capture under a NoTangent wrapper.
+    let
+        f = _RefCaptureWrap(
+            let r = Ref(3.0);
+                x -> r[] * sum(abs2, x);
+            end,
+        )
+        x = [1.0, 2.0]
+        _add_hvp_case!(
+            test_cases,
+            f,
+            x,
+            "Ref capture",
+            ([1.0, 0.0],),
+            (hvp=[6.0, 0.0], hessian=[6.0 0.0; 0.0 6.0]);
+            cmp=isapprox,
+        )
+    end
+    let
+        @static if VERSION >= v"1.11-rc4"
+            a = [1.0, 2.0]
+            for (f, expected) in (
+                (t -> t[1][1]*t[2][1] + t[1][2]*t[2][2], [0.6, -1.4]),
+                (t -> t[1][1]^2*t[2][1] + t[1][2]^2*t[2][2], [1.8, -8.4]),
+            )
+                v = [0.3, -0.7]
+                x, dx = (a, a.ref.mem), (v, v.ref.mem)
+                _add_hvp_case!(
+                    test_cases,
+                    f,
+                    x,
+                    "coherent Array Memory input",
+                    (dx,),
+                    (hvp=(expected, expected),);
+                    cmp=isapprox,
+                )
+            end
+        end
+    end
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .* x),
+        [2.0, 3.0, 4.0],
+        "broadcast quadratic HVP",
+        ([1.0, 0.0, 0.0],),
+        (value=29.0, gradient=[4.0, 6.0, 8.0], hvp=[2.0, 0.0, 0.0]);
+        cmp=isapprox,
+    )
+    let
+        rosen(z) = (1-z[1])^2 + 100*(z[2]-z[1]^2)^2
+        rosen_H(z) = [2-400*(z[2]-z[1]^2)+800*z[1]^2 -400*z[1]; -400*z[1] 200.0]
+        rosen_g(z) = [-2*(1-z[1])-400*z[1]*(z[2]-z[1]^2), 200*(z[2]-z[1]^2)]
+        z = [1.2, 1.2]
+        _add_hvp_case!(
+            test_cases,
+            rosen,
+            z,
+            "Rosenbrock Float64",
+            ([1.0, 0.0],),
+            (value=rosen(z), gradient=rosen_g(z), hessian=rosen_H(z));
+            cmp=(actual, expected) -> if actual isa Number
+                isapprox(actual, expected)
+            else
+                isapprox(actual, expected; rtol=1e-10)
+            end,
+        )
+    end
+    let
+        rosen(z) = (1-z[1])^2 + 100*(z[2]-z[1]^2)^2
+        rosen_H(z) = [2-400*(z[2]-z[1]^2)+800*z[1]^2 -400*z[1]; -400*z[1] 200.0]
+        z = Float32[1.2, 1.2]
+        _add_hvp_case!(
+            test_cases,
+            rosen,
+            z,
+            "Rosenbrock Float32",
+            (Float32[1, 0],),
+            (
+                value=(type=Float32, value=rosen(z)),
+                gradient=(type=Vector{Float32},),
+                hessian=(type=Matrix{Float32}, value=rosen_H(Float64[1.2, 1.2])),
+            );
+            cmp=(actual, expected) ->
+                actual isa expected.type &&
+                (!haskey(expected, :value) || isapprox(actual, expected.value; rtol=1e-4)),
+        )
+    end
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .^ 2),
+        [1.0, 2.0, 3.0],
+        "quadratic (diagonal Hessian)",
+        ([1.0, 0.0, 0.0],),
+        (value=14.0, gradient=[2.0, 4.0, 6.0], hessian=2I);
+        cmp=isapprox,
+    )
+    _add_hvp_case!(
+        test_cases,
+        x -> 0.0,
+        Float64[],
+        "n=0 edge case",
+        (Float64[],),
+        (value=0.0, gradient=Float64[], hessian=zeros(0, 0));
+        cmp=(==),
+    )
+    return test_cases
 end
 
 _broadcast_sin_cos_exp(x::AbstractArray{<:Real}) = sum(sin.(cos.(exp.(x))))

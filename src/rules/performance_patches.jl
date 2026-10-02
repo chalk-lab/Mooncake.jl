@@ -623,6 +623,43 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
     )
     memory = Any[]
+    for (f, x, name, direction, reference, cmp) in (
+        (
+            sum,
+            [1.0, 2.0, 3.0],
+            "primitive sum",
+            [1.0, 0.0, 0.0],
+            (value=6.0, gradient=ones(3), hvp=zeros(3)),
+            isapprox,
+        ),
+        (
+            sum,
+            Float64[],
+            "empty sum Hessian",
+            Float64[],
+            (value=0.0, gradient=Float64[], hessian=zeros(0, 0)),
+            (==),
+        ),
+        (
+            x -> sum(abs2, x),
+            [2.0, 3.0, 4.0],
+            "fused sum abs2 HVP",
+            [0.0, 1.0, 0.0],
+            (hvp=[0.0, 2.0, 0.0],),
+            isapprox,
+        ),
+    )
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                x;
+                name,
+                hvp=(; check=:reference, directions=(direction,), reference, cmp),
+            ),
+        )
+    end
+
     return test_cases, memory
 end
 
