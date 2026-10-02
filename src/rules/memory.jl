@@ -622,8 +622,13 @@ function frule!!(::Dual{typeof(Base._unsetindex!)}, x::Dual{<:MemoryRef})
     return x
 end
 function rrule!!(
-    ::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef{P},<:MemoryRef{V}}
+    f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef{P},<:MemoryRef{V}}
 ) where {P,V}
+    # `_unsetindex!` is a no-op on isbits primals, so there is nothing to save or restore.
+    if isbitstype(P)
+        Base._unsetindex!(x.dx)
+        return x, NoPullback(f, x)
+    end
     to_save = isassigned(x.x)
     old_x = Ref{Tuple{P,V}}()
     if to_save
@@ -1189,6 +1194,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, Base._deleteend!, randn(5), 0),
         (false, :none, nothing, Base._deleteend!, [(1.0, [2.0]), (3.0, [4.0])], 1),
         (false, :none, nothing, pop!, [(1.0, [2.0]), (3.0, [4.0])]),
+        (
+            false,
+            :none,
+            nothing,
+            pop!,
+            [TestResources.Mixed(1.0, [2.0]), TestResources.Mixed(3.0, [4.0])],
+        ),
+        (false, :none, nothing, Base._deletebeg!, [(1.0, [2.0]), (3.0, [4.0])], 1),
+        (
+            false,
+            :none,
+            nothing,
+            Base._deleteat!,
+            [(1.0, [2.0]), (3.0, [4.0]), (5.0, [6.0])],
+            2,
+            1,
+        ),
+        (false, :none, nothing, delete!, Dict(1 => (1.0, [2.0]), 2 => (3.0, [4.0])), 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 2, 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 1, 5),
         (false, :none, nothing, Base._deleteat!, randn(5), 5, 1),
