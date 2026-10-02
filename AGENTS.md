@@ -55,6 +55,10 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer clear, concise names for variables, types, and methods.
 - When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
 
+## Forward Representation
+
+- Every forward entry point that chooses storage from an element type must use `_storage_kind`; `Union{}` satisfies every numeric bound.
+
 ## Consistency
 
 - When changing Julia version support, update `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.

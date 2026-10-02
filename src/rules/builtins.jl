@@ -258,6 +258,9 @@ function frule!!(
 ) where {Nw,T<:NDualEltype}
     _dims = primal(dims)
     primal_arr = unsafe_wrap(Array, primal(p), _dims)
+    if Mooncake._storage_kind(T) isa Mooncake.StructuralStorage
+        return Lifted{typeof(primal_arr),Nw}(primal_arr, zero_dual(Val(Nw), primal_arr))
+    end
     p_partials = tangent(p)
     D = ndims(primal_arr)
     # Block-backed pointers address contiguous lanes of one element-major column.
@@ -2206,6 +2209,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeassert, randn(5), Vector{Float64}),
         (false, :stability, nothing, typeof, 5.0),
         (false, :stability, nothing, typeof, randn(5)),
+        (
+            true,
+            :stability,
+            nothing,
+            unsafe_wrap,
+            Array,
+            CoDual(Ptr{Union{}}(0), Ptr{Union{}}(0)),
+            0,
+        ),
         (true, :stability, nothing, unsafe_wrap, Array, CoDual(p, dp), 1),
         (true, :stability, nothing, unsafe_wrap, Vector{Float64}, CoDual(p, dp), 1),
         (

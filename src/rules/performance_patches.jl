@@ -198,6 +198,9 @@ end
 function frule!!(
     ::Lifted{typeof(permutedims),N}, x::Lifted{<:Matrix{P},N}
 ) where {N,P<:IEEEFloat}
+    if _storage_kind(P) isa StructuralStorage
+        return zero_lifted(Val(N), permutedims(primal(x)))
+    end
     px, dxs = arrayify(x)
     y = permutedims(px)
     V = zero_dual(Val(N), y)
@@ -341,6 +344,10 @@ function Mooncake.frule!!(
     x1::Lifted{<:AbstractMatrix{T},N},
     x2::Lifted{<:AbstractMatrix{T},N},
 ) where {N,T<:BlasFloat}
+    if _storage_kind(T) isa StructuralStorage
+        LinearAlgebra._kron!(primal(out), primal(x1), primal(x2))
+        return out
+    end
     pout, dout_s = arrayify(out)
     px1, dx1_s = arrayify(x1, Val(:read))
     px2, dx2_s = arrayify(x2, Val(:read))
@@ -448,6 +455,9 @@ function Mooncake.frule!!(
     x1::Lifted{<:AbstractVecOrMat{T},N},
     x2::Lifted{<:AbstractVecOrMat{T},N},
 ) where {N,T<:Union{Float32,Float64}}
+    if _storage_kind(T) isa StructuralStorage
+        return zero_lifted(Val(N), kron(primal(x1), primal(x2)))
+    end
     px1, dx1s = arrayify(x1, Val(:read))
     px2, dx2s = arrayify(x2, Val(:read))
     # Materialise wrappers once to avoid per-element branches; dense matrices pass through.
@@ -539,7 +549,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 10, 10),
             )
         end,
-
+        [(
+            true,
+            :stability,
+            (; mode=ForwardMode),
+            kron,
+            Matrix{Union{}}(undef, 0, 0),
+            Matrix{Union{}}(undef, 0, 0),
+        )],
+        [(
+            false,
+            :stability,
+            (; mode=ForwardMode),
+            LinearAlgebra._kron!,
+            Matrix{Union{}}(undef, 0, 0),
+            Matrix{Union{}}(undef, 0, 0),
+            Matrix{Union{}}(undef, 0, 0),
+        )],
+        [(
+            false,
+            :stability,
+            (; mode=ForwardMode),
+            permutedims,
+            Matrix{Union{}}(undef, 0, 0),
+        )],
         # Allocating kron has its own block writer: check derivatives at widths 1 and 8.
         # Only Float32/Float64 are forward primitives; Float16 stays derived.
         map([Float64, Float32]) do P

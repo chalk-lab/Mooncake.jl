@@ -732,6 +732,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         # Old foreigncall wrappers.
         (true, :stability, nothing, Array{Float64,0}, undef),
         (true, :stability, nothing, Array{Float64,1}, undef, 5),
+        (true, :stability, nothing, Vector{Union{}}, undef, 0),
         (true, :stability, nothing, Array{Float64,2}, undef, 5, 4),
         (true, :stability, nothing, Array{Float64,3}, undef, 5, 4, 3),
         (true, :stability, nothing, Array{Float64,4}, undef, 5, 4, 3, 2),

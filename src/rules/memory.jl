@@ -1354,6 +1354,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
 
         # Rules for `Memory`
         (true, :stability, nothing, Memory{Float64}, undef, 5),
+        (true, :stability, nothing, Memory{Union{}}, undef, 0),
         (true, :stability, nothing, Memory{Memory{Float64}}, undef, 5),
         # Non-scalar isbits element: exercises the generic `Memory{P}(undef, n)` constructor rule
         # for a struct/tuple eltype (the `bitstype` branch of `_dot_internal`).
@@ -1536,6 +1537,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[
+        (
+            false,
+            :none,
+            (
+                mode=ForwardMode,
+                chunk_size=8,
+                throws=(ArgumentError, "lifted element-wise storage"),
+            ),
+            pointer,
+            Union{}[],
+        ),
         (
             false,
             :none,

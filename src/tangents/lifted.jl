@@ -747,8 +747,14 @@ end
 struct NumericStorage end
 struct StructuralStorage end
 
+# Forward array storage is chosen from the element type: `NDualEltype` elements
+# get the split `NDualArray`, anything else recurses structurally, as reverse
+# mode does. `Union{}` satisfies every numeric bound, so a bare `T <: NDualEltype`
+# check sends `Vector{Union{}}` down the numeric path: `_wrapped_eltype` is
+# ambiguous, `Memory{Union{}}` gets `NDual{Union{},N}` storage, and the zero
+# constructor calls `zero(Union{})`. Every element-storage choice goes through here.
 @foldable @inline function _storage_kind(::Type{T}) where {T}
-    return T <: NDualEltype ? NumericStorage() : StructuralStorage()
+    return T !== Union{} && T <: NDualEltype ? NumericStorage() : StructuralStorage()
 end
 
 """
@@ -1214,9 +1220,10 @@ end
         return lifted
     end
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
-    # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{<:NoTangent}`
+    # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{NoTangent}`
     # overload and `dual_type(Memory{T}) = Memory{NoDual}`.
-    @inline _lift(::StructuralStorage, x::Memory, ẋ::Memory{<:NoTangent}) = Lifted{
+    # Exact NoTangent keeps map from reading undefined slots in non-empty bottom storage.
+    @inline _lift(::StructuralStorage, x::Memory, ẋ::Memory{NoTangent}) = Lifted{
         typeof(x),1
     }(
         x, map(_ -> NoDual(), ẋ)
@@ -1329,10 +1336,11 @@ end
 # mirrors it element-wise as an `Array{NoDual}` (coherent with `dual_type(Array{T,D}) =
 # Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the
 # element-wise overload below when a cache is threaded.
-@inline _lift(::StructuralStorage, x::Array, ẋ::Array{<:NoTangent}) = Lifted{typeof(x),1}(
+# Exact NoTangent keeps map from reading undefined slots in non-empty bottom storage.
+@inline _lift(::StructuralStorage, x::Array, ẋ::Array{NoTangent}) = Lifted{typeof(x),1}(
     x, map(_ -> NoDual(), ẋ)
 )
-@inline _lift(k::StructuralStorage, x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = _lift(
+@inline _lift(k::StructuralStorage, x::Array, ẋ::Array{NoTangent}, ::Union{Nothing,IdDict}) = _lift(
     k, x, ẋ
 )
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they match the
