@@ -156,7 +156,7 @@ end
         perf_flag=:none,
         unsafe_perturb=true,
         mode=ForwardMode,
-        oracle=(value=75.0, deriv=30.0),
+        reference=(value=75.0, deriv=30.0),
     )
 
     @testset "compiled lazy capture snapshots" begin

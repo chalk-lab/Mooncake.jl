@@ -11,19 +11,19 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
 using Mooncake.TestUtils: TestCase
 
 # Capture harness assertion failures; registry `throws` cases assert rule exceptions instead.
-struct OracleTestSet <: Test.AbstractTestSet
+struct ReferenceTestSet <: Test.AbstractTestSet
     results::Vector{Any}
 end
-OracleTestSet(description) = OracleTestSet(Any[])
-Test.record(ts::OracleTestSet, result) = push!(ts.results, result)
-function Test.finish(ts::OracleTestSet)
+ReferenceTestSet(description) = ReferenceTestSet(Any[])
+Test.record(ts::ReferenceTestSet, result) = push!(ts.results, result)
+function Test.finish(ts::ReferenceTestSet)
     parent = Test.get_testset()
-    parent isa OracleTestSet && Test.record(parent, ts)
+    parent isa ReferenceTestSet && Test.record(parent, ts)
     return ts
 end
-function oracle_result_count(ts, T)
+function reference_result_count(ts, T)
     sum(ts.results; init=0) do result
-        result isa Test.AbstractTestSet ? oracle_result_count(result, T) : result isa T
+        result isa Test.AbstractTestSet ? reference_result_count(result, T) : result isa T
     end
 end
 
@@ -393,7 +393,7 @@ end
     end
 
     @testset "a pinned tangent spreads over distinct lanes" begin
-        # Identical directions would let broadcasting lane 1 pass the per-lane oracle.
+        # Identical directions would let broadcasting lane 1 pass the comparison with each width-1 result.
         lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
         p = lanes(CoDual(2.0, 1.5), 8).partials
         @test p[1] == 1.5                      # lane 1 is the pin exactly
@@ -439,7 +439,7 @@ end
         test_rule(Xoshiro(1), mixed, 10.0, x; is_primitive=false, perf_flag=:none)
     end
 
-    @testset "oracle validation" begin
+    @testset "reference validation" begin
         # A reference that names nothing, or names it wrongly, would leave a case asserting
         # nothing while reading as green — the failure mode a pinned reference exists to avoid.
         f(x, y) = x * y
@@ -451,10 +451,10 @@ end
             is_primitive=false,
             mode=Mooncake.ForwardMode,
             print_results=false,
-            oracle=o,
+            reference=o,
         )
-        for oracle in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
-            @test_throws ArgumentError run(oracle)
+        for reference in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
+            @test_throws ArgumentError run(reference)
         end
         # A value-only reference still validates derivatives by finite differences.
         run((value=6.0,))
@@ -467,7 +467,7 @@ end
             (ReverseMode, (; rrule=bad_rrule, output_tangent=1.0)),
         )
             TestUtils._test_mode_filter() in (nothing, mode) || continue
-            captured = @testset OracleTestSet "partial oracle" begin
+            captured = @testset ReferenceTestSet "partial reference" begin
                 test_rule(
                     Xoshiro(1),
                     x -> x^2,
@@ -476,12 +476,12 @@ end
                     print_results=false,
                     perf_flag=:none,
                     is_primitive=false,
-                    oracle=(value=4.0,),
+                    reference=(value=4.0,),
                     kwargs...,
                 )
             end
-            @test oracle_result_count(captured, Test.Fail) == 1
-            @test oracle_result_count(captured, Test.Error) == 0
+            @test reference_result_count(captured, Test.Fail) == 1
+            @test reference_result_count(captured, Test.Error) == 0
         end
         if TestUtils._test_mode_filter() in (nothing, ReverseMode)
             bad_rrule =
@@ -490,12 +490,12 @@ end
                 x -> sum(x) + sum(a)
             end
             function_err = try
-                TestUtils.test_rrule_oracle(
+                TestUtils.test_rrule_reference(
                     zero_codual(captured_function),
                     zero_codual([1.0, 2.0]);
                     rrule=bad_rrule,
                     output_tangent=1.0,
-                    oracle=(deriv=(NoRData(), NoRData()),),
+                    reference=(deriv=(NoRData(), NoRData()),),
                 )
                 nothing
             catch e
@@ -503,20 +503,20 @@ end
             end
             @test function_err isa ArgumentError
             @test occursin("the function `f`", sprint(showerror, function_err))
-            @test TestUtils.test_rrule_oracle(
+            @test TestUtils.test_rrule_reference(
                 zero_codual(sum),
                 zero_codual([1.0, 2.0]);
                 rrule=bad_rrule,
                 output_tangent=1.0,
-                oracle=(value=3.0,),
+                reference=(value=3.0,),
             ) === nothing
             err = try
-                TestUtils.test_rrule_oracle(
+                TestUtils.test_rrule_reference(
                     zero_codual(sum),
                     zero_codual([1.0, 2.0]);
                     rrule=bad_rrule,
                     output_tangent=1.0,
-                    oracle=(deriv=(NoRData(), NoRData()),),
+                    reference=(deriv=(NoRData(), NoRData()),),
                 )
                 nothing
             catch e
@@ -524,10 +524,10 @@ end
             end
             @test err isa ArgumentError
             @test occursin("positional argument 1 of `f`", sprint(showerror, err))
-            # Registry `throws` cases cannot assert that the harness rejects a wrong oracle.
+            # Registry `throws` cases cannot assert that the harness rejects a wrong reference.
             for (deriv, failures) in ((3.0, 0), (0.0, 1))
                 seed = [1.0, 1.0]
-                captured = @testset OracleTestSet "array output oracle" begin
+                captured = @testset ReferenceTestSet "array output reference" begin
                     test_rule(
                         Xoshiro(1),
                         x -> [x, 2x],
@@ -536,11 +536,11 @@ end
                         print_results=false,
                         is_primitive=false,
                         output_tangent=seed,
-                        oracle=(value=[2.0, 4.0], deriv=(NoRData(), deriv)),
+                        reference=(value=[2.0, 4.0], deriv=(NoRData(), deriv)),
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == failures
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == failures
+                @test reference_result_count(captured, Test.Error) == 0
                 @test seed == [1.0, 1.0]
             end
             for (f, output_tangent) in (
@@ -557,7 +557,7 @@ end
                     end,
                 ),
             )
-                captured = @testset OracleTestSet "shared output seed" begin
+                captured = @testset ReferenceTestSet "shared output seed" begin
                     test_rule(
                         Xoshiro(1),
                         f,
@@ -566,14 +566,14 @@ end
                         print_results=false,
                         is_primitive=false,
                         output_tangent,
-                        oracle=(deriv=(NoRData(), 3.0),),
+                        reference=(deriv=(NoRData(), 3.0),),
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == 0
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == 0
+                @test reference_result_count(captured, Test.Error) == 0
             end
             for (deriv, failures) in ((0.0, 0), (-0.0, 1))
-                captured = @testset OracleTestSet "signed-zero output oracle" begin
+                captured = @testset ReferenceTestSet "signed-zero output reference" begin
                     test_rule(
                         Xoshiro(1),
                         Mooncake.IntrinsicsWrappers.neg_float,
@@ -582,17 +582,17 @@ end
                         print_results=false,
                         is_primitive=true,
                         output_tangent=-0.0,
-                        oracle=(value=-2.0, deriv=(NoRData(), deriv)),
+                        reference=(value=-2.0, deriv=(NoRData(), deriv)),
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == failures
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == failures
+                @test reference_result_count(captured, Test.Error) == 0
             end
             # A consuming pullback exposes the array seed's sign and must not mutate it.
             for (deriv, failures) in ((0.0, 0), (-0.0, 1))
                 seed = [-0.0]
-                captured = @testset OracleTestSet "signed-zero array output oracle" begin
-                    TestUtils.test_rrule_oracle(
+                captured = @testset ReferenceTestSet "signed-zero array output reference" begin
+                    TestUtils.test_rrule_reference(
                         zero_codual(x -> [-x]),
                         zero_codual(2.0);
                         rrule=(_, x) -> begin
@@ -604,11 +604,11 @@ end
                             end
                         end,
                         output_tangent=seed,
-                        oracle=(deriv=(NoRData(), deriv),),
+                        reference=(deriv=(NoRData(), deriv),),
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == failures
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == failures
+                @test reference_result_count(captured, Test.Error) == 0
                 @test isequal(seed, [-0.0])
             end
         end
@@ -624,10 +624,10 @@ end
                 Mooncake.zero_lifted(Val(1), nothing)
             end
             x_ẋ = (Mooncake.zero_lifted(Val(1), f), Mooncake.lift([1.0, 1.0], [1.0, 1.0]))
-            oracle = (deriv=Mooncake.tangent(Mooncake.zero_lifted(Val(1), nothing), 1),)
+            reference = (deriv=Mooncake.tangent(Mooncake.zero_lifted(Val(1), nothing), 1),)
             for frule in (broken_frule, correct_frule)
                 err = try
-                    TestUtils.test_frule_oracle(x_ẋ...; frule, oracle)
+                    TestUtils.test_frule_reference(x_ẋ...; frule, reference)
                     nothing
                 catch e
                     e
@@ -654,37 +654,37 @@ end
                         primal(f)(primal(x))
                         Mooncake.zero_lifted(Val(1), nothing)
                     end
-                    @test TestUtils.test_frule_oracle(
+                    @test TestUtils.test_frule_reference(
                         Mooncake.zero_lifted(Val(1), _ -> nothing),
                         Mooncake.lift(wrap(x), wrap(dx));
                         frule=bad_frule,
-                        oracle=(deriv=NoTangent(),),
+                        reference=(deriv=NoTangent(),),
                     ) === nothing
-                    @test_throws r"positional argument 1 of `f` because the call mutated it" TestUtils.test_frule_oracle(
+                    @test_throws r"positional argument 1 of `f` because the call mutated it" TestUtils.test_frule_reference(
                         Mooncake.zero_lifted(Val(1), f),
                         Mooncake.lift(wrap(x), wrap(dx));
                         frule=bad_frule,
-                        oracle=(deriv=NoTangent(),),
+                        reference=(deriv=NoTangent(),),
                     )
                 end
             end
             nonmutating_frule =
                 (f, x) -> Mooncake.lift(2 * primal(x), 2 * Mooncake.tangent(x, 1))
-            @test TestUtils.test_frule_oracle(
+            @test TestUtils.test_frule_reference(
                 Mooncake.zero_lifted(Val(1), x -> 2x),
                 Mooncake.lift(1.0, 1.0);
                 frule=nonmutating_frule,
-                oracle=(value=2.0, deriv=2.0),
+                reference=(value=2.0, deriv=2.0),
             ) === nothing
             captured = let a = [1.0, 2.0]
                 x -> x * sum(a)
             end
-            @test TestUtils.test_frule_oracle(
+            @test TestUtils.test_frule_reference(
                 Mooncake.zero_lifted(Val(1), captured),
                 Mooncake.lift(1.0, 1.0);
                 frule=(f, x) ->
                     Mooncake.lift(primal(f)(primal(x)), 3 * Mooncake.tangent(x, 1)),
-                oracle=(value=3.0, deriv=3.0),
+                reference=(value=3.0, deriv=3.0),
             ) === nothing
         end
     end
@@ -692,7 +692,7 @@ end
     @testset "forward chunk widths" begin
         withenv("TEST_MODE" => nothing) do
             for (bad_width, failures) in ((1, 1), (8, 8), (9, 0))
-                captured = @testset OracleTestSet "mutated argument lanes" begin
+                captured = @testset ReferenceTestSet "mutated argument lanes" begin
                     test_rule(
                         Xoshiro(1),
                         wrong_mutation!,
@@ -702,8 +702,8 @@ end
                         print_results=false,
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == failures
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == failures
+                @test reference_result_count(captured, Test.Error) == 0
             end
             for (f, x) in (
                 (wrong_field_mutation!, Ref(1.0)),
@@ -713,7 +713,7 @@ end
                 (wrong_nested_mutation!, Ref([1.0])),
             )
                 for (bad_width, failures) in ((8, 1), (9, 0))
-                    captured = @testset OracleTestSet "aggregate argument lanes" begin
+                    captured = @testset ReferenceTestSet "aggregate argument lanes" begin
                         test_rule(
                             Xoshiro(1),
                             f,
@@ -723,24 +723,24 @@ end
                             print_results=false,
                         )
                     end
-                    @test oracle_result_count(captured, Test.Fail) == failures
-                    @test oracle_result_count(captured, Test.Error) == 0
+                    @test reference_result_count(captured, Test.Fail) == failures
+                    @test reference_result_count(captured, Test.Error) == 0
                 end
             end
-            for oracle in (nothing, (deriv=4.0,))
-                captured = @testset OracleTestSet "independent width-1 check" begin
+            for reference in (nothing, (deriv=4.0,))
+                captured = @testset ReferenceTestSet "independent width-1 check" begin
                     test_rule(
                         Xoshiro(1),
                         wrong_square,
                         CoDual(2.0, 1.0);
                         mode=ForwardMode,
                         chunk_size=8,
-                        oracle,
+                        reference,
                         print_results=false,
                     )
                 end
-                @test oracle_result_count(captured, Test.Fail) == 1
-                @test oracle_result_count(captured, Test.Error) == 0
+                @test reference_result_count(captured, Test.Fail) == 1
+                @test reference_result_count(captured, Test.Error) == 0
             end
         end
 
