@@ -701,7 +701,7 @@ function test_frule_correctness(
     end
     # Only a derivative reference replaces finite differences; a value-only reference still
     # needs the sweep to validate the derivative.
-    use_fd = isnothing(reference) || !haskey(reference, :deriv)
+    use_fd = !_reference_has_deriv(reference, :fwd)
     use_fd || empty!(ε_list)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
@@ -1155,23 +1155,73 @@ function _chunked_v_invariant(@nospecialize(p), @nospecialize(v), ::IdDict)
     )
 end
 
-# Assumes that the interface has been tested, and we can simply check for numerical issues.
-# A caller-pinned reference replaces the finite-difference check where FD cannot express the
-# assertion: a NaN or infinite operand, an exact-zero identity at a removable singularity, a
-# saturated regime whose true derivative falls below FD's resolution. `isequal` is the default
-# comparator, so exact zero, signed zero and NaN each compare as those sites intend. Only the
-# width-1 correctness check is replaced; the chunked invariant and per-lane checks still run.
-_reference_cmp(reference) = haskey(reference, :cmp) ? reference.cmp : isequal
+# A pinned derivative replaces finite differences only in the mode it describes.
+function _reference_has_deriv(reference, key)
+    isnothing(reference) && return false
+    haskey(reference, :deriv) || return false
+    d = reference.deriv
+    return d isa NamedTuple ? haskey(d, key) : key in (:fwd, :rvs)
+end
+_reference_deriv(d, key::Symbol) = d isa NamedTuple ? d[key] : d
+_reference_value(x) = x isa Function ? x() : x
 
-# A misspelled or empty reference would otherwise leave a case asserting nothing while reading
-# as green, which is the failure mode a pinned reference exists to avoid.
-const _REFERENCE_FIELDS = (:value, :deriv, :cmp)
-function _check_reference(reference)
-    reference isa NamedTuple || throw(
-        ArgumentError(
-            "`reference` must be a NamedTuple of $(_REFERENCE_FIELDS); got $(typeof(reference)).",
-        ),
-    )
+"""
+    isequal_ignoring_signed_zero(actual, expected)
+
+Like `isequal`, but treats positive and negative zero as equal, recursively through complex
+numbers, arrays, tuples, named tuples and tangents. NaNs still compare equal.
+"""
+isequal_ignoring_signed_zero(a, b) = _reference_recurse(_equal_signed_zero, a, b)
+_equal_signed_zero(a, b) = isequal(a, b)
+_equal_signed_zero(a::Real, b::Real) = isequal(a, b) || (iszero(a) && iszero(b))
+function _equal_signed_zero(a::Complex, b::Complex)
+    return _equal_signed_zero(real(a), real(b)) && _equal_signed_zero(imag(a), imag(b))
+end
+
+_reference_isequal(a, b) = _reference_recurse(isequal, a, b)
+function _reference_isapprox(a, b; kw...)
+    leaf =
+        (x, y) ->
+            x isa Union{NoTangent,NoFData,NoRData} ? isequal(x, y) : isapprox(x, y; kw...)
+    return _reference_recurse(leaf, a, b; whole_arrays=true)
+end
+
+_reference_recurse(leaf, a, b; whole_arrays=false) = leaf(a, b)
+function _reference_recurse(leaf, a::AbstractArray, b::AbstractArray; whole_arrays=false)
+    # Preserve isapprox's array norm and dimension checks outside tangent wrappers.
+    wrappers = Union{Tangent,MutableTangent,Mooncake.FData,Mooncake.RData}
+    if whole_arrays && !(eltype(a) <: wrappers && eltype(b) <: wrappers)
+        return leaf(a, b)
+    end
+    return axes(a) == axes(b) &&
+           all(map((x, y) -> _reference_recurse(leaf, x, y; whole_arrays), a, b))
+end
+function _reference_recurse(leaf, a::Tuple, b::Tuple; whole_arrays=false)
+    return length(a) == length(b) &&
+           all(map((x, y) -> _reference_recurse(leaf, x, y; whole_arrays), a, b))
+end
+function _reference_recurse(leaf, a::NamedTuple, b::NamedTuple; whole_arrays=false)
+    return keys(a) == keys(b) &&
+           _reference_recurse(leaf, values(a), values(b); whole_arrays)
+end
+# Compare the same wrapper kind even when its fields have different concrete types.
+for W in (Tangent, MutableTangent, Mooncake.FData, Mooncake.RData)
+    @eval function _reference_recurse(leaf, a::$W, b::$W; whole_arrays=false)
+        return _reference_recurse(leaf, getfield(a, 1), getfield(b, 1); whole_arrays)
+    end
+end
+function _reference_cmp(reference)
+    cmp = get(reference, :cmp, isequal)
+    cmp === isequal && return _reference_isequal
+    cmp === isapprox || return cmp
+    tolerances = (; (k => reference[k] for k in (:rtol, :atol) if haskey(reference, k))...)
+    return (a, b) -> _reference_isapprox(a, b; tolerances...)
+end
+
+const _REFERENCE_FIELDS = (:value, :deriv, :cmp, :rtol, :atol)
+function _check_reference(reference, args; mode=nothing)
+    reference isa NamedTuple ||
+        throw(ArgumentError("`reference` must be a NamedTuple; got $(typeof(reference))."))
     unknown = filter(k -> !(k in _REFERENCE_FIELDS), keys(reference))
     isempty(unknown) || throw(
         ArgumentError(
@@ -1180,45 +1230,165 @@ function _check_reference(reference)
     )
     haskey(reference, :value) ||
         haskey(reference, :deriv) ||
-        throw(
+        throw(ArgumentError("`reference` asserts nothing: supply `value` or `deriv`."))
+    if haskey(reference, :deriv) && reference.deriv isa NamedTuple
+        d = reference.deriv
+        isempty(d) && throw(ArgumentError("`reference.deriv` asserts nothing."))
+        unknown = filter(k -> !(k in (:fwd, :rvs, :fdata)), keys(d))
+        isempty(unknown) ||
+            throw(ArgumentError("`reference.deriv` has unknown field(s) $(unknown)."))
+        for key in keys(d)
+            excluded = key === :fwd ? mode === ReverseMode : mode === ForwardMode
+            excluded && throw(
+                ArgumentError(
+                    "`reference.deriv.$key` is excluded by the test case's mode."
+                ),
+            )
+        end
+    end
+    if mode !== ForwardMode &&
+        (_reference_has_deriv(reference, :rvs) || _reference_has_deriv(reference, :fdata))
+        unpinned = String[]
+        _reference_has_deriv(reference, :rvs) ||
+            push!(unpinned, "rvs (positions 1:$(length(args)))")
+        if _reference_has_deriv(reference, :fdata)
+            _check_reference_fdata(_reference_value(reference.deriv.fdata), args)
+        else
+            for (i, p) in enumerate(__get_primals(args))
+                Mooncake.fdata_type(tangent_type(_typeof(p))) === NoFData ||
+                    push!(unpinned, "fdata[$i]")
+            end
+        end
+        isempty(unpinned) || throw(
             ArgumentError(
-                "`reference` names neither `value` nor `deriv`, so it asserts nothing."
+                "partial reverse `reference.deriv`: unpinned $(join(unpinned, ", ")); " *
+                "pin rvs and every argument's fdata (position 1 is the function).",
             ),
         )
+    end
+    for key in (:rtol, :atol)
+        haskey(reference, key) || continue
+        t = reference[key]
+        t isa Real && isfinite(t) && t >= 0 ||
+            throw(ArgumentError("`reference.$key` must be finite and nonnegative."))
+        get(reference, :cmp, isequal) === isapprox ||
+            throw(ArgumentError("`reference.$key` requires `cmp=isapprox`."))
+    end
     return nothing
 end
-# `deriv` is a single reference, or `(fwd=…, rvs=…)` where one case runs in both modes: a JVP
-# and a VJP are different objects, so a both-modes case has to carry both.
-_reference_deriv(d, key::Symbol) = d isa NamedTuple && haskey(d, key) ? d[key] : d
+function _check_reference_fdata(expected, args)
+    expected isa Tuple && length(expected) == length(args) || throw(
+        ArgumentError(
+            "`reference.deriv.fdata` must be a tuple over `(f, args...)` of length $(length(args)).",
+        ),
+    )
+    unpinned = String[]
+    for (i, (e, p)) in enumerate(zip(expected, __get_primals(args)))
+        if Mooncake.fdata_type(tangent_type(_typeof(p))) === NoFData
+            isnothing(e) || throw(
+                ArgumentError(
+                    "`reference.deriv.fdata[$i]` is supplied for an argument with no fdata; " *
+                    "use `nothing`.",
+                ),
+            )
+        elseif isnothing(e)
+            push!(unpinned, "fdata[$i]")
+        end
+    end
+    isempty(unpinned) || throw(
+        ArgumentError(
+            "`reference.deriv.fdata` asserts nothing at unpinned $(join(unpinned, ", ")).",
+        ),
+    )
+    any(!isnothing, expected) || throw(
+        ArgumentError(
+            "`reference.deriv.fdata` asserts nothing: all positions are `nothing`."
+        ),
+    )
+    return nothing
+end
 
+# Call only after validating against the test case's mode; runners may select fewer modes.
+function _reference_for_mode(reference, mode)
+    isnothing(reference) && return nothing
+    selected =
+        mode === ForwardMode ? reference : Base.structdiff(reference, (; lanes=nothing))
+    if haskey(reference, :deriv) && reference.deriv isa NamedTuple
+        excluded = mode === ForwardMode ? (; rvs=nothing, fdata=nothing) : (; fwd=nothing)
+        deriv = Base.structdiff(reference.deriv, excluded)
+        selected = Base.structdiff(selected, (; deriv=nothing))
+        isempty(deriv) || (selected = merge(selected, (; deriv)))
+    end
+    return any(k -> haskey(selected, k), (:value, :deriv, :lanes)) ? selected : nothing
+end
+
+_reference_compare(cmp, a, b) = cmp(a, b)
+function _reference_compare(cmp, a::Tuple, b::Tuple)
+    return length(a) == length(b) && all(map((x, y) -> _reference_compare(cmp, x, y), a, b))
+end
+
+function _test_reference(actual, expected, reference, field; tuplewise=false)
+    expected = _reference_value(expected)
+    cmp = _reference_cmp(reference)
+    matches = tuplewise ? _reference_compare(cmp, actual, expected) : cmp(actual, expected)
+    if matches
+        @test matches
+    else
+        @testset "$field: actual=$(repr(actual)), expected=$(repr(expected))" begin
+            @test matches
+        end
+    end
+    return nothing
+end
 function test_frule_reference(x_ẋ::Vararg{Any,P}; frule, reference) where {P}
     @nospecialize x_ẋ
     out = frule(_deepcopy_all(x_ẋ)...)
-    cmp = _reference_cmp(reference)
-    haskey(reference, :value) && @test cmp(primal(out), reference.value)
-    haskey(reference, :deriv) &&
-        @test cmp(tangent(out, 1), _reference_deriv(reference.deriv, :fwd))
+    haskey(reference, :value) &&
+        _test_reference(primal(out), reference.value, reference, "reference.value")
+    _reference_has_deriv(reference, :fwd) && _test_reference(
+        tangent(out, 1),
+        _reference_deriv(reference.deriv, :fwd),
+        reference,
+        "reference.deriv.fwd",
+    )
     return nothing
 end
 
-# `deriv` is compared against the pullback's whole return, the function's own cotangent
-# included, so a closure's captured state is not silently dropped from the comparison.
+# Keep the seeded arguments alive: mutable cotangents live there, not in the pullback return.
 function test_rrule_reference(
     x_x̄::Vararg{Any,P}; rrule, reference, output_tangent
 ) where {P}
     @nospecialize x_x̄
-    # `to_fwds` as everywhere else: the rule takes fdata, and the seeds carry full tangents.
-    out, pb!! = rrule(map(to_fwds, _deepcopy_all(x_x̄))...)
-    cmp = _reference_cmp(reference)
-    haskey(reference, :value) && @test cmp(primal(out), reference.value)
-    haskey(reference, :deriv) || return nothing
+    seeds = map(to_fwds, _deepcopy_all(x_x̄))
+    out, pb!! = rrule(seeds...)
+    haskey(reference, :value) &&
+        _test_reference(primal(out), reference.value, reference, "reference.value")
+    check_rvs = _reference_has_deriv(reference, :rvs)
+    check_fdata = _reference_has_deriv(reference, :fdata)
+    (check_rvs || check_fdata) || return nothing
     isnothing(output_tangent) && throw(
         ArgumentError(
-            "a reverse-mode `reference` carrying `deriv` needs `output_tangent`: without one " *
-            "the cotangent seed is random, which leaves `deriv` unpinned.",
+            "a reverse-mode `reference.deriv` needs `output_tangent` to pin the cotangent seed.",
         ),
     )
-    @test cmp(pb!!(Mooncake.rdata(output_tangent)), _reference_deriv(reference.deriv, :rvs))
+    increment!!(tangent(out), Mooncake.fdata(_deepcopy(output_tangent)))
+    result = pb!!(Mooncake.rdata(output_tangent))
+    check_rvs && _test_reference(
+        result,
+        _reference_deriv(reference.deriv, :rvs),
+        reference,
+        "reference.deriv.rvs",
+    )
+    if check_fdata
+        expected = _reference_value(reference.deriv.fdata)
+        _check_reference_fdata(expected, x_x̄)
+        for i in eachindex(seeds)
+            isnothing(expected[i]) && continue
+            _test_reference(
+                tangent(seeds[i]), expected[i], reference, "reference.deriv.fdata[$i]"
+            )
+        end
+    end
     return nothing
 end
 
@@ -1275,7 +1445,8 @@ function test_rrule_correctness(
         )
     end
     # Only a derivative reference replaces finite differences, as in the forward check.
-    use_fd = isnothing(reference) || !haskey(reference, :deriv)
+    use_fd =
+        !(_reference_has_deriv(reference, :rvs) || _reference_has_deriv(reference, :fdata))
     use_fd || empty!(ε_list)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
@@ -1734,9 +1905,11 @@ second-order results only.
   entries may be zero-argument functions; an HVP function receives each direction.
   A non-function HVP reference requires explicit `directions`.
   A Hessian reference always requests assembly, including under `:hvp` and `:reference`.
-- `cmp=isequal`, `rtol=nothing`, `atol=0`: references use `cmp`, applied per component
-  of tuple results (arrays and other leaves are compared whole). With `cmp=isapprox`,
-  references use these tolerances, with the `isapprox` default for an unset `rtol`.
+- `cmp=isequal`, `rtol=nothing`, `atol=0`: built-in reference comparators recurse through
+  tuples, named tuples and tangent wrappers, as for first-order `reference`. Custom
+  comparators apply per tuple component (arrays and other leaves are compared whole).
+  With `cmp=isapprox`, references use these tolerances, with the `isapprox` default
+  for an unset `rtol`.
   Finite differences use `isapprox` with `rtol=max(1e-5, 10fd_step^2)` when unset.
   Value/gradient agreement with reverse and Hessian agreement with basis HVPs always
   use the `isapprox` defaults. These tolerances are independent of first order.
@@ -1750,6 +1923,9 @@ second-order results only.
 An HVP test case must have exactly one argument and a real scalar output, as required by
 Mooncake's public HVP/Hessian APIs. `interface_only=true` is refused. Failed comparisons
 name the key, actual value, and expected value in their testset.
+
+References and HVP settings are validated at construction; deferred expected values
+are evaluated only when the test runs.
 """
 struct TestCase
     f::Any
@@ -1796,6 +1972,9 @@ struct TestCase
                 )
             end
         end
+        reference = get(opts, :reference, nothing)
+        isnothing(reference) ||
+            _check_reference(reference, (f, args...); mode=get(opts, :mode, nothing))
         return new(f, args, name, interface_only, perf_flag, (; opts...), hvp, bench)
     end
 end
@@ -1850,6 +2029,8 @@ function test_rule(
     case_mode = get(opts, :mode, nothing)
     case_mode in (nothing, ForwardMode, ReverseMode) ||
         throw(ArgumentError("TestCase mode must be nothing, ForwardMode, or ReverseMode"))
+    reference = get(opts, :reference, nothing)
+    isnothing(reference) || _check_reference(reference, (tc.f, tc.args...); mode=case_mode)
     filter = _test_mode_filter()
     if !isnothing(tc.hvp)
         get(opts, :interface_only, false) &&
@@ -1871,8 +2052,17 @@ function test_rule(
     for m in (ForwardMode, ReverseMode)
         mode in (nothing, m) && case_mode in (nothing, m) && filter in (nothing, m) ||
             continue
+        mode_reference = _reference_for_mode(reference, m)
         @testset "$m, $(something(name, _test_case_name(tc)))" begin
-            test_rule(rng, tc.f, tc.args...; opts..., primal_throws, mode=m)
+            test_rule(
+                rng,
+                tc.f,
+                tc.args...;
+                opts...,
+                reference=mode_reference,
+                primal_throws,
+                mode=m,
+            )
         end
         primal_throws = false
     end
@@ -1929,24 +2119,9 @@ function _check_hvp(hvp, args, interface_only)
     return opts
 end
 
-function _hvp_compare(cmp, a, b; tolerances...)
-    if a isa Tuple && b isa Tuple
-        return length(a) == length(b) &&
-               all(map((a, b) -> _hvp_compare(cmp, a, b; tolerances...), a, b))
-    end
-    return cmp === isapprox ? isapprox(a, b; tolerances...) : cmp(a, b)
-end
-
+# HVP custom comparators act on tuple components; first-order ones see the whole result.
 function _hvp_check(key, actual, expected, cmp; tolerances...)
-    matches = _hvp_compare(cmp, actual, expected; tolerances...)
-    if matches
-        @test matches
-    else
-        @testset "$key: actual=$(repr(actual)), expected=$(repr(expected))" begin
-            @test matches
-        end
-    end
-    return nothing
+    return _test_reference(actual, expected, (; cmp, tolerances...), key; tuplewise=true)
 end
 
 _hvp_fd_step(x) = cbrt(eps(Float64))
@@ -2187,13 +2362,22 @@ definition. See the keyword below.
 
 # Additional keywords
 
-- `reference=nothing`: a `NamedTuple` pinning the expected result where finite differences
-    cannot — `value`, `deriv`, or both, and an optional `cmp` comparator (`isequal` by
-    default, which is what separates a NaN or a signed zero). Only `deriv` replaces the
-    finite-difference comparison; a value-only reference still checks the derivative with finite
-    differences. The input, output-primal and aliasing checks always run, including with a
-    derivative-only reference. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent
-    seed is random and the reference is unpinned.
+- `reference=nothing`: a `NamedTuple` with `value` and/or `deriv`. Expected values may be
+    zero-argument functions evaluated at test time. `deriv` is a single mode's derivative,
+    or a NamedTuple using only the optional keys `fwd`, `rvs`, and `fdata`.
+    `fwd` is the output JVP; `rvs` is the pullback's entire return, including the function
+    position. `fdata` is a tuple over `(f, args...)` of argument fdata after the pullback.
+    Reverse references must pin `rvs` and every position whose type has fdata; use
+    `nothing` only at positions without fdata. Scalar-only arguments need no `fdata`
+    entry. An `fdata` function is also evaluated during validation to check its positions.
+    Put a NamedTuple-valued expected derivative under `fwd` or `rvs`. Fields excluded by
+    the test case's `mode` are refused; `TEST_MODE` may still filter their checks.
+    A reverse derivative reference requires `output_tangent`, including for array outputs.
+    Only a derivative reference for the mode being tested replaces finite differences;
+    primal, aliasing and restoration checks still run. `cmp` defaults to `isequal`; use
+    `isequal_ignoring_signed_zero`, `isapprox`, or a two-argument function to change it.
+    With `cmp=isapprox`, optional `reference.rtol`/`atol` use `isapprox`'s defaults when
+    omitted and are independent of the test case's finite-difference tolerances.
 - `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
     a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
@@ -2227,7 +2411,14 @@ function test_rule(
 
     # A case that must fail loudly asserts the raise instead of the correctness battery. The
     # rule is built inside the assertion because some of these throw at build time.
-    isnothing(reference) || _check_reference(reference)
+    if !isnothing(reference)
+        _check_reference(reference, x; mode)
+        isnothing(throws) ||
+            throw(ArgumentError("`reference` cannot assert anything with `throws`."))
+        interface_only && throw(
+            ArgumentError("`reference` cannot assert anything with `interface_only=true`."),
+        )
+    end
     if !isnothing(throws)
         err, msg = _throwing_case_expectation(throws)
         return _test_rule_throws(

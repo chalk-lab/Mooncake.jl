@@ -408,6 +408,21 @@ end
         end
     end
 
+    @testset "reference extensions" begin
+        withenv("TEST_MODE" => nothing) do
+            captured = @testset ReferenceTestSet "wrong reference" begin
+                test_rule(
+                    Xoshiro(1),
+                    TestCase(x -> 2x, CoDual(2.0, 1.0); reference=(value=6.0,));
+                    mode=ForwardMode,
+                    fallbacks=(is_primitive=false, skip_chunked=true, print_results=false),
+                )
+            end
+            @test reference_result_count(captured, Test.Fail) == 1
+            @test reference_result_count(captured, Test.Error) == 0
+        end
+    end
+
     @testset "forward chunk widths" begin
         # A registry test case cannot compare the probe stream across harness configurations.
         rngs = [StableRNG(123456) for _ in 1:3]

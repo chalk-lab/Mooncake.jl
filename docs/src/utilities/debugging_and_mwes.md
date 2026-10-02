@@ -41,6 +41,39 @@ When debugging, it might be helpful to set the `interface_only=true` to skip the
 Mooncake.TestUtils.test_rule(rng, sin, 5.0; interface_only=true)
 ```
 
+## Pinned references
+
+When finite differences cannot resolve the derivative, use `reference` to pin expected
+results. Comparisons name the failing field. For example, pin a reverse array cotangent:
+
+```julia
+Mooncake.TestUtils.test_rule(
+    rng, sum, [2.0, 3.0]; mode=Mooncake.ReverseMode, is_primitive=false,
+    output_tangent=1.0,
+    reference=(
+        value=5.0,
+        deriv=(rvs=(Mooncake.NoRData(), Mooncake.NoRData()), fdata=(nothing, [1.0, 1.0])),
+    ),
+)
+```
+
+A NamedTuple `deriv` must use only `fwd`, `rvs`, and `fdata` keys. Put a
+NamedTuple-valued expected derivative under the appropriate mode key. References are
+validated when a `TestCase` is constructed; expected-value functions run at test time.
+An `fdata` function also runs during validation to check which positions it pins.
+Fields excluded by the test case's `mode` are refused, while `TEST_MODE` may filter checks.
+
+`deriv.fwd` pins the output JVP; `deriv.rvs` pins the pullback's returned tuple;
+`deriv.fdata` pins argument cotangent storage after the pullback, including the function
+position. A reverse reference must pin the entire cotangent: `rvs` and every argument
+with fdata. Use `nothing` only at positions without fdata; scalar-only arguments need
+no `fdata` entry. Expected values can be zero-argument
+functions, for example `value=() -> sum([2.0, 3.0])`.
+
+The default comparator is `isequal`. Use `cmp=Mooncake.TestUtils.isequal_ignoring_signed_zero`
+to equate signed zeros while retaining NaN equality, or `cmp=isapprox` with `rtol`/`atol`
+inside `reference`. These tolerances are independent of finite-difference tolerances.
+
 ## Second-order registry checks
 
 The internal, unexported `Mooncake.TestUtils.TestCase` also lets a registry test case
