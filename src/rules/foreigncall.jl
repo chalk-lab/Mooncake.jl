@@ -752,6 +752,50 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     throwing_cases, throwing_memory = _foreigncall_throwing_cases()
     test_cases = vcat(TestCase[test_cases...], throwing_cases)
     memory = vcat(Any[_x, _dx, _a, _da, _b, _db], throwing_memory)
+    for (N, x, n) in
+        ((1, 2.0, Int32(3)), (2, 2.0, Int32(3)), (3, 2.0, Int32(3)), (2, 0.0, Int32(-2)))
+        args = (
+            _foreigncall_,
+            Val(Symbol("llvm.powi.f64.i32")),
+            Val(Float64),
+            (Val(Float64), Val(Int32)),
+            Val(0),
+            Val(:llvmcall),
+            x,
+            n,
+            n,
+            x,
+        )
+        seed(dx) = (
+            NoTangent(),
+            NoTangent(),
+            NoTangent(),
+            NoTangent(),
+            NoTangent(),
+            NoTangent(),
+            dx,
+            NoTangent(),
+            NoTangent(),
+            dx,
+        )
+        ref = if n < 0
+            (lanes=:inactive_zero,)
+        elseif N == 1
+            (deriv=(fwd=12.0,), cmp=isapprox)
+        else
+            (lanes=ntuple(k -> (seed=seed(Float64(k)), value=12.0 * k), N), cmp=isapprox)
+        end
+        push!(
+            test_cases,
+            TestCase(
+                map(CoDual, args, seed(1.0))...;
+                name="llvm.powi forward lanes",
+                mode=ForwardMode,
+                chunk_size=N,
+                reference=ref,
+            ),
+        )
+    end
     return test_cases, memory
 end
 
