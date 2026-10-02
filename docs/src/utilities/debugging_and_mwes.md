@@ -41,6 +41,28 @@ When debugging, it might be helpful to set the `interface_only=true` to skip the
 Mooncake.TestUtils.test_rule(rng, sin, 5.0; interface_only=true)
 ```
 
+## Second-order registry checks
+
+The internal, unexported `Mooncake.TestUtils.TestCase` also lets a registry test case
+exercise forward-over-reverse HVPs and Hessians through `test_rule`:
+
+```julia
+tc = Mooncake.TestUtils.TestCase(x -> sum(abs2, x), [1.0, 2.0]; hvp=true)
+Mooncake.TestUtils.test_rule(rng, tc)
+```
+
+The function must take one argument and return a real scalar. `hvp=true` compares
+HVPs with finite differences of the reverse gradient, reuses the cache across two
+directions, and checks Hessian assembly for real floating-point vectors.
+Use an `hvp` NamedTuple for explicit `directions`, `reference`, `cmp`, `rtol`, or
+`atol`; `check=:hvp` omits implicit Hessian assembly, and `check=:reference` checks
+only the supplied reference fields. These settings are separate from first-order
+options. See the `TestCase` docstring for the complete internal contract.
+
+An HVP test case runs only second order unless `hvp.first_order=true`. Registry
+runners execute second order once, in the reverse runner. `TEST_MODE=hvp` selects
+only second-order checks; `TEST_MODE=forward` or `reverse` selects only first order.
+
 ## Manually Running a Rule
 
 For more fine-grained debugging, you can manually run `rrule!!` to inspect intermediate values.
