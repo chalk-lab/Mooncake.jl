@@ -3406,6 +3406,34 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
+# References must run on fresh storage because both primal and partials can be mutated.
+function _blas_test_jvp(args, seeds; derived=false)
+    ps, ds = deepcopy((args, seeds))
+    c = IdDict{Any,Any}()
+    slots = map((p, d) -> lift(p, d, c), ps, ds)
+    rule = derived ? build_frule(ps...) : frule!!
+    return tangent(rule(slots...), 1)
+end
+
+# Preserve the old assertion's comparator at the selected position; the newly required
+# remaining cotangents use Julia's default approximate comparison, including NaNs.
+function _blas_test_cmp(actual, expected)
+    if expected isa NamedTuple{(:value, :cmp)}
+        return expected.cmp(actual, expected.value)
+    elseif actual isa Tuple && expected isa Tuple
+        return length(actual) == length(expected) &&
+               all(map(_blas_test_cmp, actual, expected))
+    elseif actual isa AbstractArray && expected isa AbstractArray
+        return axes(actual) == axes(expected) && all(map(_blas_test_cmp, actual, expected))
+    elseif actual isa Complex && expected isa Complex
+        return isapprox(real(actual), real(expected); nans=true) &&
+               isapprox(imag(actual), imag(expected); nans=true)
+    elseif actual isa Number && expected isa Number
+        return isapprox(actual, expected; nans=true)
+    end
+    return isequal(actual, expected)
+end
+
 function _add_blas_hvp!(cases, f, x, name, directions, reference; options...)
     push!(
         cases,
@@ -4443,7 +4471,292 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end
     end
 
+    append!(test_cases, _blas_reference_test_cases(P))
+
     return test_cases, memory
+end
+
+function _add_blas_reverse!(cases, args, name, output_tangent, deriv; cmp, options...)
+    push!(
+        cases,
+        TestCase(
+            args...;
+            name,
+            mode=ReverseMode,
+            output_tangent,
+            reference=(; deriv, cmp),
+            options...,
+        ),
+    )
+end
+
+# Keep fixture bindings separate from the closures captured by the main registry.
+function _blas_reference_test_cases(P)
+    test_cases = TestCase[]
+    if P === Float64
+        _add_blas_reverse!(
+            test_cases,
+            (BLAS.scal!, 1, 0.0, CoDual([1.0], [NaN]), 1),
+            "scal! zero coefficient with initial NaN cotangent",
+            [0.0],
+            (
+                rvs=(NoRData(), NoRData(), NaN, NoRData(), NoRData()),
+                fdata=(nothing, nothing, nothing, [0.0], nothing),
+            );
+            cmp=TestUtils.isequal_ignoring_signed_zero,
+        )
+    end
+    let A, x, y, C, cases
+        A, x, y, C = ones(P, 1, 1), ones(P, 1), zeros(P, 1), zeros(P, 1, 1)
+        cases = Any[
+            (BLAS.axpy!, 1, zero(P), x, 1, y, 1),
+            (BLAS.gemv!, 'N', one(P), A, x, zero(P), y),
+            (BLAS.symv!, 'U', one(P), A, x, zero(P), y),
+            (BLAS.gemm!, 'N', 'N', one(P), A, copy(A), zero(P), C),
+            (BLAS.symm!, 'L', 'U', one(P), A, copy(A), zero(P), C),
+            (BLAS.syrk!, 'U', 'N', one(P), A, zero(P), C),
+        ]
+        if P <: Complex
+            append!(
+                cases,
+                [
+                    (BLAS.hemv!, 'U', one(P), A, x, zero(P), y),
+                    (BLAS.hemm!, 'L', 'U', one(P), A, copy(A), zero(P), C),
+                    (BLAS.herk!, 'U', 'N', one(real(P)), A, zero(real(P)), C),
+                ],
+            )
+        end
+        for args in cases
+            op = first(args)
+            vector = op in (BLAS.axpy!, BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+            seed = fill(P(NaN), vector ? (1,) : (1, 1))
+            # Scalar conjugate products specify both components of complex NaNs; the beta
+            # contraction retains IEEE zero-times-NaN arithmetic.
+            nan_product = conj(one(P)) * P(NaN)
+            ai = vector ? 3 : 4
+            rvs = ntuple(length(args)) do i
+                if i == ai
+                    (op === BLAS.herk! ? real(nan_product) : nan_product)
+                elseif op !== BLAS.axpy! && i == length(args) - 1
+                    if op === BLAS.herk!
+                        real(dot(last(args), seed))
+                    else
+                        dot(last(args), seed)
+                    end
+                else
+                    NoRData()
+                end
+            end
+            fd = ntuple(length(args)) do i
+                args[i] isa AbstractArray || return nothing
+                if op === BLAS.axpy!
+                    fill(i == 4 ? zero(P) : P(NaN), size(args[i]))
+                elseif i == length(args)
+                    zero(args[i])
+                else
+                    fill(nan_product, size(args[i]))
+                end
+            end
+            _add_blas_reverse!(
+                test_cases,
+                (args...,),
+                "zero coefficients with NaN cotangents",
+                seed,
+                (rvs=rvs, fdata=fd);
+                cmp=TestUtils.isequal_ignoring_signed_zero,
+            )
+        end
+    end
+
+    push!(
+        test_cases,
+        TestCase(
+            BLAS.nrm2,
+            1,
+            CoDual(ones(P, 1), P[floatmax(real(P))]),
+            1;
+            name="nrm2 large tangent",
+            mode=ForwardMode,
+            chunk_size=1,
+            reference=(deriv=(fwd=floatmax(real(P)),), cmp=(==)),
+        ),
+    )
+
+    for bad in (P(NaN), P(Inf)),
+        a in (zero(P), one(P)), which in 1:3,
+        coefficients in (false, true)
+
+        A = fill(which == 1 ? bad : P(2), 3, 3)
+        B = fill(which == 2 ? bad : P(2), 3, 3)
+        C = fill(which == 3 ? bad : P(2), 3, 3)
+        cases = Any[
+            (BLAS.gemm!, 'N', 'N', a, A, B, zero(P), C),
+            (BLAS.gemv!, 'N', a, A, B[:, 1], zero(P), C[:, 1]),
+            (BLAS.symm!, 'L', 'U', a, A, B, zero(P), C),
+            (BLAS.symv!, 'U', a, A, B[:, 1], zero(P), C[:, 1]),
+            (BLAS.syrk!, 'U', 'N', a, A, zero(P), C),
+        ]
+        if P <: Complex
+            append!(
+                cases,
+                [
+                    (BLAS.hemm!, 'L', 'U', a, A, B, zero(P), C),
+                    (BLAS.hemv!, 'U', a, A, B[:, 1], zero(P), C[:, 1]),
+                    (BLAS.herk!, 'U', 'N', real(a), A, zero(real(P)), C),
+                ],
+            )
+        end
+        for f in (BLAS.trmm!, BLAS.trsm!), side in ('L', 'R'), diag in ('N', 'U')
+            push!(cases, (f, side, 'U', 'N', diag, a, A, B))
+        end
+        for f in (BLAS.trmv!, BLAS.trsv!), diag in ('N', 'U')
+            push!(cases, (f, 'U', 'N', diag, A, B[:, 1]))
+        end
+        for args in cases
+            seeds = ntuple(8) do k
+                map(args) do x
+                    if x isa AbstractArray
+                        active =
+                            (!coefficients || which == 3) && k == (coefficients ? 2 : 1)
+                        fill(active ? one(eltype(x)) : zero(eltype(x)), size(x))
+                    elseif x isa Union{AbstractFloat,Complex}
+                        k == 1 && coefficients ? one(x) : zero(x)
+                    else
+                        NoTangent()
+                    end
+                end
+            end
+            first_inactive = coefficients && which == 3 ? 3 : 2
+            # Active lanes compare with this rule at width 1, checking width consistency.
+            lanes = ntuple(8) do k
+                expected = if k < first_inactive
+                    () -> _blas_test_jvp(args, seeds[k])
+                else
+                    () -> zero(first(args)(deepcopy(Base.tail(args))...))
+                end
+                (seed=seeds[k], value=expected)
+            end
+            push!(
+                test_cases,
+                TestCase(
+                    map(CoDual, args, seeds[1])...;
+                    name="BLAS inactive lanes",
+                    mode=ForwardMode,
+                    chunk_size=8,
+                    reference=(
+                        value=() -> first(args)(deepcopy(Base.tail(args))...),
+                        lanes=lanes,
+                        cmp=isequal,
+                    ),
+                ),
+            )
+        end
+    end
+
+    for bad in (NaN, Inf)
+        A, N = P[2 1; 0 3], fill(P(bad), 2, 2)
+        x, nx, y, C = ones(P, 2), fill(P(bad), 2), zeros(P, 2), zeros(P, 2, 2)
+        cases = Any[
+            (BLAS.scal!, 2, P(bad), x, 1),
+            (BLAS.axpy!, 2, P(bad), x, 1, y, 1),
+            (BLAS.nrm2, 2, nx, 1),
+        ]
+        for (f, flags, vector) in (
+                (BLAS.gemm!, ('N', 'N'), false),
+                (BLAS.symm!, ('L', 'U'), false),
+                (BLAS.gemv!, ('N',), true),
+                (BLAS.symv!, ('U',), true),
+                (
+                    if P <: Complex
+                        ((BLAS.hemm!, ('L', 'U'), false), (BLAS.hemv!, ('U',), true))
+                    else
+                        ()
+                    end
+                )...,
+            ),
+            bad_arg in 1:4
+
+            push!(
+                cases,
+                (
+                    f,
+                    flags...,
+                    bad_arg == 3 ? P(bad) : one(P),
+                    bad_arg == 1 ? N : A,
+                    vector ? (bad_arg == 2 ? nx : x) : (bad_arg == 2 ? N : copy(A)),
+                    bad_arg == 4 ? P(bad) : zero(P),
+                    vector ? y : C,
+                ),
+            )
+        end
+        for f in (BLAS.trmv!, BLAS.trsv!), lhs in (false, true)
+            push!(cases, (f, 'U', 'N', 'N', lhs ? N : A, lhs ? x : nx))
+        end
+        for f in (BLAS.trmm!, BLAS.trsm!), bad_arg in 1:3
+            push!(
+                cases,
+                (
+                    f,
+                    'L',
+                    'U',
+                    'N',
+                    'N',
+                    bad_arg == 3 ? P(bad) : one(P),
+                    bad_arg == 1 ? N : A,
+                    bad_arg == 2 ? N : copy(A),
+                ),
+            )
+        end
+        for f in (P <: Real ? (BLAS.dot, dot) : (BLAS.dotc, BLAS.dotu))
+            push!(cases, (f, nx, x))
+        end
+        for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...), bad_arg in 1:3
+            R = f === BLAS.herk! ? real(P) : P
+            push!(
+                cases,
+                (
+                    f,
+                    'U',
+                    'N',
+                    bad_arg == 2 ? R(bad) : one(R),
+                    bad_arg == 1 ? N : A,
+                    bad_arg == 3 ? R(bad) : zero(R),
+                    C,
+                ),
+            )
+        end
+        for args in cases
+            f = first(args)
+            seed = if f === BLAS.nrm2
+                zero(real(P))
+            elseif f in (BLAS.dot, dot, BLAS.dotc, BLAS.dotu)
+                zero(P)
+            else
+                zero(
+                    if f === BLAS.scal!
+                        args[4]
+                    elseif f === BLAS.axpy!
+                        args[6]
+                    else
+                        last(args)
+                    end,
+                )
+            end
+            ds = map(zero_tangent, args)
+            fd = map(d -> fdata(d) isa NoFData ? nothing : fdata(d), ds)
+            _add_blas_reverse!(
+                test_cases,
+                (args...,),
+                "zero output cotangents with nonfinite operands",
+                seed,
+                (rvs=map(rdata, ds), fdata=fd);
+                cmp=TestUtils.isequal_ignoring_signed_zero,
+                is_primitive=(!(f in (BLAS.dot, BLAS.dotc, BLAS.dotu))),
+            )
+        end
+    end
+
+    return test_cases
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
@@ -4594,7 +4907,412 @@ end
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     # Removable singularity at the zero vector: the nrm2 frule (`s/y`) and reverse pullback
     # (`X*(dy/y)`) are both 0/0 there, so every lane's partial and the gradient must be 0, not NaN.
-    return TestCase[TestCase(BLAS.nrm2, 3, zeros(3), 1)], Any[]
+    test_cases = TestCase[TestCase(BLAS.nrm2, 3, zeros(3), 1)]
+    A, N = ones(1, 1), fill(NaN, 1, 1)
+    C, Z = ones(ComplexF64, 1, 1), fill(ComplexF64(NaN), 1, 1)
+    M, bad = ones(2, 2), fill(NaN, 2, 2)
+    for args in (
+        (BLAS.gemv!, 'N', 0.0, A, [NaN], 1.0, [0.0]),
+        (BLAS.symv!, 'U', 0.0, A, [NaN], 1.0, [0.0]),
+        (BLAS.hemv!, 'U', 0.0im, C, ComplexF64[NaN], 1.0 + 0im, ComplexF64[0]),
+        (BLAS.gemm!, 'N', 'N', 0.0, M, bad, 1.0, zeros(2, 2)),
+        (BLAS.gemm!, 'N', 'N', 0.0, bad, M, 1.0, zeros(2, 2)),
+        (BLAS.syrk!, 'U', 'N', 0.0, N, 1.0, zeros(1, 1)),
+        (BLAS.herk!, 'U', 'N', 0.0, Z, 1.0, zeros(ComplexF64, 1, 1)),
+        (BLAS.trmm!, 'L', 'U', 'N', 'N', 0.0, A, N),
+        (BLAS.trsm!, 'L', 'U', 'N', 'N', 0.0, N, A),
+    )
+        op = first(args)
+        triangular = op in (BLAS.trmm!, BLAS.trsm!)
+        ai = if triangular
+            6
+        elseif op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+            3
+        else
+            4
+        end
+        seed = one.(last(args))
+        da = op === BLAS.hemv! ? dot(ComplexF64[NaN], ComplexF64[1]) : NaN
+        rvs = ntuple(length(args)) do i
+            if i == ai
+                da
+            elseif !triangular && i == length(args) - 1
+                zero(args[i])
+            else
+                NoRData()
+            end
+        end
+        fd = ntuple(length(args)) do i
+            args[i] isa AbstractArray || return nothing
+            !triangular && i == length(args) ? copy(seed) : zero(args[i])
+        end
+        _add_blas_reverse!(
+            test_cases,
+            (args...,),
+            "zero alpha array cotangents",
+            seed,
+            (rvs=rvs, fdata=fd);
+            cmp=TestUtils.isequal_ignoring_signed_zero,
+        )
+    end
+    for N in (1, 2, 3)
+        ref = if N == 1
+            (value=0.0, deriv=(fwd=0.0,), cmp=(===))
+        else
+            (
+                value=0.0,
+                lanes=ntuple(_ -> (seed=(NoTangent(), Float64[], Float64[]), value=0.0), N),
+                cmp=(===),
+            )
+        end
+        push!(
+            test_cases,
+            TestCase(
+                dot,
+                CoDual(Float64[], Float64[]),
+                CoDual(Float64[], Float64[]);
+                name="empty dot gives exactly-zero partials",
+                mode=ForwardMode,
+                chunk_size=N,
+                reference=ref,
+            ),
+        )
+        args = (
+            BLAS.trsm!, 'L', 'U', 'N', 'U', 0.0, fill(NaN, 3, 3), randn(rng_ctor(4), 3, 3)
+        )
+        seeds = zero_tangent(args)
+        ref = if N == 1
+            (value=zeros(3, 3), deriv=(fwd=zeros(3, 3),), cmp=(a, b) -> all(iszero, a))
+        else
+            (
+                value=zeros(3, 3),
+                lanes=ntuple(_ -> (seed=seeds, value=zeros(3, 3)), N),
+                cmp=(a, b) -> all(iszero, a),
+            )
+        end
+        push!(
+            test_cases,
+            TestCase(
+                map(CoDual, args, seeds)...;
+                name="trsm! zero alpha with unseeded partials",
+                mode=ForwardMode,
+                chunk_size=N,
+                reference=ref,
+            ),
+        )
+    end
+    syrk_A = randn(rng_ctor(1), 3, 2)
+    for C in (fill(NaN, 3, 3), randn(rng_ctor(2), 3, 3))
+        ref = if isnan(C[1, 1])
+            (
+                deriv=(fwd=:no_nan_upper,),
+                cmp=(d, e) -> !any(isnan, [d[i, j] for i in 1:3 for j in i:3]),
+            )
+        else
+            (deriv=(fwd=triu(C),), cmp=(d, e) -> all(isapprox.(d, e)))
+        end
+        push!(
+            test_cases,
+            TestCase(
+                BLAS.syrk!,
+                'U',
+                'N',
+                CoDual(1.0, 0.0),
+                CoDual(syrk_A, zero(syrk_A)),
+                CoDual(0.0, 1.0),
+                CoDual(copy(C), zeros(3, 3));
+                name="syrk! beta derivative with unused NaN entries",
+                mode=ForwardMode,
+                chunk_size=1,
+                reference=ref,
+            ),
+        )
+    end
+    function broadcast_product!(C, X, Y, a, add)
+        if add
+            C .+= a .* X .* Y'
+        else
+            C .= a .* X .* Y'
+        end
+        return C
+    end
+    for P in (Float32, Float64, ComplexF32, ComplexF64)
+        big = P <: Union{Float32,ComplexF32} ? 1.0f30 : 1e200
+        for add in (false, true),
+            (a, da, x, dx, y, dy) in (
+                (1, big, 1, -big, big, 0),
+                (0, inv(big), inv(big), 0, big, 0),
+                (0, big, big, 1, inv(big), 2),
+                (0, 1, NaN, 0, 1, 0),
+                (0, 0, Inf, 0, 1, 0),
+            )
+
+            args = (_rvs_muladd!, zeros(P, 1, 1), P[x], P[y], P(a), 'N', 'C', add, true)
+            seeds = (
+                NoTangent(),
+                ones(P, 1, 1),
+                P[dx],
+                P[dy],
+                P(da),
+                NoTangent(),
+                NoTangent(),
+                NoTangent(),
+                NoTangent(),
+            )
+            bargs = (broadcast_product!, zeros(P, 1, 1), P[x], P[y], P(a), add)
+            bseeds = (NoTangent(), ones(P, 1, 1), P[dx], P[dy], P(da), NoTangent())
+            deriv = (fwd=() -> _blas_test_jvp(bargs, bseeds; derived=true),)
+            ref = if iszero(a)
+                (
+                    value=:zero_primal,
+                    deriv=deriv,
+                    cmp=(v, e) -> e === :zero_primal ? iszero(v) : isequal(v, e),
+                )
+            else
+                (deriv=deriv, cmp=isequal)
+            end
+            push!(
+                test_cases,
+                TestCase(
+                    map(CoDual, args, seeds)...;
+                    name="vector accumulation follows scalar frules",
+                    mode=ForwardMode,
+                    chunk_size=1,
+                    reference=ref,
+                ),
+            )
+        end
+    end
+    for (a, lhs, rhs, seed) in
+        ((1e-300, 1e-200, 1e200, 1e200), (1e300, 1e-100, 1e-200, 1e-200)),
+        P in (Float64, ComplexF64),
+        op in (
+            BLAS.gemv!,
+            BLAS.symv!,
+            BLAS.symm!,
+            (P <: Complex ? (BLAS.hemv!, BLAS.hemm!) : ())...,
+        )
+
+        args = if op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!)
+            (
+                op,
+                op === BLAS.gemv! ? 'N' : 'U',
+                P(a),
+                fill(P(lhs), 1, 1),
+                P[rhs],
+                zero(P),
+                zeros(P, 1),
+            )
+        else
+            (
+                op,
+                'L',
+                'U',
+                P(a),
+                fill(P(lhs), 1, 1),
+                fill(P(rhs), 1, 1),
+                zero(P),
+                zeros(P, 1, 1),
+            )
+        end
+        i = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? 4 : 5
+        expected = () -> if i == 4
+            (a * seed) * rhs
+        else
+            # symm!/hemm! pin the documented range limit here, not the exact derivative.
+            tmp = only(P(a)' * fill(P(seed), 1, 1) * fill(P(rhs), 1, 1)')
+            op === BLAS.hemm! ? tmp + tmp' - real(tmp) : tmp + tmp - tmp
+        end
+        dy = fill(P(seed), size(last(args)))
+        rvs = () -> begin
+            ref_A, ref_B = args[i], args[i + 1]
+            da = if i == 4
+                dot(
+                    ref_B,
+                    if op === BLAS.gemv!
+                        BLAS.gemv('C', one(P), ref_A, dy)
+                    elseif op === BLAS.symv!
+                        BLAS.symv('U', one(P), ref_A, dy)
+                    else
+                        BLAS.hemv('U', one(P), ref_A, dy)
+                    end,
+                )
+            else
+                dot(
+                    if op === BLAS.symm!
+                        BLAS.symm('L', 'U', one(P), ref_A, ref_B)
+                    else
+                        BLAS.hemm('L', 'U', one(P), ref_A, ref_B)
+                    end,
+                    dy,
+                )
+            end
+            ntuple(j -> if j == i - 1
+                da
+            elseif j == length(args) - 1
+                zero(P)
+            else
+                NoRData()
+            end, length(args))
+        end
+        fd = ntuple(length(args)) do j
+            args[j] isa AbstractArray || return nothing
+            if j == i
+                () -> (
+                    value=fill(P(expected()), size(args[j])),
+                    cmp=TestUtils.isequal_ignoring_signed_zero,
+                )
+            elseif j == i + 1
+                () -> if op === BLAS.gemv!
+                    BLAS.gemv('C', P(a)', args[i], dy)
+                elseif op === BLAS.symv!
+                    BLAS.symv('U', P(a)', args[i], dy)
+                elseif op === BLAS.hemv!
+                    BLAS.hemv('U', P(a)', args[i], dy)
+                elseif op === BLAS.symm!
+                    BLAS.symm('L', 'U', P(a)', args[i], dy)
+                else
+                    BLAS.hemm('L', 'U', P(a)', args[i], dy)
+                end
+            else
+                zero(args[j])
+            end
+        end
+        _add_blas_reverse!(
+            test_cases,
+            (args...,),
+            "finite extreme array cotangents",
+            dy,
+            (rvs=rvs, fdata=fd);
+            cmp=_blas_test_cmp,
+        )
+    end
+
+    for P in (Float64, ComplexF64),
+        op in (
+            BLAS.gemm!,
+            BLAS.symm!,
+            BLAS.symv!,
+            (P <: Complex ? (BLAS.hemm!, BLAS.hemv!) : ())...,
+        ),
+        (a, b, seed, expected) in
+        ((1e200, 1e100, 1e100, Inf), (1e-200, 1e-100, 1e-100, 0.0))
+
+        vector = op in (BLAS.symv!, BLAS.hemv!)
+        flags = if vector
+            ('U',)
+        elseif op === BLAS.gemm!
+            ('N', 'N')
+        else
+            ('L', 'U')
+        end
+        dims = vector ? (1,) : (1, 1)
+        args = (
+            op,
+            flags...,
+            one(P),
+            fill(P(a), 1, 1),
+            fill(P(b), dims),
+            zero(P),
+            zeros(P, dims),
+        )
+        dy = fill(P(seed), dims)
+        ai = length(flags) + 2
+        rvs = (value=ntuple(j -> if j == ai
+            P(expected)
+        elseif j == length(args) - 1
+            zero(P)
+        else
+            NoRData()
+        end, length(args)), cmp=isequal)
+        fd = ntuple(length(args)) do j
+            if j == ai + 1
+                fill(P(b) * P(seed), size(args[j]))
+            elseif j == ai + 2
+                if op === BLAS.gemm!
+                    () -> BLAS.gemm('C', 'N', one(P)', args[ai + 1], dy)
+                else
+                    fill(P(a) * P(seed), size(args[j]))
+                end
+            elseif j == length(args)
+                zero(args[j])
+            else
+                nothing
+            end
+        end
+        _add_blas_reverse!(
+            test_cases,
+            (args...,),
+            "fast coefficient cotangent extremes",
+            dy,
+            (rvs=rvs, fdata=fd);
+            cmp=_blas_test_cmp,
+        )
+    end
+
+    for (op, P) in ((BLAS.symm!, Float64), (BLAS.hemm!, ComplexF64)),
+        side in "LR", n in (1, 2, 3, 16),
+        (a, b, c) in (
+            (1e200, 1e-200, 1e200),
+            (1e-200, 1e200, 1e-200),
+            (1e200, 1e200, 1e-200),
+            (1e-200, 1e-200, 1e200),
+        )
+
+        rhs, seed = fill(P(b), n, n), fill(P(c), n, n)
+        args = (op, side, 'U', P(a), ones(P, n, n), rhs, zero(P), zeros(P, n, n))
+        rvs =
+            () -> (
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                dot(
+                    if op === BLAS.symm!
+                        BLAS.symm(side, 'U', one(P), args[5], rhs)
+                    else
+                        BLAS.hemm(side, 'U', one(P), args[5], rhs)
+                    end,
+                    seed,
+                ),
+                NoRData(),
+                NoRData(),
+                zero(P),
+                NoRData(),
+            )
+        expected =
+            () -> begin
+                product = side == 'L' ? P(a)' * seed * rhs' : P(a)' * rhs' * seed
+                projected = Matrix(
+                    transpose(LowerTriangular(product)) + UpperTriangular(product)
+                )
+                projected[diagind(projected)] .-= diag(product)
+                projected
+            end
+        fd = ntuple(length(args)) do j
+            args[j] isa AbstractArray || return nothing
+            if j == 5
+                () -> (value=expected(), cmp=TestUtils.isequal_ignoring_signed_zero)
+            elseif j == 6
+                () -> if op === BLAS.symm!
+                    BLAS.symm(side, 'U', P(a)', args[5], seed)
+                else
+                    BLAS.hemm(side, 'U', P(a)', args[5], seed)
+                end
+            else
+                zero(args[j])
+            end
+        end
+        _add_blas_reverse!(
+            test_cases,
+            (args...,),
+            "matrix reference extremes",
+            seed,
+            (rvs=rvs, fdata=fd);
+            cmp=_blas_test_cmp,
+        )
+    end
+
+    return test_cases, Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     test_cases = TestCase[
@@ -4604,6 +5322,112 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
         TestCase(BLAS.lbt_set_num_threads, 1; perf_flag=:stability),
         TestCase((x -> sum(complex(x) * x)), rand(rng_ctor(123), 5, 5)),
     ]
+    # Construct operands inside the callable: only the scalar coefficient is differentiated.
+    for op in (BLAS.gemv!, BLAS.symv!, BLAS.gemm!, BLAS.syrk!)
+        f = b -> begin
+            local A = randn(rng_ctor(3), 3, 3)
+            local B = randn(rng_ctor(4), 3, 3)
+            xx = randn(rng_ctor(5), 3)
+            if op in (BLAS.gemv!, BLAS.symv!)
+                z = [NaN, 1.0, 2.0]
+                if op === BLAS.gemv!
+                    op('N', 1.0, A, xx, b, z)
+                else
+                    op('U', 1.0, (A + A') / 2, xx, b, z)
+                end
+                z[2]
+            else
+                Z = [NaN 1.0 2.0; 3.0 4.0 5.0; 6.0 7.0 8.0]
+                if op === BLAS.gemm!
+                    op('N', 'N', 1.0, A, B, b, Z)
+                else
+                    op('U', 'N', 1.0, A, b, Z)
+                end
+                Z[2, 2]
+            end
+        end
+        expected = op in (BLAS.gemv!, BLAS.symv!) ? 1.0 : 4.0
+        _add_blas_reverse!(
+            test_cases,
+            (f, 2.0),
+            "beta gradient ignores a NaN in an unused entry",
+            1.0,
+            (rvs=(NoRData(), expected),);
+            cmp=(==),
+        )
+    end
+    for op in (BLAS.gemm!, BLAS.gemv!, BLAS.syrk!)
+        f = a -> begin
+            local M = [NaN 0.0 0.0; 1.0 2.0 3.0; 4.0 5.0 6.0]
+            if op === BLAS.gemv!
+                z = zeros(3)
+                op('N', a, M, randn(rng_ctor(6), 3), 1.0, z)
+                z[2]
+            else
+                Z = zeros(3, 3)
+                if op === BLAS.gemm!
+                    op('N', 'N', a, M, randn(rng_ctor(4), 3, 3), 1.0, Z)
+                else
+                    op('U', 'N', a, M, 1.0, Z)
+                end
+                Z[2, 2]
+            end
+        end
+        M = [NaN 0.0 0.0; 1.0 2.0 3.0; 4.0 5.0 6.0]
+        expected = if op === BLAS.gemm!
+            (M * randn(rng_ctor(4), 3, 3))[2, 2]
+        elseif op === BLAS.gemv!
+            (M * randn(rng_ctor(6), 3))[2]
+        else
+            (M * M')[2, 2]
+        end
+        _add_blas_reverse!(
+            test_cases,
+            (f, 2.0),
+            "alpha gradient ignores a NaN outside the selected output",
+            1.0,
+            (rvs=(NoRData(), expected),);
+            cmp=isapprox,
+        )
+    end
+    _add_blas_reverse!(
+        test_cases,
+        (a -> (z=[NaN, 2.0, 3.0]; BLAS.scal!(3, a, z, 1); z[2]), 2.0),
+        "scal! alpha gradient ignores unused NaN",
+        1.0,
+        (rvs=(NoRData(), 2.0),);
+        cmp=(==),
+    )
+    for P in (Float32, Float64, ComplexF32, ComplexF64)
+        f = a -> (y=P[NaN, 2]; BLAS.axpy!(2, a, P[NaN, 3], 1, y, 1); real(y[2]))
+        _add_blas_reverse!(
+            test_cases,
+            (f, P(2)),
+            "axpy! alpha gradient ignores unused NaN",
+            one(real(P)),
+            (rvs=(NoRData(), P(3)),);
+            cmp=(==),
+        )
+    end
+    for op in (BLAS.trmm!, BLAS.trsm!)
+        f = a -> begin
+            local A = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
+            local B = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
+            op('L', 'U', 'N', 'N', a, A, B)
+            B[1, 1]
+        end
+        A = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
+        B = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
+        expected = op === BLAS.trmm! ? (A * B)[1, 1] : (A \ B)[1, 1]
+        _add_blas_reverse!(
+            test_cases,
+            (f, 2.0),
+            "triangular alpha gradient ignores an unused NaN column",
+            1.0,
+            (rvs=(NoRData(), expected),);
+            cmp=isapprox,
+        )
+    end
     return test_cases, Any[]
 end
 
