@@ -495,6 +495,16 @@ end
         @test Mooncake.tangent_to_friendly!!(S, tx_S) == tx_S_data
     end
 
+    @testset "friendly custom and non-differentiable tangents" begin
+        struct FriendlyInt
+            n::Int
+        end
+        for p in (FriendlyInt(3), Base.TwicePrecision(1.0, 1e-17))
+            t = zero_tangent(p)
+            @test Mooncake.tangent_to_friendly!!(p, t) === t
+        end
+    end
+
     @testset "friendly_tangent_cache recursive struct" begin
         # Struct with a Symmetric field: friendly_tangent_cache should recurse and return
         # a NamedTuple with a FriendlyTangentCache{AsCustomised} for the matrix field.

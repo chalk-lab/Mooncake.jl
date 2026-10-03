@@ -1503,14 +1503,8 @@ live in `src/rules/linear_algebra.jl`.
         dest_exprs = [:(friendly_tangent_cache(getfield(x, $i))) for i in 1:fieldcount(P)]
         return :(($(dest_exprs...),))
     end
-    # Immutable struct with fields: recurse element-wise and return a NamedTuple dest.
-    # Mutable types are excluded for two reasons:
-    #   1. They can be recursive (e.g. tree nodes), making field-by-field descent infinite.
-    #   2. Calling tangent_type(P) here would invoke a generated function from another
-    #      generated function's body, risking world-age cycles (see AGENTS.md).
-    # Immutable structs are safe: they cannot be self-referential (infinite memory) and
-    # always have a standard Tangent{...} tangent type.
-    # AbstractArray and AbstractDict subtypes have dedicated overloads; exclude for clarity.
+    # Custom struct tangents need not be field-parallel to their primal.
+    # Check tangent_type in the returned expression so later custom methods remain visible.
     if !isprimitivetype(P) &&
         !ismutabletype(P) &&
         fieldcount(P) > 0 &&
@@ -1535,7 +1529,13 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(NamedTuple{$names}(($(dest_exprs...),)))
+        return :(
+            if ($P <: NamedTuple || tangent_type($P) <: Tangent)
+                NamedTuple{$names}(($(dest_exprs...),))
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Non-float arrays need element caches only for differentiable elements.
     # Emit the `tangent_type` call at runtime so later extension overloads remain visible.
@@ -1573,9 +1573,15 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(FriendlyTangentCache{AsMutableFields}(
-            NamedTuple{$names}(($(dest_exprs...),))
-        ))
+        return :(
+            if tangent_type($P) <: MutableTangent
+                FriendlyTangentCache{AsMutableFields}(
+                    NamedTuple{$names}(($(dest_exprs...),))
+                )
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Everything else: primitives, zero-field types, and custom-tangent types.
     return :(friendly_tangent_cache_internal(x))
