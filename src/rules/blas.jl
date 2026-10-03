@@ -334,9 +334,7 @@ function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:Abstra
     return arrayify(x_dx)
 end
 
-function viewify(
-    n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
-) where {P<:BlasFloat}
+function viewify(n::Integer, x_dx::CoDual{Ptr{P}}, incx::Integer) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
     # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
     # pointer rule comes through here, and accumulating into it would mutate the primal.
@@ -366,7 +364,7 @@ end
 end
 
 function viewify(
-    n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
+    n::Integer, x_dx::CoDual{A}, incx::Integer
 ) where {A<:Transpose{<:BlasFloat}}
     x = parent(primal(x_dx))
     dx = _fields(tangent(x_dx)).parent
@@ -374,7 +372,7 @@ function viewify(
 end
 
 function viewify(
-    n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
+    n::Integer, x_dx::CoDual{A}, incx::Integer
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
@@ -1482,7 +1480,7 @@ function rrule!!(
     primal(incx) <= 0 &&
         throw(ArgumentError("Mooncake BLAS.nrm2 requires a positive increment"))
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(max(primal(n), 0), X_dX, max(primal(incx), 1))
+    X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
         # Choose the zero subgradient at the zero vector to avoid division by zero.
         # `dy / y` and `X .* (dy / y)` can over- or underflow at extreme finite inputs
@@ -3732,6 +3730,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             args = input ? (x, 0, y, 1) : (y, 1, x, 0)
             (plain..., BLAS.axpy!, 3, P(2), args...)
         end...,
+        (plain..., BLAS.axpy!, Int32(4), P(2), randn(rng, P, 4), 1, randn(rng, P, 4), 1),
+        (
+            plain...,
+            BLAS.axpy!,
+            4,
+            P(2),
+            randn(rng, P, 4),
+            Int32(1),
+            randn(rng, P, 4),
+            Int32(1),
+        ),
+        (plain..., BLAS.scal!, Int32(4), P(2), randn(rng, P, 4), Int32(1)),
+        (plain..., BLAS.nrm2, Int32(4), randn(rng, P, 4), Int32(1)),
         map([-1, 0]) do inc
             (
                 false,
