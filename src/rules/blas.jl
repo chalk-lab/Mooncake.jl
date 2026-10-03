@@ -1264,9 +1264,19 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
+    xv, dxv = if x isa AbstractVector
+        (x, dx)
+    else
+        (_viewify_one(length(x), x, 1), _viewify_one(length(x), dx, 1))
+    end
+    yv, dyv = if y isa AbstractVector
+        (y, dy)
+    else
+        (_viewify_one(length(y), y, 1), _viewify_one(length(y), dy, 1))
+    end
     function blas_dot_pb!!(dv::P)
-        _rvs_axpy!(*, dx, y, dv, iszero(dv))
-        _rvs_axpy!(*, dy, x, dv, iszero(dv))
+        _rvs_axpy!(*, dxv, yv, dv, iszero(dv))
+        _rvs_axpy!(*, dyv, xv, dv, iszero(dv))
         return NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(BLAS.dot(x, y)), blas_dot_pb!!
@@ -3762,6 +3772,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             if P <: Real
                 Any[
                     (plain..., BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                    (plain..., BLAS.dot, randn(rng, P, 2, 3), randn(rng, P, 6)),
+                    (
+                        plain...,
+                        BLAS.dot,
+                        transpose(view(randn(rng, P, 6), 6:-2:2)),
+                        randn(rng, P, 3),
+                    ),
                     (
                         plain...,
                         BLAS.dot,
