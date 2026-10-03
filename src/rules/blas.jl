@@ -1628,11 +1628,83 @@ end
 # Pass acc by value to avoid boxing a reassigned closure capture (see _nrm2_accum).
 # Share by conjugation, independent of eltype; bind only Nw for the empty tuple (Aqua).
 @inline _dotc_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
-    k -> acc[k] + conj(xc[k]) * y + conj(x) * yc[k], Val(Nw)
+    k ->
+        acc[k] +
+        _rvs_zero(conj(xc[k]) * y, iszero(xc[k]) | iszero(y)) +
+        _rvs_zero(conj(x) * yc[k], iszero(x) | iszero(yc[k])),
+    Val(Nw),
 )
 @inline _dotu_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
-    k -> acc[k] + xc[k] * y + x * yc[k], Val(Nw)
+    k ->
+        acc[k] +
+        _rvs_zero(xc[k] * y, iszero(xc[k]) | iszero(y)) +
+        _rvs_zero(x * yc[k], iszero(x) | iszero(yc[k])),
+    Val(Nw),
 )
+
+# The short wrappers convert arrays to raw pointers before reaching the long rules.
+# Intercept them while lane strides and reversed views still have logical indices.
+for (f, accum) in ((:dotc, :_dotc_accum), (:dotu, :_dotu_accum))
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(BLAS.$f),X,Y
+        } where {T<:BlasComplexFloat,X<:AbstractArray{T},Y<:AbstractArray{T}}
+    )
+    @eval function frule!!(
+        ::Lifted{typeof(BLAS.$f),N},
+        x::Lifted{<:AbstractArray{T}},
+        y::Lifted{<:AbstractArray{T}},
+    ) where {T<:BlasComplexFloat,N}
+        xp, yp = primal(x), primal(y)
+        z = BLAS.$f(xp, yp)
+        dz = if tangent(x) isa NDualArray && tangent(y) isa NDualArray
+            xc = reinterpret(reshape, NTuple{N,T}, first(_partials_block(x)))
+            yc = reinterpret(reshape, NTuple{N,T}, first(_partials_block(y)))
+            a = ntuple(_ -> zero(T), Val(N))
+            @inbounds for i in 1:length(xp)
+                a = $accum(a, xc[i], yc[i], xp[i], yp[i])
+            end
+            a
+        else
+            _, dxs = arrayify(x)
+            _, dys = arrayify(y)
+            a = ntuple(_ -> zero(T), Val(N))
+            @inbounds for i in 1:length(xp)
+                xc = ntuple(k -> dxs[k][i], Val(N))
+                yc = ntuple(k -> dys[k][i], Val(N))
+                a = $accum(a, xc, yc, xp[i], yp[i])
+            end
+            a
+        end
+        return Lifted{T,N}(z, _scalar_ndual(z, dz))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(BLAS.$f)},
+        x::CoDual{<:AbstractArray{T}},
+        y::CoDual{<:AbstractArray{T}},
+    ) where {T<:BlasComplexFloat}
+        xp, dx = arrayify(x)
+        yp, dy = arrayify(y)
+        z = BLAS.$f(xp, yp)
+        function dot_pb!!(dz)
+            @inbounds for i in 1:length(xp)
+                dx[i] += _rvs_zero(
+                    _rvs_mul(
+                        $(f === :dotc ? :(yp[i]) : :(conj(yp[i]))),
+                        $(f === :dotc ? :(conj(dz)) : :dz),
+                    ),
+                    iszero(yp[i]),
+                )
+                dy[i] += _rvs_zero(
+                    _rvs_mul($(f === :dotc ? :(xp[i]) : :(conj(xp[i]))), dz), iszero(xp[i])
+                )
+            end
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(z), dot_pb!!
+    end
+end
 
 for (jlfname, elty) in
     ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
@@ -3543,6 +3615,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         map((BLAS.asum, BLAS.nrm2)) do f
             (plain..., f, 3, view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3), 10)
         end...,
+        (
+            if P <: Complex
+                map_prod(
+                    (BLAS.dotc, BLAS.dotu),
+                    (
+                        (randn(rng, P, 4), randn(rng, P, 4)),
+                        (view(randn(rng, P, 8), 1:2:8), view(randn(rng, P, 8), 8:-2:2)),
+                        (randn(rng, P, 4), randn(rng, P, 2, 2)),
+                        (P[], P[]),
+                    ),
+                ) do (f, xy)
+                    (false, :stability_and_allocs, nothing, f, xy...)
+                end
+            else
+                []
+            end
+        )...,
 
         # nrm2(n, x, incx)
         map_prod([5, 3], [1, 2]) do (n, incx)
