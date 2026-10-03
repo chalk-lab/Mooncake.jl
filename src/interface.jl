@@ -540,12 +540,6 @@ end
 # distinct primals may use the same direction, but a shared primal cannot carry two directions.
 function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     isbitstype(T) && return nothing
-    if expected isa MistyClosureTangent
-        # The compiled dual callable is code, not derivative storage (as in `tangent_dim`).
-        return _check_tangent_storage!(
-            seen, expected.captures_tangent, supplied.captures_tangent
-        )
-    end
     if expected isa AbstractArray
         (isempty(expected) || eltype(expected) === NoTangent) && return nothing
     end
@@ -576,7 +570,7 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
                 _check_tangent_storage!(seen, expected[i], supplied[i])
         end
     else
-        for i in 1:fieldcount(T)
+        for i in _tangent_fields(T)
             isdefined(expected, i) &&
                 _check_tangent_storage!(seen, getfield(expected, i), getfield(supplied, i))
         end
@@ -4005,7 +3999,7 @@ end
         seen[t] = nothing
     end
     total = 0
-    for n in 1:fieldcount(P)
+    for n in _tangent_fields(P)
         isdefined(t, n) && (total += tangent_dim(getfield(t, n), seen))
     end
     return total

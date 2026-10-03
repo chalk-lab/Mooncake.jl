@@ -19,9 +19,13 @@ end
 
 # Only captures carry tangent dimensions; walking dual_callable can recurse unboundedly
 # into compiled IR.
-@inline tangent_dim(t::MistyClosureTangent, seen::IdDict{Any,Any}) = tangent_dim(
-    t.captures_tangent, seen
-)
+_tangent_fields(::Type{MistyClosureTangent}) = (:captures_tangent,)
+
+function _basis_seed!!(v::MistyClosureTangent, slots::NTuple{N,Int}, cursor, dict) where {N}
+    return MistyClosureTangent(
+        _basis_seed!!(v.captures_tangent, slots, cursor, dict), v.dual_callable
+    )
+end
 
 # Build a forward-mode rule for a MistyClosure using its original world age.
 #

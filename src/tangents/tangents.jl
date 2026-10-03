@@ -8,6 +8,10 @@ You might need to use this for `primitive type`s though.
 """
 struct NoTangent end
 
+# Fields containing derivative storage. Custom tangents must exclude executable code;
+# mutable identity/cycle guards belong to the walkers, before descending into these fields.
+_tangent_fields(::Type{T}) where {T} = fieldnames(T)
+
 """
     PossiblyUninitTangent{T}
 

@@ -57,6 +57,15 @@ end
     ir.argtypes[1] = Tuple{Float64}
     mc2 = Mooncake.MistyClosure(ir, 5.0)
     @test mc2(4.0) == 9.0
+    t = zero_tangent(mc2)
+    @test Mooncake.tangent_to_friendly!!(mc2, t) === t
+    @test Mooncake.tangent_to_friendly!!(mc2.oc, zero_tangent(mc2.oc)).captures == (0.0,)
+    for N in (1, 2)
+        seed = Mooncake.basis_lifted!!(Mooncake.zero_lifted(Val(N), mc2), ntuple(_ -> 1, N))
+        out = Mooncake.frule!!(seed, Mooncake.zero_lifted(Val(N), 4.0))
+        @test primal(out) == 9.0
+        @test all(k -> tangent(out, k) == 1.0, 1:N)
+    end
     TestUtils.test_rule(
         StableRNG(123),
         mc2,

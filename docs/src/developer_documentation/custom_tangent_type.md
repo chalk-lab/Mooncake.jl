@@ -792,8 +792,20 @@ cyclic_a.a.a = cyclic_a
 Mooncake.TestUtils.test_data(Random.default_rng(), cyclic_a)
 ```
 
-### Friendly output
+### Derivative storage in custom tangents
 
+`_tangent_fields` and `_basis_seed!!` are internal hooks;
+their signatures and behaviour may change without a public API deprecation.
+
+If a custom tangent contains executable rules or other non-derivative fields, define
+`Mooncake._tangent_fields(::Type{<:MyTangent})` to return only the field names holding
+derivative storage. Dimension counting and shared-storage validation use these fields,
+keeping their identity guards for aliases and cycles. The FunctionWrappers extension
+selects only `(:dobj_ref,)`; its compiled closures are never derivative storage.
+
+Custom forward representations also need a `Mooncake._basis_seed!!` method that seeds
+that same storage, threads the supplied cursor and identity cache, and preserves the
+executable fields. The callable must read the seeded storage when it runs.
 Friendly conversion defaults to the raw tangent for custom tangent types; override
 `friendly_tangent_cache` when a different representation is needed; see
 [Customising Friendly Gradients](@ref). This user hook must not recurse through

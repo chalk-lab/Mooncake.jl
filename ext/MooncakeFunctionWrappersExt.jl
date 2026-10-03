@@ -4,6 +4,12 @@ using Random
 using FunctionWrappers: FunctionWrapper
 import Mooncake:
     TestUtils,
+    _tangent_fields,
+    _basis_seed!!,
+    _materialise_lane,
+    friendly_tangent_cache,
+    FriendlyTangentCache,
+    AsRaw,
     _add_to_primal_internal,
     _zero_dual_internal,
     _uninit_dual_internal,
@@ -54,11 +60,30 @@ import Mooncake:
 # Fields:
 # - fwds_wrapper: reverse-mode forward pass (OpaqueClosure capturing rrule)
 # - frule_wrapper: forward-mode rule (OpaqueClosure capturing frule)
-# - dobj_ref: tangent of the wrapped callable
+# - dobj_ref: native tangent, or the cached forward slot, of the wrapped callable
+# - frule: compiled rule retained for lifting native tangents without another lookup
 mutable struct FunctionWrapperTangent{Tfwds_oc,Tfrule_oc}
     fwds_wrapper::Tfwds_oc
     frule_wrapper::Tfrule_oc
     dobj_ref::Ref
+    frule::Any
+end
+
+_tangent_fields(::Type{<:FunctionWrapperTangent}) = (:dobj_ref,)
+
+# The primal's pointer and type metadata have no friendly derivative representation.
+friendly_tangent_cache(::FunctionWrapper) = FriendlyTangentCache{AsRaw}(nothing)
+
+function _basis_seed!!(
+    v::FunctionWrapperTangent, slots::NTuple{N,Int}, cursor, dict
+) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    ref = v.dobj_ref
+    haskey(dict, ref) && return v
+    dict[ref] = ref
+    ref[] = _basis_seed!!(ref[], slots, cursor, dict)
+    return v
 end
 
 function _construct_rrule_types(R, A)
@@ -104,22 +129,29 @@ end
 @foldable dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} =
     FunctionWrapperTangent
 lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
-function lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent, ::Union{Nothing,IdDict})
-    return Lifted{typeof(x),1,typeof(ẋ)}(x, ẋ)
+function lift(
+    x::FunctionWrapper{R,A}, ẋ::FunctionWrapperTangent, c::Union{Nothing,IdDict}
+) where {R,A}
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::Lifted{typeof(x),1}
+    obj = lift(x.obj[], ẋ.dobj_ref[], d)
+    v = _function_wrapper_forward_tangent(R, A, obj, Val(1), ẋ)
+    return d[x] = Lifted{typeof(x),1}(x, v)
 end
-# A `FunctionWrapperTangent` wraps an OpaqueClosure tangent with all `N` lanes baked in,
-# so it cannot be decomposed per lane; at `N == 1` the whole tangent IS lane 1. Wider
-# slots fail loudly rather than hand every lane the full width-`N` tangent.
+# Materialise a native tangent from the selected lane of derivative storage.
 @inline function tangent(
-    x::Lifted{P,N,<:FunctionWrapperTangent}, ::Integer
+    x::Lifted{P,N,<:FunctionWrapperTangent}, lane::Integer
 ) where {P<:FunctionWrapper,N}
-    N == 1 || throw(
-        ArgumentError(
-            "per-lane tangent extraction is unsupported for a width-$N FunctionWrapper " *
-            "slot: its FunctionWrapperTangent bakes all $N lanes into one OpaqueClosure.",
-        ),
-    )
-    return x.rep
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+function _materialise_lane(
+    x::Lifted{FunctionWrapper{R,A},N,<:FunctionWrapperTangent}, lane::Integer, cache::IdDict
+) where {R,A,N}
+    haskey(cache, primal(x)) && return cache[primal(x)]
+    obj = x.rep.dobj_ref[]
+    obj isa Lifted || return x.rep
+    t = _function_wrapper_tangent(R, primal(obj), A, _materialise_lane(obj, lane, cache))[1]
+    return cache[primal(x)] = t
 end
 
 import .TestUtils: has_equal_data_internal
@@ -201,29 +233,35 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
         end
     end
 
-    t = FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref)
+    t = FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref, frule)
     return t, obj_tangent_ref
 end
 
-# The frule closes over the supplied width-N slot (seeded or a constructor argument).
-# Reverse fields keep the type coherent; lane 1 in dobj_ref makes width-1 FD agree with AD.
+# Keep the slot in dobj_ref so basis seeding updates the storage read by the rule.
+# Native lifting can reuse its compiled rule and reverse closures.
 function _function_wrapper_forward_tangent(
-    R, A, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}
+    R, A, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}, source=nothing
 ) where {Tobj,N}
     obj = primal(obj_fwd_slot)
-    run_fwds_pass, obj_tangent_ref = _function_wrapper_reverse_parts(
-        R, obj, A, tangent(obj_fwd_slot, 1)
-    )
-    _, frule_sig, frule_ret = _construct_frule_types(R, A, Val(N))
-    frule = build_frule(
-        get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...}; chunk_size=N
-    )
-    run_frule = @static if VERSION ≥ v"1.12-"
-        Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> frule(obj_fwd_slot, x...)
+    run_fwds_pass = if source === nothing
+        _function_wrapper_reverse_parts(R, obj, A, tangent(obj_fwd_slot, 1))[1]
     else
-        Base.Experimental.@opaque frule_sig (x...) -> frule(obj_fwd_slot, x...)
+        source.fwds_wrapper
     end
-    return FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref)
+    obj_tangent_ref = Ref(obj_fwd_slot)
+    _, frule_sig, frule_ret = _construct_frule_types(R, A, Val(N))
+    frule = if source === nothing
+        build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...}; chunk_size=N)
+    else
+        source.frule
+    end
+    run_frule = @static if VERSION ≥ v"1.12-"
+        Base.Experimental.@opaque frule_sig -> frule_ret (x...) ->
+            frule(obj_tangent_ref[], x...)
+    else
+        Base.Experimental.@opaque frule_sig (x...) -> frule(obj_tangent_ref[], x...)
+    end
+    return FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref, frule)
 end
 
 function zero_tangent_internal(p::FunctionWrapper{R,A}, dict::MaybeCache) where {R,A}
@@ -276,6 +314,8 @@ function _randn_dual_internal(
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:FunctionWrapperTangent}
+    (t === s || haskey(c, t)) && return t
+    c[t] = true
     t.dobj_ref[] = increment_internal!!(c, t.dobj_ref[], s.dobj_ref[])
     return t
 end
@@ -288,7 +328,11 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, p::FunctionWrapper, t::FunctionWrapperTangent, unsafe::Bool
 )
-    return typeof(p)(_add_to_primal_internal(c, p.obj[], t.dobj_ref[], unsafe))
+    key = (p, t, unsafe)
+    haskey(c, key) && return c[key]::typeof(p)
+    q = typeof(p)(_add_to_primal_internal(c, p.obj[], t.dobj_ref[], unsafe))
+    c[key] = q
+    return q
 end
 
 function tangent_to_primal_internal!!(
@@ -309,16 +353,31 @@ function primal_to_tangent_internal!!(
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:FunctionWrapperTangent}
+    key = (t, s)
+    haskey(c, key) && return c[key]::Float64
+    c[key] = 0.0
     return _dot_internal(c, t.dobj_ref[], s.dobj_ref[])::Float64
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrapperTangent}
-    return T(t.fwds_wrapper, t.frule_wrapper, Ref(_scale_internal(c, a, t.dobj_ref[])))
+    haskey(c, t) && return c[t]::T
+    s = T(t.fwds_wrapper, t.frule_wrapper, Ref{typeof(t.dobj_ref[])}(), t.frule)
+    c[t] = s
+    s.dobj_ref[] = _scale_internal(c, a, t.dobj_ref[])
+    return s
 end
 
 # Opaque closures and dobj_ref are not field-parallel to FunctionWrapper; test calls and
 # construction rather than structural field interactions.
 TestUtils.supports_field_access_interactions(::Type{<:FunctionWrapper}) = false
+
+function TestUtils._chunked_v_invariant(
+    p::FunctionWrapper, v::FunctionWrapperTangent, c::IdDict
+)
+    haskey(c, v) && return true
+    c[v] = nothing
+    return TestUtils._chunked_v_invariant(p.obj[], tangent(v.dobj_ref[]), c)
+end
 
 function TestUtils.populate_address_map_internal(
     m::TestUtils.AddressMap, p::FunctionWrapper, t::FunctionWrapperTangent
