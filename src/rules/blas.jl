@@ -1073,6 +1073,11 @@ function frule!!(
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
     x, y = primal(X_dX), primal(Y_dY)
+    Base.require_one_based_indexing(x, y)
+    length(x) == length(y) ||
+        throw(DimensionMismatch("x has length $(length(x)), but y has length $(length(y))"))
+    BLAS.vec_pointer_stride(x)
+    BLAS.vec_pointer_stride(y, ArgumentError("dest vector with 0 stride is not allowed"))
     x === y || _check_blas_output_alias(BLAS.axpby!, y, x)
     a_da, b_db = _fwd_blas_alpha(P, _a), _fwd_blas_alpha(P, _b)
     a, b = primal(a_da), primal(b_db)
@@ -1084,7 +1089,7 @@ function frule!!(
         # Both `β` terms carry the strong zero the other `β`-taking rules use: BLAS discards `y`
         # entirely at `β == 0`, so it may hold undefined values there and `0 * NaN` is `NaN`.
         # Unguarded, `axpby!(a, [2.0], 0.0, [NaN])` gave a JVP of `NaN` on a primal of 2.0.
-        @inbounds for i in eachindex(dy_k, dx_k, x, y)
+        @inbounds for i in 1:length(y)
             t = a * dx_k[i] + da * x[i]
             iszero(b) || (t += b * dy_k[i])
             if !iszero(db)
@@ -1109,11 +1114,13 @@ function rrule!!(
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
     x === y || _check_blas_output_alias(BLAS.axpby!, y, x)
+    xv, dxv = _viewify_one(length(x), x, 1), _viewify_one(length(x), dx, 1)
+    dyv = _viewify_one(length(y), dy, 1)
     y_copy = copy(y)
     BLAS.axpby!(a, x, b, y)
     function axpby!_pb!!(::NoRData)
         copyto!(y, y_copy)
-        ∇a = _rvs_blas_alpha(a_da, _rvs_guarded_dot(x, dy))
+        ∇a = _rvs_blas_alpha(a_da, _rvs_guarded_dot(xv, dyv))
         ∇b = _rvs_blas_alpha(b_db, _rvs_guarded_dot(y_copy, dy))
         if x === y
             # Read the shared cotangent before writing it. Sum first for cancellation,
@@ -1125,7 +1132,7 @@ function rrule!!(
                 dy .= a' .* dy .+ b' .* dy
             end
         else
-            dx .+= _rvs_mul.(dy, a')
+            dxv .+= _rvs_mul.(dyv, a')
             dy .*= b'
         end
         return NoRData(), ∇a, NoRData(), ∇b, NoRData()
@@ -3466,8 +3473,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 (flags..., BLAS.scal!, P(2), x),
             ]
         end...,
-
         (plain..., BLAS.axpy!, P(2), view(ones(P, 3), StepRangeLen(1, 0, 3)), ones(P, 3)),
+        map((
+            (randn(rng, P, 2, 3), randn(rng, P, 6)),
+            (randn(rng, P, 6), randn(rng, P, 2, 3)),
+            (transpose(view(randn(rng, P, 6), 6:-2:2)), randn(rng, P, 3)),
+        )) do (x, y)
+            (plain..., BLAS.axpby!, P(2), x, P(3), y)
+        end...,
+        map((
+            (ones(P, 2), ones(P, 3), DimensionMismatch),
+            (ones(P, 8), view(ones(P, 4, 4), 1:2, :), ArgumentError),
+            (ones(P, 3), view(ones(P, 3), StepRangeLen(1, 0, 3)), ArgumentError),
+        )) do (x, y, err)
+            (
+                false,
+                :none,
+                (throws=err, primal_throws=true),
+                BLAS.axpby!,
+                P(2),
+                x,
+                P(3),
+                y,
+            )
+        end...,
 
         # Convenience forms need their own boundary above width 1; cover strides too.
         Any[
