@@ -23,6 +23,31 @@ using FunctionWrappers: FunctionWrapper
         @test Mooncake.to_cr_tangent(t) === t
     end
 
+    @testset "lifted mutable capture" begin
+        state = Ref(1.0)
+        fw = FunctionWrapper{Float64,Tuple{Float64}}(x -> (state[] += x))
+        dfw = Mooncake.zero_tangent(fw)
+        x = Mooncake.lift(2.0, 1.0)
+        @test_throws r"use lift" Mooncake.Lifted{typeof(fw),1}(fw, dfw)
+        raw = Mooncake.lift(fw, dfw)
+        @test Mooncake.tangent(Mooncake.frule!!(raw, x), 1) == 1.0
+        @test Mooncake.tangent(Mooncake.frule!!(raw, x), 1) == 2.0
+        for _ in 1:2
+            Mooncake.set_to_zero!!(dfw)
+            cache = IdDict()
+            slot = @inferred Mooncake.lift(fw, dfw, cache)
+            @test Mooncake.lift(fw, dfw, cache) === slot
+            @test Mooncake.tangent(Mooncake.frule!!(slot, x), 1) == 1.0
+            @test Mooncake.tangent(Mooncake.frule!!(slot, x), 1) == 2.0
+        end
+    end
+
+    for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+        Mooncake.TestUtils.run_rule_test_cases(
+            StableRNG, Val(:function_wrappers), mode, false
+        )
+    end
+
     # Rule testing.
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
         (
