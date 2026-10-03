@@ -791,3 +791,10 @@ cyclic_a = A(1.0, A(2.0))
 cyclic_a.a.a = cyclic_a
 Mooncake.TestUtils.test_data(Random.default_rng(), cyclic_a)
 ```
+
+### Friendly output
+
+Friendly conversion defaults to the raw tangent for custom tangent types; override
+`friendly_tangent_cache` when a different representation is needed; see
+[Customising Friendly Gradients](@ref). This user hook must not recurse through
+executable code or primal type metadata.

@@ -1,5 +1,8 @@
 # 0.6.0
 
+- Friendly output changes from fieldwise named tuples to raw tangents for custom
+  tangent types and non-differentiable structs (for example, `(n = NoTangent(),)`
+  becomes `NoTangent()`).
 - Forward rules now use `Lifted{P,N}` with `N` tangent lanes instead of `Dual`. Use
   `lift` / `unlift` at the single-direction boundary and `arrayify` for array rules.
 - Remove `NfwdMooncake` and the `Config(enable_nfwd=...)` keyword. Forward caches always
