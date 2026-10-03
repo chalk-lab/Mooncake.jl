@@ -1,6 +1,9 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "..", "ext", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "Flux")
+
+# Every `test_rule` below pins `mode=ReverseMode`; forward mode is not covered. Whether it
+# now works is unverified, and cannot be checked here while Flux caps Mooncake at 0.5 and
+# the line above skips the file.
 
 using Test
 using Bijectors, CUDA, cuDNN, Flux, Mooncake, StableRNGs

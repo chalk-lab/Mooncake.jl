@@ -88,6 +88,13 @@ interfaces that this package defines have been implemented correctly.
 module TestUtils
 
 using Random, Mooncake, Test
+using LinearAlgebra:
+    Hermitian,
+    LowerTriangular,
+    Symmetric,
+    UnitLowerTriangular,
+    UnitUpperTriangular,
+    UpperTriangular
 using Mooncake:
     CoDual,
     NoTangent,
@@ -175,26 +182,44 @@ defining custom behavior.
 """
 test_hook(f, caller, args...; kws...) = f()
 
-function test_opt(x...)
-    test_hook(test_opt, x...) do
-        test_opt_internal(Shim(), x...)
+function test_opt(x...; options...)
+    test_hook(test_opt, x...; options...) do
+        test_opt_internal(Shim(), x...; options...)
     end
 end
-test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
+test_opt_internal(::Any, x...; options...) = throw(error("Load JET to use this function."))
 
-function report_opt(tt)
-    test_hook(report_opt, tt) do
-        report_opt_internal(Shim(), tt)
+function report_opt(x...; options...)
+    test_hook(report_opt, x...; options...) do
+        report_opt_internal(Shim(), x...; options...)
     end
 end
-report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
+function report_opt_internal(::Any, x...; options...)
+    throw(error("Load JET to use this function."))
+end
+
+# Options travel in `visited` to preserve the four-argument extension interface.
+# A fifth argument would lose the option below extension-defined nodes.
+# Singleton option keys cannot collide with visited `(x, y)` pairs.
+struct ExactFloats end
+
+# Only precision narrower than a leaf loosens its tolerance, so
+# `_float_tolerance` only needs to check Float16 and Float32.
+struct FloatPrecision{P} end
 
 """
-    has_equal_data(x, y; equal_undefs=true)
+    has_equal_data(x, y; equal_undefs=true, exact_floats=false, float_precision=Float64)
 
-Determine if two objects `x` and `y` have equivalent data. If `equal_undefs` 
-is `true`, undefined elements in arrays or unassigned fields in structs are 
-considered equal.
+Determine if two objects `x` and `y` have equivalent data. If `equal_undefs`
+is `true`, undefined elements in arrays or unassigned fields in structs are
+considered equal. If `exact_floats` is `true`, floats compare by `isequal` rather than within
+the default tolerance -- use it for structural questions, where a tolerance calibrated for
+comparing computed derivatives is a false positive.
+
+`float_precision` names the precision the values were *computed* in, where that is narrower than
+their own type: a `Float32` reduction feeding a `Float64` result agrees only to `Float32` eps,
+whatever the result's type says, so two implementations free to reduce in different orders differ
+by more than the default tolerance allows. Floats then compare at the looser of the two.
 
 By default, floating-point components are compared approximately, with matching NaNs
 considered equal. This is not bitwise equality: NaN payloads and the sign of zero need not
@@ -205,8 +230,24 @@ The main logic is implemented in `has_equal_data_internal`, which is a recursive
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
 """
-function has_equal_data(x, y; equal_undefs=true)
-    return has_equal_data_internal(x, y, equal_undefs, IdDict{Any,Bool}())
+function has_equal_data(
+    x, y; equal_undefs=true, exact_floats=false, float_precision=Float64
+)
+    float_precision in (Float16, Float32, Float64) || throw(
+        ArgumentError(
+            "float_precision must be Float16, Float32 or Float64, got $float_precision"
+        ),
+    )
+    visited = IdDict{Any,Bool}()
+    exact_floats && (visited[ExactFloats()] = true)
+    float_precision === Float64 || (visited[FloatPrecision{float_precision}()] = true)
+    return has_equal_data_internal(x, y, equal_undefs, visited)
+end
+
+function _float_tolerance(::Type{P}, d::IdDict{Any,Bool}) where {P<:Base.IEEEFloat}
+    haskey(d, FloatPrecision{Float16}()) && return max(√eps(P), √eps(Float16))
+    haskey(d, FloatPrecision{Float32}()) && return max(√eps(P), √eps(Float32))
+    return √eps(P)
 end
 
 function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
@@ -225,8 +266,10 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
-    # Pass an atol such that we can compare approximately against 0 values.
-    return isapprox(x, y; atol=(√eps(P)), nans=true)
+    haskey(d, ExactFloats()) && return isequal(x, y)
+    # Passing `atol` alone defaults `rtol` to zero, making strictness magnitude-dependent.
+    tol = _float_tolerance(P, d)
+    return isapprox(x, y; atol=tol, rtol=tol, nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::IdDict{Any,Bool}
@@ -283,6 +326,42 @@ function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
+end
+
+# Compare logical entries: unread backing entries may be uninitialised
+# (e.g. the unused triangle from `kron(Symmetric, Symmetric)`).
+# Recurse rather than use `==`, so NaNs and float-comparison options work at the leaves.
+for T in (
+    :Symmetric,
+    :Hermitian,
+    :UpperTriangular,
+    :LowerTriangular,
+    :UnitUpperTriangular,
+    :UnitLowerTriangular,
+)
+    @eval function has_equal_data_internal(
+        x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
+    )
+        size(x) == size(y) || return false
+        id_pair = (x, y)
+        haskey(d, id_pair) && return d[id_pair]
+        d[id_pair] = true
+        return all(CartesianIndices(x)) do i
+            # Structural zeros may read undefined backing entries to determine their type.
+            x isa Union{UpperTriangular,UnitUpperTriangular} && i[1] > i[2] && return true
+            x isa Union{LowerTriangular,UnitLowerTriangular} && i[1] < i[2] && return true
+            x isa Union{UnitUpperTriangular,UnitLowerTriangular} &&
+                i[1] == i[2] &&
+                return true
+            if isassigned(x, i) != isassigned(y, i)
+                return !equal_undefs
+            elseif !isassigned(x, i)
+                return true
+            else
+                return has_equal_data_internal(x[i], y[i], equal_undefs, d)
+            end
+        end
+    end
 end
 
 # `Method`, `CodeInstance` and `MethodInstance` reference one another, so field descent
@@ -700,13 +779,19 @@ get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
 
 _deepcopy(x) = deepcopy(x)
 _deepcopy(x::Module) = x
+_deepcopy(x, d::IdDict) = Base.deepcopy_internal(x, d)
+_deepcopy(x::Module, ::IdDict) = x
+
+# Share one copy cache to preserve aliases without merging distinct objects.
+# Tuple-level deepcopy would lose the Module carve-out.
+_deepcopy_all(t::Tuple) = (d=IdDict(); map(x -> _deepcopy(x, d), t))
 
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_reuse(x_ẋ...; frule)
     @nospecialize x_ẋ
-    x_ẋ_a = map(_deepcopy, x_ẋ)
-    x_ẋ_b = map(_deepcopy, x_ẋ)
+    x_ẋ_a = _deepcopy_all(x_ẋ)
+    x_ẋ_b = _deepcopy_all(x_ẋ)
 
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
@@ -785,7 +870,7 @@ function test_frule_interface(x_ẋ...; frule)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
-    x_ẋ = map(_deepcopy, x_ẋ)
+    x_ẋ = _deepcopy_all(x_ẋ)
     x = map(primal, x_ẋ)
 
     # Run the primal programme. Bail out early if this doesn't work.
@@ -822,7 +907,7 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
     f̄ = tangent(f_f̄)
-    x_x̄ = map(_deepcopy, x_x̄)
+    x_x̄ = _deepcopy_all(x_x̄)
     x = map(primal, x_x̄)
     x̄ = map(tangent, x_x̄)
 
@@ -1154,8 +1239,9 @@ function test_rule(
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
 )
-    # Take a copy of `x` to ensure that we do not mutate the original.
-    x = deepcopy(x)
+    # Independent seeds require independent primal copies. Shared seeding must migrate
+    # with tuple-wide copying, including the correctness checks below.
+    x = map(_deepcopy, x)
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
