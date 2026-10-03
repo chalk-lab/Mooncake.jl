@@ -1043,7 +1043,7 @@ is shown by the cache.
         _args = Base.tail(fx)
         # Seed cache-owned copies so in-place rules cannot mutate prepare-time arguments.
         # Preserve intra-argument aliases so `_tangent_layout` can reject them.
-        _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
+        _arg_seeds = map(a -> zero_lifted(Val(W), _copy_output(a)), _args)
         _grad_bufs = _zero_tangents(_args)
         _leaves = _tangent_layout(_arg_seeds, _grad_bufs)
         _bindings = if _leaves === nothing
@@ -3534,8 +3534,45 @@ rebuilt rather than updated. For types with custom copy semantics, overload this
 """
 _copy_to_output!!(dst::Number, src::Number, c=nothing, r=nothing) = src
 _copy_to_output!!(::Type, src::Type, c=nothing, r=nothing) = src
-_copy_to_output!!(::Core.TypeName, src::Core.TypeName, c=nothing, r=nothing) = src
-_copy_to_output!!(::Module, src::Module, c=nothing, r=nothing) = src
+# Atomic leaves are compiler-owned objects reached by reference that user code does not own.
+for T in (
+    Core.TypeName,
+    TypeVar,
+    Core.TypeofVararg,
+    Module,
+    Method,
+    Core.MethodInstance,
+    Core.MethodMatch,
+    Core.CodeInstance,
+    Core.MethodTable,
+    Core.TypeMapEntry,
+    Core.TypeMapLevel,
+    Core.Binding,
+    Core.Compiler.InferenceState,
+    Core.Compiler.InferenceResult,
+)
+    @eval begin
+        _copy_output(x::$T, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+        _copy_to_output!!(::$T, src::$T, c=nothing, r=nothing) = src
+    end
+end
+@static if VERSION >= v"1.12-"
+    for T in (Core.MethodCache, Core.BindingPartition, Core.DebugInfo)
+        @eval begin
+            _copy_output(x::$T, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+            _copy_to_output!!(::$T, src::$T, c=nothing, r=nothing) = src
+        end
+    end
+end
+function _copy_to_output!!(
+    dst::P, src::P, c=nothing, r=nothing
+) where {P<:Core.OpaqueClosure}
+    captures = _copy_to_output!!(dst.captures, src.captures, c, r)
+    return captures === src.captures ? src : replace_captures(src, captures)
+end
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:MistyClosure}
+    return P(_copy_to_output!!(dst.oc, src.oc, c, r), src.ir)
+end
 @static if VERSION >= v"1.11.0-rc4"
     function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:MemoryRef}
         mem = _copy_to_output!!(dst.mem, src.mem, c, r)
@@ -3706,16 +3743,17 @@ work for `Core.svec`. For types with custom copy semantics, overload this functi
 # descent for cycles and repeated references, including arrays with isbits elements. A lone
 # isbits-element array can keep the cache-free allocation path.
 
-# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
-# cannot be deep-copied; return x as-is.
+# Type values cannot be deep-copied.
 @unstable _copy_output(x::Type, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
-_copy_output(x::Core.TypeName, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
-_copy_output(x::Module, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
-# Compiled callables are nondifferentiable and retain cyclic reflection/IR graphs;
-# return them unchanged so copying a captured reverse rule terminates.
-_copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
-_copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+# Copy captured state without traversing cyclic executable metadata.
+function _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    captures = _copy_output(x.captures, c)
+    return captures === x.captures ? x : replace_captures(x, captures)
+end
+function _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    return typeof(x)(_copy_output(x.oc, c), x.ir)
+end
 
 @static if VERSION >= v"1.11.0-rc4"
     function _copy_output(x::MemoryRef, c::C=nothing) where {C<:Union{Nothing,IdDict}}

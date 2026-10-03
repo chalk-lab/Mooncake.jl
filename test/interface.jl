@@ -33,6 +33,12 @@ struct WithSymField
     v::Float64
 end
 
+struct WithCompilerMetadata{T}
+    metadata::T
+    scale::Float64
+end
+metadata_scale(h::WithCompilerMetadata, x) = h.scale * x
+
 struct ScalarBox
     x::Float64
 end
@@ -1457,6 +1463,52 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake._copy_to_output!!(Float64, Float64) === Float64
             @test Mooncake._copy_to_output!!(Float64.name, Float64.name) === Float64.name
             @test Mooncake._copy_to_output!!(Base, Base) === Base
+
+            let metadata = which(sin, (Float64,))
+                @test Mooncake._copy_output(metadata) === metadata
+                @test Mooncake._copy_to_output!!(metadata, metadata) === metadata
+                h = WithCompilerMetadata(metadata, 2.0)
+                for N in (1, 8)
+                    cache = Mooncake.prepare_derivative_cache(
+                        metadata_scale, h, 0.5; config=Mooncake.Config(chunk_size=N)
+                    )
+                    for _ in 1:3
+                        @test Mooncake.value_and_derivative!!(
+                            cache,
+                            (metadata_scale, NoTangent()),
+                            (h, zero_tangent(h)),
+                            (0.5, 1.0),
+                        ) == (1.0, 2.0)
+                    end
+                end
+            end
+
+            @testset "owned $field" for (metadata, field, entry) in (
+                (only(code_lowered(sin, (Float64,))), :code, nothing),
+                (Base.code_ircode(sin, (Float64,))[1][1], :argtypes, Any),
+            )
+                h = WithCompilerMetadata(metadata, 2.0)
+                f = (h, x) -> begin
+                    push!(getfield(h.metadata, field), entry)
+                    h.scale * x * length(getfield(h.metadata, field))
+                end
+                original = copy(getfield(metadata, field))
+                expected = length(original) + 1
+                for N in (1, 8)
+                    cache = Mooncake.prepare_derivative_cache(
+                        f, h, 0.5; config=Mooncake.Config(chunk_size=N)
+                    )
+                    for _ in 1:3
+                        @test Mooncake.value_and_derivative!!(
+                            cache, (f, zero_tangent(f)), (h, zero_tangent(h)), (0.5, 1.0)
+                        ) == (expected, 2expected)
+                        @test getfield(metadata, field) == original
+                        y, g = Mooncake.value_and_gradient!!(cache, f, h, 0.5)
+                        @test (y, g[3]) == (expected, 2expected)
+                        @test getfield(metadata, field) == original
+                    end
+                end
+            end
 
             # Mutable struct containing a Type field.
             mutable struct MutableWithTypeField
