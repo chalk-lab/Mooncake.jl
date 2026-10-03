@@ -17,6 +17,14 @@ using Test
 
 @testset "test_data on key types" begin
     for N in (Node, GraphNode)
+        t = Mooncake.zero_tangent(N{Float64}(; val=1.0))
+        t.val = 2.0
+        @test Mooncake._dot((t, t), (t, t)) == 4.0
+        p = N{Float64}(; val=1.0)
+        ps = Mooncake.tangent_to_primal!!((p, p), (t, t))
+        ts = Mooncake.primal_to_tangent!!((t, t), (p, p))
+        @test ps[1] === ps[2]
+        @test ts[1] === ts[2]
         a, b = N{Float64}(; val=1.0), N{Float64}(; val=1.00001)
         x, y = N{Float64}(; op=1, children=(a,)), N{Float64}(; op=1, children=(b,))
         @test !has_equal_data(x, y)

@@ -4,6 +4,9 @@
         T = IdDict{Bool,Float64}
         TestUtils.test_tangent(sr(123456), p, T; interface_only=false, perf=false)
         TestUtils.test_tangent_splitting(sr(123456), p)
+        t, s = IdDict(:a => 1.0), IdDict(:a => 2.0)
+        @test Mooncake.increment!!((t, t), (s, s))[1][:a] == 3.0
+        @test Mooncake.increment!!(s, s)[:a] == 2.0
         # Abstract V must survive lane traversal. The tangent registry's allocation
         # checks exclude abstract-valued IdDicts, so exercise test_lifted directly.
         TestUtils.test_lifted(sr(123456), IdDict{Symbol,Any}(:a => 5.0))

@@ -282,7 +282,6 @@ Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentNode, s::NoTangent) = 0
                 )
             )
         end
-        c[key] = res
         return res
     end
 end
@@ -357,10 +356,9 @@ end
 ) where {T,D,N<:AbstractExpressionNode{T,D}}
     quote
         t isa NoTangent && return p
-        # Not using the cache since it's not clear to me
-        # which expressions are mutable and which are not
+        haskey(c, p) && return c[p]::N
         deg = p.degree
-        if deg == 0
+        result = if deg == 0
             if p.constant
                 new_leaf = leaf_copy(p)
                 new_leaf.val = Mooncake.tangent_to_primal_internal!!(p.val, t.val, c)
@@ -382,6 +380,8 @@ end
                 )
             )
         end
+        c[p] = result
+        return result
     end
 end
 @generated function Mooncake.primal_to_tangent_internal!!(
@@ -389,11 +389,10 @@ end
 ) where {T,D,N<:AbstractExpressionNode{T,D}}
     quote
         t isa NoTangent && return NoTangent()
-        # Not using the cache since it's not clear to me
-        # which expressions are mutable and which are not
         Tv = Mooncake.tangent_type(T)
+        haskey(c, p) && return c[p]::TangentNode{Tv,D}
         deg = p.degree
-        if deg == 0
+        result = if deg == 0
             if p.constant
                 TangentNode{Tv,D}(Mooncake.primal_to_tangent_internal!!(t.val, p.val, c))
             else
@@ -413,6 +412,8 @@ end
                 )
             )
         end
+        c[p] = result
+        return result
     end
 end
 
