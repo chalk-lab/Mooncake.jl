@@ -127,6 +127,26 @@
         @test hv ≈ [0.0, 1.0, -1.0]
     end
 
+    @testset "complex dot strong zeros" for f in (BLAS.dotc, BLAS.dotu),
+        P in (ComplexF32, ComplexF64), N in (1, 8), wrap in (identity, x -> view(x, :)),
+        zero_input in (false, true)
+
+        x = wrap(zero_input ? zeros(P, 2) : P[NaN, Inf])
+        ds = map(z -> Mooncake.zero_lifted(Val(N), z), (f, x, copy(x)))
+        if zero_input
+            for d in ds[2:3], k in 1:N
+                fill!(Mooncake._blas_lane_partial(d, k), P(Inf))
+            end
+        end
+        out = Mooncake.frule!!(ds...)
+        @test all(k -> iszero(tangent(out, k)), 1:N)
+        cds = map(Mooncake.zero_fcodual, (f, x, copy(x)))
+        _, pb = Mooncake.rrule!!(cds...)
+        pb(zero_input ? P(Inf) : zero(P))
+        @test all(iszero, last(Mooncake.arrayify(cds[2])))
+        @test all(iszero, last(Mooncake.arrayify(cds[3])))
+    end
+
     @testset "nrm2 large tangent" for P in (Float32, Float64, ComplexF32, ComplexF64)
         d = floatmax(real(P))
         out = Mooncake.frule!!(
