@@ -341,10 +341,12 @@ function viewify(
     # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
     # pointer rule comes through here, and accumulating into it would mutate the primal.
     IntrinsicsWrappers._check_tangent_ptr(x, dx, n)
-    xinds = 1:incx:(incx * n)
+    # Negative BLAS walks start at the high end; StepRangeLen permits repeated indices.
+    xinds = StepRangeLen(1 - min(0, incx) * max(n - 1, 0), incx, max(n, 0))
+    span = n <= 0 ? 0 : 1 + (n - 1) * abs(incx)
     return (
-        view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
-        view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
+        view(unsafe_wrap(Vector{P}, x, span), xinds),
+        view(unsafe_wrap(Vector{P}, dx, span), xinds),
     )
 end
 @noinline function _throw_no_walk_step(x, incx)
@@ -382,16 +384,11 @@ function viewify(
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
-        xinds = 1:step:(1 + (n - 1) * step)
-        return map((x, dx)) do z
-            v = z isa Array && ndims(z) > 1 ? Base.ReshapedArray(z, (length(z),), ()) : z
-            view(v, xinds)
-        end
+        return map(z -> _viewify_one(n, z, step), (x, dx))
     end
-    incx > 0 || _throw_no_walk_step(x, incx)
     if x isa SubArray && parent(x) isa Array
         p0 = n <= 0 ? 1 : 1 + sum((first.(x.indices) .- 1) .* strides(parent(x)))
-        pinds = p0:incx:(p0 + (n - 1) * incx)
+        pinds = StepRangeLen(p0 - min(0, incx) * max(n - 1, 0), incx, max(n, 0))
         for i in pinds
             checkbounds(Bool, parent(x), i) || _throw_no_walk_step(x, incx)
             coords = Tuple(CartesianIndices(parent(x))[i])
@@ -409,7 +406,6 @@ function _blas_walk_indices(n::Integer, x::AbstractArray, incx::Integer)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         return _blas_walk_indices(n, parent(x), incx)
     end
-    incx > 0 || _throw_no_walk_step(x, incx)
     ranks = ntuple(
         d -> count(e -> (abs(stride(x, e)), -e) > (abs(stride(x, d)), -d), 1:ndims(x)),
         Val(ndims(x)),
@@ -419,7 +415,7 @@ function _blas_walk_indices(n::Integer, x::AbstractArray, incx::Integer)
     steps = Base.size_to_strides(1, size(x)...)
     inds = Vector{Int}(undef, max(n, 0))
     for k in 0:(n - 1)
-        remaining, ind = k * incx - offset, 1
+        remaining, ind = k * incx - min(0, incx) * max(n - 1, 0) - offset, 1
         # Physical strides decode in descending magnitude, including reversed axes.
         for d in dims
             (size(x, d) == 1 || iszero(stride(x, d))) && continue
@@ -974,8 +970,11 @@ function frule!!(
     x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
     if _axpy_overlaps(x, y, n, incx, incy)
         P <: Complex && _throw_axpy_overlap()
-        ((x isa Ptr ? x : pointer(x)) == (y isa Ptr ? y : pointer(y)) && incx == incy) ||
-            _throw_blas_output_alias(BLAS.axpy!)
+        (
+            (x isa Ptr ? x : pointer(x)) == (y isa Ptr ? y : pointer(y)) &&
+            incx == incy &&
+            !iszero(incx)
+        ) || _throw_blas_output_alias(BLAS.axpy!)
     end
     # `dy := a*dx + da*x + dy`, then the primal ONCE, after every lane has read the original `x`.
     # Broadcast rather than `BLAS.axpy!` on the lane partial: above width 1 a lane is a stride-`Nw`
@@ -1009,7 +1008,8 @@ function rrule!!(
         P <: Complex && _throw_axpy_overlap()
         (
             (xp isa Ptr ? xp : pointer(xp)) == (yp isa Ptr ? yp : pointer(yp)) &&
-            incx == incy
+            incx == incy &&
+            !iszero(incx)
         ) || _throw_blas_output_alias(BLAS.axpy!)
     end
     x, dx = viewify(n, X_dX, incx)
@@ -1404,6 +1404,8 @@ function frule!!(
 ) where {Nw,T<:BlasFloat}
     _n = primal(n)
     _inc = primal(incx)
+    _inc <= 0 && throw(ArgumentError("Mooncake BLAS.nrm2 requires a positive increment"))
+    _n = max(_n, 0)
     Xp = primal(X_dX)
     if Xp isa Transpose
         Xp = parent(Xp)
@@ -1429,11 +1431,34 @@ end
 # but their strides can differ.
 @inline function _viewify_one(n::Integer, x::AbstractArray, step::Integer)
     v = x isa Array && ndims(x) > 1 ? Base.ReshapedArray(x, (length(x),), ()) : x
-    return view(v, 1:step:(1 + (n - 1) * step))
+    inds = StepRangeLen(1 - min(0, step) * max(n - 1, 0), step, max(n, 0))
+    return view(v, inds)
+end
+# Compose ranges explicitly: Base's stepped-range reindexing forbids a zero step.
+@inline function _viewify_one(
+    n::Integer, x::SubArray{T,1,P,I}, step::Integer
+) where {T,P,I<:Tuple{Vararg{Union{Integer,AbstractRange}}}}
+    inds = StepRangeLen(1 - min(0, step) * max(n - 1, 0), step, max(n, 0))
+    checkbounds(x, inds)
+    pinds = map(parentindices(x)) do i
+        i isa Integer && return i
+        StepRangeLen(
+            first(i) + (first(inds) - 1) * Base.step(i), step * Base.step(i), max(n, 0)
+        )
+    end
+    return SubArray(parent(x), pinds)
+end
+@inline function _viewify_one(
+    n::Integer,
+    x::Union{Transpose{<:Any,<:AbstractVector},Adjoint{<:Real,<:AbstractVector}},
+    step::Integer,
+)
+    return _viewify_one(n, parent(x), step)
 end
 @inline _viewify_one(::Integer, x::AbstractArray, inds::Vector{Int}) = view(x, inds)
 @inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
-    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
+    unsafe_wrap(Vector{T}, x, n <= 0 ? 0 : 1 + (n - 1) * abs(step)),
+    StepRangeLen(1 - min(0, step) * max(n - 1, 0), step, max(n, 0)),
 )
 
 # Pair walk validation with computation so invalid layouts get the diagnostic,
@@ -1454,8 +1479,10 @@ function rrule!!(
     X_dX::CoDual{<:Union{Ptr{T},AbstractArray{T}} where {T<:BlasFloat}},
     incx::CoDual{<:Integer},
 )
+    primal(incx) <= 0 &&
+        throw(ArgumentError("Mooncake BLAS.nrm2 requires a positive increment"))
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(primal(n), X_dX, primal(incx))
+    X, dX = viewify(max(primal(n), 0), X_dX, max(primal(incx), 1))
     function nrm2_pb!!(dy)
         # Choose the zero subgradient at the zero vector to avoid division by zero.
         # `dy / y` and `X .* (dy / y)` can over- or underflow at extreme finite inputs
@@ -1505,29 +1532,31 @@ end
 # Forward dot rules stay at array level: raw pointers cannot address wide tangent lanes.
 # Dense walks use block columns; other layouts use the lane-strided BLAS walk.
 # Unit first stride alone does not imply a dense matrix.
-# Map physical increments to logical steps: dense arrays use inc, strided vectors
-# divide by their stride. Walks without a logical step need a layout-specific fallback;
-# the primal and derivative must follow the same raw memory walk.
+# Map physical increments to logical steps: zero repeats an element, negative starts at
+# the high end, and strided vectors divide by their stride. Layouts without a single
+# logical step need the physical-index fallback, which rejects walks outside the operand.
 @inline function _blas_walk_step(x, inc::Integer, n::Integer)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         return _blas_walk_step(parent(x), inc, n)
     end
-    inc > 0 || return nothing
+    x isa Union{Transpose{<:Any,<:AbstractVector},Adjoint{<:Real,<:AbstractVector}} &&
+        return _blas_walk_step(parent(x), inc, n)
     x isa Ptr && return inc
+    inc == 0 && return isempty(x) && n > 0 ? nothing : 0
     n <= 1 && return n <= length(x) ? 1 : nothing
     step = if x isa AbstractVector
         st = stride(x, 1)
         (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
     else
         st = stride(x, 1)
-        if st > 0 && iszero(inc % st) && 1 + (n - 1) * (inc ÷ st) <= size(x, 1)
+        if st > 0 && iszero(inc % st) && 1 + (n - 1) * abs(inc ÷ st) <= size(x, 1)
             inc ÷ st
         else
             strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
         end
     end
     step === nothing && return nothing
-    return 1 + (n - 1) * step <= length(x) ? step : nothing
+    return 1 + (n - 1) * abs(step) <= length(x) ? step : nothing
 end
 
 # Raised where the walk runs off the end of the operand, as distinct from following it in a
@@ -1821,6 +1850,11 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     n = primal(_n)
     incx = primal(_incx)
+    incx > 0 || throw(
+        ArgumentError(
+            "Mooncake BLAS.scal! does not support operands with nonpositive increments"
+        ),
+    )
     a = primal(a_da)
     X = primal(X_dX)
     # Partial blocks follow logical indices, whereas BLAS walks raw memory. Unlike
@@ -1870,6 +1904,11 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     n = primal(_n)
     incx = primal(_incx)
+    incx > 0 || throw(
+        ArgumentError(
+            "Mooncake BLAS.scal! does not support operands with nonpositive increments"
+        ),
+    )
     a = primal(a_da)
     X = primal(X_dX)
     # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
@@ -1893,6 +1932,11 @@ function rrule!!(
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
+    incx > 0 || throw(
+        ArgumentError(
+            "Mooncake BLAS.scal! does not support operands with nonpositive increments"
+        ),
+    )
     a = primal(a_da)
     X, dX = viewify(n, X_dX, incx)
 
@@ -3589,7 +3633,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         )) do x
             (false, :stability_and_allocs, nothing, BLAS.asum, x)
         end...,
-        map_prod((0, 3), (0, 1, 2)) do (n, incx)
+        map_prod((0, 3), (-1, 0, 1, 2)) do (n, incx)
             (false, :stability_and_allocs, nothing, BLAS.asum, n, randn(rng, P, 6), incx)
         end,
         (plain..., BLAS.asum, 3, view(randn(rng, P, 6), 1:2:6), 2),
@@ -3659,6 +3703,64 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 []
             end
         )...,
+        map_prod((0, 1, 3), (-1, 0)) do (n, inc)
+            (
+                false,
+                :stability,
+                (throws=(ArgumentError, "positive increment"),),
+                BLAS.nrm2,
+                n,
+                randn(rng, P, 3),
+                inc,
+            )
+        end,
+        (
+            plain...,
+            BLAS.axpy!,
+            4,
+            P(2),
+            SubArray(view(randn(rng, P, 16), 1:2:15), (1:2:7,)),
+            0,
+            randn(rng, P, 4),
+            1,
+        ),
+        map_prod(
+            P <: Real ? (transpose, adjoint) : (transpose,), (true, false)
+        ) do (wrap, input)
+            x = wrap(view(randn(rng, P, 7), 1:2:7))
+            y = randn(rng, P, 3)
+            args = input ? (x, 0, y, 1) : (y, 1, x, 0)
+            (plain..., BLAS.axpy!, 3, P(2), args...)
+        end...,
+        map([-1, 0]) do inc
+            (
+                false,
+                :stability,
+                (throws=(ArgumentError, "does not support operand"),),
+                BLAS.scal!,
+                3,
+                P(2),
+                randn(rng, P, 3),
+                inc,
+            )
+        end,
+        map_prod((-1, 0), (-1, 0, 1)) do (incx, incy)
+            (
+                false,
+                :stability,
+                nothing,
+                BLAS.axpy!,
+                3,
+                P(2),
+                randn(rng, P, 3),
+                incx,
+                randn(rng, P, 3),
+                incy,
+            )
+        end,
+        let x = randn(rng, P, 3)
+            (false, :none, (throws=ArgumentError,), BLAS.axpy!, 3, P(2), x, 0, x, 0)
+        end,
 
         # nrm2(n, x, incx)
         map_prod([5, 3], [1, 2]) do (n, incx)
@@ -4449,6 +4551,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     #
 
     push!(test_cases, (false, :none, (mode=ReverseMode,), x -> dot(x, x), P[]))
+
+    append!(
+        test_cases,
+        map_prod(P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu), (-1, 0)) do (f, inc)
+            (false, :none, nothing, f, 3, randn(rng, P, 3), inc, randn(rng, P, 3), 1)
+        end,
+    )
 
     # dot (real types only)
     if P <: BlasRealFloat

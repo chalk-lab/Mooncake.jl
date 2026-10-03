@@ -100,6 +100,26 @@
         end
     end
 
+    @testset "wrapped low-level walks" for P in (Float64, ComplexF64),
+        wrap in (P <: Real ? (transpose, adjoint) : (transpose,))
+
+        x = wrap(view(collect(P, 1:8), 1:2:8))
+        @test Mooncake._blas_walk_step(x, 2, 4) === 1
+        for mode in (ForwardMode, ReverseMode)
+            TestUtils.test_rule(
+                StableRNG(123),
+                BLAS.scal!,
+                4,
+                P(2),
+                x,
+                2;
+                is_primitive=true,
+                perf_flag=:none,
+                mode=mode,
+            )
+        end
+    end
+
     @testset "dot lane cost follows walk" for N in (1, 8), inc in (1, 2000)
         args = (BLAS.dot, 3, view(ones(1000, 1000), 2, 1:2:7), inc, ones(3), 1)
         slots = map(x -> Mooncake.zero_lifted(Val(N), x), args)
@@ -138,7 +158,7 @@
             A -> transpose(view(A, 2, 1:2:7)),
             A -> SubArray(view(A, 2, :), (1:2:7,)),
         ),
-        inc in (2,)
+        inc in (-2, 2)
 
         g = (A, y) -> real(f(3, wrap(A), inc, y, 1))
         for mode in (ForwardMode, ReverseMode)

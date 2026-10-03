@@ -393,6 +393,9 @@ when their relationships change.
 
 ## Low-level BLAS increments
 
+Low-level `BLAS.nrm2(n, x, incx)` differentiation requires `incx > 0` in both
+modes. Zero- and negative-increment behavior varies between BLAS implementations.
+Low-level `BLAS.scal!` differentiation requires a positive increment in both modes.
 Low-level `BLAS.asum`, `BLAS.axpy!`, `BLAS.nrm2` and `BLAS.scal!`
 differentiation requires the raw-memory walk to stay within the supplied operand's
 elements in both modes, even if BLAS can read other elements of its parent.
