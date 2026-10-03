@@ -333,13 +333,19 @@ for (f, last_type) in
         last::$(last_type),
     ) where {N,T<:IEEEFloat}
         y = $f(primal(a), primal(st), primal(last))
-        a_parts = tangent(a).partials
-        st_parts = tangent(st).partials
+        # Narrow ranges store Float64 fields, so widen before arithmetic.
+        a_parts = map(Float64, tangent(a).partials)
+        st_parts = map(Float64, tangent(st).partials)
         # `ref == a + (offset-1)*step`; zero-crossing ranges can have offset != 1.
         # This makes d(r[i]) == d(a) + (i-1)*d(step), independent of offset.
         o = y.offset - 1
-        ref_v = ntuple(k -> TWP{T}(a_parts[k] + o * st_parts[k], zero(T)), Val(N))
-        step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
+        ref_v = ntuple(k -> oftype(y.ref, a_parts[k] + o * st_parts[k]), Val(N))
+        step_v = ntuple(k -> oftype(y.step, st_parts[k]), Val(N))
+        # Narrow ranges store Float64 fields; only Float64 ranges use TWP fields.
+        if _storage_kind(typeof(y.ref)) isa NumericStorage
+            ref_v = NDual(y.ref, ref_v)
+            step_v = NDual(y.step, step_v)
+        end
         nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
         return Lifted{typeof(y),N}(y, ImmutableDual(nt))
     end
@@ -484,14 +490,18 @@ function frule!!(
     _len = primal(length)
     l = _len - 1
     y = Base.range_start_stop_length(primal(start), primal(stop), _len)
-    start_parts = tangent(start).partials
-    stop_parts = tangent(stop).partials
+    start_parts = map(Float64, tangent(start).partials)
+    stop_parts = map(Float64, tangent(stop).partials)
     # `ref == start + (offset-1)*step` with `step == (stop-start)/l`, and `offset` is 1 only when
     # the range avoids zero.
     o = y.offset - 1
     d_step = ntuple(k -> (stop_parts[k] - start_parts[k]) / l, Val(N))
-    ref_v = ntuple(k -> TWP{P}(start_parts[k] + o * d_step[k], zero(P)), Val(N))
-    step_v = ntuple(k -> TWP{P}(d_step[k], zero(P)), Val(N))
+    ref_v = ntuple(k -> oftype(y.ref, start_parts[k] + o * d_step[k]), Val(N))
+    step_v = ntuple(k -> oftype(y.step, d_step[k]), Val(N))
+    if _storage_kind(typeof(y.ref)) isa NumericStorage
+        ref_v = NDual(y.ref, ref_v)
+        step_v = NDual(y.step, step_v)
+    end
     nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
     return Lifted{typeof(y),N}(y, ImmutableDual(nt))
 end
@@ -655,6 +665,45 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             (mode=ReverseMode,)
         end
         push!(test_cases, (false, :allocs, opts, f, P(1), b, c))
+    end
+    for P in (Float16, Float32),
+        (f, b, c) in (
+            (Base.range_start_step_length, P(0.5), 4),
+            ((:), P(0.5), P(2.6)),
+            (Base.range_start_stop_length, P(2.5), 4),
+        )
+
+        opts = if P === Float16
+            ds = f === Base.range_start_stop_length ? 1.0 : 6.0
+            dt = Tangent((ref=3.0, step=ds, len=NoTangent(), offset=NoTangent()))
+            (mode=ForwardMode, oracle=(deriv=dt,))
+        else
+            (mode=ForwardMode,)
+        end
+        push!(test_cases, (false, :allocs, opts, f, CoDual(P(1), P(3)), CoDual(b, P(6)), c))
+    end
+    for P in (Float16, Float32),
+        (f, a, b, c) in (
+            (Base.range_start_step_length, P(-1), P(0.5), 6),
+            ((:), P(-1), P(0.5), P(2)),
+            (Base.range_start_stop_length, P(-3), P(1), 5),
+        )
+
+        da, db = P(0.1), P(0.3)
+        y = f(a, b, c)
+        ds = if f === Base.range_start_stop_length
+            (Float64(db) - Float64(da)) / (c - 1)
+        else
+            Float64(db)
+        end
+        dt = Tangent((
+            ref=Float64(da) + (y.offset - 1) * ds,
+            step=ds,
+            len=NoTangent(),
+            offset=NoTangent(),
+        ))
+        opts = (mode=ForwardMode, oracle=(deriv=dt,))
+        push!(test_cases, (false, :allocs, opts, f, CoDual(a, da), CoDual(b, db), c))
     end
     @static if VERSION >= v"1.11"
         extra_test_cases = Any[
