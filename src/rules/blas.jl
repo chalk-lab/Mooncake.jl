@@ -965,7 +965,7 @@ function frule!!(
     _incy::Lifted,
 ) where {Nw,P<:BlasFloat}
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-    x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
+    x, y = primal(X_dX), primal(Y_dY)
     if _axpy_overlaps(x, y, n, incx, incy)
         P <: Complex && _throw_axpy_overlap()
         (
@@ -980,6 +980,14 @@ function frule!!(
     lbl = "Forward-mode `BLAS.axpy!`"
     step_x = _checked_walk_step(lbl, n, x, incx)
     step_y = _checked_walk_step(lbl, n, y, incy)
+    return _axpy_frule(n, a_da, X_dX, incx, Y_dY, incy, step_x, step_y)
+end
+
+# Keep the update loop specialised when physical walks need index vectors.
+function _axpy_frule(
+    n, a_da::Lifted{P,Nw}, X_dX, incx, Y_dY, incy, step_x, step_y
+) where {P,Nw}
+    x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
     xv = _viewify_one(n, x, step_x)
     for k in 1:Nw
         dy_k = _viewify_one(n, _blas_lane_partial(Y_dY, k), step_y)
@@ -1463,7 +1471,10 @@ end
 # rather than passing nothing to _viewify_one.
 @inline function _checked_walk_step(label, n::Integer, x, inc::Integer)
     step = _blas_walk_step(x, inc, n)
-    step === nothing && _throw_no_walk_step(x, inc)
+    if step === nothing
+        x isa Union{Array,AbstractVector,Ptr} && _throw_no_walk_step(x, inc)
+        return _blas_walk_indices(n, x, inc)
+    end
     return step
 end
 
@@ -3661,6 +3672,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (plain..., f, 3, view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3), 10)
         end...,
         (
+            plain...,
+            BLAS.axpy!,
+            3,
+            P(2),
+            view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3),
+            10,
+            randn(rng, P, 3),
+            1,
+        ),
+        (
             if P <: Complex
                 map_prod(
                     (BLAS.dotc, BLAS.dotu),
@@ -3730,6 +3751,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             args = input ? (x, 0, y, 1) : (y, 1, x, 0)
             (plain..., BLAS.axpy!, 3, P(2), args...)
         end...,
+        map((-1, 1)) do inc
+            (
+                plain...,
+                BLAS.axpy!,
+                3,
+                P(2),
+                view(randn(rng, P, 4, 3), 4:-1:1, :),
+                inc,
+                randn(rng, P, 3),
+                1,
+            )
+        end...,
+        (
+            false,
+            :stability_and_allocs,
+            (mode=ForwardMode,),
+            BLAS.axpy!,
+            3,
+            P(2),
+            view(randn(rng, P, 8, 3), 1:4, :),
+            1,
+            view(randn(rng, P, 8, 3), 1:4, :),
+            1,
+        ),
         (plain..., BLAS.axpy!, Int32(4), P(2), randn(rng, P, 4), 1, randn(rng, P, 4), 1),
         (
             plain...,
