@@ -390,3 +390,14 @@ as dictionaries. It does not establish overlap introduced through raw pointers o
 `unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
+
+## Low-level BLAS increments
+
+Low-level `BLAS.asum`, `BLAS.axpy!`, `BLAS.nrm2` and `BLAS.scal!`
+differentiation requires the raw-memory walk to stay within the supplied operand's
+elements in both modes, even if BLAS can read other elements of its parent.
+Pass a view covering every visited address. `BLAS.dot`, `BLAS.dotc` and `BLAS.dotu`
+also accept walks outside a view when every visited address stays in its backing
+array.
+A bare `Ptr` operand has no owning array, so its walk is not bounds-checked and
+staying within the buffer is the caller's responsibility.

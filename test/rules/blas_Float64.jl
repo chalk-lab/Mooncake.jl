@@ -100,6 +100,33 @@
         end
     end
 
+    @testset "asum strong zeros" for P in (Float32, Float64, ComplexF32, ComplexF64),
+        N in (1, 8)
+
+        x = P[0, NaN, Inf]
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), BLAS.asum), Mooncake.zero_lifted(Val(N), x)
+        )
+        @test all(k -> iszero(tangent(out, k)), 1:N)
+        dx = Mooncake.zero_fcodual(x)
+        _, pb = Mooncake.rrule!!(Mooncake.zero_fcodual(BLAS.asum), dx)
+        pb(zero(real(P)))
+        @test all(iszero, tangent(dx))
+        # A zero component's subgradient must also mask a nonfinite direction.
+        z = Mooncake.zero_lifted(Val(N), zeros(P, 1))
+        fill!(first(Mooncake._partials_block(z)), P(Inf))
+        out = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), BLAS.asum), z)
+        @test all(k -> iszero(tangent(out, k)), 1:N)
+    end
+
+    @testset "asum mixed Hessian at zero weight" begin
+        f(z) = z[1] * BLAS.asum(view(z, 2:3))
+        x, v = [0.0, 2.0, -3.0], [1.0, 0.0, 0.0]
+        cache = Mooncake.prepare_hvp_cache(f, x)
+        _, _, hv = Mooncake.value_and_hvp!!(cache, f, v, x)
+        @test hv ≈ [0.0, 1.0, -1.0]
+    end
+
     @testset "nrm2 large tangent" for P in (Float32, Float64, ComplexF32, ComplexF64)
         d = floatmax(real(P))
         out = Mooncake.frule!!(

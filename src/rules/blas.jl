@@ -425,7 +425,7 @@ function _blas_walk_indices(n::Integer, x::AbstractArray, incx::Integer)
         remaining, ind = k * incx - offset, 1
         # Physical strides decode in descending magnitude, including reversed axes.
         for d in dims
-            size(x, d) == 1 && continue
+            (size(x, d) == 1 || iszero(stride(x, d))) && continue
             q, remaining = divrem(remaining, abs(stride(x, d)))
             0 <= q < size(x, d) || _throw_no_walk_step(x, incx)
             ind += (stride(x, d) > 0 ? q : size(x, d) - 1 - q) * steps[d]
@@ -825,6 +825,100 @@ for (fname, jlfname, elty) in (
 
         return CoDual(result, NoFData()), dot_pb!!
     end
+end
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(BLAS.asum),X} where {T<:BlasFloat,X<:AbstractArray{T}}
+)
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.asum),Integer,X,Integer
+    } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}}
+)
+
+# BLAS uses |re| + |im|, with the same zero subgradient as abs_float.
+@inline _asum_product(x::Real, dx::Real) = _rvs_zero(_rvs_mul(sign(x), dx), iszero(x))
+@inline _asum_product(x::Complex, dx::Complex) =
+    _asum_product(real(x), real(dx)) + _asum_product(imag(x), imag(dx))
+@inline _asum_accum(acc::NTuple{N}, x, col) where {N} = ntuple(
+    k -> acc[k] + _asum_product(x, col[k]), Val(N)
+)
+
+@inline function _asum_lanes(x::Lifted{P,N}, n, step, ::Type{R}) where {P,N,R}
+    xp = primal(x)
+    if tangent(x) isa NDualArray && step isa Integer
+        cols = reinterpret(reshape, NTuple{N,eltype(xp)}, first(_partials_block(x)))
+        acc = ntuple(_ -> zero(R), Val(N))
+        @inbounds for j in 1:n
+            i = 1 + (j - 1) * step
+            acc = _asum_accum(acc, xp[i], cols[i])
+        end
+        return acc
+    end
+    xv = _viewify_one(n, xp, step)
+    return ntuple(Val(N)) do k
+        dx = _viewify_one(n, _blas_lane_partial(x, k), step)
+        s = zero(R)
+        @inbounds for i in eachindex(xv)
+            s += _asum_product(xv[i], dx[i])
+        end
+        s
+    end
+end
+
+function frule!!(
+    ::Lifted{typeof(BLAS.asum),N}, x::Lifted{<:AbstractArray{T}}
+) where {T<:BlasFloat,N}
+    y = BLAS.asum(primal(x))
+    return Lifted{typeof(y),N}(
+        y, _scalar_ndual(y, _asum_lanes(x, length(primal(x)), 1, typeof(y)))
+    )
+end
+function frule!!(
+    ::Lifted{typeof(BLAS.asum),N},
+    n::Lifted{<:Integer},
+    x::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
+    incx::Lifted{<:Integer},
+) where {T<:BlasFloat,N}
+    nn, inc = primal(n), primal(incx)
+    y = BLAS.asum(nn, primal(x), inc)
+    (nn <= 0 || inc <= 0) && return zero_lifted(Val(N), y)
+    step = _blas_walk_step(primal(x), inc, nn)
+    step === nothing && (step = _blas_walk_indices(nn, primal(x), inc))
+    return Lifted{typeof(y),N}(y, _scalar_ndual(y, _asum_lanes(x, nn, step, typeof(y))))
+end
+
+@inline _asum_gradient(x::Real, dy::Real) = _asum_product(x, dy)
+@inline _asum_gradient(x::Complex, dy::Real) = complex(
+    _asum_product(real(x), dy), _asum_product(imag(x), dy)
+)
+function rrule!!(
+    ::CoDual{typeof(BLAS.asum)}, x::CoDual{<:AbstractArray{T}}
+) where {T<:BlasFloat}
+    xp, dx = arrayify(x)
+    y = BLAS.asum(xp)
+    function asum_pb!!(dy)
+        dx .+= _asum_gradient.(xp, dy)
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(y), asum_pb!!
+end
+function rrule!!(
+    ::CoDual{typeof(BLAS.asum)},
+    n::CoDual{<:Integer},
+    x::CoDual{<:Union{Ptr{T},AbstractArray{T}}},
+    incx::CoDual{<:Integer},
+) where {T<:BlasFloat}
+    nn, inc = primal(n), primal(incx)
+    y = BLAS.asum(nn, primal(x), inc)
+    # BLAS returns zero without reading x for nonpositive lengths or increments.
+    xp, dx = viewify(max(nn, 0) * (inc > 0), x, max(inc, 1))
+    function asum_n_pb!!(dy)
+        dx .+= _asum_gradient.(xp, dy)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), asum_n_pb!!
 end
 
 @is_primitive(
@@ -3410,6 +3504,45 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         #
         # BLAS LEVEL 1
         #
+
+        map((
+            P[1, -2, 0],
+            P[1 + (P <: Complex ? 2im : 0), -2, 3],
+            view(P[1, 7, -2, 8, 0], 1:2:5),
+            view(P[1, 7, -2, 8, 0], 5:-2:1),
+            P[],
+        )) do x
+            (false, :stability_and_allocs, nothing, BLAS.asum, x)
+        end...,
+        map_prod((0, 3), (0, 1, 2)) do (n, incx)
+            (false, :stability_and_allocs, nothing, BLAS.asum, n, randn(rng, P, 6), incx)
+        end,
+        (plain..., BLAS.asum, 3, view(randn(rng, P, 6), 1:2:6), 2),
+        map((view(randn(rng, P, 8), 1:2:7), view(randn(rng, P, 6, 8), 2, 1:2:7))) do x
+            (
+                false,
+                :none,
+                (throws=(ArgumentError, "does not support operand"),),
+                BLAS.asum,
+                3,
+                x,
+                1,
+            )
+        end...,
+        map((BLAS.asum, BLAS.nrm2)) do f
+            (
+                false,
+                :none,
+                (throws=(ArgumentError, "does not support operand"),),
+                f,
+                2,
+                view(randn(rng, P, 24), StepRangeLen(5, 0, 4)),
+                1,
+            )
+        end...,
+        map((BLAS.asum, BLAS.nrm2)) do f
+            (plain..., f, 3, view(randn(rng, P, 10, 3), StepRangeLen(5, 0, 2), 1:3), 10)
+        end...,
 
         # nrm2(n, x, incx)
         map_prod([5, 3], [1, 2]) do (n, incx)
