@@ -1456,6 +1456,24 @@ struct FriendlyTangentCache{M,B}
 end
 FriendlyTangentCache{M}(buffer::B) where {M,B} = FriendlyTangentCache{M,B}(buffer)
 
+# A statically acyclic cache tree needs no identity map. Keep these decisions type-only
+# so per-call friendly conversion retains its allocation and inference behaviour.
+function _friendly_cache_may_cycle(P, seen=())
+    isbitstype(P) && return false
+    isconcretetype(P) || return true
+    P in seen && return true
+    seen = (seen..., P)
+    P <: AbstractArray && return _friendly_cache_may_cycle(eltype(P), seen)
+    return any(t -> _friendly_cache_may_cycle(t, seen), fieldtypes(P))
+end
+@generated function _friendly_cache_needs_seen(::Type{P}) where {P}
+    _friendly_cache_may_cycle(P) || return false
+    P <: AbstractDict && return false
+    P <: Union{Tuple,NamedTuple} && return true
+    P <: AbstractArray && return :(tangent_type($(eltype(P))) !== NoTangent)
+    return :(tangent_type($P) <: Union{Tangent,MutableTangent})
+end
+
 """
     friendly_tangent_cache(x)
 
@@ -1490,21 +1508,45 @@ Overloads for `LinearAlgebra.Adjoint`, `LinearAlgebra.Transpose`,
 `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and `LinearAlgebra.SymTridiagonal`
 live in `src/rules/linear_algebra.jl`.
 
-!!! warning
-    Mutable structs whose fields form a self-referential cycle (e.g. a linked-list node
-    whose `next` field points to another instance of the same type) will cause a
-    `StackOverflowError` when this function descends into their fields at prepare time.
-    Override `friendly_tangent_cache` for such types to avoid recursion:
-    ```julia
-    Mooncake.friendly_tangent_cache(::MyRecursiveType) =
-        Mooncake.FriendlyTangentCache{Mooncake.AsRaw}(nothing)
-    ```
+Cycles are cut at repeated mutable objects using a primal-shaped buffer. The remaining
+fields retain their usual friendly representation; shared objects reuse their prepared cache.
 """
-@unstable @generated function friendly_tangent_cache(x::P) where {P}
+@unstable friendly_tangent_cache(x) = _friendly_tangent_cache(x, NoCache())
+
+@unstable @inline function friendly_tangent_cache(x, seen::MaybeCache)
+    if !_friendly_cache_needs_seen(typeof(x))
+        return friendly_tangent_cache(x)
+    end
+    if haskey(seen, x)
+        dest = seen[x]
+        return if dest === nothing
+            (seen[x] = FriendlyTangentCache{AsPrimal}(_copy_output(x)))
+        else
+            dest
+        end
+    end
+    ismutable(x) && (seen[x] = nothing)
+    # Preserve the public one-argument customisation hook while threading the traversal cache.
+    dest =
+        if which(friendly_tangent_cache, Tuple{typeof(x)}) ===
+            which(friendly_tangent_cache, Tuple{Any})
+            _friendly_tangent_cache(x, seen)
+        else
+            friendly_tangent_cache(x)
+        end
+    ismutable(x) && (seen[x] = dest)
+    return dest
+end
+
+@unstable @generated function _friendly_tangent_cache(x::P, seen::MaybeCache) where {P}
+    needs_seen = seen === NoCache && _friendly_cache_may_cycle(P)
     # Concrete Tuple: recurse element-wise and return a Tuple dest.
     # Tuple tangents are plain tuples (no val() wrapping); always recurse.
     if P <: Tuple && isconcretetype(P)
-        dest_exprs = [:(friendly_tangent_cache(getfield(x, $i))) for i in 1:fieldcount(P)]
+        needs_seen && return :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+        dest_exprs = [
+            :(friendly_tangent_cache(getfield(x, $i), seen)) for i in 1:fieldcount(P)
+        ]
         return :(($(dest_exprs...),))
     end
     # Custom struct tangents need not be field-parallel to their primal.
@@ -1519,14 +1561,14 @@ live in `src/rules/linear_algebra.jl`.
         inits = always_initialised(P)
         dest_exprs = map(1:fieldcount(P), inits) do i, init
             if init
-                :(friendly_tangent_cache(getfield(x, $i)))
+                :(friendly_tangent_cache(getfield(x, $i), seen))
             else
                 # Field may be undefined: guard with isdefined to avoid UndefRefError.
                 # The AsRaw non-composite mode with a nothing buffer is safe because tangent_to_friendly!!
                 # returns dest[$i] as-is when both the primal and tangent fields are undefined.
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(getfield(x, $i), seen)
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
@@ -1535,7 +1577,13 @@ live in `src/rules/linear_algebra.jl`.
         end
         return :(
             if ($P <: NamedTuple || tangent_type($P) <: Tangent)
-                NamedTuple{$names}(($(dest_exprs...),))
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(NamedTuple{$names}(($(dest_exprs...),)))
+                    end
+                )
             else
                 friendly_tangent_cache_internal(x)
             end
@@ -1549,14 +1597,19 @@ live in `src/rules/linear_algebra.jl`.
             if tangent_type($ET) === NoTangent
                 friendly_tangent_cache_internal(x)
             else
-                map(friendly_tangent_cache, x)
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(map(Base.Fix2(friendly_tangent_cache, seen), x))
+                    end
+                )
             end
         )
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
     # in the buffer as a NamedTuple, mirroring the immutable struct path. This avoids
-    # per-call allocation in tangent_to_friendly!!. Self-referential types (e.g. linked-list
-    # nodes) will stack-overflow here; override friendly_tangent_cache for such types.
+    # per-call allocation in tangent_to_friendly!!.
     if !isprimitivetype(P) &&
         ismutabletype(P) &&
         fieldcount(P) > 0 &&
@@ -1566,11 +1619,11 @@ live in `src/rules/linear_algebra.jl`.
         inits = always_initialised(P)
         dest_exprs = map(1:fieldcount(P), inits) do i, init
             if init
-                :(friendly_tangent_cache(getfield(x, $i)))
+                :(friendly_tangent_cache(getfield(x, $i), seen))
             else
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(getfield(x, $i), seen)
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
@@ -1579,8 +1632,14 @@ live in `src/rules/linear_algebra.jl`.
         end
         return :(
             if tangent_type($P) <: MutableTangent
-                FriendlyTangentCache{AsMutableFields}(
-                    NamedTuple{$names}(($(dest_exprs...),))
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(FriendlyTangentCache{AsMutableFields}(
+                            NamedTuple{$names}(($(dest_exprs...),))
+                        ))
+                    end
                 )
             else
                 friendly_tangent_cache_internal(x)
@@ -1829,8 +1888,9 @@ end
 # 2-arg convenience: builds dest + cache from the primal, then delegates.
 # Unstable: dest type from friendly_tangent_cache is value-dependent.
 @unstable function tangent_to_friendly!!(primal::P, tangent) where {P}
-    dest = friendly_tangent_cache(primal)
     c = isbitstype(P) ? NoCache() : IdDict{Any,Any}()
+    dest = friendly_tangent_cache(primal, c)
+    _friendly_cache_needs_seen(P) && empty!(c)
     return tangent_to_friendly!!(dest, primal, tangent, c)
 end
 

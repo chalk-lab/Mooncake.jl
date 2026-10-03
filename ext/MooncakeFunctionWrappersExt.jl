@@ -1,7 +1,8 @@
 module MooncakeFunctionWrappersExt
 
 using Random
-using FunctionWrappers: FunctionWrapper
+using Mooncake: Mooncake
+using FunctionWrappers: FunctionWrapper, reinit_wrapper
 import Mooncake:
     TestUtils,
     _tangent_fields,
@@ -59,24 +60,92 @@ import Mooncake:
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
 # - fwds_wrapper: reverse-mode forward pass (OpaqueClosure capturing rrule)
-# - frule_wrapper: forward-mode rule (OpaqueClosure capturing frule)
+# - frule_wrapper: forward-mode rule, absent for native tangents
 # - dobj_ref: native tangent, or the cached forward slot, of the wrapped callable
-# - frule: compiled rule retained for lifting native tangents without another lookup
-mutable struct FunctionWrapperTangent{Tfwds_oc,Tfrule_oc}
+# - frule / rrule / pb_type: compiled rules and pullback type retained for reuse
+mutable struct FunctionWrapperTangent{R,A,N,Tfwds_oc,Tfrule_oc}
     fwds_wrapper::Tfwds_oc
     frule_wrapper::Tfrule_oc
     dobj_ref::Ref
     frule::Any
+    rrule::Any
+    pb_type::Type
+end
+function FunctionWrapperTangent{R,A,N}(fwds, fwd, ref, frule, rrule, pb_type) where {R,A,N}
+    return FunctionWrapperTangent{R,A,N,typeof(fwds),typeof(fwd)}(
+        fwds, fwd, ref, frule, rrule, pb_type
+    )
+end
+
+# Native storage never changes representation; forward slots are made by lift.
+mutable struct CallableTangentRef{P,T} <: Ref{T}
+    obj::P
+    value::T
+end
+_tangent_fields(::Type{<:CallableTangentRef}) = (:value,)
+Base.getindex(r::CallableTangentRef) = r.value
+Base.setindex!(r::CallableTangentRef, value) = (r.value = value)
+
+function Mooncake._slot_primal(
+    ::FunctionWrapper, ::FunctionWrapperTangent{R,A,0}
+) where {R,A}
+    throw(
+        ArgumentError("native FunctionWrapper tangents cannot be forward storage; use lift")
+    )
+end
+
+# Keep callable type recovery outside the opaque closure for Julia 1.11 inference.
+@inline function _function_wrapper_object(
+    fw, ::Union{CallableTangentRef{P},Lifted{P}}
+) where {P}
+    ref = fw.obj
+    ref isa Base.RefValue{P} && return ref[]
+    obj = ref[]
+    obj isa P || throw(
+        ArgumentError(
+            "cannot rebind FunctionWrapper storage to a different callable type; use lift with the new primal",
+        ),
+    )
+    return obj::P
 end
 
 _tangent_fields(::Type{<:FunctionWrapperTangent}) = (:dobj_ref,)
+
+function Mooncake.tangent_dim(
+    v::FunctionWrapperTangent{R,A,N}, seen::IdDict{Any,Any}
+) where {R,A,N}
+    haskey(seen, v) && return 0
+    seen[v] = nothing
+    return Mooncake.tangent_dim(N == 0 ? v.dobj_ref : tangent(v.dobj_ref[], 1), seen)
+end
+
+function Mooncake._check_tangent_storage!(
+    seen::IdDict, expected::FunctionWrapperTangent{R,A,N}, supplied
+) where {R,A,N}
+    supplied isa typeof(expected) || throw(
+        ArgumentError(
+            "incompatible FunctionWrapper tangent storage; use lift for forward slots and native tangents for directions",
+        ),
+    )
+    if N != 0 && haskey(seen, expected) && seen[expected] !== supplied
+        # Only zero-dimensionality matters here; do not walk the callable's primal metadata.
+        Mooncake.tangent_dim(tangent(expected.dobj_ref[], 1)) == 0 ||
+            Mooncake._throw_shared_input_tangent_error()
+        return nothing
+    end
+    return invoke(
+        Mooncake._check_tangent_storage!, Tuple{IdDict,Any,Any}, seen, expected, supplied
+    )
+end
 
 # The primal's pointer and type metadata have no friendly derivative representation.
 friendly_tangent_cache(::FunctionWrapper) = FriendlyTangentCache{AsRaw}(nothing)
 
 function _basis_seed!!(
-    v::FunctionWrapperTangent, slots::NTuple{N,Int}, cursor, dict
-) where {N}
+    v::FunctionWrapperTangent{R,A,W}, slots::NTuple{N,Int}, cursor, dict
+) where {R,A,W,N}
+    W == 0 &&
+        throw(ArgumentError("use lift before seeding FunctionWrapper forward storage"))
     haskey(dict, v) && return dict[v]
     dict[v] = v
     ref = v.dobj_ref
@@ -97,7 +166,7 @@ function _construct_rrule_types(R, A)
     rvs_oc_type = Core.OpaqueClosure{rvs_sig,pb_ret_type}
 
     # Signature and OpaqueClosure type for forwards pass.
-    fwd_sig = Tuple{map(fcodual_type, primal_arg_types)...}
+    fwd_sig = Tuple{FunctionWrapper{R,A},map(fcodual_type, primal_arg_types)...}
     fwd_oc_type = Core.OpaqueClosure{fwd_sig,Tuple{fcodual_type(R),rvs_oc_type}}
     return fwd_oc_type, rvs_oc_type, fwd_sig, rvs_sig
 end
@@ -106,8 +175,9 @@ function _construct_frule_types(R, A, (::Val{N})=Val(1)) where {N}
     # Convert signature into a tuple of types.
     primal_arg_types = (A.parameters...,)
 
-    # Reverse uses width 1 (its frule_wrapper is never run); forward uses chunk width N.
-    fwd_sig = Tuple{map(P -> lifted_type(Val(N), P), primal_arg_types)...}
+    fwd_sig = Tuple{
+        FunctionWrapper{R,A},map(P -> lifted_type(Val(N), P), primal_arg_types)...
+    }
     fwd_ret_type = lifted_type(Val(N), R)
     fwd_oc_type = Core.OpaqueClosure{fwd_sig,fwd_ret_type}
     return fwd_oc_type, fwd_sig, fwd_ret_type
@@ -115,8 +185,7 @@ end
 
 @foldable function tangent_type(::Type{FunctionWrapper{R,A}}) where {R,A<:Tuple}
     rrule_oc_type = _construct_rrule_types(R, A)[1]
-    frule_oc_type = _construct_frule_types(R, A)[1]
-    return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
+    return FunctionWrapperTangent{R,A,0,rrule_oc_type,Nothing}
 end
 
 # Forward V hides Ptr/capture fields behind OpaqueClosures, as the reverse tangent does,
@@ -124,7 +193,7 @@ end
 @foldable function dual_type(::Val{N}, ::Type{FunctionWrapper{R,A}}) where {N,R,A<:Tuple}
     rrule_oc_type = _construct_rrule_types(R, A)[1]
     frule_oc_type = _construct_frule_types(R, A, Val(N))[1]
-    return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
+    return FunctionWrapperTangent{R,A,N,rrule_oc_type,frule_oc_type}
 end
 @foldable dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} =
     FunctionWrapperTangent
@@ -132,11 +201,16 @@ lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
 function lift(
     x::FunctionWrapper{R,A}, ẋ::FunctionWrapperTangent, c::Union{Nothing,IdDict}
 ) where {R,A}
+    ẋ isa FunctionWrapperTangent{R,A,0} || throw(
+        ArgumentError(
+            "lift requires a native FunctionWrapper tangent; use tangent(slot, lane) to materialise one",
+        ),
+    )
     d = c === nothing ? IdDict() : c
-    haskey(d, x) && return d[x]::Lifted{typeof(x),1}
+    haskey(d, x) && return d[x]::lifted_type(Val(1), typeof(x))
     obj = lift(x.obj[], ẋ.dobj_ref[], d)
     v = _function_wrapper_forward_tangent(R, A, obj, Val(1), ẋ)
-    return d[x] = Lifted{typeof(x),1}(x, v)
+    return d[x] = Lifted{typeof(x),1}(x, v)::lifted_type(Val(1), typeof(x))
 end
 # Materialise a native tangent from the selected lane of derivative storage.
 @inline function tangent(
@@ -149,7 +223,6 @@ function _materialise_lane(
 ) where {R,A,N}
     haskey(cache, primal(x)) && return cache[primal(x)]
     obj = x.rep.dobj_ref[]
-    obj isa Lifted || return x.rep
     t = _function_wrapper_tangent(R, primal(obj), A, _materialise_lane(obj, lane, cache))[1]
     return cache[primal(x)] = t
 end
@@ -166,8 +239,25 @@ function has_equal_data_internal(
     return has_equal_data_internal(t.dobj_ref[], s.dobj_ref[], equal_undefs, d)
 end
 
+# Before Julia 1.12, @opaque cannot specify return bounds. Reconstruct a mismatched
+# closure with equal bounds, so abstract signatures still have canonical storage types.
+function _wrapper_closure(c::Core.OpaqueClosure{A}, ::Type{R}) where {A,R}
+    src, _ = Mooncake.CC.typeinf_code(
+        Mooncake.CC.NativeInterpreter(UInt(c.world)),
+        c.source,
+        Tuple{typeof(c.captures),A.parameters...},
+        Core.svec(),
+        true,
+    )
+    return Base.Experimental.generate_opaque_closure(
+        A, R, R, src, Int(c.source.nargs) - 1, c.source.isva, c.captures...
+    )::Core.OpaqueClosure{A,R}
+end
+
 # Share reverse parts without building a frule: callers choose width 1 or N.
-function _function_wrapper_reverse_parts(R, obj::Tobj, A, obj_tangent) where {Tobj}
+@inline function _function_wrapper_reverse_parts(
+    ::Type{R}, obj::Tobj, ::Type{A}, obj_tangent, source=nothing
+) where {R,Tobj,A}
 
     # Analyse types for rrule.
     rrule_fwd_oc_type, rvs_oc_type, _, _ = _construct_rrule_types(R, A)
@@ -175,93 +265,170 @@ function _function_wrapper_reverse_parts(R, obj::Tobj, A, obj_tangent) where {To
     (rvs_sig, rvs_ret) = rvs_oc_type.parameters
 
     # Construct reference to obj_tangent that we can read / write-to.
-    obj_tangent_ref = Ref{tangent_type(Tobj)}(obj_tangent)
+    obj_tangent_ref = CallableTangentRef(obj, obj_tangent)
 
-    # Construct rrule for `obj`, applied to its declared argument types.
-    rrule = build_rrule(Tuple{Tobj,A.parameters...})
+    rrule = source === nothing ? build_rrule(Tuple{Tobj,A.parameters...}) : source.rrule
+    PB = if source === nothing
+        pullback_type(typeof(rrule), (Tobj, A.parameters...))
+    else
+        source.pb_type
+    end
 
-    # Construct stack which can hold pullbacks generated by `rrule`. The forwards-pass will
-    # run `rrule` and push the pullback to `pb_stack`. The reverse-pass will pop and run it.
-    pb_stack = Stack{pullback_type(typeof(rrule), (Tobj, A.parameters...))}()
+    # Forward-only wrappers never need a pullback stack. Allocate it on the first
+    # reverse-mode call, then retain it across calls.
+    pb_stack = Ref{Stack{PB}}()
 
     # Construct reverse-pass. Note: this closes over `pb_stack`.
     @static if VERSION ≥ v"1.12-"
         run_rvs_pass = Base.Experimental.@opaque rvs_sig -> rvs_ret dy -> begin
-            obj_rdata, dx... = pop!(pb_stack)(dy)
+            obj_rdata, dx... = pop!(pb_stack[])(dy)
             obj_tangent_ref[] = increment_rdata!!(obj_tangent_ref[], obj_rdata)
             return NoRData(), dx...
         end
     else
         run_rvs_pass = Base.Experimental.@opaque rvs_sig dy -> begin
-            obj_rdata, dx... = pop!(pb_stack)(dy)
+            obj_rdata, dx... = pop!(pb_stack[])(dy)
             obj_tangent_ref[] = increment_rdata!!(obj_tangent_ref[], obj_rdata)
             return NoRData(), dx...
         end
     end
 
+    canonical_rvs_pass = if run_rvs_pass isa rvs_oc_type
+        run_rvs_pass
+    else
+        _wrapper_closure(run_rvs_pass, rvs_ret)
+    end
+
     # Construct fowards-pass for rrule. Note: this closes over the reverse-pass and `pb_stack`.
     @static if VERSION ≥ v"1.12-"
-        run_fwds_pass = Base.Experimental.@opaque fwd_sig -> fwd_ret (x...) -> begin
-            y, pb = rrule(CoDual(obj, fdata(obj_tangent_ref[])), x...)
-            push!(pb_stack, pb)
-            return y, run_rvs_pass
+        run_fwds_pass = Base.Experimental.@opaque fwd_sig -> fwd_ret (args...) -> begin
+            y, pb = rrule(
+                CoDual(
+                    _function_wrapper_object(args[1], obj_tangent_ref),
+                    fdata(obj_tangent_ref[]),
+                ),
+                Base.tail(args)...,
+            )
+            isassigned(pb_stack) || (pb_stack[] = eltype(pb_stack)())
+            push!(pb_stack[], pb)
+            return y, canonical_rvs_pass
         end
     else
-        run_fwds_pass = Base.Experimental.@opaque fwd_sig (x...) -> begin
-            y, pb = rrule(CoDual(obj, fdata(obj_tangent_ref[])), x...)
-            push!(pb_stack, pb)
-            return y, run_rvs_pass
+        run_fwds_pass = Base.Experimental.@opaque fwd_sig (args...) -> begin
+            y, pb = rrule(
+                CoDual(
+                    _function_wrapper_object(args[1], obj_tangent_ref),
+                    fdata(obj_tangent_ref[]),
+                ),
+                Base.tail(args)...,
+            )
+            isassigned(pb_stack) || (pb_stack[] = eltype(pb_stack)())
+            push!(pb_stack[], pb)
+            return y, canonical_rvs_pass
         end
     end
 
-    return run_fwds_pass, obj_tangent_ref
+    canonical_fwds_pass = if run_fwds_pass isa rrule_fwd_oc_type
+        run_fwds_pass
+    else
+        _wrapper_closure(run_fwds_pass, fwd_ret)
+    end
+    return canonical_fwds_pass, obj_tangent_ref, rrule, PB
 end
 
-# Reverse/FD needs a valid width-1 frule_wrapper for _scale_internal to copy.
-function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
-    run_fwds_pass, obj_tangent_ref = _function_wrapper_reverse_parts(R, obj, A, obj_tangent)
-
-    _, frule_sig, frule_ret = _construct_frule_types(R, A)
-    frule = build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...})
-    @static if VERSION ≥ v"1.12-"
-        run_frule = Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> begin
-            return frule(lift(obj, obj_tangent_ref[]), x...)
-        end
+function _function_wrapper_tangent(
+    ::Type{R}, obj::Tobj, ::Type{A}, obj_tangent, source=nothing
+) where {R,Tobj,A}
+    run_fwds_pass, obj_tangent_ref, rrule, PB = _function_wrapper_reverse_parts(
+        R, obj, A, obj_tangent, source
+    )
+    frule = if source === nothing
+        build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...})
     else
-        run_frule = Base.Experimental.@opaque frule_sig (x...) -> begin
-            return frule(lift(obj, obj_tangent_ref[]), x...)
-        end
+        source.frule
     end
-
-    t = FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref, frule)
+    t = FunctionWrapperTangent{R,A,0}(
+        run_fwds_pass, nothing, obj_tangent_ref, frule, rrule, PB
+    )
     return t, obj_tangent_ref
+end
+
+# A reused V keeps its partials, but scalar dual values must follow the slot's callable.
+@inline function _callable_slot(obj::P, slot::Lifted{P,N}) where {P,N}
+    obj === primal(slot) && return slot
+    return Lifted{P,N}(obj, _callable_rep(obj, primal(slot), tangent(slot)))
+end
+@inline function _callable_rep(p, old, v)
+    p === old && return v
+    throw(
+        ArgumentError(
+            "cannot rebind this FunctionWrapper capture; use lift with the new primal"
+        ),
+    )
+end
+@inline _callable_rep(p, old, v::Mooncake.NoDual) = v
+@inline _callable_rep(p, old, v::Mooncake.Nfwd.NDual) = typeof(v)(p, v.partials)
+@inline _callable_rep(p, old, v::Mooncake.Nfwd.NDualArray) = typeof(v)(
+    p, getfield(v, :partials_block)
+)
+@inline _callable_rep(p, old, v::Mooncake.Nfwd.NDualRef) = v
+@inline function _callable_rep(p, old, v::Union{Tuple,NamedTuple})
+    return map((p, old, v) -> _callable_rep(p, old, v), p, old, v)
+end
+@inline function _callable_rep(
+    p, old, v::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
+)
+    p === old && return v
+    fields = map(keys(v.fields)) do name
+        _callable_rep(getfield(p, name), getfield(old, name), getfield(v.fields, name))
+    end
+    nt = NamedTuple{keys(v.fields)}(fields)
+    v isa Mooncake.ImmutableDual && return typeof(v)(nt)
+    v.fields = nt
+    return v
 end
 
 # Keep the slot in dobj_ref so basis seeding updates the storage read by the rule.
 # Native lifting can reuse its compiled rule and reverse closures.
 function _function_wrapper_forward_tangent(
-    R, A, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}, source=nothing
-) where {Tobj,N}
+    ::Type{R}, ::Type{A}, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}, source=nothing
+) where {R,A,Tobj,N}
     obj = primal(obj_fwd_slot)
-    run_fwds_pass = if source === nothing
-        _function_wrapper_reverse_parts(R, obj, A, tangent(obj_fwd_slot, 1))[1]
+    run_fwds_pass, _, rrule, PB = if source === nothing
+        _function_wrapper_reverse_parts(R, obj, A, tangent(obj_fwd_slot, 1))
     else
-        source.fwds_wrapper
+        (source.fwds_wrapper, nothing, source.rrule, source.pb_type)
     end
     obj_tangent_ref = Ref(obj_fwd_slot)
-    _, frule_sig, frule_ret = _construct_frule_types(R, A, Val(N))
+    frule_type, frule_sig, frule_ret = _construct_frule_types(R, A, Val(N))
     frule = if source === nothing
         build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...}; chunk_size=N)
     else
         source.frule
     end
     run_frule = @static if VERSION ≥ v"1.12-"
-        Base.Experimental.@opaque frule_sig -> frule_ret (x...) ->
-            frule(obj_tangent_ref[], x...)
+        Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> begin
+            obj_tangent_ref[] = _callable_slot(
+                _function_wrapper_object(x[1], obj_tangent_ref[]), obj_tangent_ref[]
+            )
+            frule(obj_tangent_ref[], Base.tail(x)...)
+        end
     else
-        Base.Experimental.@opaque frule_sig (x...) -> frule(obj_tangent_ref[], x...)
+        Base.Experimental.@opaque frule_sig (x...) -> begin
+            obj_tangent_ref[] = _callable_slot(
+                _function_wrapper_object(x[1], obj_tangent_ref[]), obj_tangent_ref[]
+            )
+            frule(obj_tangent_ref[], Base.tail(x)...)
+        end
     end
-    return FunctionWrapperTangent(run_fwds_pass, run_frule, obj_tangent_ref, frule)
+    return FunctionWrapperTangent{R,A,N}(
+        run_fwds_pass,
+        run_frule isa frule_type ? run_frule : _wrapper_closure(run_frule, frule_ret),
+        obj_tangent_ref,
+        frule,
+        rrule,
+        PB,
+    )
 end
 
 function zero_tangent_internal(p::FunctionWrapper{R,A}, dict::MaybeCache) where {R,A}
@@ -313,14 +480,22 @@ function _randn_dual_internal(
     return t
 end
 
-function increment_internal!!(c::IncCache, t::T, s::T) where {T<:FunctionWrapperTangent}
+function increment_internal!!(
+    c::IncCache, t::T, s::T
+) where {R,A,N,T<:FunctionWrapperTangent{R,A,N}}
+    N == 0 || throw(
+        ArgumentError("materialise native tangents before incrementing forward storage")
+    )
     (t === s || haskey(c, t)) && return t
     c[t] = true
     t.dobj_ref[] = increment_internal!!(c, t.dobj_ref[], s.dobj_ref[])
     return t
 end
 
-function set_to_zero_internal!!(c::SetToZeroCache, t::FunctionWrapperTangent)
+function set_to_zero_internal!!(
+    c::SetToZeroCache, t::FunctionWrapperTangent{R,A,N}
+) where {R,A,N}
+    N == 0 || throw(ArgumentError("use basis_lifted!! to reseed forward storage"))
     t.dobj_ref[] = set_to_zero_internal!!(c, t.dobj_ref[])
     return t
 end
@@ -359,12 +534,50 @@ function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:FunctionWrapperTange
     return _dot_internal(c, t.dobj_ref[], s.dobj_ref[])::Float64
 end
 
-function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrapperTangent}
+function _scale_internal(
+    c::MaybeCache, a::Float64, t::T
+) where {R,A,T<:FunctionWrapperTangent{R,A,0}}
     haskey(c, t) && return c[t]::T
-    s = T(t.fwds_wrapper, t.frule_wrapper, Ref{typeof(t.dobj_ref[])}(), t.frule)
-    c[t] = s
-    s.dobj_ref[] = _scale_internal(c, a, t.dobj_ref[])
-    return s
+    ref = t.dobj_ref
+    s = _function_wrapper_tangent(R, ref.obj, A, _scale_internal(c, a, ref[]), t)[1]
+    return c[t] = s::T
+end
+
+function _scale_internal(::MaybeCache, ::Float64, ::FunctionWrapperTangent)
+    throw(
+        ArgumentError(
+            "materialise a native tangent with tangent(slot, lane) before scaling"
+        ),
+    )
+end
+
+# Type piracy: Base copies objptr verbatim, leaving it pointing at the original callable.
+# Reconstruct the wrapper so its object pointer uses the copied callable.
+function Base.deepcopy_internal(x::FunctionWrapper, dict::IdDict)
+    haskey(dict, x) && return dict[x]::typeof(x)
+    y = typeof(x)(x.obj[])
+    dict[x] = y
+    dict[x.obj] = y.obj
+    y.obj[] = Base.deepcopy_internal(x.obj[], dict)
+    reinit_wrapper(y)
+    return y
+end
+
+# Opaque closures are not deep-copied. Rebind them to the copied derivative storage.
+function Base.deepcopy_internal(
+    t::T, dict::IdDict
+) where {R,A,N,T<:FunctionWrapperTangent{R,A,N}}
+    haskey(dict, t) && return dict[t]::T
+    ref = t.dobj_ref
+    copied = if N == 0
+        obj = Base.deepcopy_internal(ref.obj, dict)
+        seed = Base.deepcopy_internal(ref[], dict)
+        _function_wrapper_tangent(R, obj, A, seed, t)[1]
+    else
+        slot = Base.deepcopy_internal(ref[], dict)
+        _function_wrapper_forward_tangent(R, A, slot, Val(N))
+    end
+    return dict[t] = copied::T
 end
 
 # Opaque closures and dobj_ref are not field-parallel to FunctionWrapper; test calls and
@@ -420,13 +633,15 @@ end
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
 function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
-    y, pb = f.dx.fwds_wrapper(x...)
+    y, pb = f.dx.fwds_wrapper(primal(f), x...)
     function_wrapper_eval_pb(dy) = pb(dy)
     return y, function_wrapper_eval_pb
 end
 
 function frule!!(f::Lifted{FunctionWrapper{R,A},N}, x::Vararg{Lifted}) where {R,A,N}
-    return tangent(f).frule_wrapper(x...)
+    tangent(f) isa dual_type(Val(N), typeof(primal(f))) ||
+        throw(ArgumentError("incompatible FunctionWrapper forward storage; use lift"))
+    return tangent(f).frule_wrapper(primal(f), x...)
 end
 
 end

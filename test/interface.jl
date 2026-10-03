@@ -1678,6 +1678,328 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test_throws "must match the primal axes" run([3.0, 4.0, 5.0])
         end
 
+        @testset "friendly direction shapes" for N in (1, 8)
+            for (x, direction) in (
+                (ones(1000), [1.0]),
+                (ones(3), ones(1000)),
+                (ones(2, 3), ones(3, 2)),
+                (Diagonal(ones(1000)), Mooncake.zero_tangent(Diagonal(ones(1)))),
+            )
+                cache = Mooncake.prepare_derivative_cache(
+                    sum,
+                    x;
+                    config=Mooncake.Config(;
+                        friendly_tangents=true, chunk_size=N, kwargs...
+                    ),
+                )
+                before = deepcopy(cache.input_tangents)
+                err = try
+                    Mooncake.value_and_derivative!!(cache, (sum, NoTangent()), (x, direction))
+                catch e
+                    e
+                end
+                @test err isa ArgumentError
+                msg = sprint(showerror, err)
+                @test occursin("argument 1", msg)
+                expected = x isa Diagonal ? axes(x.diag) : axes(x)
+                supplied = x isa Diagonal ? axes(direction.fields.diag) : axes(direction)
+                @test occursin(string(expected), msg)
+                @test occursin(string(supplied), msg)
+                @test Mooncake.TestUtils.has_equal_data(cache.input_tangents, before)
+            end
+        end
+
+        @testset "friendly dictionary directions by key" for N in (1, 8), C in (IdDict,)
+            config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
+            fd(d) = sum(abs2, d[1].diag) + 5sum(abs2, d[23].diag)
+            make_dict() = C(1 => Diagonal([1.0]), 23 => Diagonal([2.0]))
+            d = make_dict()
+            cache = Mooncake.prepare_derivative_cache(fd, d; config)
+            plain = Mooncake.prepare_derivative_cache(
+                fd, d; config=Mooncake.Config(; chunk_size=N, kwargs...)
+            )
+            for refilled in (false, true)
+                if refilled
+                    for k in collect(keys(d))
+                        delete!(d, k)
+                    end
+                    d[23] = Diagonal([2.0])
+                    d[1] = Diagonal([1.0])
+                end
+                for native in (false, true), ks in ((23, 1), (1,), (1, 23, 99), (1, 99))
+                    direction = C(k => Diagonal([k == 1 ? 1.0 : 0.0]) for k in ks)
+                    if native
+                        direction = C(
+                            k => begin
+                                dt = Mooncake.zero_tangent(v)
+                                dt.fields.diag .= v.diag
+                                dt
+                            end for (k, v) in direction
+                        )
+                    end
+                    before = deepcopy(cache.input_tangents)
+                    if ks == (23, 1)
+                        @test Mooncake.value_and_derivative!!(
+                            cache, (fd, NoTangent()), (d, direction)
+                        ) == (21.0, 2.0)
+                        @test isempty(cache.friendly_alias_cache)
+                    else
+                        @test_throws r"argument 1.*missing or extra keys" Mooncake.value_and_derivative!!(
+                            cache, (fd, NoTangent()), (d, direction)
+                        )
+                        @test TestUtils.has_equal_data(cache.input_tangents, before)
+                        @test isempty(cache.friendly_alias_cache)
+                    end
+                end
+                _, dict_grad = Mooncake.value_and_gradient!!(cache, fd, d)
+                _, reverse_dict_grad = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_gradient_cache(fd, d; config), fd, d
+                )
+                @test dict_grad[2][1].diag == reverse_dict_grad[2][1].diag == [2.0]
+                @test dict_grad[2][23].diag == reverse_dict_grad[2][23].diag == [20.0]
+                h = 1e-5
+                plus, minus = deepcopy(d), deepcopy(d)
+                plus[1].diag[1] += h
+                minus[1].diag[1] -= h
+                @test (fd(plus) - fd(minus)) / 2h ≈ 2.0
+                native = Mooncake.zero_tangent(d)
+                native[1].fields.diag .= 1
+                @test Mooncake.value_and_derivative!!(
+                    plain, (fd, NoTangent()), (d, native)
+                ) == (21.0, 2.0)
+            end
+            @test Mooncake.value_and_derivative!!(
+                cache,
+                (fd, NoTangent()),
+                (make_dict(), C(23 => Diagonal([0.0]), 1 => Diagonal([1.0]))),
+            ) == (21.0, 2.0)
+            # A different insertion order can also move differently shaped leaves.
+            heterogeneous = C{Int,Any}(1 => [1.0, 2.0], 23 => Diagonal([3.0]))
+            heterogeneous_f = x -> sum(abs2, x[1]) + sum(abs2, x[23].diag)
+            heterogeneous_cache = Mooncake.prepare_derivative_cache(
+                heterogeneous_f, heterogeneous; config
+            )
+            for k in (1, 23)
+                delete!(heterogeneous, k)
+            end
+            heterogeneous[23] = Diagonal([3.0])
+            heterogeneous[1] = [1.0, 2.0]
+            heterogeneous_dir = C{Int,Any}(23 => Diagonal([0.0]), 1 => [1.0, 1.0])
+            @test Mooncake.value_and_derivative!!(
+                heterogeneous_cache,
+                (heterogeneous_f, NoTangent()),
+                (heterogeneous, heterogeneous_dir),
+            ) == (14.0, 6.0)
+            cyclic = C{Symbol,Any}(:x => 2.0)
+            cyclic[:self] = cyclic
+            cyclic_dir = C{Any,Any}(:x => 1.0)
+            cyclic_dir[:self] = cyclic_dir
+            cyclic_f = x -> x[:x]^2 + 3x[:self][:x]
+            cyclic_cache = Mooncake.prepare_derivative_cache(cyclic_f, cyclic; config)
+            for _ in 1:2
+                @test Mooncake.value_and_derivative!!(
+                    cyclic_cache, (cyclic_f, NoTangent()), (cyclic, cyclic_dir)
+                ) == (10.0, 7.0)
+                @test isempty(cyclic_cache.friendly_alias_cache)
+            end
+            # Cycles through mutable dictionary values share the conversion's alias cache.
+            node = AnyCycleNode(nothing, 2.0)
+            node.next = node
+            node_dir = AnyCycleNode(nothing, 1.0)
+            node_dir.next = node_dir
+            nodes = C(:a => node, :b => node)
+            nodes_dir = C(:a => node_dir, :b => node_dir)
+            nodes_f = x -> x[:a].next.weight^2 + x[:b].weight
+            nodes_cache = Mooncake.prepare_derivative_cache(nodes_f, nodes; config)
+            for weight in (1.0, 2.0, 1.0)
+                node_dir.weight = weight
+                @test Mooncake.value_and_derivative!!(
+                    nodes_cache, (nodes_f, NoTangent()), (nodes, nodes_dir)
+                ) == (6.0, 5weight)
+                @test nodes_cache.input_tangents[2][:a] ===
+                    nodes_cache.input_tangents[2][:b]
+                @test node_dir.next === node_dir
+                @test node_dir.weight == weight
+            end
+            # Any-valued arrays can hold primal-shaped values despite matching tangent types.
+            array_nodes = C(:a => Any[node, node])
+            array_nodes_f = x -> x[:a][1].next.weight^2 + x[:a][2].weight
+            array_nodes_cache = Mooncake.prepare_derivative_cache(
+                array_nodes_f, array_nodes; config
+            )
+            @test Mooncake.value_and_derivative!!(
+                array_nodes_cache,
+                (array_nodes_f, NoTangent()),
+                (array_nodes, C(:a => Any[node_dir, node_dir])),
+            ) == (6.0, 5.0)
+            # Config dictionaries are still valid primal-shaped directions, including inside structs.
+            config_f = (x, meta) -> sum(abs2, x) * meta[:n]
+            meta = C(:n => 1)
+            config_cache = Mooncake.prepare_derivative_cache(config_f, [1.0], meta; config)
+            @test Mooncake.value_and_derivative!!(
+                config_cache, (config_f, NoTangent()), ([1.0], [1.0]), (meta, meta)
+            ) == (1.0, 2.0)
+            model = StructuredPair([1.0, 2.0], meta)
+            model_f = m -> sum(abs2, m.u)
+            model_cache = Mooncake.prepare_derivative_cache(model_f, model; config)
+            _, model_grad = Mooncake.value_and_gradient!!(model_cache, model_f, model)
+            @test Mooncake.value_and_derivative!!(
+                model_cache, (model_f, NoTangent()), (model, model_grad[2])
+            ) == (5.0, 20.0)
+            # The shared-storage walk must agree with key-based IdDict lifting.
+            many = C(k => Float64(k) for k in 1:40)
+            many_f = x -> sum(k * x[k]^2 for k in 1:40)
+            many_cache = Mooncake.prepare_derivative_cache(many_f, many; config)
+            for k in 1:40
+                delete!(many, k)
+            end
+            for k in shuffle(Xoshiro(1), collect(1:40))
+                many[k] = Float64(k)
+            end
+            many_dir = C(k => (
+                if k == 7
+                    1.0
+                elseif k == 30
+                    2.0
+                else
+                    0.0
+                end
+            ) for k in shuffle(Xoshiro(2), collect(1:40)))
+            @test Mooncake.value_and_derivative!!(
+                many_cache, (many_f, NoTangent()), (many, many_dir)
+            )[2] == 3698.0
+            @test many_cache.gradient_chunk_size.width == N
+            _, many_grad = Mooncake.value_and_gradient!!(many_cache, many_f, many)
+            _, many_reverse = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(many_f, many; config), many_f, many
+            )
+            @test sum(many_grad[2][k] * many_dir[k] for k in 1:40) == 3698.0
+            @test sum(many_reverse[2][k] * many_dir[k] for k in 1:40) == 3698.0
+            h = 1e-5
+            many_plus = C(k => many[k] + h * many_dir[k] for k in 1:40)
+            many_minus = C(k => many[k] - h * many_dir[k] for k in 1:40)
+            @test isapprox((many_f(many_plus) - many_f(many_minus)) / 2h, 3698.0; rtol=1e-6)
+            select = x -> x[1]
+            selected = C(1 => 1.0)
+            select_cache = Mooncake.prepare_derivative_cache(select, selected; config)
+            @test isequal(
+                Mooncake.value_and_derivative!!(
+                    select_cache, (select, NoTangent()), (selected, C(1 => -0.0))
+                ),
+                (1.0, -0.0),
+            )
+            scalar_dict = C(1 => 1.0, 23 => 2.0)
+            scalar_other = copy(scalar_dict)
+            sizehint!(scalar_other, 1000)
+            scalar_native = Mooncake.zero_tangent(scalar_other)
+            scalar_f = x -> x[1]^2 + 5x[23]^2
+            scalar_cache = Mooncake.prepare_derivative_cache(
+                scalar_f, scalar_dict; config=Mooncake.Config(; chunk_size=N, kwargs...)
+            )
+            if C === IdDict
+                dict_constant = _ -> 1.0
+                identity_dict = IdDict([1] => 1.0)
+                identity_cache = Mooncake.prepare_derivative_cache(
+                    dict_constant, identity_dict; config
+                )
+                @test_throws r"argument 1.*missing or extra keys" Mooncake.value_and_derivative!!(
+                    identity_cache,
+                    (dict_constant, NoTangent()),
+                    (identity_dict, Dict([1] => 1.0)),
+                )
+                replacement = IdDict([1] => 1.0)
+                before = copy(identity_cache.input_tangents[2])
+                @test_throws r"IdDict cache cannot represent.*key objects.*argument 1; prepare a new cache" Mooncake.value_and_derivative!!(
+                    identity_cache, (dict_constant, NoTangent()), (replacement, replacement)
+                )
+                @test TestUtils.has_equal_data(identity_cache.input_tangents[2], before)
+                @test Mooncake.value_and_derivative!!(
+                    identity_cache,
+                    (dict_constant, NoTangent()),
+                    (identity_dict, identity_dict),
+                ) == (1.0, 0.0)
+            end
+            scalar_native[1] = 1.0
+            @test Mooncake.value_and_derivative!!(
+                scalar_cache, (scalar_f, NoTangent()), (scalar_dict, scalar_native)
+            ) == (21.0, 2.0)
+        end
+
+        @testset "unsupported friendly dictionaries refuse before mutation" for N in (1, 8)
+            config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
+            dict_f = d -> sum(values(d))
+            dict_primal = Dict(1 => 1.0)
+            dict_cache = Mooncake.prepare_derivative_cache(dict_f, dict_primal; config)
+            @test_throws "Friendly directions for Dict primals are unsupported" Mooncake.value_and_derivative!!(
+                dict_cache, (dict_f, NoTangent()), (dict_primal, Dict(1 => 1.0))
+            )
+            message = "friendly forward directions support only Dict and IdDict; pass a native tangent through a non-friendly cache (friendly_tangents=false)"
+            dict_direction_sum(a, b) = sum(a) + sum(b)
+            direction_cache = Mooncake.prepare_derivative_cache(
+                dict_direction_sum, [1.0], [2.0]; config
+            )
+            bad = Base.ImmutableDict(:x => 1.0)
+            for wrap in (
+                identity,
+                x -> (x,),
+                x -> (x=x,),
+                x -> Any[x],
+                Ref,
+                x -> Mooncake.Tangent((x=x,)),
+                x -> Mooncake.MutableTangent((x=x,)),
+                x -> Dict(:inner => x),
+                x -> IdDict(:inner => x),
+            )
+                before = deepcopy(direction_cache.input_tangents)
+                TestUtils._test_throws(ArgumentError, message) do
+                    Mooncake.value_and_derivative!!(
+                        direction_cache,
+                        (dict_direction_sum, NoTangent()),
+                        ([1.0], [7.0]),
+                        ([2.0], wrap(bad)),
+                    )
+                end
+                @test TestUtils.has_equal_data(direction_cache.input_tangents, before)
+                @test isempty(direction_cache.friendly_alias_cache)
+                @test Mooncake.value_and_derivative!!(
+                    direction_cache,
+                    (dict_direction_sum, NoTangent()),
+                    ([1.0], [1.0]),
+                    ([2.0], [0.0]),
+                ) == (3.0, 1.0)
+            end
+            # A supported direction cannot disguise an unsupported primal dictionary.
+            primal_dicts = ([1.0], pairs((x=1.0,)))
+            dicts_f = x -> x[1][1]^2 + x[2][:x]^2
+            dicts_cache = Mooncake.prepare_derivative_cache(dicts_f, primal_dicts; config)
+            before = deepcopy(dicts_cache.input_tangents)
+            TestUtils._test_throws(ArgumentError, message) do
+                Mooncake.value_and_derivative!!(
+                    dicts_cache,
+                    (dicts_f, NoTangent()),
+                    (primal_dicts, ([3.0], Dict(:x => 1.0))),
+                )
+            end
+            @test TestUtils.has_equal_data(dicts_cache.input_tangents, before)
+            @test primal(
+                Mooncake.value_and_derivative!!(
+                    dicts_cache,
+                    Mooncake.zero_lifted(Val(1), dicts_f),
+                    Mooncake.zero_lifted(Val(1), primal_dicts),
+                ),
+            ) == 2.0
+            cycle = Any[]
+            push!(cycle, cycle, bad)
+            TestUtils._test_throws(ArgumentError, message) do
+                Mooncake.value_and_derivative!!(
+                    direction_cache,
+                    (dict_direction_sum, NoTangent()),
+                    ([1.0], [7.0]),
+                    ([2.0], cycle),
+                )
+            end
+        end
+
         @testset "Structured types" begin
             cache_sp_friendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
@@ -1701,6 +2023,48 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test_throws "Tangent types do not match primal types:" Mooncake.value_and_derivative!!(
                 cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
             )
+        end
+
+        @testset "native friendly directions remain caller-owned" begin
+            raw_composite_sum(v) = sum(abs2, v[1].diag) + 2sum(abs2, v[2].diag)
+            for N in (1, 8), shared in (false, true)
+                v = [Diagonal([1.0]), Diagonal([3.0])]
+                config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
+                cache = Mooncake.prepare_derivative_cache(raw_composite_sum, v; config)
+                t1 = Mooncake.zero_tangent(v[1])
+                t1.fields.diag .= 1
+                t2 = shared ? t1 : Mooncake.zero_tangent(v[2])
+                @test Mooncake.value_and_derivative!!(
+                    cache, (raw_composite_sum, Mooncake.NoTangent()), (v, [t1, t2])
+                ) == (19.0, shared ? 14.0 : 2.0)
+                @test t1.fields.diag == [1.0]
+                @test t2.fields.diag == [shared ? 1.0 : 0.0]
+                d1, d2 = shared ? (1.0, 0.0) : (5.0, 7.0)
+                @test Mooncake.value_and_derivative!!(
+                    cache,
+                    (raw_composite_sum, Mooncake.NoTangent()),
+                    (v, [Diagonal([d1]), Diagonal([d2])]),
+                ) == (19.0, shared ? 2.0 : 94.0)
+                @test t1.fields.diag == [1.0]
+                @test t2.fields.diag == [shared ? 1.0 : 0.0]
+            end
+            # A mutable composite also retains converted fields in the input buffer.
+            for N in (1, 8)
+                h = Ref(Diagonal([1.0]))
+                fref(h) = sum(abs2, h[].diag)
+                config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
+                cache = Mooncake.prepare_derivative_cache(fref, h; config)
+                t = Mooncake.zero_tangent(h[])
+                t.fields.diag .= 1
+                @test Mooncake.value_and_derivative!!(
+                    cache, (fref, Mooncake.NoTangent()), (h, (x=t,))
+                ) == (1.0, 2.0)
+                @test t.fields.diag == [1.0]
+                @test Mooncake.value_and_derivative!!(
+                    cache, (fref, Mooncake.NoTangent()), (h, Ref(Diagonal([0.5])))
+                ) == (1.0, 1.0)
+                @test t.fields.diag == [1.0]
+            end
         end
 
         @testset "Tuple-like inputs" begin
@@ -4084,6 +4448,45 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, true, false))
             @test cache_grad.tangents[2] == 2x
             @test cache_grad.tangents[3] == -4y
+        end
+    end
+end
+
+@testset "friendly caches with cycles" begin
+    node = AnyCycleNode(nothing, 2.0)
+    node.next = node
+    array = Any[3.0]
+    push!(array, array)
+    root = AnyCycleNode(Any[], 1.0)
+    push!(root.next, AnyCycleNode(root, 2.0))
+    for (f, x, component, expected) in (
+            (n -> 3n.weight^2 + n.next.weight, node, g -> g.weight, 13.0),
+            (a -> a[1]^2 + a[2][1], array, first, 7.0),
+            (
+                t -> t.weight * t.next[1].weight + t.next[1].next.weight,
+                root,
+                g -> g.weight,
+                3.0,
+            ),
+        ),
+        prepare in (prepare_gradient_cache, Mooncake.prepare_derivative_cache),
+        width in (1, 8)
+
+        @testset "$(typeof(x)), $prepare, width=$width" begin
+            cache = prepare(
+                f, x; config=Mooncake.Config(; friendly_tangents=true, chunk_size=width)
+            )
+            if prepare === Mooncake.prepare_derivative_cache
+                result_type = Core.Compiler.return_type(
+                    value_and_gradient!!, Tuple{typeof(cache),typeof(f),typeof(x)}
+                )
+                @test result_type <: Tuple{Any,Tuple{typeof(f),typeof(x)}}
+            end
+            for _ in 1:2
+                y, grad = value_and_gradient!!(cache, f, x)
+                @test y == f(x)
+                @test component(grad[2]) == expected
+            end
         end
     end
 end

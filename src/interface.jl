@@ -115,7 +115,7 @@ struct GradientChunkSize
     auto::Bool
 end
 
-struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
+struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB,FA,FZ}
     single_rule::R
     input_tangents::IT
     friendly_gradients::FG
@@ -137,6 +137,9 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # Packable single-float-vector Jacobian buffer, sized on first use (output size is lazy).
     # Returned storage is reused and overwritten; other shapes use `nothing`.
     jacobian_buffer::JB
+    # Reused by friendly direction validation and raw-leaf copies.
+    friendly_alias_cache::FA
+    friendly_zero_cache::FZ
 end
 
 function _cache_show_fields(cache::FCache)
@@ -554,7 +557,11 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         end
         seen[key] = value
     end
-    if expected isa Union{Tangent,MutableTangent} &&
+    if expected isa IdDict
+        for (k, v) in expected
+            _check_tangent_storage!(seen, v, supplied[k])
+        end
+    elseif expected isa Union{Tangent,MutableTangent} &&
         !(supplied isa Union{Tangent,MutableTangent})
         for name in keys(expected.fields)
             isdefined(supplied, name) && _check_tangent_storage!(
@@ -578,18 +585,82 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     return nothing
 end
 
-function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualArray, supplied)
+function _check_tangent_storage!(seen::IdDict, expected::T, supplied, p) where {T}
+    isbitstype(T) && return nothing
+    if expected isa AbstractArray
+        (isempty(expected) || eltype(expected) === NoTangent) && return nothing
+    end
+    if ismutable(expected)
+        key, value = _storage_id(expected), _storage_id(supplied)
+        if haskey(seen, key)
+            # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
+            seen[key] === value ||
+                tangent_dim(expected) == 0 ||
+                _throw_shared_input_tangent_error()
+            return nothing
+        end
+        seen[key] = value
+    end
+    if expected isa IdDict
+        for (k, v) in expected
+            _check_tangent_storage!(seen, v, supplied[k], p === nothing ? nothing : p[k])
+        end
+    elseif expected isa Union{Tangent,MutableTangent} &&
+        !(supplied isa Union{Tangent,MutableTangent})
+        for name in keys(expected.fields)
+            isdefined(supplied, name) && _check_tangent_storage!(
+                seen,
+                getfield(expected.fields, name),
+                getfield(supplied, name),
+                p === nothing ? nothing : getfield(p, name),
+            )
+        end
+    elseif expected isa PossiblyUninitTangent && !(supplied isa PossiblyUninitTangent)
+        is_init(expected) && _check_tangent_storage!(seen, val(expected), supplied, p)
+    elseif expected isa AbstractArray
+        isbitstype(eltype(expected)) && return nothing
+        for i in eachindex(expected)
+            isassigned(expected, i) && _check_tangent_storage!(
+                seen, expected[i], supplied[i], p === nothing ? nothing : p[i]
+            )
+        end
+    else
+        for i in _tangent_fields(T)
+            isdefined(expected, i) && _check_tangent_storage!(
+                seen,
+                getfield(expected, i),
+                getfield(supplied, i),
+                if expected isa Union{Tangent,MutableTangent,PossiblyUninitTangent}
+                    p
+                elseif p === nothing || !isdefined(p, i)
+                    nothing
+                else
+                    getfield(p, i)
+                end,
+            )
+        end
+    end
+    return nothing
+end
+
+function _check_tangent_storage!(
+    seen::IdDict, expected::Nfwd.NDualArray, supplied, p=nothing
+)
     return _check_tangent_storage!(
         seen,
         Nfwd._block_storage(getfield(expected, :partials_block)),
         Nfwd._block_storage(getfield(supplied, :partials_block)),
     )
 end
-function _check_tangent_storage!(seen::IdDict, expected::Lifted, supplied::Lifted)
+function _check_tangent_storage!(
+    seen::IdDict, expected::Lifted, supplied::Lifted, p=nothing
+)
     return _check_tangent_storage!(seen, tangent(expected), tangent(supplied))
 end
 @static if VERSION >= v"1.11-rc4"
-    function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied)
+    function _check_tangent_storage!(
+        seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied, p=nothing
+    )
         return _check_tangent_storage!(
             seen, expected.partials_ref.mem, supplied.partials_ref.mem
         )
@@ -1075,7 +1146,11 @@ is shown by the cache.
     end
     input_tangents, friendly_gradients, gradient_workspace = if config.friendly_tangents
         # `input_ts` is already built for the dimension count and has not been written to.
-        (input_ts, _copy_output(fx), Ref{Union{Nothing,typeof(input_ts)}}(nothing))
+        (
+            input_ts,
+            map(_forward_friendly_cache, fx, _copy_output(fx)),
+            Ref{Union{Nothing,typeof(input_ts)}}(nothing),
+        )
     else
         # Keep the lazy workspace concretely typed without evaluating more tangents.
         (
@@ -1098,6 +1173,8 @@ is shown by the cache.
         gradient_seed,
         inputs_share_storage,
         jacobian_buffer,
+        config.friendly_tangents ? IdDict{Any,Any}() : nothing,
+        config.friendly_tangents ? UInt[] : nothing,
     )
 end
 
@@ -1161,6 +1238,11 @@ provided by the user (in which case we translate between "friendly tangents" and
 tangents using cache storage).
 With `friendly_tangents=false`, each direction must have the internal tangent type for its
 primal and matching axes (or length for sized collections without axes).
+With `friendly_tangents=true`, types using `AsRaw` (including `FunctionWrapper`)
+still accept their internal tangent type. Friendly dictionary directions support `IdDict`
+by key, including nested native tangent leaves. Keys must match the call-time
+primal. Other `AbstractDict`
+directions require a native tangent through a non-friendly cache (`friendly_tangents=false`).
 
 The arguments in `x` are returned to their original state, whether the rule returns or
 raises: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the
@@ -1184,16 +1266,58 @@ snapshotted — a callable that mutates its own fields is not restored.
 @inline function value_and_derivative!!(
     cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,FG,GW,CF,S,M}
-    input_primals = tuple_map(first, fx)
-    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
-    # Types and sizes match when only the aliasing differs, so the check above cannot see it.
-    _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
-    _check_repeated_arg_tangents(fx)
+    local input_primals, input_tangents
     input_friendly_tangents = tuple_map(last, fx)
-    _check_shared_input_tangents(input_primals, input_friendly_tangents)
-    input_tangents = tuple_map(
-        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
-    )
+    try
+        _empty_alias_map!(cache.friendly_alias_cache)
+        _check_friendly_direction_dicts(cache.friendly_alias_cache, input_friendly_tangents)
+        input_primals = tuple_map(first, fx)
+        _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
+        # Types and sizes match when only the aliasing differs, so the check above cannot see it.
+        _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
+        _check_repeated_arg_tangents(fx)
+        tuple_map(
+            cache.input_tangents, input_friendly_tangents, ntuple(identity, Val(M))
+        ) do t, d, i
+            _check_friendly_direction_axes(t, d, i - 1)
+        end
+        _empty_alias_map!(cache.friendly_alias_cache)
+        has_dict = any(
+            tuple_map(cache.input_tangents, fx, ntuple(identity, Val(M))) do t, pair, i
+                _check_friendly_dict_layouts(
+                    cache.friendly_alias_cache, first(pair), t, last(pair), i - 1
+                )
+            end,
+        )
+        if has_dict
+            _check_tangent_storage!(
+                IdDict{Any,Any}(),
+                _zero_tangents(input_primals),
+                input_friendly_tangents,
+                input_primals,
+            )
+        else
+            _check_shared_input_tangents(input_primals, input_friendly_tangents)
+        end
+        seen = has_dict ? IdDict{Any,Any}() : nothing
+        input_tangents =
+            tuple_map(cache.friendly_gradients, cache.input_tangents, fx) do d, t, pair
+                _friendly_input_tangent(
+                    d,
+                    t,
+                    last(pair),
+                    cache.friendly_alias_cache,
+                    cache.friendly_zero_cache,
+                    first(pair),
+                    seen,
+                )
+            end
+
+    catch
+        _empty_alias_map!(cache.friendly_alias_cache)
+        rethrow()
+    end
+    _empty_alias_map!(cache.friendly_alias_cache)
 
     # Restore in `finally` so a mutating rule that throws also leaves inputs unchanged.
     input_snapshot, restore_contexts = _snapshot_inputs!!(
@@ -1210,10 +1334,7 @@ snapshotted — a callable that mutates its own fields is not restored.
         output_primal = primal(output)
         _, output_internal_tangent = unlift(output)
         output_friendly_tangent = tangent_to_friendly!!(
-            friendly_tangent_cache(output_primal),
-            output_primal,
-            output_internal_tangent,
-            _friendly_cache((output_primal,)),
+            output_primal, output_internal_tangent
         )
         # Copy before restoring: the result may alias a mutated input. Isbits copies are free.
         return _copy_output(output_primal), output_friendly_tangent
@@ -1708,7 +1829,308 @@ There are lots of ways to get this wrong though, so we generally advise against 
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
 _friendly_cache(fx::Tuple) = isbitstype(typeof(fx)) ? NoCache() : IdDict{Any,Any}()
 
-# Convert the internal tangents `native` back to friendly (primal-shaped) tangents, sharing
+# Preserve primal-shaped NoTangent values and types that do not opt into AsRaw.
+function _forward_friendly_cache(x, buffer)
+    dest = friendly_tangent_cache(x)
+    return if (
+        dest isa FriendlyTangentCache{AsRaw} && tangent_type(typeof(x)) !== NoTangent
+    ) || _has_raw_friendly_leaf(dest, x)
+        dest
+    else
+        FriendlyTangentCache{AsPrimal}(buffer)
+    end
+end
+
+# Preserve the existing primal-shaped fast path unless a leaf needs a different
+# representation. Inspect the cache family, so custom friendly dispatch is respected.
+_has_raw_friendly_leaf(::FriendlyTangentCache{AsPrimal}, x) = x isa AbstractDict
+function _has_raw_friendly_leaf(::FriendlyTangentCache{AsRaw}, x::P) where {P}
+    tangent_type(P) !== NoTangent && tangent_type(P) !== P
+end
+_has_raw_friendly_leaf(::FriendlyTangentCache{<:AsCustomised}, x) = false
+function _has_raw_friendly_leaf(d::FriendlyTangentCache{AsMutableFields}, x)
+    _has_raw_friendly_leaf(d.buffer, x)
+end
+function _has_raw_friendly_leaf(d::Union{Tuple,NamedTuple}, x)
+    any(i -> isdefined(x, i) && _has_raw_friendly_leaf(d[i], getfield(x, i)), 1:length(d))
+end
+function _has_raw_friendly_leaf(d::AbstractArray, x)
+    any(i -> isassigned(x, i) && _has_raw_friendly_leaf(d[i], x[i]), eachindex(d, x))
+end
+
+# Check directions, not primals, before any conversion route can write a cache leaf.
+# Use the derivative-field protocol to avoid following custom tangents into primal callables.
+@inline function _check_friendly_direction_dicts(seen::IdDict, direction::T) where {T}
+    direction isa AbstractDict &&
+        !(direction isa Union{Dict,IdDict}) &&
+        throw(
+            ArgumentError(
+                "friendly forward directions support only Dict and IdDict; pass a native tangent " *
+                "through a non-friendly cache (friendly_tangents=false)",
+            ),
+        )
+    isbitstype(T) && return nothing
+    direction isa Union{Type,Module,Core.OpaqueClosure,Method} && return nothing
+    if direction isa AbstractArray && isbitstype(eltype(T))
+        return nothing
+    end
+    if Base.ismutabletype(T)
+        haskey(seen, direction) && return nothing
+        seen[direction] = nothing
+    end
+    if direction isa Union{Dict,IdDict}
+        for (k, v) in direction
+            _check_friendly_direction_dicts(seen, k)
+            _check_friendly_direction_dicts(seen, v)
+        end
+    elseif direction isa AbstractArray
+        for i in eachindex(direction)
+            isassigned(direction, i) && _check_friendly_direction_dicts(seen, direction[i])
+        end
+    else
+        tuple_map(_tangent_fields(T)) do name
+            isdefined(direction, name) &&
+                _check_friendly_direction_dicts(seen, getfield(direction, name))
+            return nothing
+        end
+    end
+    return nothing
+end
+
+# Preflight every dictionary before any direction is copied into cache-owned storage.
+@inline function _check_friendly_dict_layouts(seen, p::P, t, direction, arg) where {P}
+    p isa Dict && throw(
+        ArgumentError(
+            "Friendly directions for Dict primals are unsupported; pass a native tangent through a non-friendly cache (friendly_tangents=false)",
+        ),
+    )
+    p isa AbstractDict &&
+        !(p isa Union{Dict,IdDict}) &&
+        _check_friendly_direction_dicts(seen, p)
+    isbitstype(P) && return false
+    p isa AbstractArray && (!(t isa AbstractArray) || isbitstype(eltype(P))) && return false
+    t isa NoTangent && !(p isa AbstractDict) && return false
+    !(
+        p isa Union{AbstractDict,AbstractArray,Tuple,NamedTuple} ||
+        t isa Union{Tangent,MutableTangent}
+    ) && return false
+    if ismutable(p)
+        haskey(seen, p) && return false
+        seen[p] = nothing
+    end
+    if p isa IdDict
+        direction isa Union{Dict,IdDict} || throw(
+            ArgumentError(
+                "Friendly dictionary direction for argument $arg must be a Dict or IdDict; pass a native tangent through a non-friendly cache (friendly_tangents=false)",
+            ),
+        )
+        _check_direction_keys(p, direction, arg)
+        if p isa IdDict
+            length(p) == length(t) && all(k -> haskey(t, k), keys(p)) || throw(
+                ArgumentError(
+                    "IdDict cache cannot represent the new key objects for argument $arg; prepare a new cache",
+                ),
+            )
+        else
+            _check_direction_keys(p, t, arg)
+        end
+        for (k, v) in p
+            haskey(seen, v) && continue
+            tv = t[k]
+            _check_friendly_direction_axes(tv, direction[k], arg)
+            _check_friendly_dict_layouts(seen, v, tv, direction[k], arg)
+        end
+        return true
+    elseif p isa AbstractArray && t isa AbstractArray && direction isa AbstractArray
+        found = false
+        for i in eachindex(p)
+            found |=
+                isassigned(p, i) &&
+                isassigned(t, i) &&
+                isassigned(direction, i) &&
+                _check_friendly_dict_layouts(seen, p[i], t[i], direction[i], arg)
+        end
+        return found
+    elseif p isa Union{Tuple,NamedTuple} || t isa Union{Tangent,MutableTangent}
+        ts = t isa Union{Tangent,MutableTangent} ? t.fields : t
+        ds = direction isa Union{Tangent,MutableTangent} ? direction.fields : direction
+        return any(
+            tuple_map(fieldnames(P)) do name
+                if isdefined(p, name) && isdefined(ts, name) && isdefined(ds, name)
+                    return _check_friendly_dict_layouts(
+                        seen,
+                        getfield(p, name),
+                        val(getfield(ts, name)),
+                        getfield(ds, name),
+                        arg,
+                    )
+                end
+                return false
+            end,
+        )
+    end
+    return false
+end
+
+function _check_direction_keys(p, direction, arg)
+    length(p) == length(direction) &&
+    all(k -> haskey(direction, k), keys(p)) &&
+    all(k -> haskey(p, k), keys(direction)) || throw(
+        ArgumentError(
+            "Dictionary direction for argument $arg must have exactly the primal's keys (missing or extra keys)",
+        ),
+    )
+    return nothing
+end
+
+# Match identity-dictionary directions to the call-time primal by key.
+function _friendly_input_tangent(
+    ::FriendlyTangentCache{AsPrimal}, t, direction, c, z, p::IdDict, seen
+)
+    seen === nothing && (seen = IdDict{Any,Any}())
+    haskey(seen, p) && return seen[p]::typeof(t)
+    seen[p] = t
+    for (k, v) in p
+        t[k] = _friendly_input_tangent(nothing, t[k], direction[k], c, z, v, seen)
+    end
+    return t
+end
+
+# Dictionary values have no prepared field caches. Walk their tangent structure lazily,
+# sharing the conversion's alias map rather than recursively building friendly caches.
+function _friendly_input_tangent(::Nothing, t, direction, c, z, p, seen)
+    if p isa Union{Dict,IdDict}
+        return _friendly_input_tangent(
+            FriendlyTangentCache{AsPrimal}(nothing), t, direction, c, z, p, seen
+        )
+    elseif p isa Union{Tuple,NamedTuple} && t isa Union{Tuple,NamedTuple}
+        return map(t, direction, p) do ti, di, pi
+            _friendly_input_tangent(nothing, ti, di, c, z, pi, seen)
+        end
+    elseif t isa AbstractArray && p isa AbstractArray
+        haskey(seen, p) && return seen[p]::typeof(t)
+        seen[p] = t
+        for i in eachindex(t, direction, p)
+            isassigned(p, i) || continue
+            t[i] = _friendly_input_tangent(nothing, t[i], direction[i], c, z, p[i], seen)
+        end
+        return t
+    elseif typeof(direction) === typeof(t)
+        isbitstype(typeof(t)) && return direction
+        if ismutable(p)
+            haskey(seen, p) && return seen[p]::typeof(t)
+            seen[p] = t
+        end
+        return _friendly_input_tangent(
+            FriendlyTangentCache{AsRaw}(nothing), t, direction, c, z, p, seen
+        )
+    elseif t isa Union{Tangent,MutableTangent}
+        dest = map(_ -> nothing, t.fields)
+        return _friendly_input_tangent(dest, t, direction, c, z, p, seen)
+    end
+    return _friendly_input_tangent(
+        _forward_friendly_cache(p, p), t, direction, c, z, p, seen
+    )
+end
+
+# Validate native array storage before any friendly conversion can overwrite a cache leaf.
+@inline _check_friendly_direction_axes(t, direction, arg) = nothing
+@inline function _check_friendly_direction_axes(
+    t::AbstractArray, direction::AbstractArray, arg
+)
+    axes(t) == axes(direction) || throw(
+        ArgumentError(
+            "Tangent direction for argument $arg must match the cache-owned tangent axes; " *
+            "got axes $(axes(direction)) for direction vs $(axes(t)) for cache-owned tangent",
+        ),
+    )
+    return nothing
+end
+@inline function _check_friendly_direction_axes(t::Tangent, direction::Tangent, arg)
+    _check_friendly_direction_axes(t.fields, direction.fields, arg)
+end
+@inline function _check_friendly_direction_axes(
+    t::Union{Tuple,NamedTuple}, direction::Union{Tuple,NamedTuple}, arg
+)
+    map((x, y) -> _check_friendly_direction_axes(x, y, arg), t, direction)
+    return nothing
+end
+
+@inline _friendly_input_tangent(d::Tuple, t::Tuple, direction, c, z, p, seen) = map(
+    (d, t, v, p) -> _friendly_input_tangent(d, t, v, c, z, p, seen), d, t, direction, p
+)
+@inline _friendly_input_tangent(d::NamedTuple, t::NamedTuple, direction, c, z, p, seen) = map(
+    (d, t, v, p) -> _friendly_input_tangent(d, t, v, c, z, p, seen), d, t, direction, p
+)
+@inline function _friendly_input_tangent(
+    d::NamedTuple, t::Union{Tangent,MutableTangent}, direction, c, z, p, seen
+)
+    if t isa MutableTangent && seen !== nothing
+        haskey(seen, p) && return seen[p]::typeof(t)
+        seen[p] = t
+    end
+    fields = map(keys(d)) do name
+        _friendly_input_field(
+            getfield(d, name), getfield(t.fields, name), direction, name, c, z, p, seen
+        )
+    end
+    nt = typeof(t.fields)(fields)
+    t isa Tangent && return typeof(t)(nt)
+    t.fields = nt
+    return t
+end
+@inline _friendly_input_field(d, t, direction, name, c, z, p, seen) = _friendly_input_tangent(
+    d, t, getfield(direction, name), c, z, getfield(p, name), seen
+)
+@inline function _friendly_input_field(
+    d, t::PossiblyUninitTangent{T}, direction, name, c, z, p, seen
+) where {T}
+    is_init(t) || return t
+    return PossiblyUninitTangent{T}(
+        _friendly_input_tangent(
+            d, val(t), getfield(direction, name), c, z, getfield(p, name), seen
+        ),
+    )
+end
+@inline _friendly_input_tangent(
+    d::Union{Tuple,NamedTuple,AbstractArray}, t::NoTangent, direction, c, z, p, seen
+) = t
+@inline _friendly_input_tangent(d::FriendlyTangentCache{AsMutableFields}, t, direction, c, z, p, seen) = _friendly_input_tangent(
+    d.buffer, t, direction, c, z, p, seen
+)
+@inline function _friendly_input_tangent(
+    d::AbstractArray, t::AbstractArray, direction, c, z, p, seen
+)
+    @inbounds for i in eachindex(d, t, direction, p)
+        t[i] = _friendly_input_tangent(d[i], t[i], direction[i], c, z, p[i], seen)
+    end
+    return t
+end
+
+@inline _friendly_input_tangent(::FriendlyTangentCache, t, direction, c, z, p, seen) = primal_to_tangent!!(
+    t, direction
+)
+# Keep cache-owned storage even when a composite retains this result across calls.
+@inline function _friendly_input_tangent(
+    ::FriendlyTangentCache{AsRaw}, t::T, direction::T, c, z, p, seen
+) where {T}
+    t === direction && return t
+    require_tangent_cache(T) isa Val{false} &&
+        return increment!!(set_to_zero!!(t), direction)
+    # Reset for each leaf: two composite positions can retain the same destination.
+    _empty_alias_map!(c)
+    empty!(z)
+    return increment_internal!!(c, set_to_zero_internal!!(z, t), direction)
+end
+
+@inline function _forward_friendly_gradient(dest, primal::P, tangent, c) where {P}
+    if dest isa FriendlyTangentCache{AsPrimal} && isbitstype(P)
+        return tangent_to_primal_internal!!(primal, tangent, c)
+    end
+    return tangent_to_friendly!!(dest, primal, tangent, c)
+end
+
+# Convert the internal tangents `native` back to friendly tangents, sharing
 # one aliasing cache across the tuple. Shared by the four (pullback/gradient) ×
 # (rule/cached) friendly branches below.
 @inline function _to_friendly(dests, fx, native)
@@ -2218,7 +2640,11 @@ Compute the value and gradient of the scalar-returning `f` at `x...` using forwa
 (the gradient is assembled from standard-basis directional derivatives, evaluated in chunks
 of the cache's resolved chunk width). This overload exists so callers can prepare a forward
 cache once, then use it either for directional derivatives via
-[`value_and_derivative!!`](@ref) or for full gradients.
+[`value_and_derivative!!`](@ref) or for full gradients. With `friendly_tangents=true`,
+`AsRaw` types with differentiable storage, including array wrappers such as `Diagonal`
+and `SubArray`, return their raw native tangents. A composite containing such leaves takes
+the friendly form of the whole composite used in reverse mode. Inputs without differently
+represented raw leaves retain their primal-shaped representation.
 
 All differentiable input shapes are chunked (a zero-dimension input is evaluated once). Four shape
 families take a zero-allocation path that reuses cache-owned seeds: (0) a single scalar
@@ -2251,13 +2677,17 @@ fields is not restored. Random draws leave RNGs advanced, once per executed chun
 """
 # Shared finalisation for every value_and_gradient!! path: return the native gradient
 # directly, or (when the cache was prepared with `friendly_tangents=true`) convert it to a
-# primal-shaped one. Type-stable — each caller's types are concrete at the call site.
+# friendly one. Type-stable — each caller's types are concrete at the call site.
 @inline function _finalize_gradient(cache::FCache, y, native_gradients, input_primals)
     isnothing(cache.input_tangents) && return y, native_gradients
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+    native_gradients = native_gradients::typeof(cache.input_tangents)
+    c = _friendly_cache(input_primals)
     return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients, native_gradients, _friendly_cache(friendly_gradients)
+    tuple_map(
+        (d, p, t) -> _forward_friendly_gradient(d, p, t, c),
+        cache.friendly_gradients,
+        input_primals,
+        native_gradients,
     )
 end
 
@@ -3619,6 +4049,23 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:_Buil
     end
     return dst
 end
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:IdDict}
+    c === nothing && (c = IdDict{Any,Any}())
+    dst, seen = _copy_context_destination!!(dst, src, c, r)
+    seen && return dst
+    for (k, v) in src
+        dst[k] = if haskey(dst, k) && typeof(dst[k]) === typeof(v)
+            _copy_to_output!!(dst[k], v, c, r)
+        else
+            _copy_missing(v, c, r)
+        end
+    end
+    for k in keys(dst)
+        haskey(src, k) || delete!(dst, k)
+    end
+    return dst
+end
+
 function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:Tuple}
     isbitstype(P) && return src
     return map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)

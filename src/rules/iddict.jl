@@ -7,8 +7,11 @@ function zero_tangent_internal(d::P, dict::MaybeCache) where {P<:IdDict}
     if haskey(dict, d)
         return dict[d]::T
     else
-        t = T([k => zero_tangent_internal(v, dict) for (k, v) in d])
+        t = T()
         dict[d] = t
+        for (k, v) in d
+            t[k] = zero_tangent_internal(v, dict)
+        end
         return t
     end
 end
@@ -184,6 +187,7 @@ end
 @inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, nothing)
 # Register the shell before recursion to preserve aliases and terminate cycles.
 function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
+    _check_direction_keys(x, ẋ, "(native IdDict)")
     d = c === nothing ? IdDict() : c
     haskey(d, x) && return d[x]::Lifted{IdDict{K,V},1}
     DV = dual_type(Val(1), V)

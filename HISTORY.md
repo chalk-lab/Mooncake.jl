@@ -1,8 +1,14 @@
 # 0.6.0
 
+- Forward friendly gradients of composites holding an `AbstractDict` change from
+  primal-shaped structs to fieldwise `NamedTuple`s, matching reverse mode.
+- Forward friendly gradients of `AsRaw` array wrappers (for example, `Diagonal`) now
+  return raw tangents, as in reverse mode, instead of primal-shaped arrays.
 - Friendly output changes from fieldwise named tuples to raw tangents for custom
   tangent types and non-differentiable structs (for example, `(n = NoTangent(),)`
   becomes `NoTangent()`).
+- Friendly reverse caches accept self-referential inputs, which previously overflowed
+  the stack during preparation.
 - Forward rules now use `Lifted{P,N}` with `N` tangent lanes instead of `Dual`. Use
   `lift` / `unlift` at the single-direction boundary and `arrayify` for array rules.
 - Remove `NfwdMooncake` and the `Config(enable_nfwd=...)` keyword. Forward caches always
