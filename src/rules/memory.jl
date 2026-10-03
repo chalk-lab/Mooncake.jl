@@ -626,8 +626,7 @@ function rrule!!(
 ) where {P,V}
     # `_unsetindex!` leaves isbits unions and pointer-free inline elements in place.
     arrayelem = Base.datatype_arrayelem(typeof(x.x.mem))
-    if arrayelem == 2 ||
-        (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
+    if arrayelem == 2 || (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
         Base._unsetindex!(x.x) # Preserve the primal's native bounds check.
         Base._unsetindex!(x.dx)
         return x, NoPullback(f, x)
