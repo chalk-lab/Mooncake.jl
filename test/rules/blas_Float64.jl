@@ -100,6 +100,60 @@
         end
     end
 
+    @testset "dot lane cost follows walk" for N in (1, 8), inc in (1, 2000)
+        args = (BLAS.dot, 3, view(ones(1000, 1000), 2, 1:2:7), inc, ones(3), 1)
+        slots = map(x -> Mooncake.zero_lifted(Val(N), x), args)
+        Mooncake.frule!!(slots...)
+        TestUtils.count_allocs(Mooncake.frule!!, slots...)
+        @test TestUtils.count_allocs(Mooncake.frule!!, slots...) == 0
+    end
+
+    @testset "dot reinterpreted walk" for inc in (-2, 0, 1, 2)
+        g = (a, y) -> BLAS.dot(3, view(reinterpret(Float64, a), 2:2:16), inc, y, 1)
+        h =
+            (a, y) -> real(
+                BLAS.dotc(
+                    3, view(reinterpret(ComplexF64, view(a, 2:23)), 1:2:9), inc, y, 1
+                ),
+            )
+        for (f, a, y) in
+            ((g, ones(ComplexF64, 12), ones(3)), (h, ones(24), ones(ComplexF64, 3)))
+            TestUtils.test_rule(
+                StableRNG(123),
+                f,
+                a,
+                y;
+                is_primitive=false,
+                perf_flag=:none,
+                mode=ForwardMode,
+            )
+        end
+    end
+
+    @testset "dot walks into parent" for P in (Float64, ComplexF64),
+        f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu)),
+        wrap in (
+            A -> view(A, 2, 1:2:7),
+            A -> view(A, 2:5, 3),
+            A -> transpose(view(A, 2, 1:2:7)),
+            A -> SubArray(view(A, 2, :), (1:2:7,)),
+        ),
+        inc in (2,)
+
+        g = (A, y) -> real(f(3, wrap(A), inc, y, 1))
+        for mode in (ForwardMode, ReverseMode)
+            TestUtils.test_rule(
+                StableRNG(123),
+                g,
+                reshape(collect(P, 1:48), 6, 8),
+                ones(P, 3);
+                is_primitive=false,
+                perf_flag=:none,
+                mode=mode,
+            )
+        end
+    end
+
     @testset "asum strong zeros" for P in (Float32, Float64, ComplexF32, ComplexF64),
         N in (1, 8)
 

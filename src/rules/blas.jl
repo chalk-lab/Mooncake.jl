@@ -139,12 +139,9 @@ function arrayify(
 end
 # Recurse through the wrapper's ImmutableDual and reconstruct the primal wrapper.
 # Val(false) and Val(:read) keep stride-N lane views at dense leaves; only Val(true)
-# copies them so dotc/dotu's raw-memory fallback reads partials in the primal's layout.
+# copies them to produce dense lanes in the primal's layout.
 # The static Val lets the dense leaf choice constant-fold.
 @inline _arrayify_lane(x, V, lane::Integer) = _arrayify_lane(x, V, lane, Val(false))
-@inline _dense_lane_partial(x::Lifted, k::Integer) = _arrayify_lane(
-    primal(x), tangent(x), k, Val(true)
-)
 @inline _arrayify_lane(
     ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
 ) where {dense} = dense === true ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
@@ -720,39 +717,6 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    # Real cblas dot returns by value. Complex dotc/dotu write a Ref and need
-    # forward primitives at the BLAS wrapper instead; reverse handles all here.
-    if isreal
-        @eval @inline function frule!!(
-            ::Lifted{typeof(_foreigncall_),Nw},
-            ::Lifted{Val{$(blas_name(fname))}},
-            ::Lifted, # return type
-            ::Lifted, # argument types
-            ::Lifted, # nreq
-            ::Lifted, # calling convention
-            _n::Lifted{BLAS.BlasInt},
-            _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
-            _incx::Lifted{BLAS.BlasInt},
-            _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
-            _incy::Lifted{BLAS.BlasInt},
-            args::Vararg{Any,M},
-        ) where {Nw,M}
-            GC.@preserve args begin
-                n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-                DX = primal(_DX)
-                DY = primal(_DY)
-                result = BLAS.$jlfname(n, DX, incx, DY, incy)
-                # _blas_lane_partial checks for the uninit_* primal-address placeholder.
-                dresult_lanes = ntuple(Val(Nw)) do lane
-                    dDX = _blas_lane_partial(_DX, lane)
-                    dDY = _blas_lane_partial(_DY, lane)
-                    return BLAS.$jlfname(n, dDX, incx, DY, incy) +
-                           BLAS.$jlfname(n, DX, incx, dDY, incy)
-                end
-                return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
-            end
-        end
-    end
     @eval @inline function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{$(blas_name(fname))}},
@@ -1528,16 +1492,12 @@ function rrule!!(
     return CoDual(result, NoFData()), dot_pb!!
 end
 
-# Forward complex dotc/dotu need an array-level primitive: cblas writes a Ref whose
-# Complex{NDual} dual is incompatible with contiguous per-lane scalar cells. Reverse
-# still uses the foreigncall rule. Dense operands with positive increments use the
-# block loop; other layouts rebuild each lane over contiguous memory and call BLAS,
-# preserving its raw pointer walk at the cost of O(Nw) calls and materialisations.
-# Unit first-dimension stride alone does not imply density (e.g. a matrix subview).
-# Negative increments start at (-n+1)*inc + 1 and also require the fallback.
-# _blas_walk_step maps a raw increment to logical indices: dense arrays step by inc,
-# strided vectors by inc ÷ stride. If stride does not divide inc, BLAS reads elements
-# outside the operand. Matrices also admit a step within one column, or across a dense layout.
+# Forward dot rules stay at array level: raw pointers cannot address wide tangent lanes.
+# Dense walks use block columns; other layouts use the lane-strided BLAS walk.
+# Unit first stride alone does not imply a dense matrix.
+# Map physical increments to logical steps: dense arrays use inc, strided vectors
+# divide by their stride. Walks without a logical step need a layout-specific fallback;
+# the primal and derivative must follow the same raw memory walk.
 @inline function _blas_walk_step(x, inc::Integer, n::Integer)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         return _blas_walk_step(parent(x), inc, n)
@@ -1583,46 +1543,71 @@ end
     )
 end
 
-# Both dot paths need this span: the fallback rebuilds only length(x) elements.
-# Negative increments walk the same span backwards and are valid in the fallback.
+# Select the ordinary dot path when the raw span fits within the operand length.
+# Negative increments visit the same span backwards.
 @inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
     1 + (n - 1) * abs(inc) <= length(x)
 
-# Return the primal span, its partials slot, and the partials' leading offset.
-# A raw BLAS walk can leave a vector view while staying in its dense parent. Widen
-# from the view's first element (same pointer) to include those parent partials,
-# matching the reverse pointer rule. Other operands must contain their own walk.
-@inline function _dot_walk_widen(label, slot::Lifted, inc::Integer, n::Integer)
-    x = primal(slot)
-    _blas_walk_inbounds(x, inc, n) || _throw_walk_past_operand(label, x, inc, n)
-    return x, slot, 0
+# Dense lane reconstruction retains the complete parent, including elements outside a view.
+@inline _blas_walk_capacity(x) = length(x)
+@inline function _blas_walk_capacity(x::SubArray)
+    offset = sum((first.(parentindices(x)) .- 1) .* strides(parent(x)))
+    return _blas_walk_capacity(parent(x)) - offset
 end
-@inline function _dot_walk_widen(
-    label,
-    slot::Lifted{<:SubArray{T,1,Vector{T},<:Tuple{AbstractRange}},Nw},
-    inc::Integer,
-    n::Integer,
-) where {T,Nw}
-    x = primal(slot)
-    p = parent(x)
-    a = first(parentindices(x)[1])
-    a + (n - 1) * abs(inc) <= length(p) || _throw_walk_past_operand(label, x, inc, n)
-    return view(p, a:length(p)), Lifted{typeof(p),Nw}(p, tangent(slot).fields.parent), a - 1
+@inline function _blas_walk_capacity(
+    x::Union{Transpose{<:Any,<:AbstractVector},Adjoint{<:Real,<:AbstractVector}}
+)
+    return _blas_walk_capacity(parent(x))
 end
 
-@inline _dot_lane_span(a, drop::Integer) = view(a, (firstindex(a) + drop):lastindex(a))
-
-# Cold path for a walk that runs past an operand. Per-lane BLAS calls, as the non-contiguous branch
-# does: the widened operand is rare and does not need the block fast path.
+# Validate parent-bounded walks before reading lane-strided storage.
 @noinline function _dot_widened_acc(
     f::F, ::Val{Nw}, ::Type{E}, label, _DX, _DY, n, incx, incy
 ) where {F,Nw,E}
-    pX, sX, aX = _dot_walk_widen(label, _DX, incx, n)
-    pY, sY, aY = _dot_walk_widen(label, _DY, incy, n)
+    x, y = primal(_DX), primal(_DY)
+    1 + (n - 1) * abs(incx) <= _blas_walk_capacity(x) ||
+        _throw_walk_past_operand(label, x, incx, n)
+    1 + (n - 1) * abs(incy) <= _blas_walk_capacity(y) ||
+        _throw_walk_past_operand(label, y, incy, n)
+    return _dot_strided_acc(f, Val(Nw), E, _DX, _DY, n, incx, incy)
+end
+
+@inline _dot_walk_base(x::Lifted) = x
+@inline function _dot_walk_base(
+    x::Lifted{P,N}
+) where {P<:Union{SubArray,Transpose,Adjoint,Base.ReshapedArray,Base.ReinterpretArray},N}
+    p = parent(primal(x))
+    return _dot_walk_base(Lifted{typeof(p),N}(p, tangent(x).fields.parent))
+end
+
+@inline function _dot_lane_walk(x::Lifted{<:AbstractArray{T},N}, k, n, inc) where {T,N}
+    base = _dot_walk_base(x)
+    S = eltype(primal(base))
+    if N == 1 || sizeof(T) == sizeof(S)
+        return _blas_lane_partial(x, k), N * inc
+    end
+    # Reinterpretation can split one stored element across multiple logical elements.
+    # Gather from the logical lane, aligning its start before reinterpreting it.
+    n <= 0 && return T[], 1
+    lane = vec(_blas_lane_partial(base, k))
+    bytes = Int(UInt(pointer(primal(x))) - UInt(pointer(primal(base))))
+    start, offset = divrem(bytes, sizeof(S))
+    stop = start + ((length(lane) - start) * sizeof(S) ÷ sizeof(T)) * sizeof(T) ÷ sizeof(S)
+    values = reinterpret(T, view(lane, (start + 1):stop))
+    first = offset ÷ sizeof(T) + 1 - min(0, inc) * (n - 1)
+    return T[values[first + (i - 1) * inc] for i in 1:n], 1
+end
+
+# Lane views share the primal's physical layout with every stride multiplied by Nw.
+# BLAS can read those lanes directly, including walks into a view's parent.
+@noinline function _dot_strided_acc(
+    f::F, ::Val{Nw}, ::Type{E}, _DX, _DY, n, incx, incy
+) where {F,Nw,E}
+    pX, pY = primal(_DX), primal(_DY)
     return ntuple(Val(Nw)) do k
-        dX = _dot_lane_span(_dense_lane_partial(sX, k), aX)
-        dY = _dot_lane_span(_dense_lane_partial(sY, k), aY)
-        f(n, dX, incx, pY, incy) + f(n, pX, incx, dY, incy)
+        dX, sx = _dot_lane_walk(_DX, k, n, incx)
+        dY, sy = _dot_lane_walk(_DY, k, n, incy)
+        f(n, dX, sx, pY, incy) + f(n, pX, incx, dY, sy)
     end::NTuple{Nw,E}
 end
 
@@ -1713,8 +1698,14 @@ for (f, accum) in ((:dotc, :_dotc_accum), (:dotu, :_dotu_accum))
     end
 end
 
-for (jlfname, elty) in
-    ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
+for (jlfname, elty) in (
+    (:dot, :Float64),
+    (:dot, :Float32),
+    (:dotc, :ComplexF64),
+    (:dotc, :ComplexF32),
+    (:dotu, :ComplexF64),
+    (:dotu, :ComplexF32),
+)
     # Independent X/Y allow mixed array wrappers, matching the frule's coverage.
     @eval @is_primitive(
         MinimalCtx,
@@ -1746,7 +1737,7 @@ for (jlfname, elty) in
                 BLAS.$jlfname,
                 Val(Nw),
                 $elty,
-                "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`",
+                $("Forward-mode `BLAS.$jlfname`"),
                 _DX,
                 _DY,
                 n,
@@ -1767,12 +1758,7 @@ for (jlfname, elty) in
             end
             a
         else
-            # Dense lane rebuilds preserve BLAS's raw walk for non-contiguous operands.
-            ntuple(Val(Nw)) do k
-                dX = _dense_lane_partial(_DX, k)
-                dY = _dense_lane_partial(_DY, k)
-                BLAS.$jlfname(n, dX, incx, DY, incy) + BLAS.$jlfname(n, DX, incx, dY, incy)
-            end
+            _dot_strided_acc(BLAS.$jlfname, Val(Nw), $elty, _DX, _DY, n, incx, incy)
         end
         return Lifted{$elty,Nw}(result, _scalar_ndual(result, acc))
     end
@@ -3653,12 +3639,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         (
             if P <: Complex
                 [(
-                false,
-                :stability_and_allocs,
-                (oracle=(value=BLAS.BlasInt(2),),),
-                BLAS.iamax,
-                P[3, 2 + 2im, -2 - 2im],
-            )]
+                    false,
+                    :stability_and_allocs,
+                    (oracle=(value=BLAS.BlasInt(2),),),
+                    BLAS.iamax,
+                    P[3, 2 + 2im, -2 - 2im],
+                )]
             else
                 []
             end
@@ -3833,28 +3819,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         # Forward primitives; derived rows cover reverse. Keep the direct chunk-width
         # sweep and stability checks for boxed block accumulators; and the strided operand exercises the per-lane fallback.
         (
-            if P <: BlasRealFloat
-                []
-            else
-                map([BLAS.dotc, BLAS.dotu]) do f
-                    flags = (false, :stability, (; skip_reverse=true))
-                    return [
-                        (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
-                        # Negative increments: BLAS walks the same elements backwards from
-                        # `(-n+1)*inc + 1`, so the value matches `inc = +1`, but the block loop's
-                        # `1 + (t-1)*inc` would run off the front. Takes the per-lane fallback.
-                        (flags..., f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1),
-                        (
-                            flags...,
-                            f,
-                            3,
-                            randn(rng, P, 3),
-                            1,
-                            view(randn(rng, P, 12), 1:2:12),
-                            2,
-                        ),
-                    ]
-                end
+            map(P <: BlasRealFloat ? [BLAS.dot] : [BLAS.dotc, BLAS.dotu]) do f
+                flags = (false, :stability, (; skip_reverse=true))
+                return [
+                    (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
+                    # Negative increments: BLAS walks the same elements backwards from
+                    # `(-n+1)*inc + 1`, so the value matches `inc = +1`, but the block loop's
+                    # `1 + (t-1)*inc` would run off the front. Takes the per-lane fallback.
+                    (flags..., f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1),
+                    (
+                        flags...,
+                        f,
+                        3,
+                        randn(rng, P, 3),
+                        1,
+                        view(randn(rng, P, 12), 1:2:12),
+                        2,
+                    ),
+                ]
             end
         )...,
 
@@ -4454,13 +4436,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # dot (real types only)
     if P <: BlasRealFloat
         flags = (false, :none, nothing)
-        dot_flags = (false, :none, (skip_chunked=true,))
+        dot_flags = (false, :none, nothing)
         append!(
             test_cases,
             [
-                # `skip_chunked`: the strided `dot` walks both arguments through raw pointers,
-                # which the element-major partials block cannot serve at width > 1 (stride N per
-                # lane). The sibling rows below take the same shape but pass, so they are left on.
                 (dot_flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
                 (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
                 (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
@@ -4487,7 +4466,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                     (flags..., f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
                     # Walk running past the view into its parent: BLAS reads raw memory, so the
                     # elements beyond the view belong to the parent and carry partials.
-                    # `_dot_walk_widen` re-expresses the operand over that parent.
                     (
                         flags...,
                         f,
@@ -4617,12 +4595,11 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
     ]
     # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
     # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
-    # Real `BLAS.dot` has a reverse pointer rule but no forward one; `dotc`/`dotu` have both.
     xs = P[i for i in 1:3]
     ys = P[i for i in 4:6]
     placeholder = (ArgumentError, "tangent is the placeholder")
     two_operand = if P <: Real
-        ((BLAS.dot, (; mode=ReverseMode)),)
+        ((BLAS.dot, (;)),)
     else
         ((BLAS.dotc, (;)), (BLAS.dotu, (;)))
     end
@@ -4636,9 +4613,8 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
              (f, opts) in two_operand)...,
         ],
     )
-    # Complex forward dot must reject walks past the parent. Real dot takes a
-    # different path; reverse uses tangent pointers with no operand length to check.
-    P <: Complex && append!(
+    # Forward dot must reject walks past the parent; reverse has only pointers.
+    append!(
         cases,
         Any[
             (
@@ -4646,7 +4622,7 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
                 f,
                 (30, short, 1, short, 1),
                 (; mode=ForwardMode),
-            ) for f in (BLAS.dotc, BLAS.dotu)
+            ) for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
         ],
     )
 
