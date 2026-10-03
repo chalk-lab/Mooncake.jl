@@ -24,8 +24,6 @@ using FunctionWrappers: FunctionWrapper
 
     # Rule testing.
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
         (
             false,
             :none,
@@ -56,7 +54,17 @@ using FunctionWrappers: FunctionWrapper
             randn(100),
             randn(),
         ),
-        # Test constructing a FunctionWrapper with Nothing return type (#1005)
+    ]
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+    end
+
+    # `skip_chunked`: a `FunctionWrapperTangent` bakes all N lanes into one `OpaqueClosure`, so
+    # per-lane extraction is unsupported at width > 1. Constructing and calling a wrapper are
+    # covered at width N by the dedicated testset below; the Nothing-return construction is not,
+    # which is a known gap rather than an oversight.
+    @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
+        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
+        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
         (
             false,
             :none,
@@ -66,7 +74,7 @@ using FunctionWrappers: FunctionWrapper
             },
             (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
         ),
-        # Test calling a FunctionWrapper with Nothing return type (#1005)
+        # Calling that same Nothing-return wrapper (#1005).
         (
             false,
             :none,
@@ -82,6 +90,48 @@ using FunctionWrappers: FunctionWrapper
             0.5,
         ),
     ]
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, skip_chunked=true)
+    end
+
+    # The generic per-lane oracle skips FunctionWrapperTangent's opaque width-N captures.
+    # Check each output lane for both zero-seeded wrappers and differentiated captures.
+    @testset "chunked forward (width N)" begin
+        FW = FunctionWrapper{Float64,Tuple{Float64}}
+        ndual(x, seeds) = Mooncake.Lifted{Float64,length(seeds)}(
+            x, Mooncake.Nfwd.NDual{Float64,length(seeds)}(x, seeds)
+        )
+        zl(N, v) = Mooncake.zero_lifted(Val(N), v)
+        # Fresh interpreter per build (the testset's function defs advance the world age).
+        mkfr(sig, N) = Mooncake.build_frule(
+            Mooncake.get_interpreter(Mooncake.ForwardMode), sig; chunk_size=N
+        )
+
+        call_fw(fw, x) = fw(x)
+        fw_sin = FW(sin)
+        f_construct(x, y) = FW(t -> t * y)(x)   # x*y; d/dx = y, d/dy = x
+
+        @testset "width $N" for N in (2, 3)
+            seeds = ntuple(Float64, N)
+
+            r1 = mkfr(Tuple{typeof(call_fw),FW,Float64}, N)
+            o1 = r1(zl(N, call_fw), zl(N, fw_sin), ndual(1.3, seeds))
+            @test Mooncake.primal(o1) ≈ sin(1.3)
+            @test all(k -> Mooncake.tangent(o1, k) ≈ cos(1.3) * seeds[k], 1:N)
+
+            xs, ys = ntuple(Float64, N), ntuple(k -> -Float64(k), N)
+            x0, y0 = 1.3, 2.5
+            r2 = mkfr(Tuple{typeof(f_construct),Float64,Float64}, N)
+            o2 = r2(zl(N, f_construct), ndual(x0, xs), ndual(y0, ys))
+            @test Mooncake.primal(o2) ≈ x0 * y0
+            @test all(k -> Mooncake.tangent(o2, k) ≈ y0 * xs[k] + x0 * ys[k], 1:N)
+
+            # All lanes share one opaque closure. The registry skips per-lane extraction
+            # for this V shape, so check the accessor's width > 1 guard directly.
+            @test_throws ArgumentError Mooncake.tangent(zl(N, fw_sin), 1)
+        end
+        # At width 1 the whole tangent IS lane 1, so the same call is allowed.
+        let s1 = zl(1, fw_sin)
+            @test Mooncake.tangent(s1, 1) === Mooncake.tangent(s1)
+        end
     end
 end

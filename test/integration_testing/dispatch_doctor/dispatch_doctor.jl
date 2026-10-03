@@ -33,6 +33,7 @@ function skip_instability_check(::Type{T}) where {T}
         (fieldcount(T) > 16 || any(skip_instability_check, fieldtypes(T)))
     )
 end
+skip_instability_check(::Type{Union{}}) = false
 function skip_instability_check(::Type{<:Tangent{Tfields}}) where {Tfields}
     skip_instability_check(Tfields)
 end
@@ -74,6 +75,10 @@ function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
 end
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
+
+# A type-valued primal need not be concrete, even when its slot is.
+@test Lifted{Type{Union{Nothing,Float64}},1}(Union{Nothing,Float64}, Mooncake.NoDual()).primal ===
+    Union{Nothing,Float64}
 
 # julia#61368 workaround: loading DispatchDoctor (above) advances the world counter by
 # defining many methods, which on Julia 1.10 would invalidate inner OC CodeInstances and

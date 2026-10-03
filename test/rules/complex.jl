@@ -4,4 +4,6 @@
     TestUtils.test_data(rng, p)
     p = Complex{Float32}(5.0, 4.0)
     TestUtils.test_data(rng, p)
+
+    TestUtils.run_rule_test_cases(StableRNG, Val(:complex))
 end

@@ -20,7 +20,8 @@ using AbstractGPs,
     Zygote
 
 using Mooncake:
-    Dual,
+    Lifted,
+    lift,
     CoDual,
     hand_written_rule_test_cases,
     derived_rule_test_cases,
@@ -28,12 +29,12 @@ using Mooncake:
     _typeof,
     primal,
     tangent,
-    zero_dual,
+    zero_lifted,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
 
-to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
+to_benchmark(__frule!!::R, dx::Vararg{Lifted,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -227,20 +228,21 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Reverse-only rows are not forward-tested, so skip their forward timing.
-            if !(
-                ranges[n] isa NamedTuple &&
-                get(ranges[n], :mode, nothing) === Mooncake.ReverseMode
-            )
-                # Benchmark AD via Mooncake.
+            # Benchmark AD via Mooncake (forward), skipping cases that opt out via
+            # `skip_forward` (forward mode cannot represent them; the frule throws when run).
+            if !TestUtils._case_skip_forward(ranges[n])
                 @info "Mooncake (Forward)"
                 rule = Mooncake.build_frule(args...)
-                duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-                to_benchmark(rule, copy_coduals(duals...)...)
+                lifts = map(
+                    x ->
+                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
+                    args,
+                )
+                to_benchmark(rule, copy_coduals(lifts...)...)
                 include_other_frameworks && GC.gc(true)
                 suite["mooncake_fwd"] = Chairmarks.benchmark(
-                    () -> (rule, duals),
-                    ((rule, duals),) -> (rule, copy_coduals(duals...)),
+                    () -> (rule, lifts),
+                    ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
                     a -> to_benchmark(a[1], a[2]...),
                     _ -> GC.gc(false);
                     evals=1,
@@ -319,11 +321,15 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = median(d["primal"]).time
     mooncake_time = median(d["mooncake"]).time
-    mooncake_fwd_time = haskey(d, "mooncake_fwd") ? median(d["mooncake_fwd"]).time : missing
+    mooncake_fwd_time =
+        in("mooncake_fwd", keys(d)) ? median(d["mooncake_fwd"]).time : missing
     zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
     fallback_tag = string((result[1][1], map(Mooncake._typeof, result[1][2:end])...))
+    # `_range` (the case opts) may also carry flags like `skip_forward`; take the perf
+    # bounds from it when present, else fall back to the default.
+    opts = _range isa NamedTuple ? _range : (;)
     return (
         tag=tag === nothing ? fallback_tag : tag,
         primal_time=primal_time,
@@ -337,9 +343,17 @@ function combine_results(result, tag, _range, default_range)
         ReverseDiff=rd_time / primal_time,
         enzyme_time=ez_time,
         Enzyme=ez_time / primal_time,
-        # Options without `lb` (e.g. only `mode`) take the default bounds.
-        range=_range === nothing || !haskey(_range, :lb) ? default_range : _range,
+        range=(lb=get(opts, :lb, default_range.lb), ub=get(opts, :ub, default_range.ub)),
     )
+end
+
+# These benchmarks time the reverse rule against the primal, so a case that cannot run in
+# reverse has nothing to measure: a guard case must raise, and `skip_reverse` marks a rule
+# reverse mode refuses outright. Both share the registry with ordinary cases.
+function _benchmarkable(case)
+    opts = case[3]
+    isnothing(TestUtils._case_throws(opts)) || return false
+    return !TestUtils._case_skip_reverse(opts)
 end
 
 function benchmark_hand_written_rrules!!(rng_ctor)
@@ -356,8 +370,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :new,
     ]) do s
         test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
-        # Rows that expect an exception have nothing to time.
-        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
+        test_cases = filter(_benchmarkable, test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
@@ -368,8 +381,7 @@ end
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
         test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
-        # Rows that expect an exception have nothing to time.
-        filter!(c -> !(c[3] isa NamedTuple && haskey(c[3], :throws)), test_cases)
+        test_cases = filter(_benchmarkable, test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags

@@ -70,27 +70,14 @@ fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
-Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
-when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
-useful. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
-construction stays passive, but a later `value_and_gradient!!` or
-`value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
-support the function. In that case, rebuild the cache with `Config(enable_nfwd=false)` to
-force the `frule!!` (aka ir-based forward) path instead. `show(cache)` / `repr(cache)`
-also report whether the prepared `ForwardCache` is currently using `nfwd`.
+Passing `Config(chunk_size=2)` caps the number of tangent directions evaluated together.
+Leaving `chunk_size=nothing` uses Mooncake's default heuristic. Forward caches always use
+lifted `frule!!` rules; `NfwdMooncake` and `Config(enable_nfwd=...)` have been removed.
+`show(cache)` / `repr(cache)` report the resolved chunk width. Cache construction does
+not execute the primal; unsupported operations can still fail at evaluation time.
 
-When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
-higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
-custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
-does the usual cache checks and tangent zeroing. That extra interface work adds some
-overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
-nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
-element types, and tuples thereof.
-
-Separately, the Hessian path exposed by `prepare_hessian_cache` /
-`value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
-closure. It does not currently use the public `NfwdMooncake` fast path, even though the
-outer layer is forward mode.
+The Hessian path exposed by `prepare_hessian_cache` / `value_gradient_and_hessian!!`
+uses forward-over-reverse AD over a captured gradient closure.
 
 ## Jacobian example
 
@@ -168,7 +155,7 @@ Reusing just the rule allocates fresh gradient buffers on each call, which a pre
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
-Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_gradient!!(::Mooncake.FCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_jacobian!!
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache

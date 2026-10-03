@@ -1,3 +1,13 @@
+# 0.6.0
+
+- Forward rules now use `Lifted{P,N}` with `N` tangent lanes instead of `Dual`. Use
+  `lift` / `unlift` at the single-direction boundary and `arrayify` for array rules.
+- Remove `NfwdMooncake` and the `Config(enable_nfwd=...)` keyword. Forward caches always
+  use lifted `frule!!` rules; `chunk_size` controls their batch width. Removed configuration
+  keywords raise `MethodError`, as other unrecognised `Config` keywords do.
+- Reject arguments identical to constants or globals read by a rule, because separately
+  seeded constant storage would otherwise drop derivative contributions.
+
 # 0.5.32
 
 - Fix forward-over-reverse Hessian-vector products on closures that capture a `Ref` wrapped in a `NoTangent`-typed aggregate, which previously threw `UndefRefError`. `prepare_hvp_cache` now eagerly compiles the inner `rrule!!` together with its forward-mode dual callables and routes the outer forward pass through a new `DerivedFoRRule`, so the inner `IdDict` constructor is no longer inlined past Mooncake's rule ([#1193](https://github.com/chalk-lab/Mooncake.jl/pull/1193), [#1202](https://github.com/chalk-lab/Mooncake.jl/pull/1202)).
