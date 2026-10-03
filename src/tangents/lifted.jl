@@ -53,7 +53,8 @@ Rules dispatch on `Lifted{P, N}` (V left abstract) and use `primal`,
 constructed via `Lifted{P_out, N}(primal_out, rep_out)`.
 
 Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward
-mode. `Lifted` never nests inside another `Lifted`'s `V`.
+mode. Executable closure tangents retain cached capture slots as an internal exception
+to the otherwise unnested representation.
 """
 struct Lifted{P,N,V}
     primal::P
@@ -109,6 +110,9 @@ end
 # Accessors — mirror the `CoDual` API.
 primal(d::Lifted) = d.primal
 tangent(d::Lifted) = d.rep
+
+# Custom forward tangents can hold Lifted slots whose primals contain executable metadata.
+_tangent_fields(::Type{<:Lifted}) = (:rep,)
 # `_primal` extracts a primal value from a forward-mode slot; the generic fallback returns
 # the value unchanged. The interpreter's dual IR calls `_primal` on each operand, which is
 # either a `Lifted` slot or a lifted constant.
@@ -1954,6 +1958,9 @@ end
     return (typeof(v)(inner), c)
 end
 
+function _basis_seed!!(v::Lifted{P,N}, slots::NTuple{N,Int}, cursor, dict) where {P,N}
+    return Lifted{P,N}(primal(v), _basis_seed!!(tangent(v), slots, cursor, dict))
+end
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
 # `Ptr` lane: 0-dimension placeholder (see the isbits terminal above) — return it unchanged and
 # do not advance the cursor.

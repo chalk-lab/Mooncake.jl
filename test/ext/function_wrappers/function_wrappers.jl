@@ -6,6 +6,7 @@ using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitt
 using FunctionWrappers: FunctionWrapper
 
 @testset "function_wrappers" begin
+    include("forward_storage.jl")
 
     # Tangent interface tests.
     rng = StableRNG(123)
@@ -58,10 +59,6 @@ using FunctionWrappers: FunctionWrapper
         test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
     end
 
-    # `skip_chunked`: a `FunctionWrapperTangent` bakes all N lanes into one `OpaqueClosure`, so
-    # per-lane extraction is unsupported at width > 1. Constructing and calling a wrapper are
-    # covered at width N by the dedicated testset below; the Nothing-return construction is not,
-    # which is a known gap rather than an oversight.
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
         (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
         (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
@@ -90,10 +87,9 @@ using FunctionWrappers: FunctionWrapper
             0.5,
         ),
     ]
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, skip_chunked=true)
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
     end
 
-    # The generic per-lane oracle skips FunctionWrapperTangent's opaque width-N captures.
     # Check each output lane for both zero-seeded wrappers and differentiated captures.
     @testset "chunked forward (width N)" begin
         FW = FunctionWrapper{Float64,Tuple{Float64}}
@@ -125,13 +121,15 @@ using FunctionWrappers: FunctionWrapper
             @test Mooncake.primal(o2) ≈ x0 * y0
             @test all(k -> Mooncake.tangent(o2, k) ≈ y0 * xs[k] + x0 * ys[k], 1:N)
 
-            # All lanes share one opaque closure. The registry skips per-lane extraction
-            # for this V shape, so check the accessor's width > 1 guard directly.
-            @test_throws ArgumentError Mooncake.tangent(zl(N, fw_sin), 1)
+            @test Mooncake.TestUtils.has_equal_data(
+                Mooncake.tangent(zl(N, fw_sin), 1), Mooncake.zero_tangent(fw_sin)
+            )
         end
-        # At width 1 the whole tangent IS lane 1, so the same call is allowed.
+        # Width 1 materialises a native tangent without exposing the forward slot.
         let s1 = zl(1, fw_sin)
-            @test Mooncake.tangent(s1, 1) === Mooncake.tangent(s1)
+            @test Mooncake.TestUtils.has_equal_data(
+                Mooncake.tangent(s1, 1), Mooncake.zero_tangent(fw_sin)
+            )
         end
     end
 end
