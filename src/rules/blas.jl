@@ -837,6 +837,13 @@ end
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}}
 )
 
+@zero_derivative MinimalCtx Tuple{
+    typeof(BLAS.iamax),X
+} where {T<:BlasFloat,X<:AbstractArray{T}}
+@zero_derivative MinimalCtx Tuple{
+    typeof(BLAS.iamax),Integer,X,Integer
+} where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}}
+
 # BLAS uses |re| + |im|, with the same zero subgradient as abs_float.
 @inline _asum_product(x::Real, dx::Real) = _rvs_zero(_rvs_mul(sign(x), dx), iszero(x))
 @inline _asum_product(x::Complex, dx::Complex) =
@@ -3628,6 +3635,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 ) do (f, xy)
                     (false, :stability_and_allocs, nothing, f, xy...)
                 end
+            else
+                []
+            end
+        )...,
+        map((
+            P[1, -2, 2],
+            view(P[1, 7, -2, 8, 2], 1:2:5),
+            view(P[1, 7, -2, 8, 2], 5:-2:1),
+            P[],
+        )) do x
+            (false, :stability_and_allocs, nothing, BLAS.iamax, x)
+        end...,
+        map_prod((0, 3), (-1, 0, 1, 2)) do (n, incx)
+            (false, :stability_and_allocs, nothing, BLAS.iamax, n, randn(rng, P, 6), incx)
+        end,
+        (
+            if P <: Complex
+                [(
+                false,
+                :stability_and_allocs,
+                (oracle=(value=BLAS.BlasInt(2),),),
+                BLAS.iamax,
+                P[3, 2 + 2im, -2 - 2im],
+            )]
             else
                 []
             end
