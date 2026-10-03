@@ -245,7 +245,7 @@ function rrule!!(::CoDual{typeof(mod2pi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), mod2pi_pb
 end
 
-# ---- fused trig (sin/cos/tan families): one shared `sincos`-type call for value + derivative ----
+# ---- trig: fused sin/cos pairs; tan/tand coefficients reuse the computed value ----
 @is_primitive MinimalCtx Tuple{typeof(sin),P} where {P<:IEEEFloat}
 function frule!!(::Lifted{typeof(sin),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
     nd = tangent(x)
