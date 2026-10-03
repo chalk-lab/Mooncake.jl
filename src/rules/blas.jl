@@ -843,19 +843,22 @@ function frule!!(
     f::Lifted{typeof(BLAS.nrm2),Nw}, X_dX::Lifted{<:AbstractArray{T}}
 ) where {Nw,T<:BlasFloat}
     x = primal(X_dX)
-    n = Lifted{Int,Nw}(length(x), NoDual())
-    return frule!!(f, n, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
+    y = BLAS.nrm2(x)
+    R = typeof(y)
+    xv = _viewify_one(length(x), x, 1)
+    return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, length(x), 1, xv, y, R)))
 end
 
 function rrule!!(
     f::CoDual{typeof(BLAS.nrm2)}, X_dX::CoDual{<:AbstractArray{T}}
 ) where {T<:BlasFloat}
-    x = primal(X_dX)
-    y, pb = rrule!!(f, zero_fcodual(length(x)), X_dX, zero_fcodual(stride(x, 1)))
-    # The three-argument pullback accumulates into `X_dX`'s fdata and returns rdata for its four
-    # arguments; this form has two, so drop the length and stride slots.
-    nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
-    return y, nrm2_len_pb!!
+    x, dx = arrayify(X_dX)
+    y = BLAS.nrm2(x)
+    function nrm2_len_pb!!(dy)
+        iszero(y) || (dx .+= _rvs_zero.(x .* (dy / y), iszero(dy)))
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, NoFData()), nrm2_len_pb!!
 end
 # Guard scalar cotangent contractions against NaN in unused entries, as in gemv!.
 # Complex OpenBLAS kernels can read an overwritten real component when X and Y alias.
@@ -988,17 +991,46 @@ function _rvs_blas_alpha(::CoDual{A}, ∇::Number) where {A<:Number}
     return R <: Real ? convert(R, real(∇)) : convert(R, ∇)
 end
 
+# Validate the short wrapper before mutating any partials. Its pointer adjustment
+# permits negative strides; derivatives follow the arrays' logical indices.
+@inline function _check_axpy_short(x, y)
+    length(x) == length(y) ||
+        throw(DimensionMismatch("x has length $(length(x)), but y has length $(length(y))"))
+    px, sx = BLAS.vec_pointer_stride(x)
+    py, sy = BLAS.vec_pointer_stride(
+        y, ArgumentError("dest vector with 0 stride is not allowed")
+    )
+    if _axpy_overlaps(px, py, length(x), sx, sy)
+        eltype(x) <: Complex && _throw_axpy_overlap()
+        (px == py && sx == sy) || _throw_blas_output_alias(BLAS.axpy!)
+    end
+    return nothing
+end
+
 function frule!!(
     f::Lifted{typeof(BLAS.axpy!),Nw},
     a_da::Lifted{<:Number,Nw},
     X_dX::Lifted{<:AbstractArray{P}},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
-    x = primal(X_dX)
-    n = Lifted{Int,Nw}(length(x), NoDual())
-    ix = Lifted{Int,Nw}(stride(x, 1), NoDual())
-    iy = Lifted{Int,Nw}(stride(primal(Y_dY), 1), NoDual())
-    return frule!!(f, n, _fwd_blas_alpha(P, a_da), X_dX, ix, Y_dY, iy)
+    x, y = primal(X_dX), primal(Y_dY)
+    _check_axpy_short(x, y)
+    a_da = _fwd_blas_alpha(P, a_da)
+    # Retain the dense kernel's vectorisation, especially on Julia 1.10.
+    if x isa Array && y isa Array
+        n = zero_lifted(Val(Nw), length(x))
+        inc = zero_lifted(Val(Nw), 1)
+        return frule!!(f, n, a_da, X_dX, inc, Y_dY, inc)
+    end
+    a = primal(a_da)
+    xv = _viewify_one(length(x), x, 1)
+    for k in 1:Nw
+        dx = _viewify_one(length(x), _blas_lane_partial(X_dX, k), 1)
+        dy = _viewify_one(length(y), _blas_lane_partial(Y_dY, k), 1)
+        dy .= a .* dx .+ tangent(a_da, k) .* xv .+ dy
+    end
+    BLAS.axpy!(a, x, y)
+    return Y_dY
 end
 
 function rrule!!(
@@ -1007,22 +1039,21 @@ function rrule!!(
     X_dX::CoDual{<:AbstractArray{P}},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasFloat}
-    x = primal(X_dX)
-    y, pb = rrule!!(
-        f,
-        zero_fcodual(length(x)),
-        zero_fcodual(P(primal(a_da))),
-        X_dX,
-        zero_fcodual(stride(x, 1)),
-        Y_dY,
-        zero_fcodual(stride(primal(Y_dY), 1)),
-    )
-    # Seven slots `(f, n, a, X, incx, Y, incy)` down to four `(f, a, X, Y)`.
-    function axpy!_short_pb!!(dy)
-        r = pb(dy)
-        return NoRData(), _rvs_blas_alpha(a_da, r[3]), r[4], r[6]
+    x, dx = arrayify(X_dX)
+    y, dy = arrayify(Y_dY)
+    _check_axpy_short(x, y)
+    a = P(primal(a_da))
+    xv, dxv = _viewify_one(length(x), x, 1), _viewify_one(length(x), dx, 1)
+    dyv = _viewify_one(length(y), dy, 1)
+    y_copy = copy(y)
+    BLAS.axpy!(a, x, y)
+    function axpy!_short_pb!!(::NoRData)
+        copyto!(y, y_copy)
+        da = _rvs_blas_alpha(a_da, _rvs_guarded_dot(xv, dyv))
+        _rvs_axpy!(_rvs_mul, dxv, dyv, a', all(iszero, dyv))
+        return NoRData(), da, NoRData(), NoRData()
     end
-    return y, axpy!_short_pb!!
+    return Y_dY, axpy!_short_pb!!
 end
 
 # `axpby!(a, x, b, y)`: `y := a*x + b*y`. `y` is NOT recoverable by inverting when `b == 0`, so the
@@ -1102,8 +1133,8 @@ function rrule!!(
     return Y_dY, axpby!_pb!!
 end
 
-# Keep the convenience forms primitive: Julia otherwise inlines through their ccall
-# into raw pointers, unsupported above width 1. Both use the array's own stride.
+# Keep the convenience form primitive: Julia otherwise inlines through its ccall
+# into raw pointers, unsupported above width 1.
 @is_primitive MinimalCtx Tuple{
     typeof(BLAS.scal!),P,X
 } where {P<:BlasFloat,X<:AbstractArray{P}}
@@ -1112,22 +1143,26 @@ function frule!!(
     f::Lifted{typeof(BLAS.scal!),Nw}, a_da::Lifted{P,Nw}, X_dX::Lifted{<:AbstractArray{P}}
 ) where {Nw,P<:BlasFloat}
     x = primal(X_dX)
-    n = Lifted{Int,Nw}(length(x), NoDual())
-    return frule!!(f, n, a_da, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
+    BLAS.vec_pointer_stride(x, ArgumentError("dest vector with 0 stride is not allowed"))
+    _scal_partials!(a_da, X_dX, length(x), 1)
+    BLAS.scal!(primal(a_da), x)
+    return X_dX
 end
 
 function rrule!!(
     f::CoDual{typeof(BLAS.scal!)}, a_da::CoDual{P}, X_dX::CoDual{<:AbstractArray{P}}
 ) where {P<:BlasFloat}
-    x = primal(X_dX)
-    y, pb = rrule!!(f, zero_fcodual(length(x)), a_da, X_dX, zero_fcodual(stride(x, 1)))
-    # The four-argument pullback returns rdata for `(f, n, a, X, incx)`; this form has
-    # `(f, a, X)`, so keep the scaling and array slots and drop the length and stride.
-    function scal!_short_pb!!(dy)
-        r = pb(dy)
-        return NoRData(), r[3], r[4]
+    x, dx = arrayify(X_dX)
+    a = primal(a_da)
+    x_copy = copy(x)
+    BLAS.scal!(a, x)
+    function scal!_short_pb!!(::NoRData)
+        copyto!(x, x_copy)
+        da = _rvs_guarded_dot(x, dx)
+        dx .= _rvs_zero.(_rvs_mul.(dx, a'), all(iszero, dx))
+        return NoRData(), da, NoRData()
     end
-    return y, scal!_short_pb!!
+    return X_dX, scal!_short_pb!!
 end
 
 # The five-argument BLAS.dot has only a raw-pointer rule, so handle arrays here.
@@ -1618,8 +1653,24 @@ function frule!!(
     if step === nothing
         _throw_no_walk_step(X, incx)
     end
+    _scal_partials!(a_da, X_dX, n, step)
+    BLAS.scal!(n, a, X, incx)
+    return X_dX
+end
+function _scal_partials!(a_da::Lifted{P,Nw}, X_dX::Lifted, n, step) where {P,Nw}
+    a, X = primal(a_da), primal(X_dX)
+    if !(tangent(X_dX) isa NDualArray)
+        # Update lanes in place: a gathered copy would write stale duplicates of a
+        # zero-stride element back over the updated one.
+        xv = _viewify_one(n, X, step)
+        for k in 1:Nw
+            dx = _viewify_one(n, _blas_lane_partial(X_dX, k), step)
+            dx .= a .* dx .+ tangent(a_da, k) .* xv
+        end
+        return nothing
+    end
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
-    Xb, copied = _partials_block(X_dX)
+    Xb, _ = _partials_block(X_dX)
     Xbm = reshape(Xb, Nw, :)
     # Per-lane Frechet dX_k := a·dX_k + da_k·X, all lanes in one pass: each touched
     # element's lanes are one contiguous block column.
@@ -1630,9 +1681,7 @@ function frule!!(
             Xbm[k, i] = a * Xbm[k, i] + das[k] * xi
         end
     end
-    copied && _write_back_partials!(X_dX, Xb)
-    BLAS.scal!(n, a, X, incx)
-    return X_dX
+    return nothing
 end
 # Raw-pointer path: per-lane tangent pointers are dense buffers by the `Ptr` dual
 # protocol, so the per-lane BLAS calls read them correctly at any width.
@@ -3388,10 +3437,58 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             (plain..., BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
         ]...,
 
+        # Short wrappers accept reversed and vector-like matrix layouts.
+        map_prod((-2, 2), (false, true)) do (step, row)
+            inds = step < 0 ? (6:step:2) : (1:step:5)
+            x = view(randn(rng, P, 6), inds)
+            row && (x = transpose(x))
+            Any[
+                (plain..., BLAS.axpy!, P(2), x, randn(rng, P, length(x))),
+                (plain..., BLAS.axpy!, P(2), randn(rng, P, length(x)), x),
+                (plain..., BLAS.nrm2, x),
+                (plain..., BLAS.scal!, P(2), x),
+            ]
+        end...,
+        (
+            false,
+            :none,
+            (throws=DimensionMismatch, primal_throws=true),
+            BLAS.axpy!,
+            P(2),
+            ones(P, 2),
+            ones(P, 3),
+        ),
+        map((view(ones(P, 4, 4), 1:2, :), view(ones(P, 3), StepRangeLen(1, 0, 3)))) do x
+            flags = (false, :none, (throws=ArgumentError, primal_throws=true))
+            Any[
+                (flags..., BLAS.axpy!, P(2), ones(P, length(x)), x),
+                (flags..., BLAS.nrm2, x),
+                (flags..., BLAS.scal!, P(2), x),
+            ]
+        end...,
+
+        (plain..., BLAS.axpy!, P(2), view(ones(P, 3), StepRangeLen(1, 0, 3)), ones(P, 3)),
+
         # Convenience forms need their own boundary above width 1; cover strides too.
         Any[
             (plain..., BLAS.scal!, P(2), randn(rng, P, 5)),
             (plain..., BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
+            (
+                plain...,
+                BLAS.scal!,
+                1,
+                P(2),
+                view(randn(rng, P, 24), StepRangeLen(5, 0, 4)),
+                1,
+            ),
+            (
+                plain...,
+                BLAS.scal!,
+                3,
+                P(2),
+                view(randn(rng, P, 10, 3), 1:3, StepRangeLen(2, 0, 2)),
+                1,
+            ),
         ]...,
         (
             if P <: Real
