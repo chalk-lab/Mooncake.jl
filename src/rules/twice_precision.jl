@@ -354,8 +354,8 @@ function rrule!!(
     # Adjoint of `ref == a + (offset-1)*step`; see the `frule!!` above for why `offset != 1`.
     o = y.offset - 1
     function pb(dz)
-        r̄ = T(dz.data.ref)
-        return NoRData(), r̄, o * r̄ + T(dz.data.step), NoRData()
+        r̄ = dz.data.ref
+        return NoRData(), T(r̄), T(o * r̄ + dz.data.step), NoRData()
     end
     return zero_fcodual(y), pb
 end
@@ -433,8 +433,8 @@ function rrule!!(
     # Adjoint of `ref == start + (offset-1)*step`.
     o = y.offset - 1
     function colon_pb(dy::RData)
-        r̄ = P(dy.data.ref)
-        return NoRData(), r̄, o * r̄ + P(dy.data.step), zero(P)
+        r̄ = dy.data.ref
+        return NoRData(), P(r̄), P(o * r̄ + dy.data.step), zero(P)
     end
     return zero_fcodual(y), colon_pb
 end
@@ -506,11 +506,11 @@ function rrule!!(
     # Adjoint of `ref == start + (offset-1)*(stop-start)/l`.
     o = r.offset - 1
     function range_start_stop_length_pb(dy::RData)
-        r̄ = P(dy.data.ref)
-        s̄ = P(dy.data.step)
-        dstart = r̄ * (1 - o / l) - s̄ / l
+        r̄ = dy.data.ref
+        s̄ = dy.data.step
         dstop = r̄ * o / l + s̄ / l
-        return NoRData(), dstart, dstop, NoRData()
+        dstart = r̄ - dstop
+        return NoRData(), P(dstart), P(dstop), NoRData()
     end
     return zero_fcodual(r), range_start_stop_length_pb
 end
@@ -615,6 +615,47 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # offset == 3 exercises the ref correction; other constructor rows have offset == 1.
         (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
     ]
+    for P in (Float16, Float32)
+        seed = Tangent((ref=1.0, step=0.0, len=NoTangent(), offset=NoTangent()))
+        opts = (
+            mode=ReverseMode,
+            output_tangent=seed,
+            oracle=(deriv=(NoRData(), P(1 // 1000), P(999 // 1000), NoRData()),),
+        )
+        push!(
+            test_cases,
+            (false, :allocs, opts, Base.range_start_stop_length, P(-999), P(1), 1001),
+        )
+    end
+    for P in (Float16, Float32),
+        (f, stop, last) in
+        ((Base.range_start_step_length, 1001, NoRData()), ((:), P(1001), zero(P)))
+
+        seed = Tangent((ref=0.1, step=-99.8, len=NoTangent(), offset=NoTangent()))
+        opts = (
+            mode=ReverseMode,
+            output_tangent=seed,
+            oracle=(deriv=(NoRData(), P(0.1), P(0.1), last),),
+        )
+        push!(test_cases, (false, :allocs, opts, f, P(-999), P(1), stop))
+    end
+    for P in (Float16, Float32),
+        (f, b, c) in (
+            (Base.range_start_step_length, P(0.5), 4),
+            ((:), P(0.5), P(2.6)),
+            (Base.range_start_stop_length, P(2.5), 4),
+        )
+        # Float16 perturbations round away on the finite-difference grid.
+        opts = if P === Float16
+            seed = Tangent((ref=3.0, step=6.0, len=NoTangent(), offset=NoTangent()))
+            da, db = f === Base.range_start_stop_length ? (P(1), P(2)) : (P(3), P(6))
+            dc = f === (:) ? zero(P) : NoRData()
+            (mode=ReverseMode, output_tangent=seed, oracle=(deriv=(NoRData(), da, db, dc),))
+        else
+            (mode=ReverseMode,)
+        end
+        push!(test_cases, (false, :allocs, opts, f, P(1), b, c))
+    end
     @static if VERSION >= v"1.11"
         extra_test_cases = Any[
             (
