@@ -1,4 +1,22 @@
 @testset "blas (basic)" begin
+    @testset "axpby! validates before writes" for P in (
+            Float64, Float32, ComplexF64, ComplexF32
+        ),
+        N in (1, 8)
+
+        x = Mooncake.zero_lifted(Val(N), ones(P, 3))
+        y = Mooncake.zero_lifted(Val(N), view(ones(P, 3), StepRangeLen(1, 0, 3)))
+        foreach(dx -> fill!(dx, one(P)), Mooncake.arrayify(x)[2])
+        @test_throws ArgumentError Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), BLAS.axpby!),
+            Mooncake.zero_lifted(Val(N), P(2)),
+            x,
+            Mooncake.zero_lifted(Val(N), P(3)),
+            y,
+        )
+        @test Mooncake.primal(y) == ones(P, 3)
+        @test all(iszero, Mooncake.arrayify(y)[2])
+    end
 
     # arrayify tests are not precision-specific; placed here so they run in exactly one
     # CI job. Problems with arrayify tend to surface as confusing failures in the rule
