@@ -9,6 +9,8 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+`LAPACK.getrf!` differentiation supports square matrices only; both modes reject rectangular inputs before mutation.
+
 ## Overlapping BLAS and LAPACK Operands
 
 Mutating BLAS matrix products and triangular operations, and LAPACK solves, require

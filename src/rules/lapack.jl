@@ -2,7 +2,7 @@
 # `A`/`dA_lanes` come from `arrayify(A_dA)`; getrf! has already overwritten `A`.
 function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) where {Nw}
     T = eltype(A)
-    # `ipiv` permutes ROWS: the column count reads `p` out of range for a tall `A` below.
+    # The derivative uses square triangular factors.
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     n = size(A, 1)
     # F = L \ (P·dA) / U; dA = L*tril(F,-1) + triu(F)*U. Reuse dense scratches and
@@ -32,6 +32,8 @@ function frule!!(
     ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasFloat}
     A, dA_lanes = arrayify(A_dA)
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("getrf! derivatives: matrix is not square"))
     _, ipiv, info = LAPACK.getrf!(A)
     return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
 end
@@ -39,6 +41,8 @@ function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasFloat}
     A, dA = arrayify(_A)
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("getrf! derivatives: matrix is not square"))
     A_copy = copy(A)
 
     # Run the primal.
@@ -67,6 +71,8 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     check = primal(_kwargs).check
     A, dA_lanes = arrayify(A_dA)
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("getrf! derivatives: matrix is not square"))
     _, ipiv, info = LAPACK.getrf!(A; check)
     return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
 end
@@ -78,6 +84,8 @@ function rrule!!(
 ) where {P<:BlasFloat}
     check = _kwargs.x.check
     A, dA = arrayify(_A)
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("getrf! derivatives: matrix is not square"))
     A_copy = copy(A)
 
     # Run the primal.
@@ -1207,6 +1215,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             ) for A in (tall, wide)
         ],
     )
+    for P in complexPs, dims in ((3, 2), (2, 3)), kw in (false, true)
+        f = kw ? A -> sum(first(getrf!(A; check=false))) : A -> sum(first(getrf!(A)))
+        opts = (throws=(DimensionMismatch, "getrf! derivatives: matrix is not square"),)
+        push!(test_cases, (false, :none, opts, f, randn(rng, P, dims...)))
+    end
     for P in complexPs
         append!(test_cases, _lapack_alias_test_cases(P))
     end

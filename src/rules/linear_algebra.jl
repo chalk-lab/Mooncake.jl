@@ -1,3 +1,69 @@
+@is_primitive MinimalCtx ForwardMode Tuple{
+    LinearAlgebra.MulAddMul{true,b,A,B},P
+} where {
+    b,
+    A<:Union{Bool,Base.BitInteger,BlasFloat},
+    B<:Union{Bool,Base.BitInteger,BlasFloat},
+    P<:BlasFloat,
+}
+@is_primitive MinimalCtx ForwardMode Tuple{
+    Union{LinearAlgebra.MulAddMul{true,b,A,B},LinearAlgebra.MulAddMul{false,true,A,B}},P,P
+} where {
+    b,
+    A<:Union{Bool,Base.BitInteger,BlasFloat},
+    B<:Union{Bool,Base.BitInteger,BlasFloat},
+    P<:BlasFloat,
+}
+
+# MulAddMul's `alpha == 1` / `beta == 0` shortcuts drop the coefficient's direction, so
+# differentiate through the coefficients explicitly.
+@inline function frule!!(
+    p::Lifted{<:LinearAlgebra.MulAddMul,N}, x::Lifted{P,N}, ys::Vararg{Lifted{P,N},K}
+) where {P<:BlasFloat,N,K}
+    z = primal(p)(primal(x), map(primal, ys)...)
+    coef(f) = _fwd_blas_alpha(
+        typeof(z), frule!!(zero_lifted(Val(N), lgetfield), p, zero_lifted(Val(N), f))
+    )
+    # Lane `k` of d(c·v): a strong zero on either factor's zero direction.
+    function term(c, v, k)
+        dv = oftype(z, tangent(v, k))
+        return (iszero(dv) ? zero(z) : _rvs_mul(dv, primal(c))) +
+               _rvs_mul(oftype(z, primal(v)), tangent(c, k))
+    end
+    α = coef(Val(:alpha))
+    dx = ntuple(k -> term(α, x, k), Val(N))
+    K == 0 && return Lifted{typeof(z),N}(z, _scalar_ndual(z, dx))
+    β, y = coef(Val(:beta)), only(ys)
+    ds = ntuple(k -> dx[k] + term(β, y, k), Val(N))
+    return Lifted{typeof(z),N}(z, _scalar_ndual(z, ds))
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(LinearAlgebra._modify!),
+    Union{LinearAlgebra.MulAddMul{true,b,A,B},LinearAlgebra.MulAddMul{false,true,A,B}},
+    P,
+    Array{P},
+    Union{Integer,Tuple,CartesianIndex},
+} where {
+    b,
+    A<:Union{Bool,Base.BitInteger,BlasFloat},
+    B<:Union{Bool,Base.BitInteger,BlasFloat},
+    P<:BlasFloat,
+}
+@inline function frule!!(
+    ::Lifted{typeof(LinearAlgebra._modify!),N},
+    p::Lifted{<:LinearAlgebra.MulAddMul,N},
+    x::Lifted{P,N},
+    C::Lifted{<:Array{P},N},
+    idx::Lifted,
+) where {P<:BlasFloat,N}
+    i = CartesianIndex(primal(idx))
+    y = Lifted{P,N}(primal(C)[i], tangent(C)[i])
+    out = frule!!(p, x, y)
+    tangent(C)[i] = tangent(out)
+    return zero_lifted(Val(N), nothing)
+end
+
 # friendly_tangent_cache and tangent_to_friendly_internal!! for structured matrix types.
 #
 # Symmetric, Hermitian, and SymTridiagonal store only part of the matrix internally but
@@ -85,6 +151,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             end,
         )
     end
+    test_cases = Any[test_cases...]
+    # Pinned struct seeds cannot be replicated by the chunked registry harness.
+    for P in (Float64, ComplexF64), a in (1, 2, Inf), b in (0, 2), unary in (false, true)
+        (a == 1 || (!unary && b == 0)) || continue
+        p = LinearAlgebra.MulAddMul(P(a), P(b))
+        dp = Tangent((; alpha=P(3), beta=P(5)))
+        args = if unary
+            (CoDual(P(7), zero(P)),)
+        else
+            (CoDual(P(7), zero(P)), CoDual(P(11), zero(P)))
+        end
+        expected = P(unary ? 21 : 76)
+        opts = (mode=ForwardMode, skip_chunked=true, oracle=(deriv=expected,))
+        push!(test_cases, (false, :allocs, opts, CoDual(p, dp), args...))
+    end
     memory = Any[]
     return test_cases, memory
 end
@@ -100,6 +181,30 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             ]
         end...,
     )
+    # A mutating MulAddMul returns nothing, so its derivative oracle needs a returned array.
+    test_cases = Any[test_cases...]
+    for P in (Float64, ComplexF64), integer_beta in (false, true)
+        f = function (a, b, x, C)
+            LinearAlgebra._modify!(
+                LinearAlgebra.MulAddMul{true,true,typeof(a),typeof(b)}(a, b), x, C, 1
+            )
+            return C
+        end
+        opts = (mode=ForwardMode, oracle=(deriv=fill(P(integer_beta ? 21 : 76), 1),))
+        push!(
+            test_cases,
+            (
+                false,
+                :allocs,
+                opts,
+                f,
+                CoDual(one(P), P(3)),
+                integer_beta ? 0 : CoDual(zero(P), P(5)),
+                CoDual(P(7), zero(P)),
+                fill(P(11), 1),
+            ),
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end
