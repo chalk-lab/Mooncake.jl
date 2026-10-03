@@ -91,6 +91,17 @@ were actually fields of `t`. This is the moral equivalent of `getfield` for
     return get_tangent_field(t, _sym_to_int(F, Val(s)))
 end
 
+# The backing `NamedTuple` constructor would `convert` a mismatched value into the field's
+# tangent type, silently changing its precision. Forward's per-lane writes refuse that; so does
+# this. `@noinline` keeps the check free: `isa` folds away whenever both types are known.
+@noinline function _tangent_field_write_error(::Type{Tfields}, i::Int, x) where {Tfields}
+    msg =
+        "Cannot write a `$(typeof(x))` into field `$(fieldname(Tfields, i))` of a tangent " *
+        "whose tangent type for that field is `$(fieldtype(Tfields, i))`: Mooncake does not " *
+        "convert implicitly. Convert at the call site."
+    throw(ArgumentError(msg))
+end
+
 """
     set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
 
@@ -98,12 +109,14 @@ Sets the value of the `i`th field of the data in `t` to value `x`.
 
 Has the same semantics that `setfield!` would have if the data in the `fields` field of `t`
 were actually fields of `t`. This is the moral equivalent of `setfield!` for
-[`MutableTangent`](@ref).
+[`MutableTangent`](@ref), including its strictness: `x` must already be of the field's tangent
+type, and an `ArgumentError` is thrown rather than converting.
 """
 @inline function set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
     fields = t.fields
     Ti = fieldtype(Tfields, i)
     new_val = Ti <: PossiblyUninitTangent ? Ti(x) : x
+    new_val isa Ti || _tangent_field_write_error(Tfields, i, x)
     new_fields = Tfields(ntuple(n -> n == i ? new_val : fields[n], fieldcount(Tfields)))
     t.fields = new_fields
     return x
@@ -565,9 +578,10 @@ function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
     return bitcast(Ptr{tangent_type(P)}, x)
 end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
-    return map!(
-        n -> zero_tangent_internal(x[n], dict), Vector{Any}(undef, length(x)), eachindex(x)
-    )
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> zero_tangent_internal(x[n], dict), t, eachindex(x))
 end
 @inline @generated function zero_tangent_internal(x::P, d::MaybeCache) where {P}
 
@@ -682,9 +696,10 @@ function randn_tangent_internal(rng::AbstractRNG, x::NamedTuple, dict::MaybeCach
     return tuple_map(x -> randn_tangent_internal(rng, x, dict), x)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::SimpleVector, dict::MaybeCache)
-    return map!(Vector{Any}(undef, length(x)), eachindex(x)) do n
-        return randn_tangent_internal(rng, x[n], dict)
-    end
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> randn_tangent_internal(rng, x[n], dict), t, eachindex(x))
 end
 @generated function randn_tangent_internal(rng::AbstractRNG, x::P, d::MaybeCache) where {P}
 
@@ -742,7 +757,7 @@ circular references or aliasing. Returns `Val{true}()` if caching is required (t
 or `Val{false}()` if tangents of type [`tangent_type(P)`](@ref) are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
-This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
+This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()`
 can improve performance by avoiding cache overhead, but is only safe when the memory layout
 of the tangent type is provably tree-like. 
 
@@ -871,7 +886,7 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+const IncCache = Union{NoCache,IdDict{Any,Any}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
@@ -897,9 +912,9 @@ Add `x` to `y`. If `ismutabletype(T)`, then `increment!!(x, y) === x` must hold.
 That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
-function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Bool}(), x, y)
-end
+increment!!(x::T, y::T) where {T} = increment!!(x, y, require_tangent_cache(T))
+increment!!(x, y, ::Val{true}) = increment_internal!!(IdDict{Any,Any}(), x, y)
+increment!!(x, y, ::Val{false}) = increment_internal!!(NoCache(), x, y)
 
 """
     increment_internal!!(c::IncCache, x::T, y::T) where {T}
@@ -1051,7 +1066,7 @@ function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tangent,Mutabl
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
     return sum(
-        _map((t, s) -> _dot_internal(c, t, s)::Float64, t.fields, s.fields); init=0.0
+        tuple_map((t, s) -> _dot_internal(c, t, s)::Float64, t.fields, s.fields); init=0.0
     )::Float64
 end
 
@@ -1102,10 +1117,10 @@ function _add_to_primal_internal(
     return x′
 end
 function _add_to_primal_internal(c::MaybeCache, x::Tuple, t::Tuple, unsafe::Bool)
-    return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
+    return tuple_map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
 end
 function _add_to_primal_internal(c::MaybeCache, x::NamedTuple, t::NamedTuple, unsafe::Bool)
-    return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
+    return tuple_map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
 end
 
 struct AddToPrimalException <: Exception
@@ -1451,15 +1466,17 @@ live in `src/rules/linear_algebra.jl`.
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Skip non-differentiable eltypes: avoids pointless caches and maps on sparse containers.                                                                                              
-    # Calling tangent_type in a generator body risks world-age cycles, but is probably sufficient here:
-    # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an                                                                                                 
-    # explicit non-generated method, and tangent_type for struct eltypes recurses only into
-    # field types, all of which eventually bottom out at such explicit methods. 
-    if P <: AbstractArray &&
-        !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
-        tangent_type(eltype(P)) != NoTangent
-        return :(map(friendly_tangent_cache, x))
+    # Non-float arrays need element caches only for differentiable elements.
+    # Emit the `tangent_type` call at runtime so later extension overloads remain visible.
+    if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
+        ET = eltype(P)
+        return :(
+            if tangent_type($ET) === NoTangent
+                friendly_tangent_cache_internal(x)
+            else
+                map(friendly_tangent_cache, x)
+            end
+        )
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
     # in the buffer as a NamedTuple, mirroring the immutable struct path. This avoids
