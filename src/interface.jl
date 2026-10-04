@@ -1954,19 +1954,25 @@ if calling this function multiple times with different values of `x`, should be 
 ensure that you zero-out the tangent fields of `x` each time.
 """
 function __value_and_pullback!!(
-    rule::R, ȳ::T, fx::Vararg{CoDual,N}; y_cache=nothing
-) where {R,N,T}
+    rule::R,
+    ȳ::T,
+    fx::Vararg{CoDual,N};
+    y_cache=nothing,
+    friendly_tangents::Val{F}=Val(false),
+) where {R,N,T,F}
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
-    @assert _typeof(tangent(out)) == fdata_type(T)
-    increment!!(tangent(out), fdata(ȳ))
+    # Keep the seed type concrete at the opaque pullback call, including on Julia 1.10.
+    seed = F ? primal_to_tangent!!(zero_tangent(primal(out)), ȳ) : ȳ
+    @assert _typeof(tangent(out)) == fdata_type(typeof(seed))
+    increment!!(tangent(out), fdata(seed))
     v = if y_cache === nothing
         _copy_output(primal(out))
     else
         _copy_to_output!!(y_cache, primal(out))
     end
-    return v, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(rdata(ȳ)))
+    return v, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(rdata(seed)))
 end
 
 function __verify_sig(rule::DerivedRule{<:Any,sig}, fx) where {sig}
@@ -2270,6 +2276,7 @@ end
 )
     axes(t) == axes(direction) || throw(
         ArgumentError(
+            "Invalid friendly tangent: " *
             "Tangent direction for argument $arg must match the cache-owned tangent axes; " *
             "got axes $(axes(direction)) for direction vs $(axes(t)) for cache-owned tangent",
         ),
@@ -2381,8 +2388,9 @@ end
     rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
     if friendly_tangents
-        ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
-        value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
+        value, pb = __value_and_pullback!!(
+            rule, ȳ, __create_coduals(fx)...; friendly_tangents=Val(true)
+        )
         friendly_pb = _to_friendly(map(friendly_tangent_cache, fx), fx, pb)
         return value, friendly_pb
     end

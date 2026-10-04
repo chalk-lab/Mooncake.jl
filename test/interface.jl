@@ -290,6 +290,37 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
+    @testset "nested friendly seed shapes" begin
+        for wrap in (a -> (; a), a -> ImmutablePartialInput(a), Ref, a -> [a]), w in (1, 8)
+            x, dx = wrap([1.0, 2.0]), wrap([1.0])
+            f = x -> 1.0
+            cache = Mooncake.prepare_derivative_cache(
+                f, x; config=Mooncake.Config(; friendly_tangents=true, chunk_size=w)
+            )
+            TestUtils._test_throws(ArgumentError, "Invalid friendly tangent") do
+                Mooncake.value_and_derivative!!(cache, (f, NoTangent()), (x, dx))
+            end
+        end
+        for wrap in (identity, a -> (a,)), direct in (false, true)
+            f = x -> wrap(2 .* x)
+            x, dy = [1.0, 2.0], wrap([1.0])
+            cache = if direct
+                Mooncake.build_rrule(f, x)
+            else
+                Mooncake.prepare_pullback_cache(
+                    f, x; config=Mooncake.Config(; friendly_tangents=true)
+                )
+            end
+            TestUtils._test_throws(ArgumentError, "Invalid friendly tangent") do
+                if direct
+                    Mooncake.value_and_pullback!!(cache, dy, f, x; friendly_tangents=true)
+                else
+                    Mooncake.value_and_pullback!!(cache, dy, f, x)
+                end
+            end
+        end
+    end
+
     # These API checks require cache reuse, original object identities, and different
     # prepare/call partitions, which a rule registry case cannot express.
     @testset "chunked restore re-points rebound aliases" begin
@@ -3368,6 +3399,30 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         cache.input_tangents,
                         (f, called...),
                     ) <= 51
+                end
+            end
+        end
+
+        @testset "friendly integer array seed error" begin
+            local f, x
+            for w in (1, 8), x in ([1, 3], [1.0, 3.0])
+                f = x -> sum(x)
+                cache = Mooncake.prepare_derivative_cache(
+                    f,
+                    x;
+                    config=Mooncake.Config(;
+                        friendly_tangents=true, chunk_size=w, kwargs...
+                    ),
+                )
+                TestUtils._test_throws(ArgumentError, "Invalid friendly tangent") do
+                    Mooncake.value_and_derivative!!(
+                        cache, (f, Mooncake.NoTangent()), (x, Mooncake.NoTangent())
+                    )
+                end
+                TestUtils._test_throws(ArgumentError, "Invalid friendly tangent") do
+                    Mooncake.value_and_derivative!!(
+                        cache, (f, Mooncake.NoTangent()), (x, Mooncake.zero_tangent(x)[1:1])
+                    )
                 end
             end
         end

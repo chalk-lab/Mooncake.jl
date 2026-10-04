@@ -1952,10 +1952,29 @@ modifying the tangent in place as much as possible to minimize allocations.
 The primal is not modified, and the returned tangent will not alias it.
 """
 function primal_to_tangent!!(tangent, primal::P) where {P}
-    @assert typeof(tangent) <: tangent_type(P)
+    typeof(tangent) <: tangent_type(P) || throw(
+        ArgumentError(
+            "Invalid friendly tangent of type `$P`: its native tangent type is " *
+            "`$(tangent_type(P))`, but the prepared tangent has type `$(typeof(tangent))`. " *
+            "Supply a direction with the same structure as the primal; an array argument " *
+            "requires an array direction, even when its elements are nondifferentiable.",
+        ),
+    )
     return primal_to_tangent_internal!!(
         tangent, primal, isbitstype(P) ? NoCache() : IdDict()
     )::tangent_type(P)
+end
+
+# Called at each array leaf of the recursive friendly-to-native conversion.
+@inline function _check_friendly_tangent_size(tangent, direction)
+    size(tangent) == size(direction) || throw(
+        ArgumentError(
+            "Invalid friendly tangent: direction size $(size(direction)) does not match " *
+            "the primal's tangent size $(size(tangent)). Supply a direction with the " *
+            "same shape as the primal.",
+        ),
+    )
+    return nothing
 end
 
 """
