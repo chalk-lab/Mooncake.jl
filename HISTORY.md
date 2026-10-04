@@ -3,7 +3,9 @@
 - Forward friendly gradients of composites holding an `AbstractDict` change from
   primal-shaped structs to fieldwise `NamedTuple`s, matching reverse mode.
 - Forward friendly gradients of `AsRaw` array wrappers (for example, `Diagonal`) now
-  return raw tangents, as in reverse mode, instead of primal-shaped arrays.
+  return raw tangents, as in reverse mode, instead of primal-shaped arrays. Friendly forward
+  directions support `IdDict` by key; other `AbstractDict` directions require
+  a native tangent through a non-friendly cache.
 - Friendly output changes from fieldwise named tuples to raw tangents for custom
   tangent types and non-differentiable structs (for example, `(n = NoTangent(),)`
   becomes `NoTangent()`).
