@@ -3544,9 +3544,8 @@ using its contents' runtime types at preparation only; preserve those types on c
 Prepare a cache for computing Hessian-vector products (HVPs) of `f`. Returns an `HVPCache`
 for use with [`value_and_hvp!!`](@ref).
 
-`f` must map a single `AbstractVector` `x` to a scalar. Like [`value_and_jacobian!!`](@ref),
-only a single input is supported; concatenate the inputs of a multi-argument function into
-one vector.
+`f` must map a single input `x` to a scalar. Scalar and `AbstractVector` inputs are
+supported; concatenate the inputs of a multi-argument function into one vector.
 
 The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The inner
 rule is compiled only once regardless of how many HVPs are subsequently evaluated.
@@ -3558,11 +3557,10 @@ fine, but changing the shape requires a new cache.
     Calls `f(x...)` during cache preparation (via inner gradient and derivative caches).
 
 ```jldoctest; setup = :(using Mooncake)
-f(x) = sum(x .* x)
-x = [1.0, 2.0]
+f(x) = x^3
+x = 2.0
 cache = Mooncake.prepare_hvp_cache(f, x)
-f_val, gradient, hvp = Mooncake.value_and_hvp!!(cache, f, [1.0, 0.0], x)
-f_val ≈ 5.0 && gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
+Mooncake.value_and_hvp!!(cache, f, 1.0, x) == (8.0, 12.0, 12.0)
 
 # output
 
@@ -3636,7 +3634,7 @@ end
 # functions must concatenate their inputs into one vector.
 @noinline _throw_hvp_multiarg(fname::String, got::Int) = throw(
     ArgumentError(
-        "$fname supports only a single AbstractVector input; got $got arguments. " *
+        "$fname supports only a single input; got $got arguments. " *
         "Concatenate the inputs into one vector.",
     ),
 )
@@ -3648,7 +3646,7 @@ Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `
 and the Hessian-vector product `H v`. `v` must have the internal tangent type for `x` and
 matching axes (or length for sized collections without axes); returns `(f(x), ∇f(x),
 H(x)v)`. For `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are
-`Vector{Float64}`. Like [`value_and_jacobian!!`](@ref), only a single `AbstractVector` input
+`Vector{Float64}`. Scalar inputs return a scalar gradient and HVP. Only a single input
 is supported; concatenate the inputs of a multi-argument function into one vector.
 
 As with all functionality in Mooncake, `x` is returned to its original state: if `f` mutates
