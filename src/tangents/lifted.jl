@@ -1221,7 +1221,8 @@ end
         haskey(c, x) && return c[x]::lifted_type(Val(1), A)
         owner = _storage_id(x)
         key = (owner, Val(:lift_storage))
-        haskey(c, key) || (c[key] = zero_lifted(Val(1), owner))
+        haskey(c, key) ||
+            (c[key] = Lifted{typeof(owner),1}(owner, zero_dual(Val(1), owner)))
         block = Nfwd._window_block(
             getfield(tangent(c[key]::Lifted{typeof(owner),1}), :partials_block),
             Val(1),
@@ -1373,7 +1374,7 @@ end
         mem = _storage_id(x)
         # Reserving the owner's block does not mean its full seed has been copied.
         key = (mem, Val(:lift_storage))
-        haskey(c, key) || (c[key] = zero_lifted(Val(1), mem))
+        haskey(c, key) || (c[key] = Lifted{typeof(mem),1}(mem, zero_dual(Val(1), mem)))
         memv = tangent(c[key]::Lifted{typeof(mem),1})
         v = _derived_array_dual(Val(1), x, memv)
         copyto!(tangent_view(v, 1), ẋ)
