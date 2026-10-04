@@ -793,10 +793,17 @@ function _check_tangent_storage!(seen::IdDict, expected::Lifted, supplied::Lifte
     return _check_tangent_storage!(seen, tangent(expected), tangent(supplied))
 end
 @static if VERSION >= v"1.11-rc4"
-    function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied)
-        return _check_tangent_storage!(
-            seen, expected.partials_ref.mem, supplied.partials_ref.mem
+    function _check_tangent_storage!(
+        seen::IdDict, expected::Nfwd.NDualMemoryRef{T,N}, supplied
+    ) where {T,N}
+        er, sr = expected.partials_ref, supplied.partials_ref
+        key = _storage_id(er.mem)
+        value = (
+            _storage_id(sr.mem),
+            _storage_offset(sr) - _storage_offset(er) + N * (supplied.col - expected.col),
         )
+        get!(seen, key, value) === value || _throw_shared_input_tangent_error()
+        return nothing
     end
 end
 

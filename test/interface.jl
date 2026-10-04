@@ -2928,17 +2928,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
             end
             @static if VERSION >= v"1.11-rc4"
-                for width in (1, 8), n in (4, 5, 32)
+                for width in (1, 8),
+                    n in (4, 5, 32, :dynamic),
+                    reverse_order in (false, true)
+
                     a = ones(4)
                     r = memoryref(a.ref.mem, 3)
-                    ps = (sum, a, r, ntuple(_ -> ones(2), n - 2)...)
+                    tail = n === :dynamic ? (Any[1.0],) : ntuple(_ -> ones(2), n - 2)
+                    ps = reverse_order ? (sum, r, a, tail...) : (sum, a, r, tail...)
+                    ri = reverse_order ? 2 : 3
                     vs = Mooncake.tangent(Mooncake.zero_lifted(Val(width), ps))
                     slots = map((p, v) -> Mooncake.Lifted{typeof(p),width}(p, v), ps, vs)
                     @test Mooncake._check_shared_input_tangents(slots) === nothing
-                    vr = vs[3]
+                    vr = vs[ri]
                     bad = typeof(vr)(vr.primal, vr.partials_ref, vr.ncols, vr.col - 1)
                     bad_slots = Base.setindex(
-                        slots, Mooncake.Lifted{typeof(r),width}(r, bad), 3
+                        slots, Mooncake.Lifted{typeof(r),width}(r, bad), ri
                     )
                     @test_throws ArgumentError Mooncake._check_shared_input_tangents(
                         bad_slots
