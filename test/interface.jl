@@ -2878,7 +2878,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # Rule registries invoke rules directly and cannot exercise cache admission or friendly
             # conversion. These tests need caller-supplied seeds and public interface overloads.
             sum_shared(a, b) = sum(a) + sum(b)
-            makers = (identity, a -> reshape(a, 3, 1), a -> view(a, :))
+            makers = (
+                identity,
+                a -> reshape(a, 3, 1),
+                a -> view(a, :),
+                a -> reshape(sizehint!(a, 100), 3, 1),
+            )
             @static if VERSION >= v"1.11-rc4"
                 makers = (makers..., a -> a.ref.mem)
             end
