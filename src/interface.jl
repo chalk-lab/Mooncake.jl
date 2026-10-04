@@ -956,8 +956,8 @@ end
         _storage_kind(eltype(P)) isa StructuralStorage
         throw(
             ArgumentError(
-                "Argument $i has type `$P`. Forward mode requires a concrete real element " *
-                "type for top-level Arrays; use e.g. `Array{Float32}` or `Array{Float64}`.",
+                "Argument $i has type `$P`. Forward mode requires a concrete numeric element type " *
+                "for top-level real Arrays; use e.g. `Array{Float32}` or `Array{Float64}`.",
             ),
         )
     end

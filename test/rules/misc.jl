@@ -1,4 +1,11 @@
 @testset "misc" begin
+    @testset "direct primitive refuses union storage" begin
+        T = Union{Float32,Float64}
+        for args in ((sort, T[2.0f0, 3.0]),), w in (1, 8)
+            slots = map(x -> Mooncake.zero_lifted(Val(w), x), args)
+            @test_throws "This forward primitive requires" Mooncake.frule!!(slots...)
+        end
+    end
     @testset "stop_gradient" begin
         # Primal pass-through: same object returned.
         x = [1.0, 2.0]
