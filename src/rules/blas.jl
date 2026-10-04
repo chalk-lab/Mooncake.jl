@@ -334,8 +334,29 @@ function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:Abstra
     return arrayify(x_dx)
 end
 
-function viewify(n::Integer, x_dx::CoDual{Ptr{P}}, incx::Integer) where {P<:BlasFloat}
+function viewify(
+    n::Integer, x_dx::CoDual{Ptr{P}}, incx::Integer, roots::Tuple=()
+) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
+    # Foreign-call roots retain the array bounds erased by pointer conversion.
+    foreach(roots) do root
+        owner = primal(root)
+        storage = if owner isa AbstractArray{P}
+            last(arrayify(root))
+        elseif isdefined(Base, :MemoryRef) && owner isa MemoryRef{P}
+            owner = owner.mem
+            tangent(root).mem
+        else
+            nothing
+        end
+        if storage !== nothing
+            offset = UInt(dx) - UInt(pointer(storage))
+            if offset == UInt(x) - UInt(pointer(owner)) &&
+                offset <= _blas_walk_capacity(storage) * sizeof(P)
+                _check_blas_walk(n, storage, incx, Int(offset ÷ sizeof(P)))
+            end
+        end
+    end
     # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
     # pointer rule comes through here, and accumulating into it would mutate the primal.
     IntrinsicsWrappers._check_tangent_ptr(x, dx, n)
@@ -379,6 +400,7 @@ function viewify(
         p, dp = parent(x), _fields(tangent(x_dx)).parent
         return viewify(n, CoDual(p, dp), incx)
     end
+    _check_blas_walk(n, x, incx)
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
@@ -404,6 +426,7 @@ function _blas_walk_indices(n::Integer, x::AbstractArray, incx::Integer)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         return _blas_walk_indices(n, parent(x), incx)
     end
+    _check_blas_walk(n, x, incx)
     ranks = ntuple(
         d -> count(e -> (abs(stride(x, e)), -e) > (abs(stride(x, d)), -d), 1:ndims(x)),
         Val(ndims(x)),
@@ -729,8 +752,8 @@ for (fname, jlfname, elty) in (
         GC.@preserve args begin
             # Load in values from pointers.
             n, incx, incy = map(primal, (_n, _incx, _incy))
-            DX, _dDX = viewify(n, _DX, incx)
-            DY, _dDY = viewify(n, _DY, incy)
+            DX, _dDX = viewify(n, _DX, incx, args)
+            DY, _dDY = viewify(n, _DY, incy, args)
 
             # Run primal computation.
             result = BLAS.$jlfname(DX, DY)
@@ -1548,6 +1571,7 @@ end
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         return _blas_walk_step(parent(x), inc, n)
     end
+    _check_blas_walk(n, x, inc)
     x isa Union{Transpose{<:Any,<:AbstractVector},Adjoint{<:Real,<:AbstractVector}} &&
         return _blas_walk_step(parent(x), inc, n)
     x isa Ptr && return inc
@@ -1568,56 +1592,41 @@ end
     return 1 + (n - 1) * abs(step) <= length(x) ? step : nothing
 end
 
-# Raised where the walk runs off the end of the operand, as distinct from following it in a
-# different order -- the two need different messages because the fixes differ.
-@noinline function _throw_walk_past_operand(label, x, inc, n)
+@noinline function _throw_walk_past_storage()
     throw(
         ArgumentError(
-            LazyString(
-                label,
-                " reads ",
-                n,
-                " elements from `pointer(X)` with `incx = ",
-                inc,
-                "`, which runs past the ",
-                length(x),
-                " elements of `",
-                typeof(x),
-                "`. The primal may still be defined, since the walk can stay inside a larger " *
-                "parent array, but those elements belong to no argument and have no derivative. " *
-                "Pass an operand at least `1 + (n-1)*incx` long.",
-            ),
+            "BLAS walk leaves the backing array for which Mooncake owns tangent storage. " *
+            "Pass an operand whose backing array contains every visited address.",
         ),
     )
 end
 
-# Select the ordinary dot path when the raw span fits within the operand length.
-# Negative increments visit the same span backwards.
-@inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
-    1 + (n - 1) * abs(inc) <= length(x)
+@inline _check_blas_walk(n::Integer, x::Ptr, inc::Integer) = nothing
+@inline function _check_blas_walk(
+    n::Integer, x::AbstractArray, inc::Integer, offset::Integer=0
+)
+    n <= 0 && return nothing
+    capacity = _blas_walk_capacity(x) - offset
+    capacity > 0 && (inc == 0 || n - 1 <= (capacity - 1) ÷ abs(widen(inc))) ||
+        _throw_walk_past_storage()
+    return nothing
+end
 
-# Dense lane reconstruction retains the complete parent, including elements outside a view.
+# Block columns cover only the operand's logical elements.
+@inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
+    n <= 0 || 1 + (n - 1) * abs(inc) <= length(x)
+
+# Available storage after pointer(x), including the rest of a view's parent.
 @inline _blas_walk_capacity(x) = length(x)
 @inline function _blas_walk_capacity(x::SubArray)
     offset = sum((first.(parentindices(x)) .- 1) .* strides(parent(x)))
     return _blas_walk_capacity(parent(x)) - offset
 end
-@inline function _blas_walk_capacity(
-    x::Union{Transpose{<:Any,<:AbstractVector},Adjoint{<:Real,<:AbstractVector}}
-)
+@inline function _blas_walk_capacity(x::Union{Transpose,Adjoint,Base.ReshapedArray})
     return _blas_walk_capacity(parent(x))
 end
-
-# Validate parent-bounded walks before reading lane-strided storage.
-@noinline function _dot_widened_acc(
-    f::F, ::Val{Nw}, ::Type{E}, label, _DX, _DY, n, incx, incy
-) where {F,Nw,E}
-    x, y = primal(_DX), primal(_DY)
-    1 + (n - 1) * abs(incx) <= _blas_walk_capacity(x) ||
-        _throw_walk_past_operand(label, x, incx, n)
-    1 + (n - 1) * abs(incy) <= _blas_walk_capacity(y) ||
-        _throw_walk_past_operand(label, y, incy, n)
-    return _dot_strided_acc(f, Val(Nw), E, _DX, _DY, n, incx, incy)
+@inline function _blas_walk_capacity(x::Base.ReinterpretArray{T}) where {T}
+    return _blas_walk_capacity(parent(x)) * sizeof(eltype(parent(x))) ÷ sizeof(T)
 end
 
 @inline _dot_walk_base(x::Lifted) = x
@@ -1659,10 +1668,11 @@ end
     end::NTuple{Nw,E}
 end
 
-@inline function _blas_raw_walk_matches(x, inc::Integer)
+@inline function _blas_raw_walk_matches(x, inc::Integer, n::Integer)
     inc > 0 || return false
     x isa Ptr && return true
-    return strides(x) === Base.size_to_strides(1, size(x)...)
+    return _blas_walk_inbounds(x, inc, n) &&
+           strides(x) === Base.size_to_strides(1, size(x)...)
 end
 
 # Pass acc by value to avoid boxing a reassigned closure capture (see _nrm2_accum).
@@ -1778,21 +1788,10 @@ for (jlfname, elty) in (
     ) where {Nw}
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
+        _check_blas_walk(n, DX, incx)
+        _check_blas_walk(n, DY, incy)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
-        acc = if !(_blas_walk_inbounds(DX, incx, n) && _blas_walk_inbounds(DY, incy, n))
-            # Widen to the parent partials before either path can read past the view.
-            _dot_widened_acc(
-                BLAS.$jlfname,
-                Val(Nw),
-                $elty,
-                $("Forward-mode `BLAS.$jlfname`"),
-                _DX,
-                _DY,
-                n,
-                incx,
-                incy,
-            )
-        elseif _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
+        acc = if _blas_raw_walk_matches(DX, incx, n) && _blas_raw_walk_matches(DY, incy, n)
             # Contiguous operands: logical indexing == BLAS's raw walk, so accumulate all lanes
             # in one pass over the element-major block columns.
             Xb, _ = _partials_block(_DX)
@@ -1833,6 +1832,8 @@ for (jlfname, elty) in (
         end
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
+        _check_blas_walk(n, DX, incx)
+        _check_blas_walk(n, DY, incy)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
         dresult_lanes = ntuple(Val(Nw)) do lane
             dX = _blas_lane_partial(_DX, lane)
@@ -4795,16 +4796,12 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
              (f, opts) in two_operand)...,
         ],
     )
-    # Forward dot must reject walks past the parent; reverse has only pointers.
+    # Both modes reject walks past the parent before touching tangent storage.
     append!(
         cases,
         Any[
-            (
-                (ArgumentError, "runs past the"),
-                f,
-                (30, short, 1, short, 1),
-                (; mode=ForwardMode),
-            ) for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+            ((ArgumentError, "tangent storage"), f, (30, short, 1, short, 1), (;)) for
+            f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
         ],
     )
 
