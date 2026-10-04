@@ -1,6 +1,37 @@
 @testset "performance_patches" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:performance_patches))
 
+    @testset "real-union matrix kron" begin
+        f =
+            x -> begin
+                a = kron(Union{Float32,Float64}[x 2.0f0], Union{Float32,Float64}[3.0 x])
+                a[1] + a[2] + a[3] + a[4]
+            end
+        TestUtils.test_rule(
+            StableRNG(123), f, 3.0; is_primitive=false, mode=Mooncake.ForwardMode
+        )
+    end
+
+    @testset "mixed-union kron" begin
+        T = Union{Float32,ComplexF64}
+        for wrap in (identity, transpose)
+            a = wrap(T[2.0f0 3.0 + 1.0im])
+            b = wrap(T[1.0f0 2.0 + 1.0im])
+            TestUtils.test_rule(
+                StableRNG(123), kron, a, b; is_primitive=false, mode=Mooncake.ForwardMode
+            )
+            TestUtils.test_rule(
+                StableRNG(123),
+                LinearAlgebra._kron!,
+                kron(a, b),
+                a,
+                b;
+                is_primitive=false,
+                mode=Mooncake.ForwardMode,
+            )
+        end
+    end
+
     @testset "nested unit-triangular reads" begin
         for P in (Float64, Float32),
             W in (UnitUpperTriangular, UnitLowerTriangular),

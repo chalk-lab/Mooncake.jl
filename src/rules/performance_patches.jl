@@ -255,12 +255,20 @@ end
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Dense forward inputs support IEEEFloat; wrapped inputs need arrayify's BlasFloat.
 # Wrapped Float16 stays derived. Keep modes separate: reverse supports only real IEEEFloat.
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(LinearAlgebra._kron!),Array{T,2},Array{T,2},Array{T,2}
-} where {T<:IEEEFloat}
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
-} where {T<:BlasFloat}
+# Union elements need the derived elementwise rule; arrayify requires numeric storage.
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{
+        typeof(LinearAlgebra._kron!),Array{$T,2},Array{$T,2},Array{$T,2}
+    }
+end
+for T in (Float32, Float64, ComplexF32, ComplexF64, Union{})
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{
+        typeof(LinearAlgebra._kron!),
+        AbstractMatrix{$T},
+        AbstractMatrix{$T},
+        AbstractMatrix{$T},
+    }
+end
 # Reverse folds dense cotangents onto stored entries; complex stays derived.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
@@ -412,15 +420,19 @@ end
 
 # Forward needs real BlasFloat for arrayify and NDualArray packing; Float16/complex
 # stay derived. As in reverse, require dense output and declare the strided intersection.
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(kron),StridedMatrix{T},AbstractMatrix{T}
-} where {T<:Union{Float32,Float64}}
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(kron),AbstractMatrix{T},StridedMatrix{T}
-} where {T<:Union{Float32,Float64}}
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(kron),StridedMatrix{T},StridedMatrix{T}
-} where {T<:Union{Float32,Float64}}
+for T in (Float32, Float64, Union{})
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof(kron),StridedMatrix{$T},AbstractMatrix{$T}
+        }
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof(kron),AbstractMatrix{$T},StridedMatrix{$T}
+        }
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof(kron),StridedMatrix{$T},StridedMatrix{$T}
+        }
+    end
+end
 # Dense operands have partials blocks, allowing contiguous writes across all lanes.
 # Wrapped operands keep the generic path because they have no block of their own.
 function Mooncake.frule!!(
