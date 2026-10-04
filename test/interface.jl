@@ -4532,6 +4532,48 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
             end
 
+            @testset "immutable references to shared array storage" begin
+                shared_ref_sum(a, r) = sum(abs2, a) + r[]^3
+                for w in (1, 8), slack in (false, true)
+                    a = [1.5, -0.7, 2.1, 0.4]
+                    slack && sizehint!(a, 100)
+                    b = reshape(a, 2, 2)
+                    r = @static if VERSION >= v"1.11-rc4"
+                        memoryref(b.ref.mem, 3)
+                    else
+                        Ref(b, 3)
+                    end
+                    for (g, args) in (
+                        (shared_ref_sum, (a, r)),
+                        (t -> shared_ref_sum(t...), ((a, r),)),
+                        (x -> shared_ref_sum(x, r), (a,)),
+                        (p -> shared_ref_sum(p.u, p.v), (StructuredPair(a, r),)),
+                    )
+                        shared_ref_cache = Mooncake.prepare_derivative_cache(
+                            g, args...; config=Mooncake.Config(; chunk_size=w)
+                        )
+                        TestUtils._test_throws(
+                            ArgumentError,
+                            "Forward-mode `value_and_gradient!!` does not support two arguments over one storage",
+                        ) do
+                            Mooncake.value_and_gradient!!(shared_ref_cache, g, args...)
+                        end
+                    end
+                    # Wrappers descend through their tangent fields to the same storage leaf.
+                    for wrap in (x -> view(x, :), x -> reshape(view(x, :), 2, 2))
+                        x = wrap(b)
+                        ts = Mooncake._zero_tangents((x, r))
+                        @test Mooncake._inputs_share_storage(
+                            Mooncake.tangent_dim(ts), ts, (x, r)
+                        )
+                        ts = Mooncake._zero_tangents((r, x))
+                        @test Mooncake._inputs_share_storage(
+                            Mooncake.tangent_dim(ts), ts, (r, x)
+                        )
+                    end
+                end
+            end
+
             @testset "forward gradient refuses a repeated mutable argument" begin
                 # Per-argument gradient ranges cannot represent repeated mutable storage. A derivative
                 # call can, using one caller-supplied tangent shared across positions.
