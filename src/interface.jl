@@ -559,7 +559,10 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         (isempty(expected) || eltype(expected) === NoTangent) && return nothing
     end
     if ismutable(expected)
-        key, value = _storage_id(expected), _storage_id(supplied)
+        key = _storage_id(expected)
+        value = (
+            _storage_id(supplied), _storage_offset(supplied) - _storage_offset(expected)
+        )
         if haskey(seen, key)
             # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
             seen[key] === value ||
@@ -684,8 +687,8 @@ end
         ArgumentError(
             "These inputs share differentiable storage across positions (`f` holding the same " *
             "array that is also passed as an argument, say), but the supplied tangents do not " *
-            "share it. One storage carries one tangent, so the lift would keep one of them and " *
-            "silently drop the other. Pass the same tangent object for the shared storage at " *
+            "share it at corresponding offsets. One storage carries one tangent, so the lift would " *
+            "silently discard a direction. Pass the same tangent object for the shared storage at " *
             "every position it occupies, or use reverse mode, which accumulates into it instead.",
         ),
     )
