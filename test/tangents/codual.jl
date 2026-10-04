@@ -12,6 +12,8 @@ end
 
 # A non-const global, for the rebinding test below. Both modes re-read it on every call.
 global _GLOBAL_ALIAS_G::Vector{Float64} = [1.0, 2.0]
+global _REBIND_ALIAS_G = [1.0, 2.0]
+_rebind_alias_f(x) = sum(x .* _REBIND_ALIAS_G)
 _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
 
 @testset "codual" begin
@@ -154,6 +156,15 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
             Mooncake.zero_lifted(Val(1), _global_alias_f), Mooncake.lift(y, [1.0, 0.0])
         )
         global _GLOBAL_ALIAS_G = [1.0, 2.0]
+        scalar_fr = Mooncake.build_frule(_rebind_alias_f, 2.0)
+        global _REBIND_ALIAS_G = 2.0
+        @test Mooncake.value_and_derivative!!(
+            scalar_fr, (_rebind_alias_f, NoTangent()), (2.0, 1.0)
+        ) == (4.0, 2.0)
+        @test Mooncake._check_constant_aliasing(
+            scalar_fr.consts, (zero_codual(_rebind_alias_f), zero_codual(2.0))
+        ) === nothing
+        global _REBIND_ALIAS_G = [1.0, 2.0]
     end
 
     @testset "record_const_alias! records what it cannot ask about" begin

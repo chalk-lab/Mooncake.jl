@@ -187,14 +187,18 @@ end
 # A closure over `c::Any` would heap-allocate even if `any` unrolled the tuple.
 @noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
     for c in consts
-        _aliases_any_arg(c, args) && _throw_constant_alias_error(c)
+        v = _alias_target(c)
+        if _aliases_any_arg(v, args)
+            c isa GlobalBinding && !_has_alias_storage(v) && continue
+            _throw_constant_alias_error(c)
+        end
     end
     return nothing
 end
 
 @inline _aliases_any_arg(@nospecialize(c), ::Tuple{}) = false
 @inline function _aliases_any_arg(@nospecialize(c), args::Tuple)
-    return _alias_target(c) === primal(first(args)) || _aliases_any_arg(c, Base.tail(args))
+    return c === primal(first(args)) || _aliases_any_arg(c, Base.tail(args))
 end
 
 """
@@ -274,13 +278,14 @@ end
 # `stored` is what lands in the set: the value itself, or a `GlobalBinding` to resolve at call
 # time. `v` is always the value, since only it can answer whether there is storage to clash over.
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v), @nospecialize(stored))
-    # Isbits values have no shared fdata (`Ptr` constants arrive as IR literals).
-    # Check first to avoid asking `tangent_type` about unsupported primitives.
-    isbits(v) && return nothing
-    # Record recursive types and exhausted walks without asking `tangent_type`.
-    if !_reaches_recursive_type(_typeof(v))
-        fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
-    end
+    _has_alias_storage(v) || return nothing
     any(c -> c === stored, consts) || push!(consts, stored)
     return nothing
+end
+
+function _has_alias_storage(@nospecialize(v))
+    # Avoid tangent queries on unsupported primitives and recursive types.
+    isbits(v) && return false
+    return _reaches_recursive_type(_typeof(v)) ||
+           fdata_type(tangent_type(_typeof(v))) !== NoFData
 end
