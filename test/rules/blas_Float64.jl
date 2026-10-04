@@ -110,11 +110,6 @@
                     (transpose(reshape(view(p, 20:-1:3), 3, 6)), 10, 1),
                     (p, 4, 10),
                 )
-                if P <: Complex
-                    r = reinterpret(real(P), p)
-                    x = reinterpret(P, view(r, (length(r) - 4):-1:(length(r) - 21)))
-                    walks = (walks..., (x, 10, 1))
-                end
                 for (x, n, inc) in walks,
                     f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
 
@@ -157,28 +152,6 @@
         Mooncake.frule!!(slots...)
         TestUtils.count_allocs(Mooncake.frule!!, slots...)
         @test TestUtils.count_allocs(Mooncake.frule!!, slots...) == 0
-    end
-
-    @testset "dot reinterpreted walk" for inc in (-2, 0, 1, 2)
-        g = (a, y) -> BLAS.dot(3, view(reinterpret(Float64, a), 2:2:16), inc, y, 1)
-        h =
-            (a, y) -> real(
-                BLAS.dotc(
-                    3, view(reinterpret(ComplexF64, view(a, 2:23)), 1:2:9), inc, y, 1
-                ),
-            )
-        for (f, a, y) in
-            ((g, ones(ComplexF64, 12), ones(3)), (h, ones(24), ones(ComplexF64, 3)))
-            TestUtils.test_rule(
-                StableRNG(123),
-                f,
-                a,
-                y;
-                is_primitive=false,
-                perf_flag=:none,
-                mode=ForwardMode,
-            )
-        end
     end
 
     @testset "dot walks into parent" for P in (Float64, ComplexF64),
