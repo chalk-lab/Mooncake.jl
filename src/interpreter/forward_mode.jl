@@ -27,7 +27,11 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
 end
 
 function build_frule(args...; debug_mode=false, silence_debug_messages=true, chunk_size=1)
-    sig = _typeof(TestUtils.__get_primals(args))
+    fx = TestUtils.__get_primals(args)
+    for (i, x) in enumerate(fx)
+        _check_representable_input(ForwardMode(), Base._stable_typeof(x), i - 1)
+    end
+    sig = _typeof(fx)
     interp = get_interpreter(ForwardMode)
     return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size)
 end

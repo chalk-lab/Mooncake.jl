@@ -441,7 +441,10 @@ end
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(sortperm),Vector{<:IEEEFloat}}
-@is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
+@is_primitive MinimalCtx ReverseMode Tuple{typeof(sort),Vector{<:IEEEFloat}}
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive MinimalCtx ForwardMode Tuple{typeof(sort),Vector{$T}}
+end
 
 function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:IEEEFloat}
     if _storage_kind(T) isa StructuralStorage
@@ -572,6 +575,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
         (false, :stability, (; mode=ForwardMode), sort, Union{}[]),
+        (
+            false,
+            :none,
+            (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
+            sort,
+            Union{Float32,Float64}[2.0f0, 3.0],
+        ),
     ]
 
     for T in (Float16, Float32, Float64), f in (sort, sortperm)

@@ -1,5 +1,34 @@
 @testset "performance_patches" begin
+    @testset "direct primitive refuses union storage" begin
+        T = Union{Float32,Float64}
+        a = T[2.0f0 3.0]
+        for args in
+            ((permutedims, a), (kron, a, a), (LinearAlgebra._kron!, kron(a, a), a, a)),
+            w in (1, 8)
+
+            slots = map(x -> Mooncake.zero_lifted(Val(w), x), args)
+            @test_throws "This forward primitive requires" Mooncake.frule!!(slots...)
+        end
+    end
     TestUtils.run_rule_test_cases(StableRNG, Val(:performance_patches))
+
+    @testset "real-union arrays constructed inside a function" begin
+        for op in (
+            sum,
+            x -> sum(abs2, x),
+            maximum,
+            minimum,
+            x -> sum(view(x, :)),
+            x -> sum(sort(x)),
+            x -> sum(permutedims(reshape(x, 1, :))),
+            x -> sum(kron(x, x)),
+        )
+            f = x -> op(Union{Float32,Float64}[x, 2.0f0])
+            TestUtils.test_rule(
+                StableRNG(123), f, 3.0; is_primitive=false, mode=Mooncake.ForwardMode
+            )
+        end
+    end
 
     @testset "real-union matrix kron" begin
         f =

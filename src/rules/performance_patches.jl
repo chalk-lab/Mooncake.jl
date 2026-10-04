@@ -22,7 +22,10 @@
 @inline _tscale(a::NTuple{L}, s) where {L} = ntuple(i -> a[i] * s, Val(L))
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
+@is_primitive DefaultCtx ReverseMode Tuple{typeof(sum),Array{<:IEEEFloat}}
+for T in (Float16, Float32, Float64)
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{typeof(sum),Array{$T}}
+end
 function frule!!(
     ::Lifted{typeof(sum),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
@@ -69,8 +72,10 @@ end
 # preserve the ties: maximum credits the last maximum, minimum the first minimum.
 # Forward only; reverse uses derived rules.
 for f in (maximum, minimum)
+    for T in (Float16, Float32, Float64)
+        @eval @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),Array{$T}}
+    end
     @eval begin
-        @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),Array{<:IEEEFloat}}
         function frule!!(
             ::Lifted{typeof($f),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
         ) where {N,P<:IEEEFloat,D}
@@ -81,7 +86,10 @@ for f in (maximum, minimum)
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
+@is_primitive DefaultCtx ReverseMode Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}}
+for T in (Float16, Float32, Float64)
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{typeof(sum),ContiguousSubVector{$T}}
+end
 # Summed straight off the parent's lane over the view's own index range: `arrayify` is
 # `BlasFloat`-only, and this rule is claimed for every `IEEEFloat`, `Float16` included.
 function frule!!(
@@ -113,7 +121,10 @@ function rrule!!(
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
+@is_primitive DefaultCtx ReverseMode Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}}
+for T in (Float16, Float32, Float64)
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{typeof(sum),typeof(abs2),Array{$T}}
+end
 function frule!!(
     ::Lifted{typeof(sum),N},
     ::Lifted{typeof(abs2),N},
@@ -194,7 +205,12 @@ end
 
 # Differentiating the generic implementation element by element costs more than the rules
 # either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
-@is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(permutedims),Matrix{P}
+} where {P<:IEEEFloat}
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive DefaultCtx ForwardMode Tuple{typeof(permutedims),Matrix{$T}}
+end
 function frule!!(
     ::Lifted{typeof(permutedims),N}, x::Lifted{<:Matrix{P},N}
 ) where {N,P<:IEEEFloat}
@@ -588,6 +604,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             permutedims,
             Matrix{Union{}}(undef, 0, 0),
         )],
+        [
+            (
+                false,
+                :none,
+                (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
+                permutedims,
+                Union{Float32,Float64}[2.0f0 3.0],
+            ),
+            (
+                false,
+                :none,
+                (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
+                kron,
+                Union{Float32,Float64}[2.0f0 3.0],
+                Union{Float32,Float64}[2.0f0 3.0],
+            ),
+        ],
         # Allocating kron has its own block writer: check derivatives at widths 1 and 8.
         # Only Float32/Float64 are forward primitives; Float16 stays derived.
         map([Float64, Float32]) do P
