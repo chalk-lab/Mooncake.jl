@@ -2260,6 +2260,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (Union{}[], 1.0),
         Ref(Union{}[]),
         Ref{Union{}}(),
+        Union{Float32,Float64}[2.0f0, 3.0],
+        Ref{Union{Float32,Float64}}(2.0),
+        Union{Float32,ComplexF64}[2.0f0, 3.0 + 1.0im],
+        Ref{Union{Float32,ComplexF64}}(3.0 + 1.0im),
         (2.0, 3),
         (3, 2.0),
         (2.0, 1.0),
@@ -2289,6 +2293,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     if VERSION >= v"1.11"
         mem = Memory{Union{}}(undef, 0)
         append!(rel_test_cases, (mem, memoryref(mem)))
+        union_mem = Memory{Union{Float32,Float64}}([2.0f0, 3.0])
+        append!(rel_test_cases, (union_mem, memoryref(union_mem)))
+        complex_union_mem = Memory{Union{Float32,ComplexF64}}([2.0f0, 3.0 + 1.0im])
+        append!(rel_test_cases, (complex_union_mem, memoryref(complex_union_mem)))
     end
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
     VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())

@@ -883,6 +883,76 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         @test_throws "this function" Mooncake._check_vector_argument([1];)
     end
 
+    @testset "non-concrete numeric storage" begin
+        union_elements(x) = abs2(x[1]) + abs2(x[2])
+        union_ref(x) = abs2(x[])
+        for T in (Union{Float32,Float64}, Union{Float32,ComplexF64})
+            values = T[2.0f0, T <: Real ? 3.0 : 3.0 + 1.0im]
+            cases = Any[(union_ref, Ref{T}(last(values)))]
+            T <: Real || push!(cases, (union_elements, values))
+            @static if VERSION >= v"1.11"
+                mem = Memory{T}(values)
+                append!(cases, ((union_elements, mem), (union_ref, memoryref(mem))))
+            end
+            @testset "$(typeof(x)), width=$w" for (uf, x) in cases, w in (1, 8)
+                reverse = Mooncake.prepare_gradient_cache(uf, x)
+                yr, gr = Mooncake.value_and_gradient!!(reverse, uf, x)
+                cache = Mooncake.prepare_derivative_cache(
+                    uf, x; config=Mooncake.Config(; chunk_size=w)
+                )
+                yf, gf = Mooncake.value_and_gradient!!(cache, uf, x)
+                @test yf == yr
+                @test TestUtils.has_equal_data(gf, gr)
+                seed = Mooncake.basis_lifted!!(
+                    Mooncake.zero_lifted(Val(w), x), ntuple(_ -> 1, w)
+                )
+                dx = Mooncake.tangent(seed, 1)
+                @test Mooncake.value_and_derivative!!(cache, (uf, NoTangent()), (x, dx)) ==
+                    (yr, 2 * real(uf === union_ref ? x[] : x[1]))
+                rule = Mooncake.build_frule(uf, x; chunk_size=w)
+                result = Mooncake.value_and_derivative!!(
+                    rule, Mooncake.zero_lifted(Val(w), uf), seed
+                )
+                @test Mooncake.primal(result) == yr
+                @test all(
+                    k ->
+                        Mooncake.tangent(result, k) ==
+                        2 * real(uf === union_ref ? x[] : x[1]),
+                    1:w,
+                )
+            end
+        end
+    end
+
+    @testset "union Ref seed leaf type" begin
+        union_seed_square(union_seed_ref) = union_seed_ref[]^2
+        for U in (Union{Float32,Float64}, Union{Float32,ComplexF64}),
+            union_seed_width in (1, 8),
+            friendly in (false, true)
+
+            union_seed_ref = Ref{U}(2.0f0)
+            seed_value = U === Union{Float32,Float64} ? 1.0 : 1.0 + 0im
+            seed_ref = Ref{U}(seed_value)
+            union_seed_cache = Mooncake.prepare_derivative_cache(
+                union_seed_square,
+                union_seed_ref;
+                config=Mooncake.Config(;
+                    chunk_size=union_seed_width, friendly_tangents=friendly
+                ),
+            )
+            TestUtils._test_throws(
+                ArgumentError,
+                "Tangent leaf type $(typeof(seed_value)) must match primal leaf type Float32",
+            ) do
+                Mooncake.value_and_derivative!!(
+                    union_seed_cache,
+                    (union_seed_square, NoTangent()),
+                    (union_seed_ref, friendly ? seed_ref : Mooncake.zero_tangent(seed_ref)),
+                )
+            end
+        end
+    end
+
     # Prepared-cache admission, not a rule: the registry seeds well-formed inputs and never
     # reaches these paths.
     @testset "vector API admission" begin

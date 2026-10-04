@@ -57,7 +57,7 @@ The overall target is: correct by construction where possible, aggressively test
 
 ## Forward Representation
 
-- Every forward entry point that chooses storage from an element type must use `_storage_kind`; `Union{}` satisfies every numeric bound.
+- Every forward entry point that chooses storage from an element type must use `_storage_kind`; only concrete `NDualEltype` elements use numeric storage. Numeric unions and `Union{}` use structural storage. Top-level real-union Array inputs remain unsupported and must fail at forward preparation.
 
 ## Consistency
 

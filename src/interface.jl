@@ -660,6 +660,11 @@ end
 # Compare canonical and supplied tangent storage, not scalar values. This is one-directional:
 # distinct primals may use the same direction, but a shared primal cannot carry two directions.
 function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
+    if expected isa NDualEltype &&
+        supplied isa NDualEltype &&
+        typeof(expected) !== typeof(supplied)
+        _throw_tangent_leaf_type_error(expected, supplied)
+    end
     isbitstype(T) && return nothing
     if expected isa AbstractArray
         (isempty(expected) || eltype(expected) === NoTangent) && return nothing
@@ -935,29 +940,26 @@ end
 
 # A concrete input needs a concrete derivative representation: invariant CoDual/Lifted
 # slots otherwise fail annotation, potentially crashing reverse codegen. Abstract-field
-# NamedTuples are one example. Only inputs are checked; internal values can still work.
+# NamedTuples are one example. Only top-level inputs are checked; fields and internal
+# values can still work.
 # Ask each mode separately: extensions may support only one representation, e.g.
 # DynamicExpressions' recursive nodes have a custom reverse tangent but no forward dual.
 @inline function _check_representable_input(mode::Mode, @nospecialize(P::Type), i::Int)
     isconcretetype(P) || return nothing
     forward = mode isa ForwardMode
-    # NDualArray partials use `zero(T)`, requiring a concrete element type even when the
-    # array type itself is concrete. Other forward array representations and reverse
-    # plain-array tangents support abstract element types.
-    if forward
-        D = dual_type(Val(1), P)
-        D <: Nfwd.NDualArray &&
-            !isconcretetype(D.parameters[1]) &&
-            throw(
-                ArgumentError(
-                    "Argument $i has type `$P`, whose element type `$(eltype(P))` is not " *
-                    "concrete. Forward mode stores each element's partials as an " *
-                    "`NTuple{N,T}`, which needs a concrete `T` to stay unboxed — that is what " *
-                    "makes chunked forward mode fast — so Mooncake restricts forward inputs " *
-                    "to concrete element types. Use one, e.g. `Vector{Float64}` or " *
-                    "`Vector{Float32}`.",
-                ),
-            )
+    # Top-level real-union Array arguments are not supported by forward preparation.
+    # Nested fields, captures, and internal arrays may use structural storage.
+    if forward &&
+        P <: Array &&
+        eltype(P) !== Union{} &&
+        eltype(P) <: IEEEFloat &&
+        _storage_kind(eltype(P)) isa StructuralStorage
+        throw(
+            ArgumentError(
+                "Argument $i has type `$P`. Forward mode requires a concrete real element " *
+                "type for top-level Arrays; use e.g. `Array{Float32}` or `Array{Float64}`.",
+            ),
+        )
     end
     isconcretetype(forward ? dual_type(Val(1), P) : tangent_type(P)) && return nothing
     return throw(
@@ -1222,6 +1224,7 @@ is shown by the cache.
             tangent_type(typeof(first(fx))) === NoTangent &&
             !isempty(args) &&
             first(args) isa AbstractVector{<:IEEEFloat} &&
+            _storage_kind(eltype(first(args))) isa NumericStorage &&
             all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
             # The flat sweep counts elements; extra differentiable fields need the generic path.
             all(i -> tangent_dim(input_ts[i + 1]) == length(args[i]), eachindex(args)) &&
@@ -4738,20 +4741,12 @@ end
 @inline function tangent_dim(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
     return Nfwd.primal_dim(t)
 end
-# `Union{}`-eltype arrays (e.g. an empty `Memory{Union{}}` reached while walking a closure
-# tangent like the HVP `grad_f`'s `MistyClosureTangent`) carry no differentiable content; 0.
-# More specific than the float/complex-array and generic-array methods, so no ambiguity.
+# Bottom-element storage can have undefined slots but no differentiable content.
 @inline tangent_dim(::AbstractArray{Union{}}, ::IdDict{Any,Any}) = 0
-@inline function tangent_dim(
-    t::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
-)
-    haskey(seen, t) && return 0
-    seen[t] = nothing
-    return Nfwd.primal_dim(t)
-end
 @inline function tangent_dim(t::AbstractArray, seen::IdDict{Any,Any})
     haskey(seen, t) && return 0
     seen[t] = nothing
+    _storage_kind(eltype(t)) isa NumericStorage && return Nfwd.primal_dim(t)
     total = 0
     if t isa _BuiltinArrays
         for i in eachindex(t)
