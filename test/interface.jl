@@ -2752,6 +2752,58 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gclo[2].b ≈ 4.0
         end
 
+        @testset "prebuilt forward slots do not allocate validation buffers" begin
+            for width in (1, 8)
+                fs = Mooncake.zero_lifted(Val(width), sum)
+                xs = Mooncake.zero_lifted(Val(width), ones(1024))
+                @test (@inferred Mooncake._check_shared_input_tangents((fs, xs))) ===
+                    nothing
+                @test TestUtils.count_allocs(
+                    Mooncake._check_shared_input_tangents, (fs, xs)
+                ) == 0
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_derivative!!, Mooncake.frule!!, fs, xs
+                ) == 0
+            end
+        end
+
+        @testset "wide forward storage validation" begin
+            for width in (1, 8), n in (4, 5, 32)
+                ps = (sum, ntuple(_ -> ones(4), n))
+                slots = map(p -> Mooncake.zero_lifted(Val(width), p), ps)
+                @test (@inferred Mooncake._check_shared_input_tangents(slots)) === nothing
+                if n == 4
+                    @test TestUtils.count_allocs(
+                        Mooncake._check_shared_input_tangents, slots
+                    ) == 0
+                end
+                a = ones(4)
+                ps = (sum, (a, ntuple(_ -> ones(4), n - 2)..., a))
+                independent = map(p -> Mooncake.zero_lifted(Val(width), p), (sum, ps[2]...))
+                @test_throws ArgumentError Mooncake._check_shared_input_tangents(
+                    independent
+                )
+            end
+            @static if VERSION >= v"1.11-rc4"
+                for width in (1, 8), n in (4, 5, 32)
+                    a = ones(4)
+                    r = memoryref(a.ref.mem, 3)
+                    ps = (sum, a, r, ntuple(_ -> ones(2), n - 2)...)
+                    vs = Mooncake.tangent(Mooncake.zero_lifted(Val(width), ps))
+                    slots = map((p, v) -> Mooncake.Lifted{typeof(p),width}(p, v), ps, vs)
+                    @test Mooncake._check_shared_input_tangents(slots) === nothing
+                    vr = vs[3]
+                    bad = typeof(vr)(vr.primal, vr.partials_ref, vr.ncols, vr.col - 1)
+                    bad_slots = Base.setindex(
+                        slots, Mooncake.Lifted{typeof(r),width}(r, bad), 3
+                    )
+                    @test_throws ArgumentError Mooncake._check_shared_input_tangents(
+                        bad_slots
+                    )
+                end
+            end
+        end
+
         @testset "forward entry points reject conflicting storage seeds" begin
             # Rule registries invoke rules directly and cannot exercise cache admission or friendly
             # conversion. These tests need caller-supplied seeds and public interface overloads.

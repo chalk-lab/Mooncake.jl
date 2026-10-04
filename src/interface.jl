@@ -543,12 +543,118 @@ end
     return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
 end
 
-# Slots already carry their seeds. Compare their partial storage against one joint lift,
-# without materialising lanes (which would itself merge or copy the storage being checked).
-@inline function _check_shared_input_tangents(fx::Tuple{Vararg{Lifted}})
-    ps = map(primal, fx)
-    expected = tangent(zero_lifted(Val(_lifted_width(first(fx))), ps))
-    return _check_tangent_storage!(IdDict{Any,Any}(), expected, map(tangent, fx))
+# Fixed layouts expose their storage directly, so validation need not allocate a second
+# set of partials. Dynamic/cyclic layouts retain the joint-lift graph check below.
+@inline @generated function _check_shared_input_tangents(fx::Tuple{Vararg{Lifted}})
+    leaves = Any[]
+    function walk(P, V, p, v, active, ancestors)
+        isconcretetype(V) || return false
+        isbitstype(V) && return true
+        V in ancestors && return false
+        ancestors = (ancestors..., V)
+        if V <: Nfwd.NDualArray && P <: _BuiltinArrays
+            t = :(Nfwd._block_storage(getfield($v, :partials_block)))
+            push!(
+                leaves,
+                (
+                    p,
+                    t,
+                    :($N * _storage_offset($p)),
+                    :(_storage_offset($t)),
+                    :($active && !isempty($p)),
+                ),
+            )
+        elseif V <: Nfwd.NDualRef
+            push!(leaves, (p, :(getfield($v, :partials)), 0, 0, active))
+        elseif VERSION >= v"1.11-rc4" && V <: Nfwd.NDualMemoryRef
+            pm, tr = :($p.mem), :(getfield($v, :partials_ref))
+            tm = :($tr.mem)
+            po = :($N * (_storage_offset($pm) + Core.memoryrefoffset($p) - 1))
+            to = :(
+                _storage_offset($tm) + Core.memoryrefoffset($tr) - 1 +
+                $N * (getfield($v, :col) - 1)
+            )
+            push!(leaves, (pm, tm, po, to, :($active && !isempty($pm))))
+        elseif V <: Union{Tuple,NamedTuple}
+            for i in 1:fieldcount(V)
+                walk(
+                    fieldtype(P, i),
+                    fieldtype(V, i),
+                    :(getfield($p, $i)),
+                    :(getfield($v, $i)),
+                    active,
+                    ancestors,
+                ) || return false
+            end
+        elseif V <: Union{ImmutableDual,MutableDual}
+            V <: MutableDual && push!(leaves, (p, v, 0, 0, active))
+            fields = fieldtype(V, 1)
+            for i in 1:fieldcount(fields)
+                F = fieldtype(fields, i)
+                pv, vv = :(getfield($p, $i)), :(getfield(getfield($v, :fields), $i))
+                present = :($active && isdefined($p, $i))
+                if F <: PossiblyUninitTangent
+                    F = F.parameters[1]
+                    vv = :(val($vv))
+                end
+                walk(fieldtype(P, i), F, pv, vv, present, ancestors) || return false
+            end
+        else
+            return false
+        end
+        return true
+    end
+    N = fx.parameters[1].parameters[2]
+    fixed = all(enumerate(fx.parameters)) do (i, L)
+        P, _, V = L.parameters
+        walk(P, V, :(primal(fx[$i])), :(tangent(fx[$i])), true, ())
+    end
+    if !fixed
+        return quote
+            ps = map(primal, fx)
+            expected = tangent(zero_lifted(Val(_lifted_width(first(fx))), ps))
+            _check_tangent_storage!(IdDict{Any,Any}(), expected, map(tangent, fx))
+        end
+    end
+    # Keep the offset checks without quadratic codegen for more than four leaves.
+    if length(leaves) > 4
+        entries = map(leaves) do (p, t, po, to, active)
+            :($active ? (_storage_id($p), _storage_id($t), $to - $po) : nothing)
+        end
+        return :(_check_shared_storage_leaves(
+            Union{Nothing,Tuple{Any,Any,Int}}[$(entries...)]
+        ))
+    end
+    checks = Expr(:block)
+    for i in eachindex(leaves), j in (i + 1):length(leaves)
+        p, t, po, to, active = leaves[i]
+        q, u, qo, uo, other_active = leaves[j]
+        push!(
+            checks.args,
+            quote
+                if $active && $other_active && _shares_storage($p, $q)
+                    (_shares_storage($t, $u) && $to - $uo == $po - $qo) ||
+                        _throw_shared_input_tangent_error()
+                end
+            end,
+        )
+    end
+    push!(checks.args, :(return nothing))
+    return checks
+end
+
+# Erasing leaf types keeps wide signatures from generating quadratic validation code.
+@noinline function _check_shared_storage_leaves(
+    leaves::Vector{Union{Nothing,Tuple{Any,Any,Int}}}
+)
+    seen = IdDict{Any,Tuple{Any,Int}}()
+    for leaf in leaves
+        leaf === nothing && continue
+        p, t, offset = leaf
+        value = (t, offset)
+        get!(seen, p, value) === value || _throw_shared_input_tangent_error()
+    end
+    return nothing
 end
 
 # Compare canonical and supplied tangent storage, not scalar values. This is one-directional:
@@ -1786,6 +1892,7 @@ __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
     # rrule!! is a plain Julia function (not an OpaqueClosure), so calling it directly is
     # safe on Julia 1.10; the `(rule::Any)` dispatch barrier is not needed here.
     @inline __call_rule(rule::typeof(rrule!!), args) = rule(args...)
+    @inline __call_rule(rule::typeof(frule!!), args) = rule(args...)
 end
 
 """
