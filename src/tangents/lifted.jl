@@ -1668,10 +1668,7 @@ end
     ) where {N,E<:NDualEltype,D}
         dims = (N, size(x)...)
         block = Nfwd._window_block(
-            getfield(memv, :partials_block),
-            Val(N),
-            Core.memoryrefoffset(getfield(x, :ref)),
-            dims,
+            getfield(memv, :partials_block), Val(N), _storage_offset(x), dims
         )
         return NDualArray{E,N,D,typeof(x)}(x, block)
     end
@@ -1778,9 +1775,7 @@ for (factory, internal) in (
                 v = if d isa NoCache
                     $factory(w, $(rng_vals...), x)
                 else
-                    _derived_array_dual(
-                        w, x, $internal(w, $(rng_vals...), getfield(x, :ref).mem, d)
-                    )
+                    _derived_array_dual(w, x, $internal(w, $(rng_vals...), _storage_id(x), d))
                 end
             else
                 v = _cached_array_dual(w, x, d, () -> $factory(w, $(rng_vals...), x))
@@ -1879,7 +1874,16 @@ for (factory, internal) in (
             ::NumericStorage, w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
         ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            v = $factory(w, $(rng_vals...), x)
+            owner = _storage_id(x)
+            v = if owner === x || d isa NoCache
+                $factory(w, $(rng_vals...), x)
+            else
+                ov = $internal(w, $(rng_vals...), owner, d)
+                block = Nfwd._window_block(
+                    getfield(ov, :partials_block), w, _storage_offset(x), (N, length(x))
+                )
+                NDualArray{eltype(x),N,1,typeof(x)}(x, block)
+            end
             d[x] = v
             return v
         end
@@ -1994,7 +1998,7 @@ end
 # allocation.
 @inline _partials_allocation(store) = store
 @static if VERSION >= v"1.11-rc4"
-    @inline _partials_allocation(store::Array) = getfield(store, :ref).mem
+    @inline _partials_allocation(store::Array) = _storage_id(store)
 end
 
 # Claim and clear the whole allocation once, then let each container write its hot lanes.

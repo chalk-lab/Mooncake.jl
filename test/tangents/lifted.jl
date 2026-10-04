@@ -959,6 +959,19 @@ const NDAC_VecC64 = NDualArray{
             @static if VERSION >= v"1.11-rc4"
                 ps, ts = (ps..., ps[2].ref.mem), (ts..., ts[2].ref.mem)
             end
+            for width in (1, 8),
+                factory in (
+                    x -> zero_lifted(Val(width), x),
+                    x -> randn_lifted(Val(width), StableRNG(123), x),
+                )
+
+                vs = tangent(factory(ps))
+                tangent_view(vs[1], width)[1] = 7.0
+                @test all(t -> tangent_view(t, width)[1] == 7.0, vs)
+            end
+            zs = Mooncake.zero_tangent(ps)
+            zs[1][1] = 7.0
+            @test all(t -> t[1] == 7.0, zs)
             v = tangent(lift(ps, ts))
             tangent_view(v[1], 1)[1] *= 2
             @test all(t -> tangent_view(t, 1)[1] == 4.0, v)

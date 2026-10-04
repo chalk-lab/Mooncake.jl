@@ -16,6 +16,20 @@ const Maybe{T} = Union{Nothing,T}
 
 @foldable tangent_type(::Type{<:Memory{P}}) where {P} = Memory{tangent_type(P)}
 
+# Julia 1.11 reshape may introduce a Memory header over a window of its owner.
+# Slice the owner's tangent as well, retaining ownership even for boxed elements.
+@inline function _tangent_memory_window(x::Memory, t::Memory{T}) where {T}
+    ref = memoryref(t, _storage_offset(x))
+    return ccall(
+        :jl_genericmemory_slice,
+        Memory{T},
+        (Any, Ptr{Cvoid}, Int),
+        t,
+        ref.ptr_or_offset,
+        length(x),
+    )
+end
+
 function zero_tangent_internal(x::Memory{P}, dict::MaybeCache) where {P}
     T = tangent_type(typeof(x))
 
@@ -28,6 +42,14 @@ function zero_tangent_internal(x::Memory{P}, dict::MaybeCache) where {P}
     # If we've seen this primal before, then we have a circular reference, and must return
     # the tangent which has already been allocated for it.
     haskey(dict, x) && return dict[x]::T
+    @static if VERSION < v"1.12-"
+        owner = _storage_id(x)
+        if owner !== x
+            t = _tangent_memory_window(x, zero_tangent_internal(owner, dict))
+            dict[x] = t
+            return t::T
+        end
+    end
 
     # We have not seen this primal before, so allocate + store the tangent for it, and zero
     # out the elements.
@@ -40,6 +62,14 @@ function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
     T = tangent_type(typeof(x))
     haskey(dict, x) && return dict[x]::T
 
+    @static if VERSION < v"1.12-"
+        owner = _storage_id(x)
+        if owner !== x
+            t = _tangent_memory_window(x, randn_tangent_internal(rng, owner, dict))
+            dict[x] = t
+            return t::T
+        end
+    end
     t = T(undef, length(x))
     dict[x] = t
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), t, x)::T
