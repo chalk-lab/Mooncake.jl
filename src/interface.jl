@@ -334,8 +334,8 @@ end
 
 # Compare storage leaves, including those reached through immutable fields, without a
 # per-call graph walk. Mutable interiors and abstract fields remain unchecked.
-# `bidirectional` requires both partitions to agree (reverse); forward only refuses
-# shared tangent storage for distinct primals.
+# Structured gradient seeds require both partitions to agree (`bidirectional`); friendly
+# JVPs only refuse shared tangent storage for distinct primals.
 function _alias_checks(
     @nospecialize(tangents::Type),
     bidirectional::Bool,
@@ -379,7 +379,7 @@ function _alias_checks(
 end
 
 # Runtime form of the same pairwise contract for signatures too wide to unroll. Each
-# repeated tangent must still name its first primal; reverse mode also checks the inverse.
+# repeated tangent must still name its first primal; bidirectional checks add the inverse.
 @noinline function _check_alias_partition(
     tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
 )
@@ -404,12 +404,6 @@ end
         end
     end
     return nothing
-end
-
-# Reverse requires the prepared tangent partition to match the call's primal partition;
-# types and sizes alone cannot establish this.
-@generated function _check_tangent_aliasing(tangents::Tuple, fx::Tuple)
-    return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
 
 # Snapshot primal storage sharing independently of tangent seeding. In particular, legacy
