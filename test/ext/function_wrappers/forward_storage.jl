@@ -332,23 +332,20 @@ end
                 else
                     Mooncake.build_frule(f, h, h, 2.0; chunk_size=N)
                 end
-                args = (
-                    Mooncake.zero_lifted(Val(N), f),
-                    Mooncake.zero_lifted(Val(N), h),
-                    Mooncake.zero_lifted(Val(N), h),
-                    Mooncake.basis_lifted!!(
-                        Mooncake.zero_lifted(Val(N), 2.0), ntuple(_ -> 1, N)
-                    ),
+                df = Mooncake.zero_lifted(Val(N), f)
+                dh = Mooncake.zero_lifted(Val(N), h)
+                dx = Mooncake.basis_lifted!!(
+                    Mooncake.zero_lifted(Val(N), 2.0), ntuple(_ -> 1, N)
                 )
-                if obj === sin
-                    out = Mooncake.value_and_derivative!!(cache, args...)
-                    @test Mooncake.primal(out) ≈ 2sin(2.0)
-                    @test Mooncake.tangent(out, 1) ≈ 2cos(2.0)
-                else
-                    @test_throws r"supplied tangents do not share it" Mooncake.value_and_derivative!!(
-                        cache, args...
-                    )
-                end
+                # Wrappers erase the callable's type, so a mutable container of them has
+                # derivative capacity even when the wrapped callable is stateless.
+                @test_throws r"supplied tangents do not share it" Mooncake.value_and_derivative!!(
+                    cache, df, dh, Mooncake.zero_lifted(Val(N), h), dx
+                )
+                obj === sin || continue
+                out = Mooncake.value_and_derivative!!(cache, df, dh, dh, dx)
+                @test Mooncake.primal(out) ≈ 2sin(2.0)
+                @test Mooncake.tangent(out, 1) ≈ 2cos(2.0)
             end
         end
     end

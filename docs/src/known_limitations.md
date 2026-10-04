@@ -382,19 +382,27 @@ DocTestSetup = nothing
 ## Reusing prepared reverse caches
 
 `prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
-mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
-both object identity relationships and shared backing storage. On Julia 1.11 and later,
-array offsets within backing `Memory` must also match. A mismatch raises
+mutable inputs and storage carried by immutable values, including `MemoryRef`, tuples,
+named tuples, closures and immutable array wrappers. Reuse must preserve
+both object identity relationships and shared backing storage for leaf types that can carry
+derivatives, including empty containers that the function can fill. Distinct empty arrays
+count as independent storage only when their owning backing `Memory` has length zero
+(Julia 1.11+). Arrays emptied with `empty!` can retain
+nonempty backing storage, whose sharing must still be preserved. Julia 1.10 uses
+`Base.dataids` to identify storage. On Julia 1.11 and later,
+relative offsets within each shared backing `Memory` group must also match. A mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
 those relationships change. Forward caches using structured gradient seeds also check
 the sharing of differentiable array leaves inside struct fields before refreshing their buffers.
 
 Callers must preserve types, shapes, and aliasing throughout the inputs, including
-parts the guard does not inspect. The guard does not traverse struct fields (including
-closures and array wrappers), array elements, or other variable-length containers such
+parts the guard does not inspect. The guard does not traverse mutable struct interiors,
+abstractly typed fields, array elements, or other variable-length containers such
 as dictionaries. It does not establish overlap introduced through raw pointers or
 `unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
+The forward per-call alias check has the same boundary, including abstractly typed
+fields and mutable functor interiors.
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
 

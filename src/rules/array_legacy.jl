@@ -1,7 +1,7 @@
 # Julia 1.10 lacks Memory identity: dataids plus length identifies shared storage
 # and distinguishes extents. Valid only within a call while callers root every array,
 # preventing address reuse.
-@inline _legacy_storage(x::Array) = (Base.dataids(x), length(x))
+@inline _legacy_storage(x::Array) = (_storage_id(x), length(x))
 # Keep distinct array headers over shared storage, even when the shapes match.
 # `reshape` would return the cached vector itself and couple independent resizes.
 @inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}

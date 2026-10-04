@@ -1373,7 +1373,7 @@ end
     haskey(c, x) && return c[x]::lifted_type(Val(1), A)
     # Share one owner block, then copy the caller's seed into the array window.
     lifted = @static if VERSION >= v"1.11-rc4"
-        mem = _storage_id(x)
+        mem = _storage_id(getfield(x, :ref).mem)
         # Reserving the owner's block does not mean its full seed has been copied.
         key = (mem, Val(:lift_storage))
         haskey(c, key) || (c[key] = Lifted{typeof(mem),1}(mem, zero_dual(Val(1), mem)))
@@ -1385,7 +1385,7 @@ end
         # 1.10 has no backing `Memory` to window, so share through a STORAGE key and a block over
         # the cached block's parent — the same device the 1.10 seed path uses. Keyed separately
         # from the object key below, which cannot see that `a` and `reshape(a)` are one buffer.
-        sk = (Base.dataids(x), length(x))
+        sk = (_storage_id(x), length(x))
         if haskey(c, sk)
             cached = tangent(c[sk]::Lifted)
             Lifted{A,1}(
@@ -1681,7 +1681,7 @@ end
         w::Val{N}, x::Array, d::MaybeCache, owned::F
     ) where {N,F}
         d isa NoCache && return owned()
-        sk = (Base.dataids(x), length(x))
+        sk = (_storage_id(x), length(x))
         if haskey(d, sk)
             # The cached entry is whatever array claimed the buffer first, so its own type is not
             # `x`'s -- a vector's seed serves a reshape. Only the block's flat `parent` is shared,
@@ -1775,7 +1775,11 @@ for (factory, internal) in (
                 v = if d isa NoCache
                     $factory(w, $(rng_vals...), x)
                 else
-                    _derived_array_dual(w, x, $internal(w, $(rng_vals...), _storage_id(x), d))
+                    _derived_array_dual(
+                        w,
+                        x,
+                        $internal(w, $(rng_vals...), _storage_id(getfield(x, :ref).mem), d),
+                    )
                 end
             else
                 v = _cached_array_dual(w, x, d, () -> $factory(w, $(rng_vals...), x))
@@ -1998,7 +2002,7 @@ end
 # allocation.
 @inline _partials_allocation(store) = store
 @static if VERSION >= v"1.11-rc4"
-    @inline _partials_allocation(store::Array) = _storage_id(store)
+    @inline _partials_allocation(store::Array) = _storage_id(getfield(store, :ref).mem)
 end
 
 # Claim and clear the whole allocation once, then let each container write its hot lanes.

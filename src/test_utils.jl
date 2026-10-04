@@ -822,10 +822,9 @@ end
 # Storage, not object identity: what the invariant buys is that accumulation lands in one place.
 # On 1.10 the legacy array path caches on the storage and hands back a fresh reshape header, so
 # two aliased arguments get tangents that share a buffer without being the same object.
-@inline _shares_tangent_storage(a, b) = a === b
-@inline function _shares_tangent_storage(a::Array, b::Array)
-    return a === b || Base.dataids(a) == Base.dataids(b)
-end
+@inline _shares_tangent_storage(a, b) =
+    Mooncake._storage_id(a) === Mooncake._storage_id(b) &&
+    Mooncake._storage_offset(a) == Mooncake._storage_offset(b)
 
 # Independent directions on aliased primals can pass finite differences, so check
 # forward seed sharing structurally; reverse passes its CoDuals directly to the rule.
