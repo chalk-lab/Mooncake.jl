@@ -174,6 +174,7 @@ end
 function primal_to_tangent_internal!!(
     t::Memory{T}, x::Memory{<:Any}, c::MaybeCache
 ) where {T}
+    _check_friendly_tangent_size(t, x)
     haskey(c, x) && return c[x]::Memory{T}
     c[x] = t
     return _map_if_assigned!(t, t, x) do tn, xn
@@ -401,6 +402,7 @@ end
 function primal_to_tangent_internal!!(
     t::Array{T,N}, x::Array{<:Any,N}, c::MaybeCache
 ) where {T,N}
+    _check_friendly_tangent_size(t, x)
     haskey(c, x) && return c[x]::Array{T,N}
     c[x] = t
     return _map_if_assigned!(t, t, x) do tn, xn

@@ -99,6 +99,7 @@ end
 function primal_to_tangent_internal!!(
     t::Array{<:Any,N}, x::Array{P,N}, c::MaybeCache
 ) where {P,N}
+    _check_friendly_tangent_size(t, x)
     haskey(c, x) && return c[x]::Array{tangent_type(P),N}
     c[x] = t
     return _map_if_assigned!(t, t, x) do txn, xn
