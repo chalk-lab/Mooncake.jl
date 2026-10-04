@@ -751,14 +751,10 @@ end
 struct NumericStorage end
 struct StructuralStorage end
 
-# Forward array storage is chosen from the element type: `NDualEltype` elements
-# get the split `NDualArray`, anything else recurses structurally, as reverse
-# mode does. `Union{}` satisfies every numeric bound, so a bare `T <: NDualEltype`
-# check sends `Vector{Union{}}` down the numeric path: `_wrapped_eltype` is
-# ambiguous, `Memory{Union{}}` gets `NDual{Union{},N}` storage, and the zero
-# constructor calls `zero(Union{})`. Every element-storage choice goes through here.
+# Split numeric storage requires a concrete element type; unions (including bottom)
+# use structural storage so each runtime element keeps its own forward representation.
 @foldable @inline function _storage_kind(::Type{T}) where {T}
-    return T !== Union{} && T <: NDualEltype ? NumericStorage() : StructuralStorage()
+    return isconcretetype(T) && T <: NDualEltype ? NumericStorage() : StructuralStorage()
 end
 
 """
@@ -790,11 +786,9 @@ Shapes defined so far:
   `NDualMemoryRef{T, N, Memory{T}}` — primal ref plus the shared `(N, ncols)` element-major
   partials block (one contiguous column per referenced element).
 """
-# No `isconcretetype(P)` guard (unlike the `lifted_type(::Type{P<:IEEEFloat})` sibling, which
-# widens a non-concrete `P` to a UnionAll): `dual_type` is the inner-V query and is only ever
-# invoked with concrete `P` — the slot-level `lifted_type` performs the non-concrete widening and
-# only calls `dual_type` in its `isconcretetype` branch, and the seed factories feed `typeof(x)`.
-@foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
+@foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
+    return isconcretetype(P) ? NDual{P,N} : Any
+end
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
 # in reverse mode, returning the forward-mode V sentinel `NoDual`.
 @foldable @inline dual_type(
@@ -1131,6 +1125,14 @@ end
 # lift(primal, tangent_type(P)) is the width-1 user-JVP boundary. Width-N basis seeds
 # are built with basis_lifted!! and Lifted{P,N}.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
+lift(x::NDualEltype, ẋ::NDualEltype) = _throw_tangent_leaf_type_error(x, ẋ)
+@noinline function _throw_tangent_leaf_type_error(x, ẋ)
+    throw(
+        ArgumentError(
+            "Tangent leaf type $(typeof(ẋ)) must match primal leaf type $(typeof(x))"
+        ),
+    )
+end
 @inline function _lift(::NumericStorage, x::A, ẋ::A) where {E<:NDualEltype,D,A<:Array{E,D}}
     return Lifted{A,1}(x, NDualArray{E,1,D,A}(x, (ẋ,)))
 end
