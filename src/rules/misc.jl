@@ -432,11 +432,20 @@ function lsetfield_rrule(
     return y, pb!!
 end
 
+@noinline function _throw_nonconcrete_primitive(T)
+    throw(
+        ArgumentError(
+            "This forward primitive requires a concrete numeric element type; got $T."
+        ),
+    )
+end
+
 @zero_derivative MinimalCtx Tuple{typeof(sortperm),Vector{<:IEEEFloat}}
 @is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
 
 function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:IEEEFloat}
     if _storage_kind(T) isa StructuralStorage
+        T === Union{} || _throw_nonconcrete_primitive(T)
         return zero_lifted(Val(N), sort(primal(x)))
     end
     p = sortperm(primal(x))

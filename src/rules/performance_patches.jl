@@ -199,6 +199,7 @@ function frule!!(
     ::Lifted{typeof(permutedims),N}, x::Lifted{<:Matrix{P},N}
 ) where {N,P<:IEEEFloat}
     if _storage_kind(P) isa StructuralStorage
+        P === Union{} || _throw_nonconcrete_primitive(P)
         return zero_lifted(Val(N), permutedims(primal(x)))
     end
     px, dxs = arrayify(x)
@@ -345,6 +346,7 @@ function Mooncake.frule!!(
     x2::Lifted{<:AbstractMatrix{T},N},
 ) where {N,T<:BlasFloat}
     if _storage_kind(T) isa StructuralStorage
+        T === Union{} || _throw_nonconcrete_primitive(T)
         LinearAlgebra._kron!(primal(out), primal(x1), primal(x2))
         return out
     end
@@ -456,6 +458,7 @@ function Mooncake.frule!!(
     x2::Lifted{<:AbstractVecOrMat{T},N},
 ) where {N,T<:Union{Float32,Float64}}
     if _storage_kind(T) isa StructuralStorage
+        T === Union{} || _throw_nonconcrete_primitive(T)
         return zero_lifted(Val(N), kron(primal(x1), primal(x2)))
     end
     px1, dx1s = arrayify(x1, Val(:read))
