@@ -100,6 +100,37 @@
         end
     end
 
+    @testset "BLAS tangent storage bounds" begin
+        for P in (Float32, Float64, ComplexF32, ComplexF64)
+            buffer = ones(P, 256)
+            GC.@preserve buffer begin
+                p = unsafe_wrap(Array, pointer(buffer), 24)
+                walks = (
+                    (view(p, 20:-1:3), 10, 1),
+                    (transpose(reshape(view(p, 20:-1:3), 3, 6)), 10, 1),
+                    (p, 4, 10),
+                )
+                if P <: Complex
+                    r = reinterpret(real(P), p)
+                    x = reinterpret(P, view(r, (length(r) - 4):-1:(length(r) - 21)))
+                    walks = (walks..., (x, 10, 1))
+                end
+                for (x, n, inc) in walks,
+                    f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+
+                    args = (f, n, x, inc, ones(P, n), 1)
+                    for N in (1, 8)
+                        slots = map(z -> Mooncake.zero_lifted(Val(N), z), args)
+                        @test_throws "tangent storage" Mooncake.frule!!(slots...)
+                    end
+                    # Entry must refuse before the pullback can write out of bounds.
+                    rule = Mooncake.build_rrule(args...)
+                    @test_throws "tangent storage" rule(map(Mooncake.zero_fcodual, args)...)
+                end
+            end
+        end
+    end
+
     @testset "wrapped low-level walks" for P in (Float64, ComplexF64),
         wrap in (P <: Real ? (transpose, adjoint) : (transpose,))
 
