@@ -255,9 +255,21 @@ end
 @inline _storage_id(@nospecialize(x)) = x
 @inline _storage_offset(@nospecialize(x)) = 0
 @static if VERSION >= v"1.11-rc4"
-    @inline _storage_id(x::Array) = getfield(x, :ref).mem
-    @inline _storage_offset(x::Array) = Core.memoryrefoffset(getfield(x, :ref))
-    @inline _storage_id(x::Memory) = x
+    @inline _storage_id(x::Array) = _storage_id(getfield(x, :ref).mem)
+    @inline function _storage_id(x::Memory)
+        @static if VERSION < v"1.12-"
+            owner = ccall(:jl_genericmemory_owner, Any, (Any,), x)
+            return owner isa typeof(x) ? owner : x
+        else
+            return x
+        end
+    end
+    @inline _storage_offset(x::Array) =
+        _storage_offset(getfield(x, :ref).mem) + Core.memoryrefoffset(getfield(x, :ref)) - 1
+    @inline function _storage_offset(x::Memory)
+        iszero(Base.elsize(x)) && return 1
+        return Int(UInt(pointer(x)) - UInt(pointer(_storage_id(x)))) ÷ Base.elsize(x) + 1
+    end
 else
     @inline _storage_id(x::Array) = Base.dataids(x)
 end
@@ -444,7 +456,7 @@ _empty_alias_map!(d::Dict) = empty!(d)
     storage, _storage_id(x), object
 )
 @inline _alias_storage_index!(::Dict{UInt,Int}, x, object::Int) = object
-@inline _alias_storage_index!(storage::Dict{UInt,Int}, x::Array, object::Int) = get!(
+@inline _alias_storage_index!(storage::Dict{UInt,Int}, x::_BuiltinArrays, object::Int) = get!(
     storage, only(Base.dataids(x)), object
 )
 

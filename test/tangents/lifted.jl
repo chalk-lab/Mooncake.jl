@@ -950,6 +950,47 @@ const NDAC_VecC64 = NDualArray{
         end
     end
 
+    @testset "lift shares partials across unequal backing capacities" begin
+        # The registry supplies canonical seeds; this needs caller-owned capacity slack.
+        for reserve_primal in (false, true)
+            a, da = [3.0, 4.0], [2.0, 1.0]
+            sizehint!(reserve_primal ? a : da, 100)
+            ps, ts = (a, reshape(a, 2, 1)), (da, reshape(da, 2, 1))
+            @static if VERSION >= v"1.11-rc4"
+                ps, ts = (ps..., ps[2].ref.mem), (ts..., ts[2].ref.mem)
+            end
+            v = tangent(lift(ps, ts))
+            tangent_view(v[1], 1)[1] *= 2
+            @test all(t -> tangent_view(t, 1)[1] == 4.0, v)
+        end
+        @static if VERSION >= v"1.11-rc4"
+            m = Memory{Float64}([1, 2, 3, 4])
+            dm = Memory{Float64}([10, 20, 30, 40])
+            a = Base.wrap(Array, memoryref(m), (2,))
+            da = Base.wrap(Array, memoryref(dm), (2,))
+            for (ps, ts) in (((a, m), (da, dm)), ((m, a), (dm, da)))
+                vs = tangent(lift(ps, ts))
+                @test map(v -> collect(tangent_view(v, 1)), vs) == map(collect, ts)
+            end
+        end
+    end
+
+    @testset "raw pointer aliases have independent forward storage" begin
+        @static if VERSION >= v"1.11-rc4"
+            buf = [1.0, 2.0, 3.0]
+            GC.@preserve buf begin
+                a = unsafe_wrap(Array, pointer(buf), 3)
+                b = unsafe_wrap(Array, pointer(buf), 3)
+                v = tangent(lift((a, b), (ones(3), fill(10.0, 3))))
+                @test tangent_view(v[1], 1) == ones(3)
+                @test tangent_view(v[2], 1) == fill(10.0, 3)
+                b32 = unsafe_wrap(Array, Ptr{Float32}(pointer(buf)), 3)
+                v = tangent(lift((a, b32), (ones(3), fill(10.0f0, 3))))
+                @test tangent_view(v[2], 1) == fill(10.0f0, 3)
+            end
+        end
+    end
+
     @testset "_add_to_primal with non-always-init struct fields (D4/D9)" begin
         # Match reverse reconstruction: unwrap PUTs, preserve undefined fields, honour unsafe.
         # Bitstype y is defined (PUT); heap y stays FieldUndefined.
