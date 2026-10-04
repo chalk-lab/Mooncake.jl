@@ -8,6 +8,9 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. It is always necessary to produce hand-written rules for `ccall`s (and, more generally, foreigncall nodes). We have rules for many `ccall`s, but not all. If you encounter a foreigncall without a hand-written rule, you should get an informative error message which tells you what is going on and how to deal with it.
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
+1. Friendly forward directions support `IdDict` by key, including nested native tangent leaves. Direction keys must match the call-time primal. Other `AbstractDict` primals, including `Dict`, require a native tangent through a non-friendly cache (`friendly_tangents=false`).
+1. An `IdDict` argument's key objects must be the prepare-time ones; prepare a new cache after replacing them.
+1. HVPs through a captured or constructed `FunctionWrapper` are unsupported. On Julia 1.10/1.11, captured wrappers may fail only after a long compilation or may not terminate in practice.
 
 ## Resizing shared arrays on Julia 1.10
 

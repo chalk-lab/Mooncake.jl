@@ -51,6 +51,12 @@ At width one, `lift(p, dp)` and `unlift(x)` convert to and from a primal and an
 ordinary Mooncake tangent. For arrays, `arrayify(x)` returns the primal and a tuple
 of writable lane views.
 
+`FunctionWrapper` and `MistyClosure` forward representations retain internal
+`Lifted` slots for their callable or captures. This exception to unnested `V`
+storage preserves compiler inference on supported Julia versions. It is contained
+within those custom representations: derivative walkers visit only their stored
+derivatives, never executable closures or primal metadata.
+
 Array, Memory, MemoryRef, and Ref factories select numeric or structural storage
 through `_storage_kind` before dispatching to their implementations.
 `Union{}`-element storage uses the structural representation: bottom is a subtype
