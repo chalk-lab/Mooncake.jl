@@ -709,10 +709,10 @@ end
 ) where {E<:NDualEltype,D,A<:Array{E,D},Nw}
     return Lifted{A,Nw}(y, NDualArray{E,Nw,D,A}(y, dys))
 end
-# Only bottom satisfies a numeric bound while selecting structural storage.
+# Bottom storage has no partials to preserve.
 @inline function _lift_from_lanes(
     ::StructuralStorage, y::A, dys::NTuple{Nw,A}
-) where {E<:NDualEltype,A<:AbstractArray{E},Nw}
+) where {A<:AbstractArray{Union{}},Nw}
     return zero_lifted(Val(Nw), y)
 end
 # CRC.NoTangent can accompany a differentiable result (floor/round/sign): use its

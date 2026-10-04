@@ -458,6 +458,10 @@ end
                 @test Mooncake._lift_from_lanes(x, ntuple(_ -> x, N)) ==
                     Mooncake.zero_lifted(Val(N), x)
             end
+            for T in (Union{Float32,Float64}, Union{Float32,ComplexF64}), N in (1, 8)
+                x = T[1.0f0]
+                @test_throws ArgumentError Mooncake._lift_from_lanes(x, ntuple(_ -> x, N))
+            end
             @test_throws ArgumentError Mooncake._lift_from_lanes(
                 Vector{Float64}[], (Vector{Float64}[], Vector{Float64}[])
             )
