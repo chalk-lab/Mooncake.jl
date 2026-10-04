@@ -1218,8 +1218,20 @@ end
         ::NumericStorage, x::A, ẋ::A, c::Union{Nothing,IdDict}
     ) where {E<:NDualEltype,A<:Memory{E}}
         c isa IdDict || return lift(x, ẋ)
-        haskey(c, x) && return c[x]::Lifted{A,1}
-        lifted = lift(x, ẋ)
+        haskey(c, x) && return c[x]::lifted_type(Val(1), A)
+        owner = _storage_id(x)
+        key = (owner, Val(:lift_storage))
+        haskey(c, key) || (c[key] = zero_lifted(Val(1), owner))
+        block = Nfwd._window_block(
+            getfield(tangent(c[key]::Lifted{typeof(owner),1}), :partials_block),
+            Val(1),
+            _storage_offset(x),
+            (1, length(x)),
+        )
+        v = NDualArray{E,1,1,A}(x, block)
+        # Backing capacities may differ; unused owner slots keep their zero seed.
+        copyto!(tangent_view(v, 1), 1, ẋ, 1, min(length(x), length(ẋ)))
+        lifted = Lifted{A,1}(x, v)
         c[x] = lifted
         return lifted
     end
@@ -1355,21 +1367,17 @@ end
     ::NumericStorage, x::A, ẋ::A, c::Union{Nothing,IdDict}
 ) where {E<:NDualEltype,D,A<:Array{E,D}}
     c isa IdDict || return lift(x, ẋ)
-    haskey(c, x) && return c[x]::Lifted{A,1}
-    # Window the backing `Memory`'s V, as the seed path does (`_derived_array_dual`), so an
-    # aggregate holding both a `Vector` and its `Memory` gets one partials store. Only when `ẋ`
-    # mirrors the primal's `Memory` geometry: that is what an aliasing-preserving reverse tangent
-    # gives (`zero_tangent` over the aliased pair does), and it is also what makes `ẋ.ref.mem` the
-    # tangent for `x.ref.mem` rather than a shorter buffer of its own.
+    haskey(c, x) && return c[x]::lifted_type(Val(1), A)
+    # Share one owner block, then copy the caller's seed into the array window.
     lifted = @static if VERSION >= v"1.11-rc4"
-        if length(getfield(ẋ, :ref).mem) == length(getfield(x, :ref).mem) &&
-            Core.memoryrefoffset(getfield(ẋ, :ref)) ==
-           Core.memoryrefoffset(getfield(x, :ref))
-            memv = tangent(lift(getfield(x, :ref).mem, getfield(ẋ, :ref).mem, c))
-            Lifted{A,1}(x, _derived_array_dual(Val(1), x, memv))
-        else
-            lift(x, ẋ)
-        end
+        mem = _storage_id(x)
+        # Reserving the owner's block does not mean its full seed has been copied.
+        key = (mem, Val(:lift_storage))
+        haskey(c, key) || (c[key] = zero_lifted(Val(1), mem))
+        memv = tangent(c[key]::Lifted{typeof(mem),1})
+        v = _derived_array_dual(Val(1), x, memv)
+        copyto!(tangent_view(v, 1), ẋ)
+        Lifted{A,1}(x, v)
     else
         # 1.10 has no backing `Memory` to window, so share through a STORAGE key and a block over
         # the cached block's parent — the same device the 1.10 seed path uses. Keyed separately
