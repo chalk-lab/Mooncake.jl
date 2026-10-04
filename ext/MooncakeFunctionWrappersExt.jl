@@ -127,12 +127,10 @@ function Mooncake._check_tangent_storage!(
             "incompatible FunctionWrapper tangent storage; use lift for forward slots and native tangents for directions",
         ),
     )
-    if N != 0 && haskey(seen, expected) && seen[expected] !== supplied
-        # Only zero-dimensionality matters here; do not walk the callable's primal metadata.
-        Mooncake.tangent_dim(tangent(expected.dobj_ref[], 1)) == 0 ||
-            Mooncake._throw_shared_input_tangent_error()
+    # The callable's type is erased from this tangent's type, so ask of its live storage.
+    callable = expected.dobj_ref[]
+    Mooncake._holds_derivatives(typeof(N == 0 ? callable : tangent(callable))) ||
         return nothing
-    end
     return invoke(
         Mooncake._check_tangent_storage!, Tuple{IdDict,Any,Any}, seen, expected, supplied
     )

@@ -224,30 +224,65 @@ function _throw_prepared_cache_aliasing_error(
         ),
     )
 end
+function _throw_prepared_cache_aliasing_error(li::String, lj::String)
+    throw(
+        PreparedCacheError(
+            "Cached forward gradient call has an aliasing mismatch: $li and $lj share " *
+            "differentiable storage at distinct positions. Forward gradients cannot seed " *
+            "these positions independently. Use `value_and_derivative!!` with a shared " *
+            "tangent, or reverse mode.",
+        ),
+    )
+end
 """
     _mutable_tangent_paths(T::Type)
 
-Field paths from a tangent of type `T` to the mutable objects reachable through immutable
-fixed-arity containers, as tuples of field indices (`()` when `T` is itself mutable). Only `Tuple`
-and `NamedTuple` are walked, because their tangents mirror the primal element-wise, so one path
-indexes both. The walk is complete: a truncated one silently accepts calls whose aliasing differs
-from the prepared shape past the cut, which is a wrong gradient rather than a missed diagnostic.
+Field paths to storage leaves through concrete immutable containers. Mutable objects and
+`MemoryRef`s are leaves. `:fields` and `:value` steps unwrap native tangent representations;
+`_path_expr` skips those steps on primals. Abstract fields and mutable interiors require the
+caller to preserve their aliasing, as documented in `known_limitations.md`.
 """
-function _mutable_tangent_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
+function _mutable_tangent_paths(
+    @nospecialize(T::Type), path=(), out=Vector{Any}(); primal=false
+)
     if Base.ismutabletype(T)
         push!(out, path)
-    elseif (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
+    elseif VERSION >= v"1.11-rc4" && T <: MemoryRef
+        push!(out, path)
+    elseif !primal && T <: Tangent
+        _mutable_tangent_paths(fieldtype(T, :fields), (path..., :fields), out)
+    elseif !primal && T <: PossiblyUninitTangent
+        _mutable_tangent_paths(T.parameters[1], (path..., :value), out)
+    elseif (primal || T <: Union{Tuple,NamedTuple}) && isconcretetype(T) && !isbitstype(T)
         for (k, FT) in enumerate(fieldtypes(T))
-            _mutable_tangent_paths(FT, (path..., k), out)
+            _mutable_tangent_paths(FT, (path..., k), out; primal)
         end
     end
     return out
 end
 
 # `tangents[i][p1][p2]...` as an expression, and the same position as a label for the error.
-_path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
-function _alias_label(i::Int, path)
-    return (i == 1 ? "`f" : "`x$(i - 1)") * prod(k -> "[$k]", path; init="") * "`"
+function _path_expr(base::Symbol, i::Int, path)
+    return foldl(path; init=:($base[$i])) do e, k
+        if k === :fields
+            base === :tangents ? :(_alias_field($e, :fields)) : e
+        elseif k === :value
+            base === :tangents ? :(is_init($e) ? val($e) : nothing) : e
+        else
+            :(_alias_field($e, $k))
+        end
+    end
+end
+@inline _alias_field(x, i) = isdefined(x, i) ? getfield(x, i) : nothing
+function _alias_label(i::Int, path, @nospecialize(T::Type))
+    label = i == 1 ? "`f" : "`x$(i - 1)"
+    for k in path
+        if k !== :fields && k !== :value
+            label *= T <: Tuple ? "[$k]" : ".$(fieldname(T, k))"
+        end
+        T = k === :value ? T.parameters[1] : fieldtype(T, k)
+    end
+    return label * "`"
 end
 
 # Use the same storage identity for primals and tangents: an Array and its backing
@@ -255,7 +290,14 @@ end
 @inline _storage_id(@nospecialize(x)) = x
 @inline _storage_offset(@nospecialize(x)) = 0
 @static if VERSION >= v"1.11-rc4"
-    @inline _storage_id(x::Array) = _storage_id(getfield(x, :ref).mem)
+    @inline _storage_id(x::MemoryRef) = _storage_id(x.mem)
+    @inline _storage_offset(x::MemoryRef) =
+        _storage_offset(x.mem) + Core.memoryrefoffset(x) - 1
+    @inline function _storage_id(x::Array)
+        owner = _storage_id(getfield(x, :ref).mem)
+        # Only a zero-length owner cannot be shared: empty! can retain nonempty storage.
+        return isempty(owner) ? x : owner
+    end
     @inline function _storage_id(x::Memory)
         @static if VERSION < v"1.12-"
             owner = ccall(:jl_genericmemory_owner, Any, (Any,), x)
@@ -273,17 +315,14 @@ end
 else
     @inline _storage_id(x::Array) = Base.dataids(x)
 end
-@inline _shares_storage(@nospecialize(x), @nospecialize(y)) =
-    _storage_id(x) === _storage_id(y)
 
-# The positions both aliasing emitters compare, as `(argument index, path)`. `leafwise` walks into
-# immutable containers for the tangent check; the primal check takes top-level mutables only.
-# Shared so the two cannot drift apart in what they enumerate.
-function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
+# Share the storage paths between native tangents and call-time primals. Tangent wrapper
+# steps are marked so `_path_expr` can skip them when indexing the primal.
+function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool; primal=false)
     leaves = Tuple{Int,Any}[]
     for (i, P) in enumerate(T.parameters)
         if leafwise
-            for path in _mutable_tangent_paths(P)
+            for path in _mutable_tangent_paths(P; primal)
                 push!(leaves, (i, path))
             end
         elseif Base.ismutabletype(P)
@@ -293,19 +332,20 @@ function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
     return leaves
 end
 
-# Compare mutable tangent leaves only: immutable `===` is value equality, not aliasing.
-# Find nested Tuple/NamedTuple leaves from their types to avoid a per-call graph walk.
-# Variable-arity containers and struct fields remain unchecked; see `known_limitations.md`.
+# Compare storage leaves, including those reached through immutable fields, without a
+# per-call graph walk. Mutable interiors and abstract fields remain unchecked.
 # `bidirectional` requires both partitions to agree (reverse); forward only refuses
 # shared tangent storage for distinct primals.
 function _alias_checks(
-    @nospecialize(tangents::Type), bidirectional::Bool, label=_alias_label
+    @nospecialize(tangents::Type),
+    bidirectional::Bool,
+    label=(i, p) -> _alias_label(i, p, tangents.parameters[i]),
 )
     # Compare leaves across the whole signature, including two leaves of one argument.
     leaves = _aliasable_positions(tangents, true)
     n = length(leaves)
     # Limit quadratic codegen to 256 pairs; larger signatures use a linear runtime pass.
-    # The runtime pass allocates two IdDicts, so small signatures retain the unrolled path.
+    # The runtime pass allocates maps, so small signatures retain the unrolled path.
     if n * (n - 1) ÷ 2 > 256
         ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
         fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
@@ -322,10 +362,15 @@ function _alias_checks(
         push!(
             checks.args,
             quote
-                let same_primal = _shares_storage($fi, $fj),
-                    same_tangent = _shares_storage($ti, $tj)
+                let same_primal = (_storage_id($fi) === _storage_id($fj)),
+                    same_tangent = (_storage_id($ti) === _storage_id($tj))
 
-                    $bad && _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
+                    $bad &&
+                        (
+                            _holds_derivatives(tangent_type(typeof($fi))) ||
+                            _holds_derivatives(tangent_type(typeof($fj)))
+                        ) &&
+                        _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
                 end
             end,
         )
@@ -339,14 +384,22 @@ end
     tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
 )
     first_tangent = IdDict{Any,Int}()
-    first_primal = IdDict{Any,Int}()
+    first_primal = bidirectional ? IdDict{Any,Int}() : nothing
     for k in eachindex(tangents)
-        t = get!(first_tangent, _storage_id(tangents[k]), k)
-        _shares_storage(primals[t], primals[k]) ||
+        t = _alias_storage_index!(first_tangent, _storage_id(tangents[k]), k)
+        (_storage_id(primals[t]) === _storage_id(primals[k])) ||
+            !(
+                _holds_derivatives(tangent_type(typeof(primals[t]))) ||
+                _holds_derivatives(tangent_type(typeof(primals[k])))
+            ) ||
             _throw_prepared_cache_aliasing_error(labels[t], labels[k], false)
         if bidirectional
-            f = get!(first_primal, _storage_id(primals[k]), k)
-            _shares_storage(tangents[f], tangents[k]) ||
+            f = _alias_storage_index!(first_primal, _storage_id(primals[k]), k)
+            (_storage_id(tangents[f]) === _storage_id(tangents[k])) ||
+                !(
+                    _holds_derivatives(tangent_type(typeof(primals[f]))) ||
+                    _holds_derivatives(tangent_type(typeof(primals[k])))
+                ) ||
                 _throw_prepared_cache_aliasing_error(labels[f], labels[k], true)
         end
     end
@@ -371,7 +424,7 @@ end
                 let object = get!(objects, primals[$k], $k)
                     (
                         object,
-                        _alias_storage_index!(storage, primals[$k], object),
+                        _alias_storage_index!(storage, _storage_id(primals[$k]), object),
                         _storage_offset(primals[$k]),
                     )
                 end
@@ -391,33 +444,43 @@ end
     end
 end
 
-# Tuple and NamedTuple leaves are checked; struct fields and array elements remain unchecked.
+# Immutable fields are checked; mutable interiors and abstract fields remain unchecked.
 # See `known_limitations.md` for the caller's responsibilities.
 function _alias_checks(@nospecialize(tangents::Type))
     leaves = _aliasable_positions(tangents, true)
     n = length(leaves)
     if n * (n - 1) ÷ 2 > 256
         fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
-        labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
+        labels = Expr(
+            :tuple, (_alias_label(i, p, tangents.parameters[i]) for (i, p) in leaves)...
+        )
         return :(_check_alias_partition(aliases, $fs, $labels, workspace))
     end
     checks = Expr(:block)
     for a in 1:n
         i, pi = leaves[a]
-        fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi)
+        fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi, tangents.parameters[i])
         for b in (a + 1):n
             j, pj = leaves[b]
-            fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj)
+            fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj, tangents.parameters[j])
             push!(
                 checks.args,
                 quote
                     same_object = $fi === $fj
                     same_object == (aliases[$a][1] == aliases[$b][1]) ||
+                        !(
+                            _holds_derivatives(tangent_type(typeof($fi))) ||
+                            _holds_derivatives(tangent_type(typeof($fj)))
+                        ) ||
                         _throw_prepared_cache_aliasing_error(
                             $li, $lj, same_object, "object"
                         )
-                    same_storage = _shares_storage($fi, $fj)
+                    same_storage = (_storage_id($fi) === _storage_id($fj))
                     same_storage == (aliases[$a][2] == aliases[$b][2]) ||
+                        !(
+                            _holds_derivatives(tangent_type(typeof($fi))) ||
+                            _holds_derivatives(tangent_type(typeof($fj)))
+                        ) ||
                         _throw_prepared_cache_aliasing_error($li, $lj, same_storage)
                     same_storage && _check_alias_offset(
                         aliases[$a][3] - aliases[$b][3], $fi, $fj, $li, $lj
@@ -431,12 +494,17 @@ end
 
 # Only relative offsets within a shared storage group constrain cache reuse.
 @inline function _check_alias_offset(offset::Int, a, b, la::String, lb::String)
-    offset == _storage_offset(a) - _storage_offset(b) || throw(
-        PreparedCacheError(
-            "Cached autodiff call has a relative storage offset mismatch between $la and $lb. " *
-            "Prepare a separate cache for these array offsets.",
-        ),
-    )
+    offset == _storage_offset(a) - _storage_offset(b) ||
+        !(
+            _holds_derivatives(tangent_type(typeof(a))) ||
+            _holds_derivatives(tangent_type(typeof(b)))
+        ) ||
+        throw(
+            PreparedCacheError(
+                "Cached autodiff call has a relative storage offset mismatch between $la and $lb. " *
+                "Prepare a separate cache for these array offsets.",
+            ),
+        )
     return nothing
 end
 
@@ -452,12 +520,15 @@ end
 _empty_alias_map!(d::Dict) = empty!(d)
 
 # A typed address map avoids boxing legacy data pointers on the wide-signature path.
-@inline _alias_storage_index!(storage::IdDict, x, object::Int) = get!(
-    storage, _storage_id(x), object
+# Keep an IdDict key boxed once across lookup and insertion.
+@noinline Base.@nospecializeinfer function _alias_storage_index!(
+    storage::IdDict, @nospecialize(id), object::Int
 )
+    return get!(storage, id, object)
+end
 @inline _alias_storage_index!(::Dict{UInt,Int}, x, object::Int) = object
-@inline _alias_storage_index!(storage::Dict{UInt,Int}, x::_BuiltinArrays, object::Int) = get!(
-    storage, only(Base.dataids(x)), object
+@inline _alias_storage_index!(storage::Dict{UInt,Int}, id::Tuple{UInt}, object::Int) = get!(
+    storage, only(id), object
 )
 
 @noinline function _check_alias_partition(
@@ -467,12 +538,18 @@ _empty_alias_map!(d::Dict) = empty!(d)
     try
         for k in eachindex(primals)
             object = get!(objects, primals[k], k)
-            buffer = _alias_storage_index!(storage, primals[k], object)
+            buffer = _alias_storage_index!(storage, _storage_id(primals[k]), object)
             for (f, expected, relation) in
                 ((object, aliases[k][1], "object"), (buffer, aliases[k][2], "storage"))
-                f == expected || _throw_prepared_cache_aliasing_error(
-                    labels[min(f, expected)], labels[k], f < expected, relation
-                )
+                f == expected ||
+                    !(
+                        _holds_derivatives(
+                            tangent_type(typeof(primals[min(f, expected)]))
+                        ) || _holds_derivatives(tangent_type(typeof(primals[k])))
+                    ) ||
+                    _throw_prepared_cache_aliasing_error(
+                        labels[min(f, expected)], labels[k], f < expected, relation
+                    )
             end
             buffer == k || _check_alias_offset(
                 aliases[k][3] - aliases[buffer][3],
@@ -513,11 +590,16 @@ end
     checks = Expr(:block)
     for i in 1:n, j in (i + 1):n
         Base.ismutabletype(fx.parameters[i].parameters[1]) || continue
-        push!(checks.args, quote
-            if fx[$i][1] === fx[$j][1] && !(fx[$i][2] === fx[$j][2])
-                _throw_repeated_arg_tangent_error($i, $j)
-            end
-        end)
+        push!(
+            checks.args,
+            quote
+                if fx[$i][1] === fx[$j][1] &&
+                    !(fx[$i][2] === fx[$j][2]) &&
+                    _holds_derivatives(tangent_type(typeof(fx[$i][1])))
+                    _throw_repeated_arg_tangent_error($i, $j)
+                end
+            end,
+        )
     end
     push!(checks.args, :(return nothing))
     return checks
@@ -555,14 +637,7 @@ end
         if V <: Nfwd.NDualArray && P <: _BuiltinArrays
             t = :(Nfwd._block_storage(getfield($v, :partials_block)))
             push!(
-                leaves,
-                (
-                    p,
-                    t,
-                    :($N * _storage_offset($p)),
-                    :(_storage_offset($t)),
-                    :($active && !isempty($p)),
-                ),
+                leaves, (p, t, :($N * _storage_offset($p)), :(_storage_offset($t)), active)
             )
         elseif V <: Nfwd.NDualRef
             push!(leaves, (p, :(getfield($v, :partials)), 0, 0, active))
@@ -574,7 +649,7 @@ end
                 _storage_offset($tm) + Core.memoryrefoffset($tr) - 1 +
                 $N * (getfield($v, :col) - 1)
             )
-            push!(leaves, (pm, tm, po, to, :($active && !isempty($pm))))
+            push!(leaves, (pm, tm, po, to, active))
         elseif V <: Union{Tuple,NamedTuple}
             for i in 1:fieldcount(V)
                 walk(
@@ -587,7 +662,8 @@ end
                 ) || return false
             end
         elseif V <: Union{ImmutableDual,MutableDual}
-            V <: MutableDual && push!(leaves, (p, v, 0, 0, active))
+            V <: MutableDual &&
+                push!(leaves, (p, v, 0, 0, :($active && _holds_derivatives($V))))
             fields = fieldtype(V, 1)
             for i in 1:fieldcount(fields)
                 F = fieldtype(fields, i)
@@ -632,8 +708,8 @@ end
         push!(
             checks.args,
             quote
-                if $active && $other_active && _shares_storage($p, $q)
-                    (_shares_storage($t, $u) && $to - $uo == $po - $qo) ||
+                if $active && $other_active && (_storage_id($p) === _storage_id($q))
+                    ((_storage_id($t) === _storage_id($u)) && $to - $uo == $po - $qo) ||
                         _throw_shared_input_tangent_error()
                 end
             end,
@@ -666,19 +742,14 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         _throw_tangent_leaf_type_error(expected, supplied)
     end
     isbitstype(T) && return nothing
-    if expected isa AbstractArray
-        (isempty(expected) || eltype(expected) === NoTangent) && return nothing
-    end
+    _holds_derivatives(T) || return nothing
     if ismutable(expected)
         key = _storage_id(expected)
         value = (
             _storage_id(supplied), _storage_offset(supplied) - _storage_offset(expected)
         )
         if haskey(seen, key)
-            # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
-            seen[key] === value ||
-                tangent_dim(expected) == 0 ||
-                _throw_shared_input_tangent_error()
+            seen[key] === value || _throw_shared_input_tangent_error()
             return nothing
         end
         seen[key] = value
@@ -711,82 +782,18 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     return nothing
 end
 
-function _check_tangent_storage!(seen::IdDict, expected::T, supplied, p) where {T}
-    isbitstype(T) && return nothing
-    if expected isa AbstractArray
-        (isempty(expected) || eltype(expected) === NoTangent) && return nothing
-    end
-    if ismutable(expected)
-        key, value = _storage_id(expected), _storage_id(supplied)
-        if haskey(seen, key)
-            # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
-            seen[key] === value ||
-                tangent_dim(expected) == 0 ||
-                _throw_shared_input_tangent_error()
-            return nothing
-        end
-        seen[key] = value
-    end
-    if expected isa KeyedDict
-        for (k, v) in expected
-            _check_tangent_storage!(seen, v, supplied[k], p === nothing ? nothing : p[k])
-        end
-    elseif expected isa Union{Tangent,MutableTangent} &&
-        !(supplied isa Union{Tangent,MutableTangent})
-        for name in keys(expected.fields)
-            isdefined(supplied, name) && _check_tangent_storage!(
-                seen,
-                getfield(expected.fields, name),
-                getfield(supplied, name),
-                p === nothing ? nothing : getfield(p, name),
-            )
-        end
-    elseif expected isa PossiblyUninitTangent && !(supplied isa PossiblyUninitTangent)
-        is_init(expected) && _check_tangent_storage!(seen, val(expected), supplied, p)
-    elseif expected isa AbstractArray
-        isbitstype(eltype(expected)) && return nothing
-        for i in eachindex(expected)
-            isassigned(expected, i) && _check_tangent_storage!(
-                seen, expected[i], supplied[i], p === nothing ? nothing : p[i]
-            )
-        end
-    else
-        for i in _tangent_fields(T)
-            isdefined(expected, i) && _check_tangent_storage!(
-                seen,
-                getfield(expected, i),
-                getfield(supplied, i),
-                if expected isa Union{Tangent,MutableTangent,PossiblyUninitTangent}
-                    p
-                elseif p === nothing || !isdefined(p, i)
-                    nothing
-                else
-                    getfield(p, i)
-                end,
-            )
-        end
-    end
-    return nothing
-end
-
-function _check_tangent_storage!(
-    seen::IdDict, expected::Nfwd.NDualArray, supplied, p=nothing
-)
+function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualArray, supplied)
     return _check_tangent_storage!(
         seen,
         Nfwd._block_storage(getfield(expected, :partials_block)),
         Nfwd._block_storage(getfield(supplied, :partials_block)),
     )
 end
-function _check_tangent_storage!(
-    seen::IdDict, expected::Lifted, supplied::Lifted, p=nothing
-)
+function _check_tangent_storage!(seen::IdDict, expected::Lifted, supplied::Lifted)
     return _check_tangent_storage!(seen, tangent(expected), tangent(supplied))
 end
 @static if VERSION >= v"1.11-rc4"
-    function _check_tangent_storage!(
-        seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied, p=nothing
-    )
+    function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualMemoryRef, supplied)
         return _check_tangent_storage!(
             seen, expected.partials_ref.mem, supplied.partials_ref.mem
         )
@@ -807,7 +814,7 @@ end
 
 # A forward gradient's per-argument basis ranges cannot represent shared storage;
 # `value_and_derivative!!` can, using a caller-supplied shared seed.
-# Check mutable top-level arguments per call using `_shares_storage`, including Array/Memory
+# Check mutable top-level arguments per call using `_storage_id`, including Array/Memory
 # pairs. Immutable identity is value equality. Nested sharing and sharing with `f` are
 # checked at preparation by `_inputs_share_storage` to avoid per-call traversal.
 # Generate literal indices: dynamic indexing of the heterogeneous tuple is type-unstable.
@@ -819,8 +826,11 @@ end
         push!(
             checks.args,
             :(
-                _shares_storage(x[$i], x[$j]) &&
-                _holds_derivatives(x[$i]) &&
+                (_storage_id(x[$i]) === _storage_id(x[$j])) &&
+                (
+                    _holds_derivatives(tangent_type(typeof(x[$i]))) ||
+                    _holds_derivatives(tangent_type(typeof(x[$j])))
+                ) &&
                 _throw_gradient_arg_alias_error($i, $j)
             ),
         )
@@ -831,9 +841,23 @@ end
     end
 end
 
-# Shared storage matters only if it carries dimensions. Empty arrays share Julia's global
-# empty Memory, and integer buffers carry no derivatives; emptiness requires a runtime check.
-@inline _holds_derivatives(x) = tangent_dim(zero_tangent(x)) != 0
+# Derivative capacity is a type property: a mutable leaf can acquire values inside `f`.
+@foldable function _holds_derivatives(::Type{T}) where {T}
+    T === Union{} && return false
+    (T === NoTangent || T === NoDual) && return false
+    T isa Union && return _holds_derivatives(T.a) || _holds_derivatives(T.b)
+    isconcretetype(T) || return true
+    T <: Union{Tangent,MutableTangent,ImmutableDual,MutableDual} &&
+        return _holds_derivatives(fieldtype(T, :fields))
+    T <: PossiblyUninitTangent && return _holds_derivatives(T.parameters[1])
+    T <: Union{Tuple,NamedTuple} && return any(_holds_derivatives, fieldtypes(T))
+    T <: AbstractArray && return _holds_derivatives(eltype(T))
+    T <: KeyedDict && return _holds_derivatives(valtype(T))
+    @static if VERSION >= v"1.11-rc4"
+        T <: MemoryRef && return _holds_derivatives(eltype(T))
+    end
+    return true
+end
 
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
     throw(
@@ -851,8 +875,8 @@ end
 # Count the SAME tangents jointly and per argument: only cross-position sharing changes
 # the count; repeated leaves within one argument and equal scalars do not.
 # This catches nested sharing and sharing with `f`, unlike `_check_primal_aliasing`.
-# The full traversal runs only at preparation, so newly introduced nested sharing is not
-# caught. The Jacobian needs no check: its single input range covers aliased captures too.
+# The full graph walk runs only at preparation; call-time guards cover fixed immutable paths
+# and structured array leaves. A Jacobian's single input range covers aliased captures too.
 function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
     shared_dim != sum(tangent_dim, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
@@ -877,15 +901,15 @@ function _any_shared_storage(x)
     )
 end
 
-# Empty arrays share Julia's global empty Memory; nondifferentiable buffers have no
-# contributions to double-count. Neither should trigger the sharing guard.
+# Nondifferentiable buffers have no contributions to double-count.
 function _any_shared_storage!(s::_StorageSeen, x::_BuiltinArrays)
-    (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
+    T = @static VERSION >= v"1.11-rc4" ? typeof(x) : tangent_type(typeof(x))
+    _holds_derivatives(T) || return false
     haskey(s.objs, x) && return false
     s.objs[x] = nothing
     # Julia 1.10 has no `Memory`, so the data address stands in for it: stable while the array is
     # live, which it is for the whole traversal, and equal for two arrays over one buffer.
-    store = @static VERSION >= v"1.11-rc4" ? _storage_id(x) : UInt(pointer(x))
+    store = _storage_id(x)
     haskey(s.backing, store) && return true
     s.backing[store] = nothing
     # The elements can share storage while their containers do not. Guarded on the visited check
@@ -909,7 +933,18 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     _any_shared_storage!(::_StorageSeen, ::Any) = false
-    _any_shared_storage!(s::_StorageSeen, x::MemoryRef) = _any_shared_storage!(s, x.mem)
+    function _any_shared_storage!(s::_StorageSeen, x::MemoryRef)
+        _holds_derivatives(typeof(x)) || return false
+        haskey(s.objs, x) && return false
+        s.objs[x] = nothing
+        store = _storage_id(x)
+        haskey(s.backing, store) && return true
+        s.backing[store] = nothing
+        isbitstype(eltype(x)) && return false
+        return any(
+            i -> isassigned(x.mem, i) && _any_shared_storage!(s, x.mem[i]), eachindex(x.mem)
+        )
+    end
     function _any_shared_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
         return is_init(x) && _any_shared_storage!(s, val(x))
     end
@@ -979,6 +1014,62 @@ end
 # every position the shared leaf occupies.
 @inline function _check_gradient_input_aliasing(cache::FCache)
     getfield(cache, :inputs_share_storage) && _throw_gradient_input_alias_error()
+    return nothing
+end
+
+# Immutable wrappers can acquire aliases on reuse, including aliases to captured storage.
+# Enumerate their fixed fields at compile time; ordinary scalar/array calls pay no graph walk.
+@generated function _check_immutable_arg_aliasing(fx::Tuple)
+    leaves = _aliasable_positions(fx, true; primal=true)
+    if length(leaves) > 4 &&
+        any(leaf -> !isempty(leaf[2]) || !Base.ismutabletype(fx.parameters[leaf[1]]), leaves)
+        entries = map(leaves) do (i, p)
+            :($(_path_expr(:fx, i, p)), $i, $(_alias_label(i, p, fx.parameters[i])))
+        end
+        return :(_check_immutable_storage_leaves(Tuple{Any,Int,String}[$(entries...)]))
+    end
+    checks = Expr(:block)
+    for a in eachindex(leaves), b in (a + 1):length(leaves)
+        i, pi = leaves[a]
+        j, pj = leaves[b]
+        # The existing top-level mutable guard already covers these pairs.
+        isempty(pi) &&
+            isempty(pj) &&
+            Base.ismutabletype(fx.parameters[i]) &&
+            Base.ismutabletype(fx.parameters[j]) &&
+            continue
+        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
+        li, lj = _alias_label(i, pi, fx.parameters[i]),
+        _alias_label(j, pj, fx.parameters[j])
+        push!(
+            checks.args,
+            quote
+                if (_storage_id($fi) === _storage_id($fj)) &&
+                    ($i != $j || $fi !== $fj) &&
+                    (
+                        _holds_derivatives(tangent_type(typeof($fi))) ||
+                        _holds_derivatives(tangent_type(typeof($fj)))
+                    )
+                    _throw_prepared_cache_aliasing_error($li, $lj)
+                end
+            end,
+        )
+    end
+    push!(checks.args, :(return nothing))
+    return checks
+end
+
+@noinline function _check_immutable_storage_leaves(leaves::Vector{Tuple{Any,Int,String}})
+    seen = IdDict{Any,Tuple{Any,Int,String}}()
+    for (x, i, label) in leaves
+        previous = get!(seen, _storage_id(x), (x, i, label))
+        if (previous[1] !== x || previous[2] != i) && (
+            _holds_derivatives(tangent_type(typeof(previous[1]))) ||
+            _holds_derivatives(tangent_type(typeof(x)))
+        )
+            _throw_prepared_cache_aliasing_error(previous[3], label)
+        end
+    end
     return nothing
 end
 
@@ -1428,16 +1519,7 @@ snapshotted — a callable that mutates its own fields is not restored.
                 )
             end,
         )
-        if has_dict
-            _check_tangent_storage!(
-                IdDict{Any,Any}(),
-                _zero_tangents(input_primals),
-                input_friendly_tangents,
-                input_primals,
-            )
-        else
-            _check_shared_input_tangents(input_primals, input_friendly_tangents)
-        end
+        _check_shared_input_tangents(input_primals, input_friendly_tangents)
         seen = has_dict ? IdDict{Any,Any}() : nothing
         input_tangents =
             tuple_map(cache.friendly_gradients, cache.input_tangents, fx) do d, t, pair
@@ -2975,6 +3057,7 @@ end
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
+    _check_immutable_arg_aliasing((f, x...))
     input_primals = (f, x...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
