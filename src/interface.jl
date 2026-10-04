@@ -1087,9 +1087,11 @@ function _throw_gradient_input_alias_error()
             "storage — `f` holding the same array that is also passed as an argument, say. " *
             "Each argument carries its own tangent storage, so the sweep gives the shared " *
             "leaf one standard-basis tangent_dim range per position and its gradient comes back " *
-            "scaled by that count. Repeated leaves within a single argument are supported " *
-            "and agree with reverse mode; sharing that is not object identity (a `reshape`, " *
-            "a `view`, an `Array` beside its backing `Memory`) is not, wherever it appears. " *
+            "scaled by that count. Within one argument, repeated storage leaves are supported " *
+            "when they are identical (`===`) after traversing wrappers and struct fields: " *
+            "`(a, view(a, 1:2))` reaches the same parent array twice. Distinct `Array`, " *
+            "`Memory`, or `MemoryRef` leaves over one backing storage are not supported, " *
+            "even within one argument; identical `MemoryRef`s have the same owner and offset. " *
             "Use `value_and_derivative!!` with one tangent shared across the positions, or " *
             "reverse mode, which accumulates into the shared storage.",
         ),
@@ -3016,13 +3018,14 @@ IEEEFloat array leaves, including mixed leaf eltypes, and isbits nondifferentiab
 possibly-uninitialised fields, non-isbits NoDual state, or a differentiable `f` use the
 generic chunked path, which allocates a fresh seed per chunk.
 
-Arguments that share one storage are refused. Forward mode gives each argument its own
-tangent storage, so two arguments over one array are two independent directions rather than
+Arguments that share derivative-carrying storage are refused. Forward mode gives each
+argument its own tangent storage, so two arguments over one array are two independent directions rather than
 one shared derivative, and the standard-basis sweep cannot represent that. Repeated leaves
-*within* one argument are fine — `f((a, a))` lifts through a single aliasing cache and gives
-the same gradient reverse mode does — but sharing that is not object identity (a `reshape`, a
-`view`, an `Array` beside its backing `Memory`) is refused wherever it appears, because the
-lift keys on the object. For those, use [`value_and_derivative!!`](@ref) with one tangent
+*within* one argument are supported when they are identical (`===`) after traversing
+wrappers and struct fields. Both `(a, a)` and `(a, view(a, 1:2))` reach the same array
+leaf twice. Distinct `Array`, `Memory`, or `MemoryRef` leaves over one backing storage
+are refused even within one argument; identical `MemoryRef`s have the same owner and
+offset. For those distinct leaves, use [`value_and_derivative!!`](@ref) with one tangent
 covering every position the storage occupies, or reverse mode, which accumulates into it.
 
 The arguments in `x`, except RNG state, are left unchanged: an in-place `f` mutates only cache-owned buffers
