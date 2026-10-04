@@ -286,9 +286,14 @@ for T in (Float32, Float64, ComplexF32, ComplexF64, Union{})
     }
 end
 # Reverse folds dense cotangents onto stored entries; complex stays derived.
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
-} where {T<:IEEEFloat}
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive DefaultCtx ReverseMode Tuple{
+        typeof(LinearAlgebra._kron!),
+        AbstractMatrix{$T},
+        AbstractMatrix{$T},
+        AbstractMatrix{$T},
+    }
+end
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
 function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
@@ -409,15 +414,17 @@ end
 # At least one strided operand guarantees dense output; matching structured wrappers
 # can return structured output and must stay derived. The strided×strided intersection
 # prevents primitive ambiguity. Reverse folds dense cotangents onto stored entries.
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),StridedMatrix{T},AbstractMatrix{T}
-} where {T<:IEEEFloat}
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),AbstractMatrix{T},StridedMatrix{T}
-} where {T<:IEEEFloat}
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),StridedMatrix{T},StridedMatrix{T}
-} where {T<:IEEEFloat}
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive DefaultCtx ReverseMode Tuple{
+        typeof(kron),StridedMatrix{$T},AbstractMatrix{$T}
+    }
+    @eval @is_primitive DefaultCtx ReverseMode Tuple{
+        typeof(kron),AbstractMatrix{$T},StridedMatrix{$T}
+    }
+    @eval @is_primitive DefaultCtx ReverseMode Tuple{
+        typeof(kron),StridedMatrix{$T},StridedMatrix{$T}
+    }
+end
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
     x1::CoDual{<:AbstractVecOrMat{<:T}},

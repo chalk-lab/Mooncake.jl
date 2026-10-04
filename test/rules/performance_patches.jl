@@ -31,14 +31,14 @@
     end
 
     @testset "real-union matrix kron" begin
-        f =
-            x -> begin
-                a = kron(Union{Float32,Float64}[x 2.0f0], Union{Float32,Float64}[3.0 x])
-                a[1] + a[2] + a[3] + a[4]
-            end
-        TestUtils.test_rule(
-            StableRNG(123), f, 3.0; is_primitive=false, mode=Mooncake.ForwardMode
-        )
+        for k in (kron, (a, b) -> LinearAlgebra._kron!(similar(a, 1, 4), a, b))
+            f =
+                x -> begin
+                    a = k(Union{Float32,Float64}[x 2.0f0], Union{Float32,Float64}[3.0 x])
+                    a[1] + a[2] + a[3] + a[4]
+                end
+            TestUtils.test_rule(StableRNG(123), f, 3.0; is_primitive=false)
+        end
     end
 
     @testset "mixed-union kron" begin
