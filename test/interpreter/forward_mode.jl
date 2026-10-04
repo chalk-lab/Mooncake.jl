@@ -22,6 +22,19 @@ stale_fwd_lazy(x) = stale_fwd_mid(x)
 const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
+# A rule fetched from the cache must not share its lazy and dynamic rules with other fetches.
+# Both fetches run in one function so they share one world, hence one interpreter and cache.
+const COPIED_FWD_FNS = Function[sin]
+copied_fwd_dyn(x) = (COPIED_FWD_FNS[1])(x)
+copied_fwd_caches(rule) =
+    [c.cache for c in rule.fwd_oc.oc.captures if c isa Mooncake.DynamicFRule]
+function copied_fwd_fetches()
+    first_rule = Mooncake.build_frule(copied_fwd_dyn, 1.5)
+    first_rule(Mooncake.zero_dual(copied_fwd_dyn), Mooncake.Dual(1.5, 1.0))
+    second_rule = Mooncake.build_frule(copied_fwd_dyn, 1.5)
+    return copied_fwd_caches(first_rule), copied_fwd_caches(second_rule)
+end
+
 @noinline refined_fwd_inner(x) =
     sizeof(x) == sizeof(typeof(x)) ? x : Base.inferencebarrier(x)
 @noinline refined_fwd_outer(x) = refined_fwd_inner(x)
@@ -130,5 +143,13 @@ end
         )
         @test Mooncake.primal(lazy_out) === 3.0f0
         @test Mooncake.primal(dyn_out) === 3.0f0
+    end
+
+    # Two fetches of one cached rule are independent copies, as `build_rrule` hands out, so
+    # rules running on separate tasks never fill one `DynamicFRule` cache concurrently.
+    @testset "cached forward rules are fetched as copies" begin
+        first_caches, second_caches = copied_fwd_fetches()
+        @test !isempty(first_caches) && all(!isempty, first_caches)
+        @test all(isempty, second_caches)
     end
 end;
