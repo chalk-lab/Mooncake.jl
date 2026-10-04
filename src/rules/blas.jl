@@ -341,6 +341,7 @@ function viewify(
     # Foreign-call roots retain the array bounds erased by pointer conversion.
     foreach(roots) do root
         owner = primal(root)
+        _check_blas_operand(owner)
         storage = if owner isa AbstractArray{P}
             last(arrayify(root))
         elseif isdefined(Base, :MemoryRef) && owner isa MemoryRef{P}
@@ -395,12 +396,12 @@ end
 function viewify(
     n::Integer, x_dx::CoDual{A}, incx::Integer
 ) where {A<:AbstractArray{<:BlasFloat}}
+    _check_blas_walk(n, primal(x_dx), incx)
     x, dx = arrayify(x_dx)
     if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
         p, dp = parent(x), _fields(tangent(x_dx)).parent
         return viewify(n, CoDual(p, dp), incx)
     end
-    _check_blas_walk(n, x, incx)
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
@@ -818,12 +819,32 @@ end
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}}
 )
 
-@zero_derivative MinimalCtx Tuple{
+@is_primitive MinimalCtx Tuple{
     typeof(BLAS.iamax),X
 } where {T<:BlasFloat,X<:AbstractArray{T}}
-@zero_derivative MinimalCtx Tuple{
+@is_primitive MinimalCtx Tuple{
     typeof(BLAS.iamax),Integer,X,Integer
 } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}}
+
+# The zero-derivative macro cannot express this operand precondition.
+for (rule, slot, zero_rule) in
+    ((:frule!!, :Lifted, :zero_derivative), (:rrule!!, :CoDual, :zero_adjoint))
+    @eval function $rule(
+        f::$slot{typeof(BLAS.iamax)}, x::$slot{<:AbstractArray{T}}
+    ) where {T<:BlasFloat}
+        _check_blas_operand(primal(x))
+        return $zero_rule(f, x)
+    end
+    @eval function $rule(
+        f::$slot{typeof(BLAS.iamax)},
+        n::$slot{<:Integer},
+        x::$slot{<:Union{Ptr{T},AbstractArray{T}}},
+        inc::$slot{<:Integer},
+    ) where {T<:BlasFloat}
+        _check_blas_operand(primal(x))
+        return $zero_rule(f, n, x, inc)
+    end
+end
 
 # BLAS uses |re| + |im|, with the same zero subgradient as abs_float.
 @inline _asum_product(x::Real, dx::Real) = _rvs_zero(_rvs_mul(sign(x), dx), iszero(x))
@@ -858,6 +879,7 @@ end
 function frule!!(
     ::Lifted{typeof(BLAS.asum),N}, x::Lifted{<:AbstractArray{T}}
 ) where {T<:BlasFloat,N}
+    _check_blas_operand(primal(x))
     y = BLAS.asum(primal(x))
     return Lifted{typeof(y),N}(
         y, _scalar_ndual(y, _asum_lanes(x, length(primal(x)), 1, typeof(y)))
@@ -869,6 +891,7 @@ function frule!!(
     x::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
     incx::Lifted{<:Integer},
 ) where {T<:BlasFloat,N}
+    _check_blas_operand(primal(x))
     nn, inc = primal(n), primal(incx)
     y = BLAS.asum(nn, primal(x), inc)
     (nn <= 0 || inc <= 0) && return zero_lifted(Val(N), y)
@@ -884,6 +907,7 @@ end
 function rrule!!(
     ::CoDual{typeof(BLAS.asum)}, x::CoDual{<:AbstractArray{T}}
 ) where {T<:BlasFloat}
+    _check_blas_operand(primal(x))
     xp, dx = arrayify(x)
     y = BLAS.asum(xp)
     function asum_pb!!(dy)
@@ -898,6 +922,7 @@ function rrule!!(
     x::CoDual{<:Union{Ptr{T},AbstractArray{T}}},
     incx::CoDual{<:Integer},
 ) where {T<:BlasFloat}
+    _check_blas_operand(primal(x))
     nn, inc = primal(n), primal(incx)
     y = BLAS.asum(nn, primal(x), inc)
     # BLAS returns zero without reading x for nonpositive lengths or increments.
@@ -924,6 +949,7 @@ end
 function frule!!(
     f::Lifted{typeof(BLAS.nrm2),Nw}, X_dX::Lifted{<:AbstractArray{T}}
 ) where {Nw,T<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     x = primal(X_dX)
     y = BLAS.nrm2(x)
     R = typeof(y)
@@ -934,6 +960,7 @@ end
 function rrule!!(
     f::CoDual{typeof(BLAS.nrm2)}, X_dX::CoDual{<:AbstractArray{T}}
 ) where {T<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     x, dx = arrayify(X_dX)
     y = BLAS.nrm2(x)
     function nrm2_len_pb!!(dy)
@@ -987,6 +1014,8 @@ function frule!!(
     Y_dY::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
     _incy::Lifted,
 ) where {Nw,P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
     x, y = primal(X_dX), primal(Y_dY)
     if _axpy_overlaps(x, y, n, incx, incy)
@@ -1030,6 +1059,8 @@ function rrule!!(
     Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incy::CoDual,
 ) where {P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
     a = primal(a_da)
     xp, yp = primal(X_dX), primal(Y_dY)
@@ -1107,6 +1138,8 @@ function frule!!(
     X_dX::Lifted{<:AbstractArray{P}},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     x, y = primal(X_dX), primal(Y_dY)
     _check_axpy_short(x, y)
     a_da = _fwd_blas_alpha(P, a_da)
@@ -1133,6 +1166,8 @@ function rrule!!(
     X_dX::CoDual{<:AbstractArray{P}},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
     _check_axpy_short(x, y)
@@ -1166,6 +1201,8 @@ function frule!!(
     _b::Lifted{<:Number,Nw},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     x, y = primal(X_dX), primal(Y_dY)
     Base.require_one_based_indexing(x, y)
     length(x) == length(y) ||
@@ -1204,6 +1241,8 @@ function rrule!!(
     b_db::CoDual{<:Number},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     a, b = P(primal(a_da)), P(primal(b_db))
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
@@ -1243,6 +1282,7 @@ end
 function frule!!(
     f::Lifted{typeof(BLAS.scal!),Nw}, a_da::Lifted{P,Nw}, X_dX::Lifted{<:AbstractArray{P}}
 ) where {Nw,P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     x = primal(X_dX)
     BLAS.vec_pointer_stride(x, ArgumentError("dest vector with 0 stride is not allowed"))
     _scal_partials!(a_da, X_dX, length(x), 1)
@@ -1253,6 +1293,7 @@ end
 function rrule!!(
     f::CoDual{typeof(BLAS.scal!)}, a_da::CoDual{P}, X_dX::CoDual{<:AbstractArray{P}}
 ) where {P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     x, dx = arrayify(X_dX)
     a = primal(a_da)
     x_copy = copy(x)
@@ -1279,6 +1320,8 @@ function frule!!(
     X_dX::Lifted{<:AbstractArray{P}},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasRealFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     x, dxs = arrayify(X_dX)
     y, dys = arrayify(Y_dY)
     v = BLAS.dot(x, y)
@@ -1291,6 +1334,8 @@ function rrule!!(
     X_dX::CoDual{<:AbstractArray{P}},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_operand(primal(X_dX))
+    _check_blas_operand(primal(Y_dY))
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
     xv, dxv = if x isa AbstractVector
@@ -1431,6 +1476,7 @@ function frule!!(
     X_dX::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
     incx::Lifted,
 ) where {Nw,T<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     _n = primal(n)
     _inc = primal(incx)
     _inc <= 0 && throw(ArgumentError("Mooncake BLAS.nrm2 requires a positive increment"))
@@ -1511,6 +1557,7 @@ function rrule!!(
     X_dX::CoDual{<:Union{Ptr{T},AbstractArray{T}} where {T<:BlasFloat}},
     incx::CoDual{<:Integer},
 )
+    _check_blas_operand(primal(X_dX))
     primal(incx) <= 0 &&
         throw(ArgumentError("Mooncake BLAS.nrm2 requires a positive increment"))
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
@@ -1601,10 +1648,40 @@ end
     )
 end
 
+# This type-only predicate selects the reverse dot refusal without changing the
+# existing derived rule for supported arrays. Wrapper parent fields retain nesting.
+_blas_reinterprets(::Type) = false
+_blas_reinterprets(::Type{T}) where {T<:Base.ReinterpretArray} = isconcretetype(T)
+function _blas_reinterprets(::Type{T}) where {T<:AbstractArray}
+    return isconcretetype(T) &&
+           hasfield(T, :parent) &&
+           _blas_reinterprets(fieldtype(T, :parent))
+end
+
+# Check the whole wrapper stack before empty/singleton walk shortcuts or lane conversion.
+@inline _check_blas_operand(x) = nothing
+@inline function _check_blas_operand(x::AbstractArray)
+    p = parent(x)
+    p === x || _check_blas_operand(p)
+    return nothing
+end
+@noinline function _check_blas_operand(x::Base.ReinterpretArray)
+    throw(
+        ArgumentError(
+            LazyString(
+                "BLAS does not support operand `",
+                typeof(x),
+                "` in level-1 rules: reinterpret layouts need not map the raw-memory walk to logical elements.",
+            ),
+        ),
+    )
+end
+
 @inline _check_blas_walk(n::Integer, x::Ptr, inc::Integer) = nothing
 @inline function _check_blas_walk(
     n::Integer, x::AbstractArray, inc::Integer, offset::Integer=0
 )
+    _check_blas_operand(x)
     n <= 0 && return nothing
     capacity = _blas_walk_capacity(x) - offset
     capacity > 0 && (inc == 0 || n - 1 <= (capacity - 1) ÷ abs(widen(inc))) ||
@@ -1625,36 +1702,6 @@ end
 @inline function _blas_walk_capacity(x::Union{Transpose,Adjoint,Base.ReshapedArray})
     return _blas_walk_capacity(parent(x))
 end
-@inline function _blas_walk_capacity(x::Base.ReinterpretArray{T}) where {T}
-    return _blas_walk_capacity(parent(x)) * sizeof(eltype(parent(x))) ÷ sizeof(T)
-end
-
-@inline _dot_walk_base(x::Lifted) = x
-@inline function _dot_walk_base(
-    x::Lifted{P,N}
-) where {P<:Union{SubArray,Transpose,Adjoint,Base.ReshapedArray,Base.ReinterpretArray},N}
-    p = parent(primal(x))
-    return _dot_walk_base(Lifted{typeof(p),N}(p, tangent(x).fields.parent))
-end
-
-@inline function _dot_lane_walk(x::Lifted{<:AbstractArray{T},N}, k, n, inc) where {T,N}
-    base = _dot_walk_base(x)
-    S = eltype(primal(base))
-    if N == 1 || sizeof(T) == sizeof(S)
-        return _blas_lane_partial(x, k), N * inc
-    end
-    # Reinterpretation can split one stored element across multiple logical elements.
-    # Gather from the logical lane, aligning its start before reinterpreting it.
-    n <= 0 && return T[], 1
-    lane = vec(_blas_lane_partial(base, k))
-    bytes = Int(UInt(pointer(primal(x))) - UInt(pointer(primal(base))))
-    start, offset = divrem(bytes, sizeof(S))
-    stop = start + ((length(lane) - start) * sizeof(S) ÷ sizeof(T)) * sizeof(T) ÷ sizeof(S)
-    values = reinterpret(T, view(lane, (start + 1):stop))
-    first = offset ÷ sizeof(T) + 1 - min(0, inc) * (n - 1)
-    return T[values[first + (i - 1) * inc] for i in 1:n], 1
-end
-
 # Lane views share the primal's physical layout with every stride multiplied by Nw.
 # BLAS can read those lanes directly, including walks into a view's parent.
 @noinline function _dot_strided_acc(
@@ -1662,8 +1709,8 @@ end
 ) where {F,Nw,E}
     pX, pY = primal(_DX), primal(_DY)
     return ntuple(Val(Nw)) do k
-        dX, sx = _dot_lane_walk(_DX, k, n, incx)
-        dY, sy = _dot_lane_walk(_DY, k, n, incy)
+        dX, sx = _blas_lane_partial(_DX, k), Nw * incx
+        dY, sy = _blas_lane_partial(_DY, k), Nw * incy
         f(n, dX, sx, pY, incy) + f(n, pX, incx, dY, sy)
     end::NTuple{Nw,E}
 end
@@ -1706,6 +1753,8 @@ for (f, accum) in ((:dotc, :_dotc_accum), (:dotu, :_dotu_accum))
         x::Lifted{<:AbstractArray{T}},
         y::Lifted{<:AbstractArray{T}},
     ) where {T<:BlasComplexFloat,N}
+        _check_blas_operand(primal(x))
+        _check_blas_operand(primal(y))
         xp, yp = primal(x), primal(y)
         z = BLAS.$f(xp, yp)
         dz = if tangent(x) isa NDualArray && tangent(y) isa NDualArray
@@ -1734,6 +1783,8 @@ for (f, accum) in ((:dotc, :_dotc_accum), (:dotu, :_dotu_accum))
         x::CoDual{<:AbstractArray{T}},
         y::CoDual{<:AbstractArray{T}},
     ) where {T<:BlasComplexFloat}
+        _check_blas_operand(primal(x))
+        _check_blas_operand(primal(y))
         xp, dx = arrayify(x)
         yp, dy = arrayify(y)
         z = BLAS.$f(xp, yp)
@@ -1767,7 +1818,6 @@ for (jlfname, elty) in (
     # Independent X/Y allow mixed array wrappers, matching the frule's coverage.
     @eval @is_primitive(
         MinimalCtx,
-        ForwardMode,
         Tuple{
             typeof(BLAS.$jlfname),Integer,X,Integer,Y,Integer
         } where {
@@ -1809,6 +1859,34 @@ for (jlfname, elty) in (
         end
         return Lifted{$elty,Nw}(result, _scalar_ndual(result, acc))
     end
+    # Ordinary reverse calls retain the foreigncall rule. Intercept only wrappers
+    # containing reinterpretation, before pointer conversion loses that information.
+    @eval function _is_primitive(
+        ::Type{MinimalCtx}, ::Type{ReverseMode}, ::Type{S}
+    ) where {
+        S<:Tuple{
+            typeof(BLAS.$jlfname),
+            Integer,
+            Union{Ptr{$elty},AbstractArray{$elty}},
+            Integer,
+            Union{Ptr{$elty},AbstractArray{$elty}},
+            Integer,
+        },
+    }
+        return _blas_reinterprets(fieldtype(S, 3)) || _blas_reinterprets(fieldtype(S, 5))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(BLAS.$jlfname)},
+        ::CoDual{<:Integer},
+        x::CoDual{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        ::CoDual{<:Integer},
+        y::CoDual{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        ::CoDual{<:Integer},
+    )
+        _check_blas_operand(primal(x))
+        _check_blas_operand(primal(y))
+        error("internal: the array dot refusal rule requires a reinterpret operand")
+    end
     # Ptr lanes are dense by protocol; array lanes are stride-Nw, so mixed calls
     # require width 1. All-array calls use the block method above.
     @eval @inline function frule!!(
@@ -1819,6 +1897,8 @@ for (jlfname, elty) in (
         _DY::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
         _incy::Lifted{<:Integer},
     ) where {Nw}
+        _check_blas_operand(primal(_DX))
+        _check_blas_operand(primal(_DY))
         if Nw > 1 && !(primal(_DX) isa Ptr && primal(_DY) isa Ptr)
             throw(
                 ArgumentError(
@@ -1858,6 +1938,7 @@ function frule!!(
     X_dX::Lifted{<:AbstractArray{P}},
     _incx::Lifted,
 ) where {Nw,P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
     n = primal(_n)
     incx = primal(_incx)
     incx > 0 || throw(
@@ -1938,6 +2019,7 @@ function rrule!!(
     X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::CoDual{<:Integer},
 ) where {P<:BlasFloat}
+    _check_blas_operand(primal(X_dX))
 
     # Extract params.
     n = primal(_n)
@@ -3684,6 +3766,56 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         ),
         (
             if P <: Complex
+                map((BLAS.dotc, BLAS.dotu)) do f
+                    # The padded backing keeps even the refused primal walk inside allocated memory.
+                    x = reinterpret(P, view(randn(rng, real(P), 256), 44:-1:27))
+                    (
+                        false,
+                        :none,
+                        (throws=(ArgumentError, "reinterpret"),),
+                        f,
+                        10,
+                        x,
+                        1,
+                        ones(P, 10),
+                        1,
+                    )
+                end
+            else
+                []
+            end
+        )...,
+        # Reinterpretation need not map pointer(X) to the logical first element.
+        map((
+            reinterpret(P, randn(rng, P <: Real ? Complex{P} : real(P), 24)),
+            view(reinterpret(P, randn(rng, P <: Real ? Complex{P} : real(P), 24)), 2:2:10),
+            reinterpret(P, view(randn(rng, P <: Real ? Complex{P} : real(P), 24), 20:-1:3)),
+        )) do x
+            flags = (false, :none, (throws=(ArgumentError, "reinterpret"),))
+            y = randn(rng, P, length(x))
+            dots = P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu)
+            vcat(
+                [(flags..., f, x) for f in (BLAS.nrm2, BLAS.asum, BLAS.iamax)],
+                [
+                    (flags..., f, n, x, inc) for f in (BLAS.nrm2, BLAS.asum, BLAS.iamax) for
+                    (n, inc) in ((0, 1), (1, 1), (3, 2))
+                ],
+                [(flags..., f, a, b) for f in dots for (a, b) in ((x, y), (y, x))],
+                [
+                    (flags..., f, 3, a, inc, b, 1) for f in dots for
+                    (a, b) in ((x, y), (y, x)) for inc in (-2, 0, 1, 2)
+                ],
+                [
+                    (flags..., BLAS.axpy!, n, P(2), a, inc, b, 1) for
+                    (a, b) in ((x, y), (y, x)) for (n, inc) in ((1, 1), (3, 0))
+                ],
+                [(flags..., BLAS.axpy!, P(2), a, b) for (a, b) in ((x, y), (y, x))],
+                [(flags..., BLAS.axpby!, P(2), a, P(3), b) for (a, b) in ((x, y), (y, x))],
+                [(flags..., BLAS.scal!, P(2), x), (flags..., BLAS.scal!, 1, P(2), x, 1)],
+            )
+        end...,
+        (
+            if P <: Complex
                 map_prod(
                     (BLAS.dotc, BLAS.dotu),
                     (
@@ -4608,6 +4740,40 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     #
 
     push!(test_cases, (false, :none, (mode=ReverseMode,), x -> dot(x, x), P[]))
+
+    # Abstract operand types must defer reinterpret refusal until concrete dispatch.
+    for f in (P <: Real ? (BLAS.dot,) : (BLAS.dotc, BLAS.dotu))
+        barrier_dot = (x, y) -> f(3, Base.inferencebarrier(x)::AbstractVector{P}, 1, y, 1)
+        push!(
+            test_cases,
+            (false, :none, nothing, barrier_dot, randn(rng, P, 5), randn(rng, P, 3)),
+        )
+    end
+    if P === Float64
+        # Bypass array-level rules to exercise reinterpret refusal on foreign-call roots.
+        rooted_dot =
+            (x, y) -> ccall(
+                (BLAS.@blasfunc(cblas_ddot), BLAS.libblastrampoline),
+                Float64,
+                (BLAS.BlasInt, Ptr{Float64}, BLAS.BlasInt, Ptr{Float64}, BLAS.BlasInt),
+                3,
+                x,
+                1,
+                y,
+                1,
+            )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ReverseMode, throws=(ArgumentError, "reinterpret")),
+                rooted_dot,
+                reinterpret(Float64, view(reinterpret(UInt64, randn(rng, P, 6)), :)),
+                randn(rng, P, 3),
+            ),
+        )
+    end
 
     append!(
         test_cases,

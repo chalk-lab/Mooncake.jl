@@ -404,6 +404,8 @@ differentiation requires the raw-memory walk to stay within the supplied operand
 elements in both modes, even if BLAS can read other elements of its parent.
 Pass a view covering every visited address. `BLAS.dot`, `BLAS.dotc` and `BLAS.dotu`
 also accept walks outside a view when every visited address stays in its backing
-array.
+array. BLAS level-1 rules refuse `ReinterpretArray` operands in both modes,
+including generic routes that reach these rules, such as `LinearAlgebra.dot` and
+`axpy!` on reinterpreted arrays.
 A bare `Ptr` operand has no owning array, so its walk is not bounds-checked and
 staying within the buffer is the caller's responsibility.
