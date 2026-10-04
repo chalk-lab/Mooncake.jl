@@ -164,6 +164,12 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
         @test Mooncake._check_constant_aliasing(
             scalar_fr.consts, (zero_codual(_rebind_alias_f), zero_codual(2.0))
         ) === nothing
+        # A scalar at build time can acquire storage before the first call.
+        fr = Mooncake.build_frule(_rebind_alias_f, y)
+        global _REBIND_ALIAS_G = y
+        @test_throws ArgumentError Mooncake.value_and_derivative!!(
+            fr, (_rebind_alias_f, NoTangent()), (y, [1.0, 0.0])
+        )
         global _REBIND_ALIAS_G = [1.0, 2.0]
     end
 

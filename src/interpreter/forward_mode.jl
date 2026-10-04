@@ -350,13 +350,8 @@ function modify_fwd_ad_stmts!(
     else
         # Non-const globals are re-read and zero-lifted per call, separately from arguments.
         # Track the binding so the alias guard follows rebinding instead of a stale value.
-        if isdefined(stmt.mod, stmt.name)
-            record_const_alias!(
-                info.consts,
-                getglobal(stmt.mod, stmt.name),
-                Mooncake.GlobalBinding(stmt.mod, stmt.name),
-            )
-        end
+        binding = Mooncake.GlobalBinding(stmt.mod, stmt.name)
+        any(c -> c === binding, info.consts) || push!(info.consts, binding)
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
         zero_lifted_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
