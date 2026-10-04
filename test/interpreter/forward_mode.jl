@@ -26,8 +26,9 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 # Both fetches run in one function so they share one world, hence one interpreter and cache.
 const COPIED_FWD_FNS = Function[sin]
 copied_fwd_dyn(x) = (COPIED_FWD_FNS[1])(x)
-copied_fwd_caches(rule) =
+function copied_fwd_caches(rule)
     [c.cache for c in rule.fwd_oc.oc.captures if c isa Mooncake.DynamicFRule]
+end
 function copied_fwd_fetches()
     first_rule = Mooncake.build_frule(copied_fwd_dyn, 1.5)
     first_rule(Mooncake.zero_dual(copied_fwd_dyn), Mooncake.Dual(1.5, 1.0))
