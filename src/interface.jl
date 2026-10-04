@@ -909,6 +909,7 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     _any_shared_storage!(::_StorageSeen, ::Any) = false
+    _any_shared_storage!(s::_StorageSeen, x::MemoryRef) = _any_shared_storage!(s, x.mem)
     function _any_shared_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
         return is_init(x) && _any_shared_storage!(s, val(x))
     end
