@@ -460,9 +460,47 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
+# BLAS interprets matrices by pointer and leading dimension, not logical indexing.
+# A singleton column still needs a valid leading dimension; a singleton element
+# does not use its column stride. gemv! validates and normalises its own strides.
+@inline function _check_blas_matrix_layout(f, A)
+    if A isa AbstractMatrix && f !== BLAS.gemv! && f !== BLAS.axpby!
+        if (size(A, 1) > 1 || (size(A, 1) == 1 && size(A, 2) > 1)) &&
+            stride(A, 2) < size(A, 1)
+            throw(
+                ArgumentError(
+                    "Mooncake cannot differentiate $(nameof(f)) with a matrix column stride " *
+                    "smaller than its row count. Pass a contiguous copy of the matrix.",
+                ),
+            )
+        end
+    end
+    return nothing
+end
+
+# Validate physical matrix layouts before alias analysis or numerical work.
 # Output operands must be disjoint from read-only inputs and their shared tangents.
 @inline _check_blas_output_alias(f, output) = nothing
 @inline function _check_blas_output_alias(f, output, input, inputs...)
+    # Reverse getrs! bypasses its wrapper and solves through trtrs! directly.
+    if ((f === LAPACK.trtrs! && size(output, 1) > 1) || f === LAPACK.getrs!) &&
+        !isempty(output) &&
+        stride(output, 1) != 1
+        throw(
+            ArgumentError(
+                "Mooncake cannot differentiate $(nameof(f)) with a non-unit first stride in its " *
+                "right-hand side. Pass a contiguous copy of the right-hand side.",
+            ),
+        )
+    end
+    if !isempty(output) && !(
+        isdefined(LAPACK, :lacpy!) &&
+        f === LAPACK.lacpy! &&
+        (isempty(input) || size(input, 2) <= 1)
+    )
+        _check_blas_matrix_layout(f, output)
+        _check_blas_matrix_layout(f, input)
+    end
     !isempty(output) &&
         !isempty(input) &&
         Base.mightalias(output, input) &&
@@ -4703,6 +4741,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     throwing_rows, throwing_memory = _blas_throwing_rows(P)
     test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
     append!(test_cases, _blas_alias_test_cases(P))
+    append!(test_cases, _blas_matrix_layout_test_cases(P))
     memory = throwing_memory
     return test_cases, memory
 end
@@ -4734,6 +4773,30 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
             zeros(P, 0, 0),
         ),
     )
+
+    # BLAS walks past the logical one-row view into its retained parent.
+    physical_row! = function (parent)
+        C = view(parent, 2:2, StepRangeLen(2, 0, 2))
+        BLAS.gemm!('N', 'N', one(P), ones(P, 1, 2), ones(P, 2, 2), one(P), C)
+        return sum(abs2, parent)
+    end
+    throws = (ArgumentError, "matrix column stride smaller than its row count")
+    push!(test_cases, (false, :none, (; throws), physical_row!, ones(P, 4, 4)))
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (; throws, mode=ForwardMode, chunk_size=8),
+            physical_row!,
+            ones(P, 4, 4),
+        ),
+    )
+    for wrap in (transpose, adjoint, Symmetric, Hermitian, UpperTriangular, LowerTriangular)
+        f = (A, B, C) -> mul!(C, wrap(A), B)
+        A = view(Matrix{P}(I, 5, 5), 2:3, 2:3)
+        push!(test_cases, (false, :none, nothing, f, A, ones(P, 2, 2), ones(P, 2, 2)))
+    end
 
     #
     # BLAS LEVEL 1
@@ -5110,6 +5173,91 @@ function _blas_flag_test_cases(P)
         Q = f === BLAS.herk! ? real(P) : P
         for trans in ('n', f === BLAS.herk! ? 'c' : 't')
             push!(rows, (flags..., f, 'U', trans, Q(2), A, Q(3), copy(B)))
+        end
+    end
+    return rows
+end
+
+function _blas_matrix_layout_test_cases(P)
+    rows = Any[]
+    flags = (false, :none, nothing)
+    for (m, n) in ((3, 2), (1, 2), (3, 1))
+        A, B, C = Matrix{P}(I, m, m), ones(P, m, n), ones(P, m, n)
+        x, y = ones(P, m), ones(P, m)
+        calls = Any[]
+        for trans in ('N', 'T', 'C')
+            push!(calls, (BLAS.gemm!, trans, 'N', P(2), A, B, P(3), C))
+            for f in (BLAS.trmv!, BLAS.trsv!), diag in ('N', 'U')
+                push!(calls, (f, 'U', trans, diag, A, x))
+            end
+            for f in (BLAS.trmm!, BLAS.trsm!), side in ('L', 'R'), diag in ('N', 'U')
+                S = side == 'L' ? A : Matrix{P}(I, n, n)
+                push!(calls, (f, side, 'U', trans, diag, P(2), S, B))
+            end
+        end
+        for f in (BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
+            push!(calls, (f, 'U', P(2), A, x, P(3), y))
+        end
+        for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...), side in ('L', 'R')
+            S = side == 'L' ? A : Matrix{P}(I, n, n)
+            push!(calls, (f, side, 'U', P(2), S, B, P(3), C))
+        end
+        for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
+            Q = f === BLAS.herk! ? real(P) : P
+            for trans in ('N', f === BLAS.herk! ? 'C' : 'T')
+                S = trans == 'N' ? B : copy(transpose(B))
+                push!(calls, (f, 'U', trans, Q(2), S, Q(3), copy(A)))
+            end
+        end
+        for args in calls
+            append!(rows, _blas_layout_refusal_rows(args))
+        end
+    end
+    # Preserve unused column strides and gemv!'s own signed-stride normalisation.
+    for cols in (StepRangeLen(2, 0, 1), 2:-1:2)
+        A = view(ones(P, 4, 4), 2:2, cols)
+        push!(
+            rows,
+            (flags..., BLAS.gemm!, 'N', 'N', P(2), A, ones(P, 1, 1), P(3), ones(P, 1, 1)),
+        )
+    end
+    for (m, k, n) in ((0, 2, 3), (3, 2, 0))
+        A = view(ones(P, m + 2, k + 2), 2:(m + 1), StepRangeLen(2, 0, k))
+        push!(
+            rows,
+            (flags..., BLAS.gemm!, 'N', 'N', P(2), A, ones(P, k, n), P(3), ones(P, m, n)),
+        )
+    end
+    A = view(ones(P, 3, 4), 2:1, StepRangeLen(2, 0, 3))
+    push!(
+        rows, (flags..., BLAS.gemm!, 'T', 'N', P(2), A, ones(P, 0, 2), P(3), ones(P, 3, 2))
+    )
+    A = zeros(P, 3, 0)
+    append!(
+        rows,
+        _blas_layout_refusal_rows((
+            BLAS.gemm!, 'N', 'N', P(2), A, ones(P, 0, 2), P(3), ones(P, 3, 2)
+        )),
+    )
+    A = view(ones(P, 4, 4), 2:3, 3:-1:2)
+    push!(rows, (flags..., BLAS.gemv!, 'N', P(2), A, ones(P, 2), P(3), ones(P, 2)))
+    return rows
+end
+
+function _blas_layout_refusal_rows(args)
+    rows = Any[]
+    for pos in eachindex(args)
+        A = args[pos]
+        A isa AbstractMatrix || continue
+        m, n = size(A)
+        (m > 1 || (m == 1 && n > 1)) || continue
+        for cols in (StepRangeLen(2, 0, n), (n + 1):-1:2)
+            bad = view(ones(eltype(A), m + 2, n + 2), 2:(m + 1), cols)
+            stride(bad, 2) < m || continue
+            call = Base.setindex(args, bad, pos)
+            throws = (ArgumentError, "matrix column stride smaller than its row count")
+            push!(rows, (false, :none, (; throws), call...))
+            push!(rows, (false, :none, (; throws, mode=ForwardMode, chunk_size=8), call...))
         end
     end
     return rows

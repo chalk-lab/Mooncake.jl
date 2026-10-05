@@ -31,6 +31,7 @@ end
 function frule!!(
     ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasFloat}
+    _check_blas_matrix_layout(LAPACK.getrf!, primal(A_dA))
     A, dA_lanes = arrayify(A_dA)
     _, ipiv, info = LAPACK.getrf!(A)
     return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
@@ -38,6 +39,7 @@ end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasFloat}
+    _check_blas_matrix_layout(LAPACK.getrf!, primal(_A))
     A, dA = arrayify(_A)
     A_copy = copy(A)
 
@@ -66,6 +68,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
 ) where {Nw,P<:BlasFloat}
     check = primal(_kwargs).check
+    _check_blas_matrix_layout(LAPACK.getrf!, primal(A_dA))
     A, dA_lanes = arrayify(A_dA)
     _, ipiv, info = LAPACK.getrf!(A; check)
     return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
@@ -77,6 +80,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
     check = _kwargs.x.check
+    _check_blas_matrix_layout(LAPACK.getrf!, primal(_A))
     A, dA = arrayify(_A)
     A_copy = copy(A)
 
@@ -356,6 +360,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
     _ipiv::Lifted{<:AbstractVector{Int}},
 ) where {Nw,P<:BlasRealFloat}
+    _check_blas_matrix_layout(LAPACK.getri!, primal(A_dA))
     A = primal(A_dA)
     ipiv = primal(_ipiv)
     Ab, acopied = _partials_block(A_dA)
@@ -399,6 +404,7 @@ function rrule!!(
     _ipiv::CoDual{<:AbstractVector{Int}},
 )
     # Extract args and copy A for reverse-pass.
+    _check_blas_matrix_layout(LAPACK.getri!, primal(_A))
     A, dA = arrayify(_A)
     ipiv = _ipiv.x
     A_copy = copy(A)
@@ -434,6 +440,7 @@ end
 function frule!!(
     ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasRealFloat}
+    _check_blas_matrix_layout(LAPACK.potrf!, primal(A_dA))
     uplo = uppercase(primal(_uplo))
     A = primal(A_dA)
     Ab, acopied = _partials_block(A_dA)
@@ -504,6 +511,7 @@ function rrule!!(
 
     # Extract args and take a copy of A.
     uplo = _uplo.x
+    _check_blas_matrix_layout(LAPACK.potrf!, primal(_A))
     A, dA = arrayify(_A)
     # Keep copy uninlined for forward-over-reverse: jl_genericmemory_copy_slice has no frule.
     A_copy = Base.@noinline copy(A)
@@ -1209,6 +1217,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     )
     for P in complexPs
         append!(test_cases, _lapack_alias_test_cases(P))
+        append!(test_cases, _lapack_matrix_layout_test_cases(P))
     end
     @static if VERSION > v"1.11-"
         for P in complexPs
@@ -1290,6 +1299,60 @@ function _lapack_alias_test_cases(P)
         end
         B = P[1 2; 3 4; 5 6]
         push!(rows, (flags..., LAPACK.lacpy!, view(B, 1:2, :), view(B, 2:3, :), 'A'))
+    end
+    return rows
+end
+
+function _lapack_matrix_layout_test_cases(P)
+    rows = Any[]
+    for (m, n) in ((3, 2), (1, 2), (3, 1))
+        A, B = Matrix{P}(I, m, m), ones(P, m, n)
+        calls = Any[(LAPACK.getrf!, A), (Core.kwcall, (; check=false), LAPACK.getrf!, A)]
+        if P <: Real
+            push!(calls, (LAPACK.getri!, A, collect(1:m)), (LAPACK.potrf!, 'U', A))
+            for trans in ('N', 'T', 'C')
+                push!(calls, (LAPACK.getrs!, trans, A, collect(1:m), B))
+                for diag in ('N', 'U')
+                    push!(calls, (LAPACK.trtrs!, 'U', trans, diag, A, B))
+                end
+            end
+            push!(calls, (LAPACK.potrs!, 'U', A, B))
+        end
+        @static if VERSION > v"1.11-"
+            n > 1 && push!(calls, (LAPACK.lacpy!, copy(B), B, 'A'))
+            if n == 1
+                V = view(ones(P, m + 2, 3), 2:(m + 1), StepRangeLen(2, 0, 1))
+                push!(rows, (false, :none, nothing, LAPACK.lacpy!, copy(B), V, 'A'))
+                push!(rows, (false, :none, nothing, LAPACK.lacpy!, V, B, 'A'))
+            end
+        end
+        for args in calls
+            append!(rows, _blas_layout_refusal_rows(args))
+        end
+    end
+    if P <: Real
+        # A one-row RHS never advances its row pointer; empty solves do no work.
+        for m in (0, 1), vector in (false, true)
+            A = ones(P, m, m)
+            B = vector ? view(ones(P, 4), 2:2:(2m)) : view(ones(P, 4, 2), 2:2:(2m), :)
+            push!(rows, (false, :none, nothing, LAPACK.trtrs!, 'U', 'N', 'N', A, B))
+        end
+        for trans in ('N', 'T', 'C'), diag in ('N', 'U'), vector in (false, true)
+            A = Matrix{P}(I, 3, 3)
+            B = vector ? view(ones(P, 7), 2:2:6) : view(ones(P, 7, 2), 2:2:6, :)
+            calls = (
+                (LAPACK.trtrs!, 'U', trans, diag, A, B),
+                (LAPACK.getrs!, trans, A, collect(1:3), B),
+            )
+            for args in calls
+                throws = (ArgumentError, "non-unit first stride")
+                push!(rows, (false, :none, (; throws), args...))
+                push!(
+                    rows,
+                    (false, :none, (; throws, mode=ForwardMode, chunk_size=8), args...),
+                )
+            end
+        end
     end
     return rows
 end
