@@ -220,7 +220,14 @@ end
         for (f, arg, direction, expected) in (
             (call_twice, (fw, fw), (dfw, dfw), (12.0, 4.0)),
             (call_twice, [fw, fw], [dfw, dfw], (12.0, 4.0)),
+            (call_twice, Dict(1 => fw, 2 => fw), Dict(1 => dfw, 2 => dfw), (12.0, 4.0)),
             (call_twice, IdDict(1 => fw, 2 => fw), IdDict(1 => dfw, 2 => dfw), (12.0, 4.0)),
+            (
+                (h, x) -> h.w[1](x),
+                WrapperHold(Dict(1 => fw)),
+                (w=Dict(1 => dfw),),
+                (6.0, 2.0),
+            ),
             (
                 (h, x) -> h.w[1](x),
                 WrapperHold(IdDict(1 => fw)),
@@ -231,6 +238,34 @@ end
             (call_held, WrapperHold(fw), (w=dfw,), (6.0, 2.0)),
             (call_held, MutableWrapperHold(fw), (w=dfw,), (6.0, 2.0)),
         )
+            if arg isa Dict || (arg isa WrapperHold && arg.w isa Dict)
+                @test_throws "Prepared caches do not support Dicts whose values can carry derivatives" Mooncake.prepare_derivative_cache(
+                    f, arg, 2.0; config
+                )
+                @test_throws "Prepared caches do not support Dicts whose values can carry derivatives" Mooncake.prepare_gradient_cache(
+                    f, arg, 2.0; config
+                )
+                native = Mooncake._friendly_input_tangent(
+                    Mooncake.friendly_tangent_cache(arg),
+                    Mooncake.zero_tangent(arg),
+                    direction,
+                    IdDict(),
+                    UInt[],
+                    arg,
+                    IdDict(),
+                )
+                @test Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(f, arg, 2.0),
+                    (f, Mooncake.NoTangent()),
+                    (arg, native),
+                    (2.0, 0.0),
+                ) == expected
+                yr, gr = Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(f, arg, 2.0), f, arg, 2.0
+                )
+                @test (yr, Mooncake._dot(gr[2], native)) == expected
+                continue
+            end
             cache = Mooncake.prepare_derivative_cache(f, arg, 2.0; config)
             y, g = Mooncake.value_and_gradient!!(cache, f, arg, 2.0)
             yr, gr = Mooncake.value_and_gradient!!(

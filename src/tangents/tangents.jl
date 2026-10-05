@@ -1,3 +1,9 @@
+# Keyed dictionaries share their tangent algebra and lookup/store rules.
+# Keep this union closed: other AbstractDict implementations retain their own representation.
+# `Base.ImmutableDict` keeps the structural tangent: its self-typed `parent` field makes
+# `tangent_type` recurse without bound.
+const KeyedDict{K,V} = Union{Dict{K,V},IdDict{K,V}}
+
 """
     NoTangent
 
@@ -2277,9 +2283,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (((((((((randn(33)...,),),),),), randn(5)...),),),),
         Base.OneTo{Int},
         TestResources.build_big_isbits_struct(),
-        # A `Dict`'s key store is sparsely occupied while its tangent is an isbits store
-        # reporting every slot assigned, so primal and tangent disagree over which slots are
-        # readable.
+        # Dictionary tangent algebra and lifting use keys rather than table slots.
         Dict(:a => 5.0, :b => 4.0),
     ]
     if VERSION >= v"1.11"

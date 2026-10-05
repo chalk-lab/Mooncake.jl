@@ -1,3 +1,4 @@
+using Logging
 using Mooncake:
     prepare_gradient_cache,
     prepare_hvp_cache,
@@ -1765,6 +1766,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 native = Mooncake.zero_tangent(d)
                 native[1].fields.diag .= 1
                 @test Mooncake.value_and_derivative!!(
+                    cache, (fd, NoTangent()), (d, native)
+                ) == (21.0, 2.0)
+                @test Mooncake.value_and_derivative!!(
                     plain, (fd, NoTangent()), (d, native)
                 ) == (21.0, 2.0)
             end
@@ -1925,14 +1929,28 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             ) == (21.0, 2.0)
         end
 
+        @testset "cyclic friendly gradient direction" for N in (1, 8)
+            config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
+            node = AnyCycleNode(IdDict{Symbol,Any}(:v => 3.0), 2.0)
+            node.next[:node] = node
+            node_f = x -> x.next[:node].weight^2 * x.next[:v]
+            cache = Mooncake.prepare_derivative_cache(node_f, node; config)
+            _, gradient = Mooncake.value_and_gradient!!(cache, node_f, node)
+            @test gradient[2] isa NamedTuple
+            @test gradient[2].weight == 12.0
+            @test gradient[2].next[:v] == 4.0
+            @test_throws r"share differentiable storage.*supplied tangents do not share it" Mooncake.value_and_derivative!!(
+                cache, (node_f, NoTangent()), (node, gradient[2])
+            )
+            direction = AnyCycleNode(IdDict{Symbol,Any}(:v => 0.0), 1.0)
+            direction.next[:node] = direction
+            @test Mooncake.value_and_derivative!!(
+                cache, (node_f, NoTangent()), (node, direction)
+            ) == (12.0, 12.0)
+        end
+
         @testset "unsupported friendly dictionaries refuse before mutation" for N in (1, 8)
             config = Mooncake.Config(; friendly_tangents=true, chunk_size=N, kwargs...)
-            dict_f = d -> sum(values(d))
-            dict_primal = Dict(1 => 1.0)
-            dict_cache = Mooncake.prepare_derivative_cache(dict_f, dict_primal; config)
-            @test_throws "Friendly directions for Dict primals are unsupported" Mooncake.value_and_derivative!!(
-                dict_cache, (dict_f, NoTangent()), (dict_primal, Dict(1 => 1.0))
-            )
             message = "friendly forward directions support only Dict and IdDict; pass a native tangent through a non-friendly cache (friendly_tangents=false)"
             dict_direction_sum(a, b) = sum(a) + sum(b)
             direction_cache = Mooncake.prepare_derivative_cache(
@@ -2097,23 +2115,21 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test last(z_and_dz_named) == dx * sin(y) + x * cos(y) * dy
         end
 
-        @testset "forward gradient accepts a `Dict` / `Set` argument" begin
+        @testset "forward gradient through Dict and IdDict" begin
             # Dict/Set backing storage includes nondifferentiable Memory (Vectors on 1.10).
             # Distinct coefficients check that the seed cursor follows tangent_dim order.
             # Shared Dict values must also share partials; registering only the backing container
             # would lose element aliasing. The enclosing kwargs cover debug mode on and off.
-            galias(dd) = sum(dd[1]) + sum(dd[2])
+            galias(values) =
+                (local dd=Dict(1 => values[1], 2 => values[2]); sum(dd[1]) + sum(dd[2]))
             # A multi-line function, not `mkalias() = (v = …; …)`: inside a `@testset`, a
             # one-line function whose body is a `;`-block assigns to the ENCLOSING scope, so a
             # local named `z` there silently overwrites the testset's own `z`.
             function mkalias()
                 shared = [1.0, 2.0, 3.0]
-                return Dict{Int,Vector{Float64}}(1 => shared, 2 => shared)
+                return (shared, shared)
             end
-            vals_of(g) = [
-                g.fields.vals[i] for
-                i in eachindex(g.fields.vals) if isassigned(g.fields.vals, i)
-            ]
+            vals_of(g) = [g[1], g[2]]
             _, g_rev = Mooncake.value_and_gradient!!(
                 Mooncake.prepare_gradient_cache(galias, mkalias()), galias, mkalias()
             )
@@ -2130,8 +2146,11 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test vals_of(g_fwd[2]) == vals_of(g_rev[2])
             end
 
-            fdict(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
-            mkd() = Dict(:a => 2.0, :b => 3.0)
+            fdict(values, v) = (
+                local d=Dict(:a => values.a, :b => values.b);
+                d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
+            )
+            mkd() = (a=2.0, b=3.0)
             v0 = [5.0, 7.0]
             vr, gr = Mooncake.value_and_gradient!!(
                 Mooncake.prepare_gradient_cache(fdict, mkd(), v0), fdict, mkd(), copy(v0)
@@ -2147,7 +2166,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test vf == vr
                 @test gf[3] == gr[3]
-                @test collect(gf[2].fields.vals) == collect(gr[2].fields.vals)
+                @test gf[2] == gr[2]
             end
             # IdDict interleaves keys/values in one backing ht. Check per-key gradients as well as
             # d/dv to detect a seed cursor that disagrees with tangent_dim order.
@@ -4487,6 +4506,193 @@ end
                 @test y == f(x)
                 @test component(grad[2]) == expected
             end
+        end
+    end
+end
+
+@testset "prepared caches refuse Dict arguments" begin
+    message = "Prepared caches do not support Dicts whose values can carry derivatives"
+    d = Dict(1 => 2.0)
+    bad_inputs = (
+        d,
+        (d,),
+        (; d),
+        [d],
+        Ref(d),
+        StructuredPair(d, 1),
+        Any[d],
+        Ref{Any}(d),
+        AnyCycleNode(d, 1.0),
+        StructuredPair{AbstractVector,Int}([d], 1),
+        Dict{Int,Float64}[],
+        Ref{Dict{Int,Float64}}(),
+    )
+    f(x) = sum(abs2, x)
+    captured = let d=d
+        x -> d[1] * sum(abs2, x)
+    end
+    for friendly in (false, true)
+        config = Mooncake.Config(; friendly_tangents=friendly)
+        for prepare in (
+            prepare_gradient_cache,
+            prepare_pullback_cache,
+            Mooncake.prepare_derivative_cache,
+            prepare_hvp_cache,
+            prepare_hessian_cache,
+        )
+            for x in bad_inputs
+                TestUtils._test_throws(ArgumentError, message) do
+                    prepare(f, x; config)
+                end
+            end
+            for fun in (d, captured)
+                TestUtils._test_throws(ArgumentError, message) do
+                    prepare(fun, [2.0]; config)
+                end
+            end
+        end
+        rc = prepare_gradient_cache(f, [2.0]; config)
+        fc = Mooncake.prepare_derivative_cache(f, [2.0]; config)
+        hc = prepare_hessian_cache(f, [2.0]; config)
+        TestUtils._test_throws(ArgumentError, message) do
+            value_and_jacobian!!(rc, d, view([1.0, 2.0, 3.0], 1:2:3))
+        end
+        # Wrong-typed calls must give this refusal before touching any cache storage.
+        for x in bad_inputs[1:6], (fun, arg) in ((f, x), (d, [2.0]), (captured, [2.0]))
+            for c in (rc, fc)
+                TestUtils._test_throws(ArgumentError, message) do
+                    value_and_gradient!!(c, fun, arg)
+                end
+                TestUtils._test_throws(ArgumentError, message) do
+                    value_and_jacobian!!(c, fun, arg)
+                end
+            end
+            TestUtils._test_throws(ArgumentError, message) do
+                value_and_pullback!!(rc, 1.0, fun, arg)
+            end
+            TestUtils._test_throws(ArgumentError, message) do
+                Mooncake.value_and_derivative!!(
+                    fc, (fun, zero_tangent(fun)), (arg, zero_tangent(arg))
+                )
+            end
+            TestUtils._test_throws(ArgumentError, message) do
+                Mooncake.value_and_derivative!!(
+                    fc, Mooncake.zero_lifted(Val(1), fun), Mooncake.zero_lifted(Val(1), arg)
+                )
+            end
+            TestUtils._test_throws(ArgumentError, message) do
+                value_and_hvp!!(hc, fun, zero_tangent(arg), arg)
+            end
+            TestUtils._test_throws(ArgumentError, message) do
+                value_gradient_and_hessian!!(hc, fun, arg)
+            end
+        end
+    end
+    # The same Dict-bearing shapes remain valid at the rule-taking boundary.
+    for (arg, select) in (
+        (d, identity),
+        ((d,), first),
+        ((; d), x -> x.d),
+        ([d], first),
+        (Ref(d), x -> x[]),
+        (StructuredPair(d, 1), x -> x.u),
+    )
+        g(x) = select(x)[1]^2
+        rule = build_rrule(g, arg)
+        @test first(value_and_gradient!!(rule, g, arg)) == 4.0
+        @test TestUtils.has_equal_data(
+            value_and_pullback!!(rule, 1.0, g, arg), value_and_gradient!!(rule, g, arg)
+        )
+        fr = Mooncake.build_frule(g, arg)
+        @test Mooncake.value_and_derivative!!(
+            fr, (g, zero_tangent(g)), (arg, zero_tangent(arg))
+        ) == (4.0, 0.0)
+        TestUtils.test_rule(sr(123), g, arg; is_primitive=false)
+    end
+    @test first(value_and_gradient!!(build_rrule(captured, [2.0]), captured, [2.0])) == 8.0
+    @test Mooncake.value_and_derivative!!(
+        Mooncake.build_frule(captured, [2.0]),
+        (captured, zero_tangent(captured)),
+        ([2.0], [1.0]),
+    ) == (8.0, 8.0)
+end
+
+@testset "derivative-free Dict cache inputs" begin
+    for x in (
+        Set([1]), Set([1.0]), Dict(:n => 3), Dict(:n => [3]), Logging.ConsoleLogger(stderr)
+    )
+        @test (@inferred Mooncake._check_dict_cache_inputs((identity, x))) === nothing
+        @test TestUtils.count_allocs(Mooncake._check_dict_cache_inputs, (identity, x)) == 0
+    end
+    x = [1.0, 2.0]
+    for prepare in (prepare_gradient_cache, Mooncake.prepare_derivative_cache),
+        width in (1, 8)
+
+        config = Mooncake.Config(; chunk_size=width)
+        for s in (Set([1, 2, 3]), Set([1.0, 2.0, 3.0]))
+            f(x, s) = sum(x) * length(s)
+            cache = prepare(f, x, s; config)
+            y, g = value_and_gradient!!(cache, f, x, s)
+            @test y == 9.0
+            @test g[2] == fill(3.0, 2)
+        end
+        for (f, expected, grad) in (
+            (
+                let d=Dict(:n => 3)
+                    x -> sum(x) * d[:n]
+                end,
+                9.0,
+                [3.0, 3.0],
+            ),
+            (
+                let logger=Logging.ConsoleLogger(stderr)
+                    x -> (logger.min_level; sum(abs2, x))
+                end,
+                5.0,
+                [2.0, 4.0],
+            ),
+        )
+            cache = prepare(f, x; config)
+            y, g = value_and_gradient!!(cache, f, x)
+            @test y == expected
+            @test g[2] == grad
+        end
+        # Non-concrete Dict types are abstract storage, checked by runtime type.
+        for (U, u) in (
+            (Dict, Dict(:n => 3)),
+            (Dict{Symbol}, Dict(:n => 3)),
+            (IdDict, IdDict(:n => 3)),
+            (Vector{Dict}, Dict[Dict(:n => 3)]),
+        )
+            arg = StructuredPair{U,Vector{Float64}}(u, x)
+            f = s -> sum(abs2, s.v) * (s.u isa Vector ? only(s.u) : s.u)[:n]
+            @test first(value_and_gradient!!(prepare(f, arg; config), f, arg)) == 15.0
+            h = let s=StructuredPair{U,Nothing}(u, nothing)
+                x -> sum(abs2, x) * (s.u isa Vector ? only(s.u) : s.u)[:n]
+            end
+            @test value_and_gradient!!(prepare(h, x; config), h, x)[2][2] == [6.0, 12.0]
+        end
+        d = Dict(:x => 2.0)
+        captured = let d=d
+            x -> d[:x] * sum(x)
+        end
+        for (fun, arg, path) in (
+            (identity, d, "argument 1"),
+            (identity, StructuredPair(d, 1), "argument 1.u"),
+            (identity, StructuredPair{Dict,Int}(d, 1), "argument 1.u"),
+            (identity, Ref(d), "argument 1[]"),
+            (identity, Dict[d], "argument 1[1]"),
+            (captured, x, "f.d"),
+        )
+            err = try
+                prepare(fun, arg; config)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test occursin("Dict{Symbol, Float64}", sprint(showerror, err))
+            @test occursin("at $path.", sprint(showerror, err))
         end
     end
 end

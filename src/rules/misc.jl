@@ -432,47 +432,6 @@ function lsetfield_rrule(
     return y, pb!!
 end
 
-@static if VERSION < v"1.11"
-    @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    # Rebind float-array V to the copied primal; shallow-copy element-wise V so
-    # its elements alias the shallow-shared keys/values, matching Base.copy(::Dict).
-    _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(
-        new_arr, copy(getfield(v, :partials_block))
-    )
-    _copy_dict_field_v(::Any, v::AbstractArray) = copy(v)
-    function frule!!(
-        ::Lifted{typeof(copy),Nw}, a::Lifted{D,Nw,<:MutableDual}
-    ) where {Nw,D<:Dict}
-        new_primal = copy(primal(a))
-        old_nt = getfield(tangent(a), :fields)
-        new_nt = (
-            slots=_copy_dict_field_v(new_primal.slots, old_nt.slots),
-            keys=_copy_dict_field_v(new_primal.keys, old_nt.keys),
-            vals=_copy_dict_field_v(new_primal.vals, old_nt.vals),
-            ndel=NoDual(),
-            count=NoDual(),
-            age=NoDual(),
-            idxfloor=NoDual(),
-            maxprobe=NoDual(),
-        )
-        return Lifted{D,Nw}(new_primal, MutableDual(new_nt))
-    end
-    function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
-        dx = tangent(a)
-        t = dx.fields
-        new_fields = typeof(t)((
-            copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-        ))
-        dy = MutableTangent(new_fields)
-        y = CoDual(copy(primal(a)), dy)
-        function copy_pullback!!(::NoRData)
-            increment!!(dx, dy)
-            return NoRData(), NoRData()
-        end
-        return y, copy_pullback!!
-    end
-end
-
 @zero_derivative MinimalCtx Tuple{typeof(sortperm),Vector{<:IEEEFloat}}
 @is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
 

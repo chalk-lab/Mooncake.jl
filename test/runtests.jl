@@ -81,6 +81,8 @@ include("front_matter.jl")
         include(joinpath("rules", "fastmath.jl"))
     elseif test_group == "rules/foreigncall"
         include(joinpath("rules", "foreigncall.jl"))
+    elseif test_group == "rules/dict"
+        include(joinpath("rules", "dict.jl"))
     elseif test_group == "rules/iddict"
         include(joinpath("rules", "iddict.jl"))
     elseif test_group == "rules/lapack"

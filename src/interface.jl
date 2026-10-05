@@ -557,7 +557,7 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         end
         seen[key] = value
     end
-    if expected isa IdDict
+    if expected isa KeyedDict
         for (k, v) in expected
             _check_tangent_storage!(seen, v, supplied[k])
         end
@@ -601,7 +601,7 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied, p) where {
         end
         seen[key] = value
     end
-    if expected isa IdDict
+    if expected isa KeyedDict
         for (k, v) in expected
             _check_tangent_storage!(seen, v, supplied[k], p === nothing ? nothing : p[k])
         end
@@ -771,6 +771,12 @@ function _any_shared_storage!(s::_StorageSeen, x::_BuiltinArrays)
     end
     return false
 end
+function _any_shared_storage!(s::_StorageSeen, t::KeyedDict)
+    haskey(s.objs, t) && return false
+    s.objs[t] = nothing
+    return any(v -> _any_shared_storage!(s, v), values(t))
+end
+
 function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
     return any(v -> _any_shared_storage!(s, v), x)
 end
@@ -1031,6 +1037,11 @@ end
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
+`Dict`s whose values can carry derivatives are unsupported by prepared caches, including
+those nested in `f` or other inputs. Pass values in a `Vector`/`NamedTuple`, build the `Dict`
+inside the function, or use rule-taking forms. Abstract or `Any`-typed storage is checked
+using its contents' runtime types at preparation only; preserve those types on cache reuse.
+
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
 `config.chunk_size` sets the forward chunk width baked into this cache (a default heuristic
@@ -1186,6 +1197,7 @@ Returns a `Lifted` containing the result of applying forward-mode AD to compute 
 tangent values in `f` and `x`.
 """
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
+    _check_dict_cache_inputs(map(primal, fx))
     _check_shared_input_tangents(fx)
     return _value_and_derivative!!(cache, fx...)
 end
@@ -1239,10 +1251,11 @@ tangents using cache storage).
 With `friendly_tangents=false`, each direction must have the internal tangent type for its
 primal and matching axes (or length for sized collections without axes).
 With `friendly_tangents=true`, types using `AsRaw` (including `FunctionWrapper`)
-still accept their internal tangent type. Friendly dictionary directions support `IdDict`
-by key, including nested native tangent leaves. Keys must match the call-time
-primal. Other `AbstractDict`
+still accept their internal tangent type. Friendly dictionary directions for `IdDict`
+primals are matched by key, including nested native tangent leaves. Other `AbstractDict`
 directions require a native tangent through a non-friendly cache (`friendly_tangents=false`).
+`Dict` primals whose values can carry derivatives require a rule-taking form; prepared
+caches refuse them.
 
 The arguments in `x` are returned to their original state, whether the rule returns or
 raises: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the
@@ -1266,6 +1279,7 @@ snapshotted — a callable that mutates its own fields is not restored.
 @inline function value_and_derivative!!(
     cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,FG,GW,CF,S,M}
+    _check_dict_cache_inputs(tuple_map(first, fx))
     local input_primals, input_tangents
     input_friendly_tangents = tuple_map(last, fx)
     try
@@ -1543,6 +1557,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
+    _check_dict_cache_inputs((f, x))
     _check_cache_constants(cache.single_rule, (f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
@@ -1630,6 +1645,7 @@ end
 @unstable @inline function value_and_jacobian!!(
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
+    _check_dict_cache_inputs((f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
     total_dim = length(x)
@@ -1660,6 +1676,7 @@ end
 end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f, x)
+    _check_dict_cache_inputs((f, x))
     # Reached only for inputs the methods above reject (`x` is not a dense
     # `AbstractVector{<:IEEEFloat}`). `_check_vector_argument` always throws
     # a specific message here; the explicit throw documents that this fallback
@@ -1681,6 +1698,7 @@ end
 # many-line MethodError (sibling `value_and_*!!` accept `f, x...`, so users may try it
 # here).
 @unstable function value_and_jacobian!!(cache, f, x, xs...)
+    _check_dict_cache_inputs((f, x, xs...))
     throw(
         ArgumentError(
             "value_and_jacobian!! supports only a single AbstractVector input; got " *
@@ -1862,7 +1880,7 @@ end
 # Use the derivative-field protocol to avoid following custom tangents into primal callables.
 @inline function _check_friendly_direction_dicts(seen::IdDict, direction::T) where {T}
     direction isa AbstractDict &&
-        !(direction isa Union{Dict,IdDict}) &&
+        !(direction isa KeyedDict) &&
         throw(
             ArgumentError(
                 "friendly forward directions support only Dict and IdDict; pass a native tangent " *
@@ -1878,7 +1896,7 @@ end
         haskey(seen, direction) && return nothing
         seen[direction] = nothing
     end
-    if direction isa Union{Dict,IdDict}
+    if direction isa KeyedDict
         for (k, v) in direction
             _check_friendly_direction_dicts(seen, k)
             _check_friendly_direction_dicts(seen, v)
@@ -1899,14 +1917,7 @@ end
 
 # Preflight every dictionary before any direction is copied into cache-owned storage.
 @inline function _check_friendly_dict_layouts(seen, p::P, t, direction, arg) where {P}
-    p isa Dict && throw(
-        ArgumentError(
-            "Friendly directions for Dict primals are unsupported; pass a native tangent through a non-friendly cache (friendly_tangents=false)",
-        ),
-    )
-    p isa AbstractDict &&
-        !(p isa Union{Dict,IdDict}) &&
-        _check_friendly_direction_dicts(seen, p)
+    p isa AbstractDict && !(p isa KeyedDict) && _check_friendly_direction_dicts(seen, p)
     isbitstype(P) && return false
     p isa AbstractArray && (!(t isa AbstractArray) || isbitstype(eltype(P))) && return false
     t isa NoTangent && !(p isa AbstractDict) && return false
@@ -1918,8 +1929,8 @@ end
         haskey(seen, p) && return false
         seen[p] = nothing
     end
-    if p isa IdDict
-        direction isa Union{Dict,IdDict} || throw(
+    if p isa KeyedDict
+        direction isa KeyedDict || throw(
             ArgumentError(
                 "Friendly dictionary direction for argument $arg must be a Dict or IdDict; pass a native tangent through a non-friendly cache (friendly_tangents=false)",
             ),
@@ -1974,18 +1985,20 @@ end
 
 function _check_direction_keys(p, direction, arg)
     length(p) == length(direction) &&
-    all(k -> haskey(direction, k), keys(p)) &&
-    all(k -> haskey(p, k), keys(direction)) || throw(
+        all(k -> haskey(direction, k), keys(p)) &&
+        all(k -> haskey(p, k), keys(direction)) &&
+        return nothing
+    context = arg isa Integer ? "argument $arg" : arg
+    throw(
         ArgumentError(
-            "Dictionary direction for argument $arg must have exactly the primal's keys (missing or extra keys)",
+            "Dictionary $context must have exactly the primal's keys (missing or extra keys)",
         ),
     )
-    return nothing
 end
 
-# Match identity-dictionary directions to the call-time primal by key.
+# Both native and friendly dictionary directions are keyed by the primal keys.
 function _friendly_input_tangent(
-    ::FriendlyTangentCache{AsPrimal}, t, direction, c, z, p::IdDict, seen
+    ::FriendlyTangentCache{AsPrimal}, t, direction, c, z, p::KeyedDict, seen
 )
     seen === nothing && (seen = IdDict{Any,Any}())
     haskey(seen, p) && return seen[p]::typeof(t)
@@ -1999,7 +2012,7 @@ end
 # Dictionary values have no prepared field caches. Walk their tangent structure lazily,
 # sharing the conversion's alias map rather than recursively building friendly caches.
 function _friendly_input_tangent(::Nothing, t, direction, c, z, p, seen)
-    if p isa Union{Dict,IdDict}
+    if p isa KeyedDict
         return _friendly_input_tangent(
             FriendlyTangentCache{AsPrimal}(nothing), t, direction, c, z, p, seen
         )
@@ -2220,6 +2233,11 @@ end
 """
     prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
+`Dict`s whose values can carry derivatives are unsupported by prepared caches, including
+those nested in `f` or other inputs. Pass values in a `Vector`/`NamedTuple`, build the `Dict`
+inside the function, or use rule-taking forms. Abstract or `Any`-typed storage is checked
+using its contents' runtime types at preparation only; preserve those types on cache reuse.
+
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info,
 including the `config.friendly_tangents` output-tangent contract and how arguments sharing
 one storage are handled.
@@ -2277,7 +2295,129 @@ and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
     )
 end
 
+# 0: statically Dict-free; 1: inspect abstract storage, including non-concrete `Dict` and
+# `IdDict` types, at preparation; 2: contains a concrete `Dict` type. Generators call this,
+# so it must not throw: `keytype` and `valtype` see concrete types only.
+Base.@nospecializeinfer function _dict_input_kind(
+    @nospecialize(T), seen=Set{Any}(), path="", dicts=nothing
+)
+    T === Union{} && return 0
+    if T <: Dict && isconcretetype(T)
+        dicts === nothing || push!(dicts, (T, path))
+        return 2
+    end
+    T in seen && return 0
+    T isa Union &&
+        return maximum(t -> _dict_input_kind(t, seen, path, dicts), Base.uniontypes(T))
+    T <: Union{
+        Type,
+        Module,
+        Core.OpaqueClosure,
+        Method,
+        Core.MethodInstance,
+        Core.CodeInstance,
+        Core.Binding,
+        Core.Compiler.InferenceState,
+        Core.Compiler.InferenceResult,
+        Ptr,
+    } && return 0
+    # Compiled AD programs and their Lifted storage own internal memo tables. HVP
+    # checks the original arguments before constructing its inner cache.
+    T <: Union{DerivedRule,DerivedFRule,Lifted{<:Union{DerivedRule,DebugRRule}}} && return 0
+    push!(seen, T)
+    T <: _BuiltinArrays && return _dict_input_kind(eltype(T), seen, path * "[]", dicts)
+    if !isconcretetype(T)
+        T <: Union{AbstractArray,Ref} &&
+            return max(1, _dict_input_kind(eltype(T), seen, path * "[]", dicts))
+        return 1
+    end
+    T <: IdDict && return max(
+        _dict_input_kind(keytype(T), seen, path * ".keys", dicts),
+        _dict_input_kind(valtype(T), seen, path * ".values", dicts),
+    )
+    return maximum(eachindex(fieldtypes(T)); init=0) do i
+        _dict_input_kind(fieldtype(T, i), seen, path * _dict_path_field(T, i), dicts)
+    end
+end
+
+# Source-level path segment: `[]` for a `Ref`, and closure captures without the `#12#`
+# prefix lowering adds to a shadowing `let` binding.
+function _dict_path_field(@nospecialize(T), i)
+    T <: Tuple && return "[$i]"
+    T <: Base.RefValue && return "[]"
+    name = string(fieldname(T, i))
+    return "." * (startswith(name, '#') ? name[(findlast('#', name) + 1):end] : name)
+end
+
+@noinline function _throw_dict_cache_input(T, path)
+    throw(
+        ArgumentError(
+            "Prepared caches do not support Dicts whose values can carry derivatives: found $T at $path. " *
+            "Pass the values in a Vector/NamedTuple, build the Dict inside the function, or use the rule-taking forms.",
+        ),
+    )
+end
+
+@generated function _check_dict_cache_type(::Type{T}, path) where {T}
+    dicts = Tuple{Any,String}[]
+    _dict_input_kind(T, Set{Any}(), "", dicts)
+    checks = map(dicts) do (D, suffix)
+        # Resolve tangent types at runtime so custom tangent methods remain visible.
+        :(
+            _dict_key_has_derivatives(tangent_type($(valtype(D)))) &&
+            _throw_dict_cache_input($D, path * $suffix)
+        )
+    end
+    return Expr(:block, checks..., :(nothing))
+end
+
+@generated function _check_dict_cache_inputs(fx::T) where {T<:Tuple}
+    checks = map(1:fieldcount(T)) do i
+        path = i == 1 ? "f" : "argument $(i - 1)"
+        :(_check_dict_cache_type($(fieldtype(T, i)), $path))
+    end
+    return Expr(:block, checks..., :(nothing))
+end
+
+# Only preparation follows abstract storage; reuse must preserve its runtime types.
+Base.@nospecializeinfer function _prepare_dict_cache_inputs(
+    @nospecialize(x), seen::IdDict, path
+)
+    T = typeof(x)
+    kind = _dict_input_kind(T)
+    _check_dict_cache_type(T, path)
+    T <: Dict && return nothing
+    kind == 0 && return nothing
+    haskey(seen, x) && return nothing
+    seen[x] = nothing
+    if x isa _BuiltinArrays
+        for i in eachindex(x)
+            isassigned(x, i) && _prepare_dict_cache_inputs(x[i], seen, path * "[$i]")
+        end
+    elseif x isa IdDict
+        for (k, v) in x
+            _prepare_dict_cache_inputs(k, seen, path * ".keys")
+            _prepare_dict_cache_inputs(v, seen, path * ".values")
+        end
+    else
+        for i in 1:fieldcount(T)
+            isdefined(x, i) && _prepare_dict_cache_inputs(
+                getfield(x, i), seen, path * _dict_path_field(T, i)
+            )
+        end
+    end
+    return nothing
+end
+
+function _prepare_dict_cache_inputs(fx::Tuple, seen::IdDict)
+    for i in eachindex(fx)
+        _prepare_dict_cache_inputs(fx[i], seen, i == 1 ? "f" : "argument $(i - 1)")
+    end
+    return nothing
+end
+
 function _prepare_cache_inputs(mode::Mode, fx::Tuple, config)
+    _prepare_dict_cache_inputs(fx, IdDict())
     config.empty_cache && empty_mooncake_caches!()
     # `_stable_typeof` preserves abstract NamedTuple fields; `_typeof` sharpens them,
     # potentially making `dual_type` concrete and bypassing the forward representation check.
@@ -2394,6 +2534,11 @@ end
 
 """
     prepare_gradient_cache(f, x...; config=Mooncake.Config())
+
+`Dict`s whose values can carry derivatives are unsupported by prepared caches, including
+those nested in `f` or other inputs. Pass values in a `Vector`/`NamedTuple`, build the `Dict`
+inside the function, or use rule-taking forms. Abstract or `Any`-typed storage is checked
+using its contents' runtime types at preparation only; preserve those types on cache reuse.
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
 including the `config.friendly_tangents` output-tangent contract and how arguments sharing
@@ -2695,6 +2840,7 @@ end
 # type stability and fresh per-chunk allocations for shape generality. Concrete fast
 # paths retain type stability and zero allocation.
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
+    _check_dict_cache_inputs((f, x...))
     _check_cache_constants(cache.single_rule, (f, x...))
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
@@ -2844,7 +2990,7 @@ end
         return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(t), false)
     end
 end
-function _scale_gradient_basis(a, t::IdDict, c)
+function _scale_gradient_basis(a, t::KeyedDict, c)
     haskey(c, t) && return c[t]
     out = empty(t)
     c[t] = out
@@ -2864,6 +3010,7 @@ end
 # `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to
 # chunk; this avoids the generic path's standard-basis seeding and lane accumulation.
 @inline function value_and_gradient!!(cache::FCache, f::F, x::T) where {F,T<:IEEEFloat}
+    _check_dict_cache_inputs((f, x))
     # A differentiable `f` carries its own degrees of freedom: the width-1 single-seed run
     # below cannot represent them (and `lift(f, NoTangent())` would seed uninitialised
     # tangent storage), so fall back to the generic chunked path, which sweeps `f`'s dimensions
@@ -2884,6 +3031,7 @@ end
 function value_and_gradient!!(
     cache::FCache, f::F, x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T},Nm1}
 ) where {F,T<:IEEEFloat,Nm1}
+    _check_dict_cache_inputs((f, x1, xs_rest...))
     # Leading `x1` binds T; a bare Vararg leaves it unbound at N=0 (Aqua).
     xs = (x1, xs_rest...)
     N = Nm1 + 1
@@ -3352,6 +3500,7 @@ end
             "Supply an internal tangent (e.g. `Mooncake.zero_tangent(x)`).",
         ),
     )
+    primal isa KeyedDict && _check_direction_keys(primal, tangent, "native dictionary")
     # Base's generic `axes(x) = map(oneto, size(x))` makes `applicable(axes, x)` true even
     # for a struct-shaped `Tangent` with no `size` method, so check `size` instead.
     if applicable(size, primal) && applicable(size, tangent)
@@ -3374,6 +3523,11 @@ end
 
 """
     prepare_hvp_cache(f, x; config=Mooncake.Config())
+
+`Dict`s whose values can carry derivatives are unsupported by prepared caches, including
+those nested in `f` or other inputs. Pass values in a `Vector`/`NamedTuple`, build the `Dict`
+inside the function, or use rule-taking forms. Abstract or `Any`-typed storage is checked
+using its contents' runtime types at preparation only; preserve those types on cache reuse.
 
 Prepare a cache for computing Hessian-vector products (HVPs) of `f`. Returns an `HVPCache`
 for use with [`value_and_hvp!!`](@ref).
@@ -3406,6 +3560,7 @@ true
 @unstable @inline function prepare_hvp_cache(
     f::F, x::Vararg{Any,N}; config=Config(), _chunk::Int=1
 ) where {F,N}
+    _prepare_dict_cache_inputs((f, x...), IdDict())
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hvp_cache", N)
     # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
@@ -3513,6 +3668,7 @@ true
 ```
 """
 @inline function value_and_hvp!!(cache::HVPCache, f::F, v, x1::T1) where {F,T1}
+    _check_dict_cache_inputs((f, x1))
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
@@ -3529,6 +3685,7 @@ end
 # Multi-argument calls match no single-arg method above; give a clear error rather than a
 # raw MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
 @inline function value_and_hvp!!(cache::HVPCache, f, v, x1, x2, xs::Vararg{Any,N}) where {N}
+    _check_dict_cache_inputs((f, x1, x2, xs...))
     return _throw_hvp_multiarg("value_and_hvp!!", N + 2)
 end
 
@@ -3555,6 +3712,11 @@ end
 
 """
     prepare_hessian_cache(f, x; config=Mooncake.Config())
+
+`Dict`s whose values can carry derivatives are unsupported by prepared caches, including
+those nested in `f` or other inputs. Pass values in a `Vector`/`NamedTuple`, build the `Dict`
+inside the function, or use rule-taking forms. Abstract or `Any`-typed storage is checked
+using its contents' runtime types at preparation only; preserve those types on cache reuse.
 
 Return a cache for computing `f(x)`, the gradient `∇f`, and the Hessian of `f` via
 [`value_gradient_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref), which is also
@@ -3596,6 +3758,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
 @unstable @inline function prepare_hessian_cache(
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
+    _prepare_dict_cache_inputs((f, x...), IdDict())
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
     x1 = only(x)
@@ -3744,6 +3907,7 @@ H
 @unstable @inline function value_gradient_and_hessian!!(
     cache::HVPCache, f::F, x1::T1
 ) where {F,T1}
+    _check_dict_cache_inputs((f, x1))
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
@@ -3804,6 +3968,7 @@ end
 @unstable @inline function value_gradient_and_hessian!!(
     cache::HVPCache, f, x1, x2, xs::Vararg{Any,N}
 ) where {N}
+    _check_dict_cache_inputs((f, x1, x2, xs...))
     return _throw_hvp_multiarg("value_gradient_and_hessian!!", N + 2)
 end
 
@@ -4049,7 +4214,7 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:_Buil
     end
     return dst
 end
-function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:IdDict}
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:KeyedDict}
     c === nothing && (c = IdDict{Any,Any}())
     dst, seen = _copy_context_destination!!(dst, src, c, r)
     seen && return dst
@@ -4414,7 +4579,7 @@ end
     n = length(types_and_sizes.parameters)
     m = length(fx.parameters)
     n == m || return :(_throw_prepared_cache_mismatch_error(:arity, 0, $n, $m))
-    checks = Expr(:block)
+    checks = Expr(:block, :(_check_dict_cache_inputs(fx)))
     for i in 1:n
         T_i = types_and_sizes.parameters[i].parameters[1]
         push!(
@@ -4441,6 +4606,13 @@ end
 
 # Count tangent dimensions with mutable-node deduplication for aliases and cycles.
 # Dense leaves reuse Nfwd.primal_dim; IEEEFloat/Complex elements are always assigned.
+# Forward dimension/alias traversals must visit values, never hash-table buffers or keys.
+function tangent_dim(t::KeyedDict, seen::IdDict{Any,Any})
+    haskey(seen, t) && return 0
+    seen[t] = nothing
+    return sum(v -> tangent_dim(v, seen), values(t); init=0)
+end
+
 @inline tangent_dim(t) = tangent_dim(t, IdDict{Any,Any}())
 @inline tangent_dim(::NoTangent, ::IdDict{Any,Any}) = 0
 @inline function tangent_dim(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
