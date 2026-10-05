@@ -13,6 +13,9 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. An `IdDict` argument's key objects must be the prepare-time ones; prepare a new cache after replacing them.
 1. HVPs through a captured or constructed `FunctionWrapper` are unsupported. On Julia 1.10/1.11, captured wrappers may fail only after a long compilation or may not terminate in practice.
 
+BLAS/LAPACK matrix rules require a column stride at least the row count for multi-row matrices, and a positive column stride for one-row matrices with multiple columns; they preserve `gemv!`'s own stride normalisation, empty-output calls, and `lacpy!` single-column and identity copies.
+LAPACK operands must also have unit first stride where the routine requires it, including matrix and vector right-hand sides of `trtrs!` when they have more than one row; offset and padded storage satisfying these requirements remains supported.
+
 ## Resizing shared arrays on Julia 1.10
 
 On Julia 1.10, resizing a vector whose tangent storage is shared with another array

@@ -1,5 +1,6 @@
 # 0.6.0
 
+- BLAS/LAPACK matrix layouts that disagree with BLAS storage walks now error instead of producing incorrect derivatives.
 - Forward friendly gradients of composites holding an `AbstractDict` change from
   primal-shaped structs to fieldwise `NamedTuple`s, matching reverse mode.
 - Breaking: native `Dict{K,V}` tangents change from structural `MutableTangent`
