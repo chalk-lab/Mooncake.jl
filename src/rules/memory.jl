@@ -613,6 +613,46 @@ end
     return y, memoryrefset_adjoint
 end
 
+# `Base._unsetindex!` clears a slot by writing nulls through pointer arithmetic sized to the
+# primal's element layout, which does not match the tangent's, so unset each separately.
+@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),MemoryRef}
+function frule!!(::Dual{typeof(Base._unsetindex!)}, x::Dual{<:MemoryRef})
+    Base._unsetindex!(primal(x))
+    Base._unsetindex!(tangent(x))
+    return x
+end
+function rrule!!(
+    f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef{P},<:MemoryRef{V}}
+) where {P,V}
+    # `_unsetindex!` leaves isbits unions and pointer-free inline elements in place.
+    arrayelem = Base.datatype_arrayelem(typeof(x.x.mem))
+    if arrayelem == 2 || (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
+        Base._unsetindex!(x.x) # Preserve the primal's native bounds check.
+        Base._unsetindex!(x.dx)
+        return x, NoPullback(f, x)
+    end
+    to_save = isassigned(x.x)
+    old_x = Ref{Tuple{P,V}}()
+    if to_save
+        old_x[] = (
+            memoryrefget(x.x, :not_atomic, true), memoryrefget(x.dx, :not_atomic, true)
+        )
+    end
+    Base._unsetindex!(x.x)
+    Base._unsetindex!(x.dx)
+
+    # Pointer-free inline elements are left in place, so their cotangent passes through.
+    to_restore = to_save && !isassigned(x.x)
+    function _unsetindex!_pullback!!(::NoRData)
+        if to_restore
+            memoryrefset!(x.x, old_x[][1], :not_atomic, true)
+            memoryrefset!(x.dx, old_x[][2], :not_atomic, true)
+        end
+        return NoRData(), NoRData()
+    end
+    return x, _unsetindex!_pullback!!
+end
+
 # Core.memoryrefsetonce!
 # Core.memoryrefswap!
 # Core.set_binding_type!
@@ -1031,6 +1071,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             (false, :none, nothing, memoryrefset!, mem_ref, sample_value, :not_atomic, bc)
             for (mem_ref, sample_value) in assignable_refs for bc in [false, true]
         ],
+        [(false, :none, nothing, Base._unsetindex!, ref) for (ref, _) in assignable_refs],
+        (
+            false,
+            :none,
+            nothing,
+            Base._unsetindex!,
+            memoryref(
+                Memory{Tuple{Float64,Vector{Float64}}}([(1.0, [2.0]), (3.0, [4.0])]), 2
+            ),
+        ),
         (
             false,
             :stability,
@@ -1157,6 +1207,26 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, Base._deleteend!, randn(5), 2),
         (false, :none, nothing, Base._deleteend!, randn(5), 5),
         (false, :none, nothing, Base._deleteend!, randn(5), 0),
+        (false, :none, nothing, Base._deleteend!, [(1.0, [2.0]), (3.0, [4.0])], 1),
+        (false, :none, nothing, pop!, [(1.0, [2.0]), (3.0, [4.0])]),
+        (
+            false,
+            :none,
+            nothing,
+            pop!,
+            [TestResources.Mixed(1.0, [2.0]), TestResources.Mixed(3.0, [4.0])],
+        ),
+        (false, :none, nothing, Base._deletebeg!, [(1.0, [2.0]), (3.0, [4.0])], 1),
+        (
+            false,
+            :none,
+            nothing,
+            Base._deleteat!,
+            [(1.0, [2.0]), (3.0, [4.0]), (5.0, [6.0])],
+            2,
+            1,
+        ),
+        (false, :none, nothing, delete!, Dict(1 => (1.0, [2.0]), 2 => (3.0, [4.0])), 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 2, 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 1, 5),
         (false, :none, nothing, Base._deleteat!, randn(5), 5, 1),
