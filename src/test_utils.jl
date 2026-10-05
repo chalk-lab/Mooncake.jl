@@ -454,14 +454,6 @@ function has_equal_data_internal(
 ) where {T,P}
     return false
 end
-function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {T<:Dict}
-    f(x, y) = has_equal_data_internal(x, y, equal_undefs, d)
-    return length(x) == length(y) &&
-           all(map(f, keys(x), keys(y))) &&
-           all(map(f, values(x), values(y)))
-end
 # Compare logical content: a grown partials block may exceed the primal's size.
 # `tangent_view` presents each lane in the primal's shape.
 function has_equal_data_internal(

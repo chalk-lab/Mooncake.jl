@@ -2,9 +2,16 @@
 
 - Forward friendly gradients of composites holding an `AbstractDict` change from
   primal-shaped structs to fieldwise `NamedTuple`s, matching reverse mode.
+- Breaking: native `Dict{K,V}` tangents change from structural `MutableTangent`
+  holders accessed through `.fields.vals[slot]` to `Dict{K,tangent_type(V)}`
+  accessed through `[key]`. Rebuild native directions with `zero_tangent(d)`
+  and seed values by key. Insertion and lookup treat keys as fixed labels;
+  exposing a stored differentiable key is refused. Prepared caches reject `Dict`s
+  whose values can carry derivatives, including nested ones and callable captures;
+  rule-taking forms continue to accept them.
 - Forward friendly gradients of `AsRaw` array wrappers (for example, `Diagonal`) now
   return raw tangents, as in reverse mode, instead of primal-shaped arrays. Friendly forward
-  directions support `IdDict` by key; other `AbstractDict` directions require
+  directions for `IdDict` primals are matched by key; other `AbstractDict` directions require
   a native tangent through a non-friendly cache.
 - Friendly output changes from fieldwise named tuples to raw tangents for custom
   tangent types and non-differentiable structs (for example, `(n = NoTangent(),)`

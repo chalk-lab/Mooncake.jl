@@ -2058,21 +2058,17 @@ function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     end
     return v
 end
-# IdDict values must follow backing ht slot order, as tangent_dim does. Do not generalise
-# to unvetted struct Vs: missing methods must fail loudly.
-function _basis_seed!!(v::IdDict, slots::NTuple{N,Int}, cursor, dict) where {N}
+# Keyed Vs and tangent_dim both traverse values in dictionary iteration order.
+function _basis_seed!!(v::KeyedDict, slots::NTuple{N,Int}, cursor, dict) where {N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    # Values only: the keys share the backing `ht` with them but carry no derivative, and `tangent_dim`
-    # scores them 0. `IdDict` iteration walks `ht` in slot order, which is the order `tangent_dim` counts,
-    # so the cursor advances in step. Keys collected first — the loop assigns into `v`.
+    # Keys carry no derivative. Collect them first because the loop assigns into `v`.
     for k in collect(keys(v))
         v[k] = _basis_seed!!(v[k], slots, cursor, dict)
     end
     return v
 end
-# A bare `Memory` reaches here as the backing of a lifted `Dict`/`Set`, whose `slots` and `keys`
-# fields carry no derivative while `vals` does. Same element-wise walk as the `Array` above.
+# Structural Memory uses the same element-wise walk as Array.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(v::Memory, slots::NTuple{N,Int}, cursor, dict) where {N}
         haskey(dict, v) && return dict[v]
