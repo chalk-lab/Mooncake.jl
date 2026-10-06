@@ -2109,6 +2109,17 @@ end
     ::FriendlyTangentCache{AsRaw}, t::T, direction::T, c, z, p, seen
 ) where {T}
     t === direction && return t
+    # Copy, not zero-then-increment: a union-eltype `t` keeps an earlier primal's leaf
+    # types, which `increment!!` cannot combine with the direction's; `lift` checks them.
+    if T <: _BuiltinArrays && eltype(T) <: Nfwd.NDualEltype
+        _check_friendly_tangent_size(t, direction)
+        return copyto!(t, direction)
+    elseif VERSION >= v"1.11-rc4" && T <: MemoryRef && eltype(T) <: Nfwd.NDualEltype
+        # A `MemoryRef` tangent spans its whole `Memory`, as in `increment_internal!!`.
+        _check_friendly_tangent_size(t.mem, direction.mem)
+        copyto!(t.mem, direction.mem)
+        return t
+    end
     require_tangent_cache(T) isa Val{false} &&
         return increment!!(set_to_zero!!(t), direction)
     # Reset for each leaf: two composite positions can retain the same destination.

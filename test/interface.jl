@@ -1020,7 +1020,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
-    @testset "union Ref seed leaf type" begin
+    @testset "union-eltype Ref, Vector, Memory and MemoryRef seeds" begin
         union_seed_square(union_seed_ref) = union_seed_ref[]^2
         for U in (Union{Float32,Float64}, Union{Float32,ComplexF64}),
             union_seed_width in (1, 8),
@@ -1044,6 +1044,52 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     union_seed_cache,
                     (union_seed_square, NoTangent()),
                     (union_seed_ref, friendly ? seed_ref : Mooncake.zero_tangent(seed_ref)),
+                )
+            end
+        end
+        # The cached tangent keeps the leaf types of the preparation-time primal.
+        U = Union{Float32,ComplexF64}
+        union_seed_real_square(x) = real(only(x)^2)
+        containers = Any[Vector{U}]
+        @static if VERSION >= v"1.11.0-rc4"
+            push!(containers, Memory{U}, x -> memoryref(Memory{U}(x)))
+        end
+        for A in containers, w in (1, 8), friendly in (false, true)
+            cache = Mooncake.prepare_derivative_cache(
+                union_seed_real_square,
+                A(U[2.0f0]);
+                config=Mooncake.Config(; chunk_size=w, friendly_tangents=friendly),
+            )
+            TestUtils._test_throws(
+                ArgumentError,
+                "Tangent leaf type ComplexF64 must match primal leaf type Float32",
+            ) do
+                Mooncake.value_and_derivative!!(
+                    cache,
+                    (union_seed_real_square, NoTangent()),
+                    (A(U[2.0f0]), A(U[1.0 + 0im])),
+                )
+            end
+            @test Mooncake.value_and_derivative!!(
+                cache,
+                (union_seed_real_square, NoTangent()),
+                (A(U[2.0 + 1im]), A(U[1.0 + 0im])),
+            ) == (3.0, 4.0)
+        end
+        # The axes check covers only `AbstractArray`, so a `MemoryRef` leaf checks its size.
+        @static if VERSION >= v"1.11.0-rc4"
+            x = memoryref(Memory{U}(U[1.0f0, 2.0f0, 3.0f0]), 2)
+            cache = Mooncake.prepare_derivative_cache(
+                union_seed_real_square, x; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            TestUtils._test_throws(
+                ArgumentError,
+                "direction size (1,) does not match the primal's tangent size (3,)",
+            ) do
+                Mooncake.value_and_derivative!!(
+                    cache,
+                    (union_seed_real_square, NoTangent()),
+                    (x, memoryref(Memory{U}(U[7.0f0]), 1)),
                 )
             end
         end

@@ -273,6 +273,18 @@ end
                 cache, (f, Mooncake.NoTangent()), (arg, direction), (2.0, 0.0)
             ) == expected
         end
+        # A mutable holder escapes the top-level axes check, so its leaf checks its size.
+        hold = MutableWrapperHold((fw, [1.0, 2.0]))
+        call_sum(h, x) = h.w[1](x) + sum(h.w[2])
+        cache = Mooncake.prepare_derivative_cache(call_sum, hold, 2.0; config)
+        Mooncake.TestUtils._test_throws(ArgumentError, "direction size (1,)") do
+            Mooncake.value_and_derivative!!(
+                cache,
+                (call_sum, Mooncake.NoTangent()),
+                (hold, (w=(dfw, [1.0]),)),
+                (2.0, 0.0),
+            )
+        end
     end
     @testset "persistent shared wrapper" begin
         state = Ref(1.0)
