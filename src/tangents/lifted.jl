@@ -1247,25 +1247,6 @@ end
     }(
         x, map(_ -> NoDual(), ẋ)
     )
-    # General element-wise `Memory` (differentiable non-float / nested / `Any` element):
-    # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
-    @inline function _lift(
-        ::StructuralStorage, x::Memory, ẋ::Memory, c::Union{Nothing,IdDict}
-    )
-        # A top-level call arrives with `c === nothing`; upgrade it to a shared `IdDict` as every
-        # other aggregate lift does, or two elements holding one array get independent partials
-        # and the JVP is silently wrong. Register before filling — see the `Array` lift — so a
-        # cycle reaching `x` again returns the shell instead of recursing forever.
-        d = c === nothing ? IdDict() : c
-        haskey(d, x) && return d[x]::Lifted{typeof(x),1}
-        v = similar(x, dual_type(Val(1), eltype(x)))
-        lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
-        d[x] = lifted
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], d)))
-        end
-        return lifted
-    end
     # General element-wise `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
     # element): lift the `.mem` via the Memory lift, then `memoryref` at the
     # offset. Numeric storage uses the `NDualMemoryRef` methods above.
@@ -1414,29 +1395,24 @@ else
     (Array,)
 end
 
-# Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
-# built element-wise from the per-element lift (coherent with `dual_type` above).
-# Numeric storage uses the block-backed methods above.
-@inline function _lift(
-    ::StructuralStorage, x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}
-) where {T,D}
-    # Register in the cache *before* filling, so aliased occurrences of `x` share one V (matching
-    # the reverse `zero_tangent_internal(::Array)` aliasing invariant) and self-referential arrays
-    # terminate. A top-level call may arrive with `c === nothing` (the 2-arg entry); upgrade it to
-    # a fresh `IdDict` so the cycle break holds, mirroring the mutable-struct `lift` above. Float /
-    # Complex-float element arrays don't reach here — their V aliases `ẋ`.
-    d = c === nothing ? IdDict() : c
-    haskey(d, x) && return d[x]::Lifted{typeof(x),1}
-    Vel = dual_type(Val(1), T)
-    v = similar(x, Vel)
-    lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
-    d[x] = lifted
-    @inbounds for i in eachindex(x)
-        if isassigned(x, i)
-            v[i] = tangent(lift(x[i], ẋ[i], d))
+# Element-wise lift for containers whose eltype `_storage_kind` maps to `StructuralStorage`.
+# Register before filling, as reverse mode's `zero_tangent_internal(::Array)` does, so
+# cycles terminate and repeated children share one V, including when a top-level call has
+# no cache yet.
+for C in _STRUCTURAL_CONTAINERS
+    @eval @inline function _lift(
+        ::StructuralStorage, x::$C, ẋ::$C, c::Union{Nothing,IdDict}
+    )
+        d = c === nothing ? IdDict() : c
+        haskey(d, x) && return d[x]::Lifted{typeof(x),1}
+        v = similar(x, dual_type(Val(1), eltype(x)))
+        lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
+        d[x] = lifted
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], d)))
         end
+        return lifted
     end
-    return lifted
 end
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
