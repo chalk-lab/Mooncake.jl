@@ -1336,6 +1336,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             x -> (d=Dict("a" => x, "b" => 2x); delete!(d, "b"); d["a"]^2),
             2.0,
         ),
+        # `reinterpret` on a byte vector reads through the same kind of pointer.
+        (
+            false,
+            :none,
+            nothing,
+            x -> x * reinterpret(Float64, UInt8[0, 0, 0, 0, 0, 0, 0, 64])[1],
+            2.0,
+        ),
     ]
     memory = Any[]
     return test_cases, memory
