@@ -1407,6 +1407,13 @@ end
     c[x] = lifted
     return lifted
 end
+
+const _STRUCTURAL_CONTAINERS = @static if VERSION >= v"1.11-rc4"
+    (Array, Memory)
+else
+    (Array,)
+end
+
 # Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
 # built element-wise from the per-element lift (coherent with `dual_type` above).
 # Numeric storage uses the block-backed methods above.
@@ -1543,14 +1550,16 @@ for factory in (:zero_dual, :uninit_dual, :randn_dual)
             return $storage_factory(_storage_kind(T), w, $(rng_vals...), x)
         end
     end
-    @eval @inline function $storage_factory(
-        ::StructuralStorage, w::Val{N}, $(rng_args...), x::Array{T,D}
-    ) where {N,T,D}
-        v = similar(x, dual_type(w, T))
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = $factory(w, $(rng_vals...), x[i]))
+    for C in _STRUCTURAL_CONTAINERS
+        @eval @inline function $storage_factory(
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::$C{T}
+        ) where {N,T}
+            v = similar(x, dual_type(w, T))
+            @inbounds for i in eachindex(x)
+                isassigned(x, i) && (v[i] = $factory(w, $(rng_vals...), x[i]))
+            end
+            return v
         end
-        return v
     end
     # Gate tuple seeds on dual_type: even the empty tuple seeds to NoDual, while the
     # private _dual_tuple_v recursion base remains Tuple{}.
@@ -1787,19 +1796,6 @@ for (factory, internal) in (
             d[x] = v
             return v
         end
-        # Register before filling: nested arrays may alias or cycle. Thread the same cache
-        # through children, unlike the deliberately cache-free factories.
-        function $internal(
-            ::StructuralStorage, w::Val{N}, $(rng_args...), x::Array, d::MaybeCache
-        ) where {N}
-            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
-            d[x] = shell
-            @inbounds for i in eachindex(x)
-                isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
-            end
-            return shell
-        end
         # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` branch): build the
         # wrapper directly and register by identity, so the generic struct recursion never re-lifts it.
         function $internal(
@@ -1827,6 +1823,22 @@ for (factory, internal) in (
         $internal(w::Val{N}, $(rng_args...), z::Complex, ::MaybeCache) where {N} = $factory(
             w, $(rng_vals...), z
         )
+    end
+    # Register before filling: nested containers may alias or cycle. Thread the same
+    # cache through children, unlike the deliberately cache-free factories, `Memory`
+    # included: a `Dict`'s `vals` can hold one array in two elements.
+    for C in _STRUCTURAL_CONTAINERS
+        @eval function $internal(
+            ::StructuralStorage, w::Val{N}, $(rng_args...), x::$C, d::MaybeCache
+        ) where {N}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
+            d[x] = shell
+            @inbounds for i in eachindex(x)
+                isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
+            end
+            return shell
+        end
     end
     @static if VERSION >= v"1.11-rc4"
         # With a cache, MemoryRef must share the backing Memory's partials. Leaf elements
@@ -1858,21 +1870,6 @@ for (factory, internal) in (
             end
             d[x] = v
             return v
-        end
-        # A `Memory` of LEAVES delegates to the block factory — nothing below it can alias. A
-        # `Memory` of aggregates (a `Dict`'s `vals`, say) must thread `d` through its elements the
-        # way the element-wise `Array` branch does, or two elements holding one array get
-        # independent partials: registering `x` alone shares the container, not what is inside it.
-        @eval function $internal(
-            ::StructuralStorage, w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
-        ) where {N}
-            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
-            d[x] = shell
-            @inbounds for i in eachindex(x)
-                isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
-            end
-            return shell
         end
         @eval function $internal(
             ::NumericStorage, w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
@@ -2243,22 +2240,6 @@ end
         return NDualArray{E,N,1,Memory{E}}(
             m, ntuple(_ -> Memory{E}(randn(rng, E, length(m))), Val(N))
         )
-    end
-    # Non-float Memory seeds recurse element-wise. Plain functions keep extension dual_type
-    # overloads visible at the caller's world; foldability preserves concrete element types.
-    for factory in (:zero_dual, :uninit_dual, :randn_dual)
-        storage_factory = Symbol(:_, factory)
-        rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
-        rng_vals = factory === :randn_dual ? (:rng,) : ()
-        @eval @inline function $storage_factory(
-            ::StructuralStorage, ::Val{N}, $(rng_args...), m::Memory{T}
-        ) where {N,T}
-            v = Memory{dual_type(Val(N), T)}(undef, length(m))
-            @inbounds for i in eachindex(m)
-                isassigned(m, i) && (v[i] = $factory(Val(N), $(rng_vals...), m[i]))
-            end
-            return v
-        end
     end
     @inline function _zero_dual(::StructuralStorage, ::Val{N}, p::MemoryRef{T}) where {N,T}
         return _memoryref_at(zero_dual(Val(N), p.mem), Core.memoryrefoffset(p))
