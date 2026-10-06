@@ -108,11 +108,19 @@ CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
 function CC.code_cache(interp::MooncakeInterpreter)
     return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
 end
-# A cached `CodeInstance` serves a lookup only if it is valid over the whole world range asked
-# for, as Julia's own cache requires. Caches are shared across world moves, so entries inferred
-# in another world (or invalidated since) must miss.
+
+"""
+    valid_in_worlds(ci::Core.CodeInstance, worlds::CC.WorldRange)
+
+Whether `ci` serves a lookup over `worlds`. From Julia 1.12 caches outlive world moves, so an
+entry must be valid over the whole range; earlier versions keep one cache per world.
+"""
 function valid_in_worlds(ci::Core.CodeInstance, worlds::CC.WorldRange)
-    return ci.min_world <= first(worlds) && last(worlds) <= ci.max_world
+    @static if VERSION >= v"1.12-"
+        return ci.min_world <= first(worlds) && last(worlds) <= ci.max_world
+    else
+        return true
+    end
 end
 
 function CC.get(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance, default)
