@@ -18,12 +18,6 @@ const HVP_ALIAS_GLOBAL = [1.0, 2.0]
 hvp_alias_global(x) = x[1] * HVP_ALIAS_GLOBAL[1] + x[2] * HVP_ALIAS_GLOBAL[2]
 jac_alias_global(x) = x .* HVP_ALIAS_GLOBAL
 
-# A first-order tangent need not support differentiation of itself.
-struct FirstOrderTangent
-    x::Float64
-end
-Mooncake.tangent_type(::Type{FirstOrderTangent}) = Mooncake.NoTangent
-
 struct SimplePair
     x1::Float64
     x2::Float64
@@ -1042,10 +1036,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     chunk_size=union_seed_width, friendly_tangents=friendly
                 ),
             )
-            TestUtils._test_throws(
-                ArgumentError,
-                "Tangent leaf type $(typeof(seed_value)) must match primal leaf type Float32",
-            ) do
+            # A complex friendly seed fails in `primal_to_tangent_internal!!`, before `lift`
+            # checks the leaf type.
+            expected = if friendly && seed_value isa Complex
+                (ErrorException, "primal_to_tangent_internal!!")
+            else
+                (
+                    ArgumentError,
+                    "Tangent leaf type $(typeof(seed_value)) must match primal leaf type Float32",
+                )
+            end
+            TestUtils._test_throws(expected...) do
                 Mooncake.value_and_derivative!!(
                     union_seed_cache,
                     (union_seed_square, NoTangent()),
@@ -2111,9 +2112,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gradient[2] isa NamedTuple
             @test gradient[2].weight == 12.0
             @test gradient[2].next[:v] == 4.0
-            @test_throws r"share differentiable storage.*supplied tangents do not share it" Mooncake.value_and_derivative!!(
-                cache, (node_f, NoTangent()), (node, gradient[2])
-            )
             direction = AnyCycleNode(IdDict{Symbol,Any}(:v => 0.0), 1.0)
             direction.next[:node] = direction
             @test Mooncake.value_and_derivative!!(
@@ -2928,64 +2926,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gclo[2].b ≈ 4.0
         end
 
-        @testset "prebuilt forward slots do not allocate validation buffers" begin
+        @testset "prebuilt forward slots do not allocate" begin
             for width in (1, 8)
                 fs = Mooncake.zero_lifted(Val(width), sum)
                 xs = Mooncake.zero_lifted(Val(width), ones(1024))
-                @test (@inferred Mooncake._check_shared_input_tangents((fs, xs))) ===
-                    nothing
-                @test TestUtils.count_allocs(
-                    Mooncake._check_shared_input_tangents, (fs, xs)
-                ) == 0
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_derivative!!, Mooncake.frule!!, fs, xs
                 ) == 0
             end
         end
 
-        @testset "wide forward storage validation" begin
-            for width in (1, 8), n in (4, 5, 32)
-                ps = (sum, ntuple(_ -> ones(4), n))
-                slots = map(p -> Mooncake.zero_lifted(Val(width), p), ps)
-                @test (@inferred Mooncake._check_shared_input_tangents(slots)) === nothing
-                if n == 4
-                    @test TestUtils.count_allocs(
-                        Mooncake._check_shared_input_tangents, slots
-                    ) == 0
-                end
-                a = ones(4)
-                ps = (sum, (a, ntuple(_ -> ones(4), n - 2)..., a))
-                independent = map(p -> Mooncake.zero_lifted(Val(width), p), (sum, ps[2]...))
-                @test_throws ArgumentError Mooncake._check_shared_input_tangents(
-                    independent
-                )
-            end
-            @static if VERSION >= v"1.11-rc4"
-                for width in (1, 8),
-                    n in (4, 5, 32, :dynamic),
-                    reverse_order in (false, true)
-
-                    a = ones(4)
-                    r = memoryref(a.ref.mem, 3)
-                    tail = n === :dynamic ? (Any[1.0],) : ntuple(_ -> ones(2), n - 2)
-                    ps = reverse_order ? (sum, r, a, tail...) : (sum, a, r, tail...)
-                    ri = reverse_order ? 2 : 3
-                    vs = Mooncake.tangent(Mooncake.zero_lifted(Val(width), ps))
-                    slots = map((p, v) -> Mooncake.Lifted{typeof(p),width}(p, v), ps, vs)
-                    @test Mooncake._check_shared_input_tangents(slots) === nothing
-                    vr = vs[ri]
-                    bad = typeof(vr)(vr.primal, vr.partials_ref, vr.ncols, vr.col - 1)
-                    bad_slots = Base.setindex(
-                        slots, Mooncake.Lifted{typeof(r),width}(r, bad), ri
-                    )
-                    @test_throws ArgumentError Mooncake._check_shared_input_tangents(
-                        bad_slots
-                    )
-                end
-            end
-        end
-
-        @testset "forward entry points reject conflicting storage seeds" begin
+        @testset "forward entry points take shared storage seeds" begin
             # Rule registries invoke rules directly and cannot exercise cache admission or friendly
             # conversion. These tests need caller-supplied seeds and public interface overloads.
             sum_shared(a, b) = sum(a) + sum(b)
@@ -3010,9 +2961,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         db
                     end
                 shared = internal_seed(make_b(da))
-                conflict = internal_seed(make_b(fill(2.0, 3)))
                 rule = Mooncake.build_frule(sum_shared, a, b)
-                message = a === b ? "same mutable object" : "supplied tangents do not share"
                 for friendly in (false, true), prepared_shared in (false, true)
                     prep = prepared_shared ? (a, b) : (copy(a), make_b(copy(a)))
                     cache = Mooncake.prepare_derivative_cache(
@@ -3020,21 +2969,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         prep...;
                         config=Mooncake.Config(; friendly_tangents=friendly),
                     )
-                    bad = friendly ? make_b(fill(2.0, 3)) : conflict
                     good = friendly ? make_b(da) : shared
-                    TestUtils._test_throws(ArgumentError, message) do
-                        Mooncake.value_and_derivative!!(
-                            cache, (sum_shared, NoTangent()), (a, da), (b, bad)
-                        )
-                    end
                     @test Mooncake.value_and_derivative!!(
                         cache, (sum_shared, NoTangent()), (a, da), (b, good)
                     ) == (12.0, 6.0)
-                end
-                TestUtils._test_throws(ArgumentError, message) do
-                    Mooncake.value_and_derivative!!(
-                        rule, (sum_shared, NoTangent()), (a, da), (b, conflict)
-                    )
                 end
                 @test Mooncake.value_and_derivative!!(
                     rule, (sum_shared, NoTangent()), (a, da), (b, shared)
@@ -3045,8 +2983,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     cache = Mooncake.prepare_derivative_cache(
                         ps...; config=Mooncake.Config(; chunk_size=width)
                     )
-                    bad_slots = map(p -> Mooncake.zero_lifted(Val(width), p), ps)
-                    fill!(Mooncake.tangent_view(tangent(bad_slots[2]), width), 1.0)
                     joint = Mooncake.zero_lifted(Val(width), ps)
                     good_slots = map(
                         (p, v) -> Lifted{typeof(p),width}(p, v), ps, tangent(joint)
@@ -3055,18 +2991,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         fill!(Mooncake.tangent_view(tangent(good_slots[2]), lane), lane)
                     end
                     for entry in (rule_w, cache)
-                        TestUtils._test_throws(
-                            ArgumentError, "supplied tangents do not share"
-                        ) do
-                            Mooncake.value_and_derivative!!(entry, bad_slots...)
-                        end
                         result = Mooncake.value_and_derivative!!(entry, good_slots...)
                         @test primal(result) == 12.0
                         @test all(lane -> tangent(result, lane) == 6.0 * lane, 1:width)
                     end
                 end
                 # A gradient supplies incompatible basis ranges; a Jacobian seeds its single
-                # input and captures jointly. HVP's independently seeded capture must be refused.
+                # input and captures jointly. HVP's independently seeded capture is refused
+                # at preparation.
                 cache = Mooncake.prepare_derivative_cache(sum_shared, a, b)
                 @test_throws ArgumentError Mooncake.value_and_gradient!!(
                     cache, sum_shared, a, b
@@ -3081,10 +3013,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 hvp_f = let b=b
                     x -> sum(x) * sum(b)
                 end
-                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
-                    Mooncake.value_and_hvp!!(
-                        Mooncake.prepare_hvp_cache(hvp_f, a), hvp_f, da, a
-                    )
+                TestUtils._test_throws(ArgumentError, "share differentiable storage") do
+                    Mooncake.prepare_hvp_cache(hvp_f, a)
                 end
             end
         end
@@ -3104,12 +3034,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         sum_offsets, a, b; config=Mooncake.Config(friendly_tangents=true)
                     ),
                 )
-                    @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                        entry,
-                        (sum_offsets, NoTangent()),
-                        (a, wrap(dm, 1, 3)),
-                        (b, wrap(dm, 1, 2)),
-                    )
                     @test Mooncake.value_and_derivative!!(
                         entry,
                         (sum_offsets, NoTangent()),
@@ -3117,17 +3041,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         (b, wrap(dm, 3, 2)),
                     ) == (11.0, 160.0)
                 end
-                # Keyed friendly directions must use the same owner/offset check.
+                # Keyed friendly directions keep the relative offsets too.
                 sum_dict_offsets(d) = sum(d[:a]) + sum(d[:b])
                 for N in (1, 8)
                     d = IdDict(:a => a, :b => b)
                     config = Mooncake.Config(; friendly_tangents=true, chunk_size=N)
                     cache = Mooncake.prepare_derivative_cache(sum_dict_offsets, d; config)
-                    @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                        cache,
-                        (sum_dict_offsets, NoTangent()),
-                        (d, IdDict(:b => wrap(dm, 1, 2), :a => wrap(dm, 1, 3))),
-                    )
                     @test Mooncake.value_and_derivative!!(
                         cache,
                         (sum_dict_offsets, NoTangent()),
@@ -3198,20 +3117,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (aa, dd),
                 )
                 @test (v, d) == (20.0, 8.0)
-                # Rule-direct tuple calls must also refuse conflicting tangents for shared storage;
-                # choosing the first seed gives an arbitrary JVP.
-                @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                    Mooncake.build_frule(fmut, a, a),
-                    (fmut, Mooncake.NoTangent()),
-                    (aa, ones(4)),
-                    (aa, zeros(4)),
-                )
-                @test_throws "same mutable object" Mooncake.value_and_derivative!!(
-                    Mooncake.build_frule(fmut, a, a),
-                    (fmut, Mooncake.NoTangent()),
-                    (aa, ones(4)),
-                    (aa, zeros(4)),
-                )
             end
         end
 
@@ -3346,15 +3251,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     1.5;
                     config=Mooncake.Config(; chunk_size=w, friendly_tangents=friendly),
                 )
-                TestUtils._test_throws(ArgumentError, "same mutable object") do
-                    Mooncake.value_and_derivative!!(
-                        cache,
-                        (f, Mooncake.NoTangent()),
-                        (a, Mooncake.zero_tangent(a)),
-                        (a, Mooncake.zero_tangent(a)),
-                        (1.5, 1.0),
-                    )
-                end
                 t = Mooncake.zero_tangent(a)
                 @test Mooncake.value_and_derivative!!(
                     cache, (f, Mooncake.NoTangent()), (a, t), (a, t), (1.5, 1.0)
@@ -3362,17 +3258,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test_throws ArgumentError Mooncake.value_and_gradient!!(
                     cache, f, a, a, 1.5
                 )
-                if !friendly
-                    rule = Mooncake.build_frule(f, a, a, 1.5; chunk_size=w)
-                    TestUtils._test_throws(ArgumentError, "same mutable object") do
-                        Mooncake.value_and_derivative!!(
-                            rule,
-                            (f, Mooncake.NoTangent()),
-                            (a, Mooncake.zero_tangent(a)),
-                            (a, Mooncake.zero_tangent(a)),
-                            (1.5, 1.0),
-                        )
-                    end
+                if !friendly && w == 1
+                    rule = Mooncake.build_frule(f, a, a, 1.5)
+                    t = Mooncake.zero_tangent(a)
+                    @test Mooncake.value_and_derivative!!(
+                        rule, (f, Mooncake.NoTangent()), (a, t), (a, t), (1.5, 1.0)
+                    ) == (2.25, 3.0)
                 end
             end
         end
@@ -3481,22 +3372,16 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
 
-            # Conflicting tangents for one mutable primal are ill-posed in both tuple interfaces;
-            # choosing the first or last seed would silently produce different JVPs.
+            # The same tangent at both positions of one mutable primal is well-posed.
             for cfg in (friendly, Mooncake.Config(; friendly_tangents=false, kwargs...))
                 c_rep = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=cfg)
-                @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                    c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dB_al)
-                )
-                # The same tangent at both positions is well-posed and still answered.
                 _, d_rep = Mooncake.value_and_derivative!!(
                     c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dA_al)
                 )
                 @test d_rep ≈ 2 * sum(dA_al .* X_al)
             end
 
-            # A captured argument shares storage without top-level identity. Friendly seeds
-            # must be checked in their primal-shaped form, before conversion merges them.
+            # A captured argument shares storage without top-level identity.
             mk_capturing(a) = y -> sum(y) * sum(a)
             cap_arr = [1.0, 2.0]
             d_cap = [1.0, 0.0]
@@ -3508,19 +3393,13 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     config=Mooncake.Config(; friendly_tangents=friendly_seeds, kwargs...),
                 )
                 seed(v) = friendly_seeds ? mk_capturing(v) : Mooncake.Tangent((a=v,))
-                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
-                    Mooncake.value_and_derivative!!(
-                        c_cap, (f_cap, seed(zeros(2))), (cap_arr, d_cap)
-                    )
-                end
                 _, d_shared = Mooncake.value_and_derivative!!(
                     c_cap, (f_cap, seed(d_cap)), (cap_arr, d_cap)
                 )
                 @test d_shared ≈ 2 * sum(d_cap) * sum(cap_arr)
             end
 
-            # One coherently shared leaf cannot vouch for a second leaf with conflicting seeds.
-            # Check both conflicting directions, then the fully coherent case.
+            # Two shared leaves, each seeded coherently.
             ap_a = [1.0]
             ap_b = [1.0]
             f_ap = FwdAliasPair(ap_a, ap_b)
@@ -3530,13 +3409,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ap_b;
                 config=Mooncake.Config(; friendly_tangents=false, kwargs...),
             )
-            for dq in ([0.0], [5.0])
-                dp = [1.0]  # `p` shared, exactly as the caller should
-                @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                    c_ap, (f_ap, Mooncake.Tangent((p=dp, q=dq))), (ap_a, dp), (ap_b, [1.0])
-                )
-            end
-            # Both leaves shared is well-posed and still answered.
             dp_ap = [1.0]
             dq_ap = [1.0]
             _, d_ap = Mooncake.value_and_derivative!!(
@@ -4037,59 +3909,39 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
             end
 
-            @testset "shared storage admission" begin
-                # Rule registry rows call rules directly; this checks prepared-cache admission instead.
+            @testset "shared storage is refused at preparation" begin
+                # `grad_f` captures `f`, whose storage the input shares, and Mooncake seeds
+                # them independently. `(a, a.ref.mem)` within one input is refused likewise.
                 makers = (
                     a -> (x -> x[1] * a[1] + x[2] * a[2]),
                     a -> (x -> x[1]^2 * a[1] + x[2]^2 * a[2]),
                 )
                 for make_f in makers
                     a = [1.0, 2.0]
-                    v = [0.3, -0.7]
                     captures = @static VERSION >= v"1.11-rc4" ? (a, a.ref.mem) : (a,)
-                    for captured in captures
+                    for captured in captures,
+                        prepare in (prepare_hvp_cache, prepare_hessian_cache)
+
                         f = make_f(captured)
-                        cache = prepare_hvp_cache(f, a)
                         TestUtils._test_throws(
-                            ArgumentError, "supplied tangents do not share"
+                            ArgumentError, "share differentiable storage"
                         ) do
-                            value_and_hvp!!(cache, f, v, a)
+                            prepare(f, a)
                         end
+                    end
+                    # Sharing that appears only at call time is refused too.
+                    f = make_f(a)
+                    cache = prepare_hvp_cache(f, copy(a))
+                    TestUtils._test_throws(ArgumentError, "share differentiable storage") do
+                        value_and_hvp!!(cache, f, [0.3, -0.7], a)
                     end
                 end
                 @static if VERSION >= v"1.11-rc4"
                     a = [1.0, 2.0]
-                    b = [3.0, 4.0]
-                    f = let m = a.ref.mem, b = b, r = reshape(b, 2, 1)
-                        x -> x[1] * m[1] + x[2] * m[2] + sum(b) + sum(r)
+                    f = t -> t[1][1] * t[2][1] + t[1][2] * t[2][2]
+                    TestUtils._test_throws(ArgumentError, "share differentiable storage") do
+                        prepare_hvp_cache(f, (a, a.ref.mem))
                     end
-                    cache = Mooncake.prepare_derivative_cache(f, a)
-                    TestUtils._test_throws(
-                        ArgumentError, "supplied tangents do not share"
-                    ) do
-                        Mooncake.value_and_derivative!!(
-                            cache, (f, Mooncake.zero_tangent(f)), (a, [0.3, -0.7])
-                        )
-                    end
-                    # Coherent sharing within a single input must remain usable.
-                    for (f, expected) in (
-                        (t -> t[1][1] * t[2][1] + t[1][2] * t[2][2], [0.6, -1.4]),
-                        (t -> t[1][1]^2 * t[2][1] + t[1][2]^2 * t[2][2], [1.8, -8.4]),
-                    )
-                        v = [0.3, -0.7]
-                        x, dx = (a, a.ref.mem), (v, v.ref.mem)
-                        _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, dx, x)
-                        @test hv[1] ≈ expected
-                        @test hv[2] ≈ expected
-                    end
-                end
-            end
-
-            @testset "storage admission uses first-order dimensions" begin
-                x = [FirstOrderTangent(0.0)]
-                @test Mooncake.tangent_dim(x) == 1
-                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
-                    Mooncake._check_tangent_storage!(IdDict(), (x, x), (copy(x), copy(x)))
                 end
             end
 
@@ -4311,12 +4163,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H1 ≈ H2
             end
 
-            # Both Hessian sweeps must refuse aliased captures: width 1 inherits the HVP guard,
-            # while the chunked sweep relies on the entry-point check.
-            @testset "aliased input is refused on both sweeps" begin
+            @testset "aliased input is refused at preparation" begin
                 w = [1.0, 2.0, 3.0]
                 for cfg in (Mooncake.Config(), Mooncake.Config(; chunk_size=1))
-                    cache = prepare_hessian_cache(FwdAliasHolder(w), w; config=cfg)
+                    @test_throws ArgumentError prepare_hessian_cache(
+                        FwdAliasHolder(w), w; config=cfg
+                    )
+                    # Sharing that appears only at call time is refused too.
+                    cache = prepare_hessian_cache(FwdAliasHolder(w), copy(w); config=cfg)
                     @test_throws ArgumentError value_gradient_and_hessian!!(
                         cache, FwdAliasHolder(w), w
                     )
@@ -4739,11 +4593,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     many, many_aliased; config=Mooncake.Config(; friendly_tangents=true)
                 )
                 dms = ntuple(i -> [1.0, 0.0], 24)
-                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
-                    Mooncake.value_and_derivative!!(
-                        fwd_many, (many, Mooncake.NoTangent()), (many_aliased, dms)
-                    )
-                end
                 dms = (dms[1], Base.tail(Base.front(dms))..., dms[1])
                 @test Mooncake.value_and_derivative!!(
                     fwd_many, (many, Mooncake.NoTangent()), (many_aliased, dms)

@@ -799,9 +799,9 @@ their signatures and behaviour may change without a public API deprecation.
 
 If a custom tangent contains executable rules or other non-derivative fields, define
 `Mooncake._tangent_fields(::Type{<:MyTangent})` to return only the field names holding
-derivative storage. Dimension counting and shared-storage validation use these fields,
-keeping their identity guards for aliases and cycles. The FunctionWrappers extension
-selects only `(:dobj_ref,)`; its compiled closures are never derivative storage.
+derivative storage. Dimension counting and the friendly-direction dictionary checks use
+these fields, keeping their identity guards for aliases and cycles. The FunctionWrappers
+extension selects only `(:dobj_ref,)`; its compiled closures are never derivative storage.
 
 Custom forward representations also need a `Mooncake._basis_seed!!` method that seeds
 that same storage, threads the supplied cursor and identity cache, and preserves the

@@ -2,9 +2,6 @@
 function Mooncake.tangent_dim(::Union{Core.OpaqueClosure,Method}, ::IdDict{Any,Any})
     error("visited executable code")
 end
-function Mooncake._check_tangent_storage!(::IdDict, ::Core.OpaqueClosure, supplied)
-    error("visited executable code")
-end
 Mooncake.friendly_tangent_cache(::Type) = error("visited type metadata")
 
 struct WrapperGain{M}
@@ -116,7 +113,6 @@ end
         slot = Mooncake.zero_lifted(Val(N), fw)
         v = Mooncake.tangent(slot)
         native = Mooncake.zero_tangent(fw)
-        @test_throws r"use lift" Mooncake._check_shared_input_tangents((fw,), (v,))
         @test_throws r"use lift" Mooncake._basis_seed!!(native, (1,), Ref(0), IdDict())
         @test_throws r"use lift" Mooncake.Lifted{typeof(fw),N}(fw, native)
         @test typeof(v) === Mooncake.dual_type(Val(N), typeof(fw))
@@ -126,7 +122,6 @@ end
             Mooncake.Lifted{typeof(different),N}(different, v),
             Mooncake.zero_lifted(Val(N), 2.0),
         )
-        @test Mooncake._check_shared_input_tangents((slot, slot)) === nothing
         @test_throws ArgumentError Mooncake._scale(2.0, v)
         @test_throws ArgumentError Mooncake.set_to_zero!!(v)
         @test_throws ArgumentError Mooncake.increment!!(v, deepcopy(v))
@@ -192,12 +187,6 @@ end
         @test Mooncake.value_and_derivative!!(
             cache, (call_wrapper, Mooncake.NoTangent()), (fw, dfw), (2.0, 0.0)
         ) == (6.0, 2.0)
-        @test_throws r"native tangents for directions" Mooncake.value_and_derivative!!(
-            cache,
-            (call_wrapper, Mooncake.NoTangent()),
-            (fw, FW(WrapperGain(1.0))),
-            (2.0, 0.0),
-        )
         y, g = Mooncake.value_and_gradient!!(cache, call_wrapper, fw, 2.0)
         yr, gr = Mooncake.value_and_gradient!!(
             Mooncake.prepare_gradient_cache(call_wrapper, fw, 2.0; config),
@@ -301,11 +290,6 @@ end
         )
         @test Mooncake.tangent(out, 1) == 3
     end
-    # Storage validation must also exclude the primal metadata inside a forward slot.
-    fw = FW(WrapperGain(3.0, which(sin, (Float64,))))
-    @test_throws r"supplied tangents do not share it" Mooncake._check_shared_input_tangents((
-        Mooncake.zero_lifted(Val(1), fw), Mooncake.zero_lifted(Val(1), fw)
-    ))
     fw = FW(sin)
     call_two(a, b, x) = a(x) + b(x)
     cache = Mooncake.prepare_derivative_cache(call_two, fw, fw, 2.0)
@@ -337,15 +321,9 @@ end
                 dx = Mooncake.basis_lifted!!(
                     Mooncake.zero_lifted(Val(N), 2.0), ntuple(_ -> 1, N)
                 )
-                # Wrappers erase the callable's type, so a mutable container of them has
-                # derivative capacity even when the wrapped callable is stateless.
-                @test_throws r"supplied tangents do not share it" Mooncake.value_and_derivative!!(
-                    cache, df, dh, Mooncake.zero_lifted(Val(N), h), dx
-                )
-                obj === sin || continue
                 out = Mooncake.value_and_derivative!!(cache, df, dh, dh, dx)
-                @test Mooncake.primal(out) ≈ 2sin(2.0)
-                @test Mooncake.tangent(out, 1) ≈ 2cos(2.0)
+                @test Mooncake.primal(out) ≈ 2obj(2.0)
+                @test Mooncake.tangent(out, 1) ≈ (obj === sin ? 2cos(2.0) : 6.0)
             end
         end
     end
@@ -354,10 +332,6 @@ end
     fw = FW(x -> a[1] * x)
     dfw, da = Mooncake._zero_tangents((fw, a))
     @test Mooncake.tangent_dim((dfw, da)) == 1
-    @test Mooncake._check_shared_input_tangents((fw, a), (dfw, da)) === nothing
-    @test_throws ArgumentError Mooncake._check_shared_input_tangents(
-        (fw, a), (dfw, copy(da))
-    )
     @testset "shared capture" begin
         call_shared(w, a) = w(a[1])
         rule = Mooncake.build_frule(call_shared, fw, a)

@@ -119,23 +119,6 @@ function Mooncake.tangent_dim(
     return Mooncake.tangent_dim(N == 0 ? v.dobj_ref : tangent(v.dobj_ref[], 1), seen)
 end
 
-function Mooncake._check_tangent_storage!(
-    seen::IdDict, expected::FunctionWrapperTangent{R,A,N}, supplied
-) where {R,A,N}
-    supplied isa typeof(expected) || throw(
-        ArgumentError(
-            "incompatible FunctionWrapper tangent storage; use lift for forward slots and native tangents for directions",
-        ),
-    )
-    # The callable's type is erased from this tangent's type, so ask of its live storage.
-    callable = expected.dobj_ref[]
-    Mooncake._holds_derivatives(typeof(N == 0 ? callable : tangent(callable))) ||
-        return nothing
-    return invoke(
-        Mooncake._check_tangent_storage!, Tuple{IdDict,Any,Any}, seen, expected, supplied
-    )
-end
-
 # The primal's pointer and type metadata have no friendly derivative representation.
 friendly_tangent_cache(::FunctionWrapper) = FriendlyTangentCache{AsRaw}(nothing)
 

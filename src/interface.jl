@@ -132,7 +132,8 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB,FA,FZ}
     # arrays and require nondifferentiable leaves to be isbits.
     gradient_seed::GS
     # Whether the prepared inputs share differentiable storage across positions (`f.v === x`,
-    # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_share_storage`.
+    # say), which the gradient sweeps and `prepare_hvp_cache` cannot represent and so
+    # refuse. See `_inputs_share_storage`.
     inputs_share_storage::Bool
     # Packable single-float-vector Jacobian buffer, sized on first use (output size is lazy).
     # Returned storage is reused and overwritten; other shapes use `nothing`.
@@ -576,243 +577,6 @@ end
     return Expr(:block, _alias_checks(tangents, false), :(return nothing))
 end
 
-# Repeated mutable primals must receive the same tangent object. Otherwise cached and
-# rule-direct tuple paths silently keep different seeds (first or last), with no unique JVP.
-# Sharing one tangent remains supported, including through mutation.
-@generated function _check_repeated_arg_tangents(fx::Tuple)
-    n = length(fx.parameters)
-    checks = Expr(:block)
-    for i in 1:n, j in (i + 1):n
-        Base.ismutabletype(fx.parameters[i].parameters[1]) || continue
-        push!(
-            checks.args,
-            quote
-                if fx[$i][1] === fx[$j][1] &&
-                    !(fx[$i][2] === fx[$j][2]) &&
-                    _holds_derivatives(tangent_type(typeof(fx[$i][1])))
-                    _throw_repeated_arg_tangent_error($i, $j)
-                end
-            end,
-        )
-    end
-    push!(checks.args, :(return nothing))
-    return checks
-end
-
-# `fx` carries the callable at position 1, so report the positions as the caller passed them.
-@noinline function _throw_repeated_arg_tangent_error(i::Int, j::Int)
-    name(k) = k == 1 ? "the callable" : "argument $(k - 1)"
-    throw(
-        ArgumentError(
-            "$(name(i)) and $(name(j)) are the same mutable object but were given different " *
-            "tangents. They share one storage, so they share one tangent, and only one direction " *
-            "can be carried through it. Pass the same tangent at both positions to differentiate " *
-            "along that direction.",
-        ),
-    )
-end
-
-# Check caller-owned seeds before either friendly conversion or lifting can merge them.
-# The prepared sharing flag is insufficient: call-time inputs can introduce new aliases.
-@inline function _check_shared_input_tangents(input_primals::Tuple, input_tangents::Tuple)
-    ts = _zero_tangents(input_primals)
-    return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
-end
-
-# Fixed layouts expose their storage directly, so validation need not allocate a second
-# set of partials. Dynamic/cyclic layouts retain the joint-lift graph check below.
-@inline @generated function _check_shared_input_tangents(fx::Tuple{Vararg{Lifted}})
-    leaves = Any[]
-    function walk(P, V, p, v, active, ancestors)
-        isconcretetype(V) || return false
-        isbitstype(V) && return true
-        V in ancestors && return false
-        ancestors = (ancestors..., V)
-        if V <: Nfwd.NDualArray && P <: _BuiltinArrays
-            t = :(Nfwd._block_storage(getfield($v, :partials_block)))
-            push!(
-                leaves, (p, t, :($N * _storage_offset($p)), :(_storage_offset($t)), active)
-            )
-        elseif V <: Nfwd.NDualRef
-            push!(leaves, (p, :(getfield($v, :partials)), 0, 0, active))
-        elseif VERSION >= v"1.11-rc4" && V <: Nfwd.NDualMemoryRef
-            pm, tr = :($p.mem), :(getfield($v, :partials_ref))
-            tm = :($tr.mem)
-            po = :($N * (_storage_offset($pm) + Core.memoryrefoffset($p) - 1))
-            to = :(
-                _storage_offset($tm) + Core.memoryrefoffset($tr) - 1 +
-                $N * (getfield($v, :col) - 1)
-            )
-            push!(leaves, (pm, tm, po, to, active))
-        elseif V <: Union{Tuple,NamedTuple}
-            for i in 1:fieldcount(V)
-                walk(
-                    fieldtype(P, i),
-                    fieldtype(V, i),
-                    :(getfield($p, $i)),
-                    :(getfield($v, $i)),
-                    active,
-                    ancestors,
-                ) || return false
-            end
-        elseif V <: Union{ImmutableDual,MutableDual}
-            V <: MutableDual &&
-                push!(leaves, (p, v, 0, 0, :($active && _holds_derivatives($V))))
-            fields = fieldtype(V, 1)
-            for i in 1:fieldcount(fields)
-                F = fieldtype(fields, i)
-                pv, vv = :(getfield($p, $i)), :(getfield(getfield($v, :fields), $i))
-                present = :($active && isdefined($p, $i))
-                if F <: PossiblyUninitTangent
-                    F = F.parameters[1]
-                    vv = :(val($vv))
-                end
-                walk(fieldtype(P, i), F, pv, vv, present, ancestors) || return false
-            end
-        else
-            return false
-        end
-        return true
-    end
-    N = fx.parameters[1].parameters[2]
-    fixed = all(enumerate(fx.parameters)) do (i, L)
-        P, _, V = L.parameters
-        walk(P, V, :(primal(fx[$i])), :(tangent(fx[$i])), true, ())
-    end
-    if !fixed
-        return quote
-            ps = map(primal, fx)
-            expected = tangent(zero_lifted(Val(_lifted_width(first(fx))), ps))
-            _check_tangent_storage!(IdDict{Any,Any}(), expected, map(tangent, fx))
-        end
-    end
-    # Keep the offset checks without quadratic codegen for more than four leaves.
-    if length(leaves) > 4
-        entries = map(leaves) do (p, t, po, to, active)
-            :($active ? (_storage_id($p), _storage_id($t), $to - $po) : nothing)
-        end
-        return :(_check_shared_storage_leaves(
-            Union{Nothing,Tuple{Any,Any,Int}}[$(entries...)]
-        ))
-    end
-    checks = Expr(:block)
-    for i in eachindex(leaves), j in (i + 1):length(leaves)
-        p, t, po, to, active = leaves[i]
-        q, u, qo, uo, other_active = leaves[j]
-        push!(
-            checks.args,
-            quote
-                if $active && $other_active && (_storage_id($p) === _storage_id($q))
-                    ((_storage_id($t) === _storage_id($u)) && $to - $uo == $po - $qo) ||
-                        _throw_shared_input_tangent_error()
-                end
-            end,
-        )
-    end
-    push!(checks.args, :(return nothing))
-    return checks
-end
-
-# Erasing leaf types keeps wide signatures from generating quadratic validation code.
-@noinline function _check_shared_storage_leaves(
-    leaves::Vector{Union{Nothing,Tuple{Any,Any,Int}}}
-)
-    seen = IdDict{Any,Tuple{Any,Int}}()
-    for leaf in leaves
-        leaf === nothing && continue
-        p, t, offset = leaf
-        value = (t, offset)
-        get!(seen, p, value) === value || _throw_shared_input_tangent_error()
-    end
-    return nothing
-end
-
-# Compare canonical and supplied tangent storage, not scalar values. This is one-directional:
-# distinct primals may use the same direction, but a shared primal cannot carry two directions.
-function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
-    if expected isa NDualEltype &&
-        supplied isa NDualEltype &&
-        typeof(expected) !== typeof(supplied)
-        _throw_tangent_leaf_type_error(expected, supplied)
-    end
-    isbitstype(T) && return nothing
-    _holds_derivatives(T) || return nothing
-    if ismutable(expected)
-        key = _storage_id(expected)
-        value = (
-            _storage_id(supplied), _storage_offset(supplied) - _storage_offset(expected)
-        )
-        if haskey(seen, key)
-            seen[key] === value || _throw_shared_input_tangent_error()
-            return nothing
-        end
-        seen[key] = value
-    end
-    if expected isa KeyedDict
-        for (k, v) in expected
-            _check_tangent_storage!(seen, v, supplied[k])
-        end
-    elseif expected isa Union{Tangent,MutableTangent} &&
-        !(supplied isa Union{Tangent,MutableTangent})
-        for name in keys(expected.fields)
-            isdefined(supplied, name) && _check_tangent_storage!(
-                seen, getfield(expected.fields, name), getfield(supplied, name)
-            )
-        end
-    elseif expected isa PossiblyUninitTangent && !(supplied isa PossiblyUninitTangent)
-        is_init(expected) && _check_tangent_storage!(seen, val(expected), supplied)
-    elseif expected isa AbstractArray
-        isbitstype(eltype(expected)) && return nothing
-        for i in eachindex(expected)
-            isassigned(expected, i) &&
-                _check_tangent_storage!(seen, expected[i], supplied[i])
-        end
-    else
-        for i in _tangent_fields(T)
-            isdefined(expected, i) &&
-                _check_tangent_storage!(seen, getfield(expected, i), getfield(supplied, i))
-        end
-    end
-    return nothing
-end
-
-function _check_tangent_storage!(seen::IdDict, expected::Nfwd.NDualArray, supplied)
-    return _check_tangent_storage!(
-        seen,
-        Nfwd._block_storage(getfield(expected, :partials_block)),
-        Nfwd._block_storage(getfield(supplied, :partials_block)),
-    )
-end
-function _check_tangent_storage!(seen::IdDict, expected::Lifted, supplied::Lifted)
-    return _check_tangent_storage!(seen, tangent(expected), tangent(supplied))
-end
-@static if VERSION >= v"1.11-rc4"
-    function _check_tangent_storage!(
-        seen::IdDict, expected::Nfwd.NDualMemoryRef{T,N}, supplied
-    ) where {T,N}
-        er, sr = expected.partials_ref, supplied.partials_ref
-        key = _storage_id(er.mem)
-        value = (
-            _storage_id(sr.mem),
-            _storage_offset(sr) - _storage_offset(er) + N * (supplied.col - expected.col),
-        )
-        get!(seen, key, value) === value || _throw_shared_input_tangent_error()
-        return nothing
-    end
-end
-
-@noinline function _throw_shared_input_tangent_error()
-    throw(
-        ArgumentError(
-            "These inputs share differentiable storage across positions (`f` holding the same " *
-            "array that is also passed as an argument, say), but the supplied tangents do not " *
-            "share it at corresponding offsets. One storage carries one tangent, so the lift would " *
-            "silently discard a direction. Pass the same tangent object for the shared storage at " *
-            "every position it occupies, or use reverse mode, which accumulates into it instead.",
-        ),
-    )
-end
-
 # A forward gradient's per-argument basis ranges cannot represent shared storage;
 # `value_and_derivative!!` can, using a caller-supplied shared seed.
 # Check mutable top-level arguments per call using `_storage_id`, including Array/Memory
@@ -1020,14 +784,19 @@ end
 
 # Immutable wrappers can acquire aliases on reuse, including aliases to captured storage.
 # Enumerate their fixed fields at compile time; ordinary scalar/array calls pay no graph walk.
-@generated function _check_immutable_arg_aliasing(fx::Tuple)
+@inline function _check_immutable_arg_aliasing(fx::Tuple)
+    return _check_immutable_arg_aliasing(fx, _throw_prepared_cache_aliasing_error)
+end
+@generated function _check_immutable_arg_aliasing(fx::Tuple, throw_alias)
     leaves = _aliasable_positions(fx, true; primal=true)
     if length(leaves) > 4 &&
         any(leaf -> !isempty(leaf[2]) || !Base.ismutabletype(fx.parameters[leaf[1]]), leaves)
         entries = map(leaves) do (i, p)
             :($(_path_expr(:fx, i, p)), $i, $(_alias_label(i, p, fx.parameters[i])))
         end
-        return :(_check_immutable_storage_leaves(Tuple{Any,Int,String}[$(entries...)]))
+        return :(_check_immutable_storage_leaves(
+            Tuple{Any,Int,String}[$(entries...)], throw_alias
+        ))
     end
     checks = Expr(:block)
     for a in eachindex(leaves), b in (a + 1):length(leaves)
@@ -1051,7 +820,7 @@ end
                         _holds_derivatives(tangent_type(typeof($fi))) ||
                         _holds_derivatives(tangent_type(typeof($fj)))
                     )
-                    _throw_prepared_cache_aliasing_error($li, $lj)
+                    throw_alias($li, $lj)
                 end
             end,
         )
@@ -1060,7 +829,9 @@ end
     return checks
 end
 
-@noinline function _check_immutable_storage_leaves(leaves::Vector{Tuple{Any,Int,String}})
+@noinline function _check_immutable_storage_leaves(
+    leaves::Vector{Tuple{Any,Int,String}}, throw_alias
+)
     seen = IdDict{Any,Tuple{Any,Int,String}}()
     for (x, i, label) in leaves
         previous = get!(seen, _storage_id(x), (x, i, label))
@@ -1068,7 +839,7 @@ end
             _holds_derivatives(tangent_type(typeof(previous[1]))) ||
             _holds_derivatives(tangent_type(typeof(x)))
         )
-            _throw_prepared_cache_aliasing_error(previous[3], label)
+            throw_alias(previous[3], label)
         end
     end
     return nothing
@@ -1201,9 +972,10 @@ and computes one derivative per lane of the supplied `Lifted` width — width-1 
 caller built wider (chunked) slots.
 
 Positions sharing differentiable storage must share tangent storage, including through
-`reshape`, `view`, and captured fields. All interfaces refuse conflicting seeds before
-conversion or lifting can discard them. Build `Lifted` inputs jointly when their primals
-share storage; independently lifted slots have independent partial buffers.
+`reshape`, `view`, and captured fields. Supplied tangents are not checked for this:
+conflicting tangents at a shared storage give an undefined direction without an error.
+Build `Lifted` inputs jointly when their primals share storage; independently lifted slots
+have independent partial buffers.
 """
 @inline function value_and_derivative!!(rule::R) where {R}
     throw(
@@ -1215,15 +987,12 @@ share storage; independently lifted slots have independent partial buffers.
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Lifted,N}) where {R,N}
-    _check_shared_input_tangents(fx)
     return __call_rule(rule, fx)
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
-    _check_repeated_arg_tangents(fx)
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
-    _check_shared_input_tangents(input_primals, input_tangents)
     # Share the lift cache across arguments: fresh partial blocks for aliased primals would
     # make mutations visible through the primal but not through its derivative.
     c = IdDict()
@@ -1417,12 +1186,10 @@ tangent values in `f` and `x`.
 """
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     _check_dict_cache_inputs(map(primal, fx))
-    _check_shared_input_tangents(fx)
     return _value_and_derivative!!(cache, fx...)
 end
 
-# Internally constructed basis slots share one seeding cache (or own distinct copied
-# primals). Their sweeps validate aliasing before seeding, so need no per-chunk graph walk.
+# Internally constructed basis slots share one seeding cache or own distinct copied primals.
 # Width-1 slots select `single_rule`; wider slots must match the prepared chunk width.
 # The tuple interface below always supplies width 1.
 function _value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
@@ -1508,7 +1275,6 @@ snapshotted — a callable that mutates its own fields is not restored.
         _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
         # Types and sizes match when only the aliasing differs, so the check above cannot see it.
         _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
-        _check_repeated_arg_tangents(fx)
         tuple_map(
             cache.input_tangents, input_friendly_tangents, ntuple(identity, Val(M))
         ) do t, d, i
@@ -1522,7 +1288,6 @@ snapshotted — a callable that mutates its own fields is not restored.
                 )
             end,
         )
-        _check_shared_input_tangents(input_primals, input_friendly_tangents)
         seen = has_dict ? IdDict{Any,Any}() : nothing
         input_tangents =
             tuple_map(cache.friendly_gradients, cache.input_tangents, fx) do d, t, pair
@@ -1572,10 +1337,8 @@ end
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
-    _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
-    _check_shared_input_tangents(input_primals, input_tangents)
 
     # One aliasing cache scoped to this input lift: a reverse rule captured in
     # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
@@ -3829,6 +3592,9 @@ true
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config=fwd_config)
+    # `grad_tangent` is built independently of each direction, so a `grad_f` sharing storage
+    # with `x` would give that storage two tangents and lose one.
+    getfield(fwd_cache, :inputs_share_storage) && _throw_hessian_input_alias_error()
     return HVPCache(
         f,
         grad_f,
@@ -3894,6 +3660,8 @@ true
     _check_prepared_cache(
         getfield(cache.fwd_cache, :input_types_and_sizes), (cache.grad_f, x1)
     )
+    # `prepare_hvp_cache` refuses `x` sharing storage with `f`; this catches later sharing.
+    _check_immutable_arg_aliasing((f, x1), _throw_hessian_input_alias_error)
     _check_tangent_for_primal(x1, v)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
@@ -4057,24 +3825,16 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
     end
 end
 
-# Checked at the entry point, not in the sweep: the width-1 sweep reaches
-# `_check_shared_input_tangents` through `value_and_hvp!!`; the chunked sweep constructs
-# its own slots and calls `_value_and_derivative!!` after this admission check.
-@inline function _check_hessian_input_aliasing(cache::HVPCache)
-    getfield(getfield(cache, :fwd_cache), :inputs_share_storage) &&
-        _throw_hessian_input_alias_error()
-    return nothing
-end
-
-function _throw_hessian_input_alias_error()
+# Ignores the labels `_check_immutable_arg_aliasing` passes: the message names `f` and `x`.
+function _throw_hessian_input_alias_error(_...)
     throw(
         ArgumentError(
-            "`value_gradient_and_hessian!!` does not support inputs that share differentiable " *
-            "storage across positions — `f` holding the same array that is also passed as an " *
-            "argument, say. Each Hessian column is one standard-basis direction, which reaches " *
-            "the shared leaf at a single position, so the columns come back missing the " *
-            "contributions from the others. Concatenate the shared storage into the single " *
-            "input vector the Hessian is taken with respect to.",
+            "`value_and_hvp!!` and `value_gradient_and_hessian!!` do not support inputs that " *
+            "share differentiable storage across positions — `f` holding the same array that " *
+            "is also passed as an argument, say. Mooncake seeds the direction at the argument " *
+            "and a zero tangent at `f`, and one storage can carry only one of them, so the " *
+            "result would be wrong. Concatenate the shared storage into the single input " *
+            "vector the derivatives are taken with respect to.",
         ),
     )
 end
@@ -4132,7 +3892,7 @@ H
     )
     hb = cache.hess_buffers
     hb === nothing && _throw_not_hessian_cache()
-    _check_hessian_input_aliasing(cache)
+    _check_immutable_arg_aliasing((f, x1), _throw_hessian_input_alias_error)
     buf, chunked = hb
     T = _check_vector_argument(x1; caller=(value_gradient_and_hessian!!), cache=cache)
     H = buf.H
