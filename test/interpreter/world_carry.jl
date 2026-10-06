@@ -9,6 +9,7 @@ dynamic(x) = TARGETS[1](x) * 3
 overlaid_top(x) = overlaid(x) * 2
 @noinline stale_leaf(x) = 5x
 stale_top(x) = stale_leaf(x) * 2
+plain(x) = 2x
 end
 
 # The primal and derivative at `x` of `f`, from a rule requested now in each mode.
@@ -98,6 +99,16 @@ end
             # A Lazy/Dynamic rule rebuilds at its old world this way.
             Mooncake.build_frule(stale_interp, signature; skip_world_age_check=true)
             @test world_carry_forward(WorldCarryFixtures.stale_top, 2.0) == (28.0, 14.0)
+        end
+
+        @testset "a rule for a non-dispatch signature lives in its own world only" begin
+            signature = Tuple{typeof(WorldCarryFixtures.plain),Union{Float64,Float32}}
+            interp = Mooncake.get_interpreter(Mooncake.ForwardMode)
+            Mooncake.build_frule(interp, signature)
+            key = Mooncake.rule_cache_key(interp, signature, false, :forward)
+            @test Mooncake.cached_rule(interp, key) !== nothing
+            Core.eval(WorldCarryFixtures, :(unrelated_again(x) = x))
+            @test Mooncake.cached_rule(Mooncake.get_interpreter(Mooncake.ForwardMode), key) === nothing
         end
     end
 end

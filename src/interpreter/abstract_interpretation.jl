@@ -519,7 +519,7 @@ function cached_rule(interp::MooncakeInterpreter, key::ClosureCacheKey)
     if rule === nothing
         return nothing
     elseif root === nothing
-        return key.world == interp.world ? rule : nothing
+        return key.world_age == interp.world ? rule : nothing
     end
     return valid_in_worlds(root, CC.WorldRange(interp.world)) ? rule : nothing
 end
