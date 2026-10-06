@@ -389,7 +389,11 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
+    stmt::Union{PhiNode,PhiCNode},
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::DualInfo,
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -426,24 +430,6 @@ function modify_fwd_ad_stmts!(
     # `ϒ (#undef)` marks a variable that may be unassigned at the catch; it stays undefined.
     if isdefined(stmt, :val) && !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(const_lifted!(get_const_primal_value(stmt.val), info))
-    end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(
-        dual_ir,
-        ssa,
-        :type,
-        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
-    )
-    return nothing
-end
-
-function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
-)
-    for n in eachindex(stmt.values)
-        isassigned(stmt.values, n) || continue
-        stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = const_lifted!(get_const_primal_value(stmt.values[n]), info)
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
