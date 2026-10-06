@@ -26,6 +26,7 @@
   keywords raise `MethodError`, as other unrecognised `Config` keywords do.
 - Reject arguments identical to constants or globals read by a rule, because separately
   seeded constant storage would otherwise drop derivative contributions.
+- Fix reverse cache reuse with incompatible nested inputs, preventing incorrect gradients and unsafe memory writes.
 
 # 0.5.32
 

@@ -46,6 +46,17 @@ Base.size(x::WeightedVector) = size(x.data)
 Base.getindex(x::WeightedVector, i::Int) = x.weight * x.data[i]
 Base.similar(x::WeightedVector) = WeightedVector(similar(x.data), x.weight)
 
+struct ReuseSizeThrows <: AbstractVector{Float64}
+    data::Vector{Float64}
+    fail::Bool
+end
+Base.size(x::ReuseSizeThrows) = x.fail ? error("size callback failure") : size(x.data)
+Base.getindex(x::ReuseSizeThrows, i::Int) = x.data[i]
+Mooncake.tangent_type(::Type{ReuseSizeThrows}) = Vector{Float64}
+function Mooncake.zero_tangent_internal(x::ReuseSizeThrows, ::Mooncake.MaybeCache)
+    zeros(length(x.data))
+end
+
 mutable struct IntScaler
     a::Int
 end
@@ -1458,6 +1469,107 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_pullback!!(
                 cache, 1.0, f_arr, reshape([1.0, 2.0], 2, 1)
             )
+        end
+
+        # Below the top level only the cached tangents record the prepared shape: resized
+        # storage gives wrong gradients and out-of-bounds writes, and an `Any` slot changing
+        # type reaches a rule compiled for other fdata (a segfault on 1.10).
+        @testset "reverse reuse checks nested storage" begin
+            AnyPair = StructuredPair{Any,Vector{Float64}}
+            @testset "$label" for (label, f, x, y) in (
+                (
+                    "grown field",
+                    s -> sum(s.u),
+                    StructuredPair([1.0, 2], 0.0),
+                    StructuredPair([1.0, 2, 3], 0.0),
+                ),
+                (
+                    "shrunk mutable field",
+                    s -> s.a[1],
+                    AliasedPair([1.0, 2], [3.0]),
+                    AliasedPair([1.0], [3.0]),
+                ),
+                ("grown Ref", r -> sum(r[]), Ref([1.0, 2]), Ref([1.0, 2, 3])),
+                ("grown element", v -> sum(v[1]), [[1.0, 2]], [[1.0, 2, 3, 4]]),
+                (
+                    "Any field type",
+                    s -> s.u[1] * sum(s.v),
+                    AnyPair([5.0, 7], [1.0, 2]),
+                    AnyPair((5.0, 7.0), [1.0, 2]),
+                ),
+                ("Vector{Any} element type", v -> v[1][1] * 2.0, Any[[1.0]], Any[(1.0,)]),
+            )
+                cache = prepare_gradient_cache(f, x)
+                @test_throws r"mismatch inside `x1`" value_and_gradient!!(cache, f, y)
+            end
+
+            f = v -> sum(v[1].w) + sum(v[2].w)
+            m = RebindBox([1.0, 2.0])
+            cache = prepare_gradient_cache(f, Any[m, m])
+            @test_throws r"size mismatch inside `x1`" value_and_gradient!!(
+                cache, f, Any[m, RebindBox([1.0, 2.0, 3.0])]
+            )
+            @test all(isnothing, cache.reuse_visited.primals) &&
+                all(isnothing, cache.reuse_visited.tangents)
+            value_and_gradient!!(cache, f, Any[m, m])
+            @test all(isnothing, cache.reuse_visited.primals) &&
+                all(isnothing, cache.reuse_visited.tangents)
+
+            for pullback in (false, true)
+                f = x -> 1.0
+                prepare = pullback ? prepare_pullback_cache : prepare_gradient_cache
+                cache = prepare(f, Any[ReuseSizeThrows([1.0], false)])
+                x = Any[ReuseSizeThrows([2.0], true)]
+                @test_throws "size callback failure" if pullback
+                    value_and_pullback!!(cache, 1.0, f, x)
+                else
+                    value_and_gradient!!(cache, f, x)
+                end
+                @test cache.reuse_visited.count == 0
+                @test all(isnothing, cache.reuse_visited.primals) &&
+                    all(isnothing, cache.reuse_visited.tangents)
+            end
+
+            f = s -> sum(s.u[1][1])
+            x = AnyPair(([[1.0, 2.0]], 2.0), [1.0])
+            y = AnyPair(([[1.0, 2.0, 3.0]], 2), [1.0])
+            cache = prepare_gradient_cache(f, x)
+            @test_throws r"size mismatch inside `x1`" value_and_pullback!!(cache, 1.0, f, y)
+
+            f = p -> sum(p.a)
+            cache = prepare_gradient_cache(f, PartialInput([1.0, 2.0]))
+            @test_throws r"definedness mismatch inside `x1`" value_and_gradient!!(
+                cache, f, PartialInput([1.0, 2.0], [3.0])
+            )
+            lazy = p -> (p.b=(p.a .* 2); sum(p.b))
+            cache = prepare_gradient_cache(lazy, PartialInput([1.0, 2.0]))
+            y, (_, g) = value_and_gradient!!(cache, lazy, PartialInput([1.0, 2.0]))
+            @test y == 6.0 && g.fields.a == [2.0, 2.0]
+
+            @static if VERSION >= v"1.11-rc4"
+                mem = fill!(Memory{Float64}(undef, 4), 1.0)
+                f = h -> h.u[] * 2.0
+                cache = prepare_gradient_cache(f, StructuredPair(memoryref(mem, 1), 0.0))
+                @test_throws r"`MemoryRef` offset mismatch inside `x1`" value_and_gradient!!(
+                    cache, f, StructuredPair(memoryref(mem, 2), 0.0)
+                )
+            end
+
+            # Rules see only fdata, so an immutable slot may change type if its fdata does not,
+            # and storage without derivatives may change shape.
+            cache = prepare_gradient_cache(
+                fwd_abstract_field, FwdAbstractField(2, [1.0, 2])
+            )
+            _, (_, g) = value_and_gradient!!(
+                cache, fwd_abstract_field, FwdAbstractField(2.0, [1.0, 2])
+            )
+            @test g.fields == (a=3.0, w=[2.0, 2.0])
+            gather = s -> sum(s.u[s.v])
+            cache = prepare_gradient_cache(gather, StructuredPair([1.0, 2, 3], [1]))
+            _, (_, g) = value_and_gradient!!(
+                cache, gather, StructuredPair([1.0, 2, 3], [1, 2])
+            )
+            @test g.fields.u == [1.0, 1.0, 0.0]
         end
 
         @testset "friendly tangents" begin
@@ -4066,6 +4178,33 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_and_hvp!!(
                     cache, f, reshape([1.0, 0.0], 2, 1), reshape([1.0, 2.0], 2, 1)
+                )
+                for (old, new, score) in (
+                    ([1.0], (1.0,), sum),
+                    (PartialInput([1.0]), PartialInput([1.0], [2.0]), p -> sum(p.a)),
+                )
+                    holder = RebindBox{Any}(old)
+                    f = z -> sum(abs2, z) * score(holder.w)
+                    gc = prepare_gradient_cache(f, x)
+                    pc = prepare_pullback_cache(f, x)
+                    hc = prepare_hvp_cache(f, x)
+                    @test value_and_hvp!!(hc, f, [1.0, 0.0], x) ==
+                        (5.0, [2.0, 4.0], [2.0, 0.0])
+                    holder.w = new
+                    @test_throws Mooncake.PreparedCacheError value_and_gradient!!(gc, f, x)
+                    @test_throws Mooncake.PreparedCacheError value_and_pullback!!(
+                        pc, 1.0, f, x
+                    )
+                    @test_throws Mooncake.PreparedCacheError value_and_hvp!!(
+                        hc, f, [1.0, 0.0], x
+                    )
+                end
+                w = [1.0, 2.0]
+                g(x) = sum(x .* x) * sum(w)
+                cache = prepare_hvp_cache(g, x)
+                push!(w, 3.0)
+                @test_throws r"size mismatch inside `f`" value_and_hvp!!(
+                    cache, g, [1.0, 0.0], x
                 )
             end
 

@@ -57,7 +57,7 @@ end
 
 # Cache parameters keep the rule, reusable buffers, and input/output signatures concrete.
 # HVPCache is shared by HVP and Hessian calls.
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA,TV}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
@@ -74,6 +74,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA
     # Top-level type/size signature for y = f(x...).
     output_type_and_size::TOS
     aliases::TA
+    reuse_visited::TV
 end
 
 # `input_types_and_sizes` leads with the entry for `f`; the displayed inputs are `x...`.
@@ -899,7 +900,7 @@ end
 Cache type used by [`prepare_hvp_cache`](@ref) and [`prepare_hessian_cache`](@ref) for
 repeated Hessian-vector product and Hessian evaluations.
 """
-struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
+struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB,TR}
     f::Tf
     grad_f::Tgrad_f
     # Pre-computed zero tangent for grad_f; the function is never perturbed, only x is.
@@ -913,6 +914,7 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
     # built via `prepare_hvp_cache`. `value_gradient_and_hessian!!` writes into these.
     # Layout: `((; H::Matrix, grad::Vector, v::Vector), chunked)`.
     hess_buffers::THB
+    reuse::TR
 end
 
 # Include the cache's mode in errors: forward and reverse have different admission rules.
@@ -2150,6 +2152,231 @@ end
     return tuple_map(x -> zero_tangent_internal(x, c), fx)
 end
 
+# A reverse cache pairs each call's inputs with the tangents `_zero_tangents` built at
+# preparation, which record the prepared sizes, abstract-slot types and definedness. Every
+# reverse entry point reusing them pairs through here, so none can skip the check.
+@inline function _reuse_coduals(visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple)
+    _check_tangent_reuse(visited, tangents, fx)
+    return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
+end
+
+@generated function _check_tangent_reuse(visited, tangents::Tuple, fx::Tuple)
+    checks = map(1:fieldcount(tangents)) do i
+        if fieldtype(fx, i) <: _BuiltinArrays
+            :(_check_reuse_structure(visited, $i, fx[$i], tangents[$i], Val(true), Val(false)))
+        else
+            :(_check_reuse(visited, $i, fx[$i], tangents[$i], Val(true)))
+        end
+    end
+    visited <: NoCache && return Expr(:block, checks..., :(return nothing))
+    return quote
+        try
+            $(checks...)
+        finally
+            _reset_reuse_visited!(visited)
+        end
+        return nothing
+    end
+end
+
+# The table compares identities after hashing, including on hash collisions.
+mutable struct _ReuseVisited
+    primals::Vector{Any}
+    tangents::Vector{Any}
+    slots::Vector{Int}
+    count::Int
+end
+tangent_type(::Type{_ReuseVisited}) = NoTangent
+@inline _reset_reuse_visited!(::NoCache) = nothing
+@inline function _reset_reuse_visited!(c::_ReuseVisited)
+    @inbounds for j in 1:c.count
+        k = c.slots[j]
+        c.primals[k] = nothing
+        c.tangents[k] = nothing
+    end
+    c.count = 0
+    return nothing
+end
+@inline _reuse_seen!(::NoCache, p, t) = false
+# Keep the first pair unhashed until a second distinct pair needs the table.
+@inline function _reuse_seen!(c::_ReuseVisited, p, t)
+    @inbounds if c.count == 0
+        c.primals[1] = p
+        c.tangents[1] = t
+        c.slots[1] = 1
+        c.count = 1
+        return false
+    elseif c.count == 1
+        k = c.slots[1]
+        c.primals[k] === p && c.tangents[k] === t && return true
+        p1, t1 = c.primals[k], c.tangents[k]
+        c.primals[k] = c.tangents[k] = nothing
+        c.count = 0
+        _reuse_seen_hashed!(c, p1, t1)
+    end
+    return _reuse_seen_hashed!(c, p, t)
+end
+function _reuse_seen_hashed!(c::_ReuseVisited, p, t)
+    n = length(c.primals)
+    k = Int((objectid(p) ⊻ bitrotate(objectid(t), 1)) & UInt(n - 1)) + 1
+    while c.primals[k] !== nothing
+        c.primals[k] === p && c.tangents[k] === t && return true
+        k = (k & (n - 1)) + 1
+    end
+    if 2c.count >= n
+        ps, ts = c.primals, c.tangents
+        c.primals = fill!(Vector{Any}(undef, 2n), nothing)
+        c.tangents = fill!(Vector{Any}(undef, 2n), nothing)
+        resize!(c.slots, n)
+        c.count = 0
+        for j in eachindex(ps)
+            ps[j] === nothing || _reuse_seen_hashed!(c, ps[j], ts[j])
+        end
+        return _reuse_seen_hashed!(c, p, t)
+    end
+    c.primals[k] = p
+    c.tangents[k] = t
+    c.count += 1
+    c.slots[c.count] = k
+    return false
+end
+
+@noinline function _throw_tangent_reuse_error(c, i::Int, what::String, expected, got)
+    label = i == 1 ? "`f`" : "`x$(i - 1)`"
+    throw(
+        PreparedCacheError(
+            "Cached autodiff call has a $what mismatch inside $label.\nExpected: " *
+            "$expected\nGot: $got\nThe cache's derivative storage was built for the " *
+            "prepared value. Prepare a separate cache for this call.",
+        ),
+    )
+end
+
+# Only types that can reach themselves or abstract storage need a visited table.
+function _type_may_cycle(@nospecialize(T), stack=Any[])
+    isconcretetype(T) || return true
+    isbitstype(T) && return false
+    any(S -> S === T, stack) && return true
+    push!(stack, T)
+    may_cycle = any(
+        FT -> _type_may_cycle(FT, stack), T <: _BuiltinArrays ? (eltype(T),) : fieldtypes(T)
+    )
+    pop!(stack)
+    return may_cycle
+end
+@generated function _prepare_reuse_visited(tangents::T, fx) where {T<:Tuple}
+    c = if _type_may_cycle(T)
+        :(_ReuseVisited(
+            fill!(Vector{Any}(undef, 16), nothing),
+            fill!(Vector{Any}(undef, 16), nothing),
+            Vector{Int}(undef, 8),
+            0,
+        ))
+    else
+        :(NoCache())
+    end
+    return quote
+        visited = $c
+        _check_tangent_reuse(visited, tangents, fx)
+        return visited
+    end
+end
+
+# Rules see only fdata, and above the first mutable or array storage the rdata is rebuilt
+# per call: there a slot may change type if its fdata type does not (an immutable `Any`
+# field holding an `Int`, then a `Float64`). Inside such storage the whole tangent is
+# stored, so its type must match exactly.
+@inline function _check_reuse(c, i::Int, p::P, t::T, top::Val{S}) where {P,T,S}
+    T <: tangent_type(P) ||
+        (S && fdata_type(T) <: fdata_type(tangent_type(P))) ||
+        _throw_tangent_reuse_error(c, i, "type", "a value with tangent type $T", P)
+    # Storage without derivatives cannot misplace one, whatever its shape.
+    _holds_derivatives(T) || return nothing
+    return _check_reuse_structure(c, i, p, t, top)
+end
+
+# Other tangents are opaque; custom array tangents still record their size.
+@inline function _check_reuse_structure(c, i::Int, p, t, _)
+    p isa AbstractArray &&
+        t isa AbstractArray &&
+        size(p) != size(t) &&
+        _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
+    return nothing
+end
+@generated function _check_reuse_structure(
+    c, i::Int, p::Union{Tuple,NamedTuple}, t::Union{Tuple,NamedTuple}, top
+)
+    fieldcount(p) == fieldcount(t) || return :(return nothing)
+    checks = map(
+        k -> :(_check_reuse(c, i, getfield(p, $k), getfield(t, $k), top)), 1:fieldcount(t)
+    )
+    return Expr(:block, checks..., :(return nothing))
+end
+@generated function _check_reuse_structure(
+    c, i::Int, p::P, t::Union{Tangent,MutableTangent}, top
+) where {P}
+    fieldnames(P) == fieldnames(fieldtype(t, :fields)) || return :(return nothing)
+    mutable = t <: MutableTangent
+    checks = map(enumerate(fieldnames(P))) do (k, n)
+        quote
+            let ft = getfield(fs, $(QuoteNode(n)))
+                if ft isa PossiblyUninitTangent
+                    isdefined(p, $k) &&
+                        !is_init(ft) &&
+                        _throw_reuse_definedness(c, i, "field", false)
+                    isdefined(p, $k) &&
+                        _check_reuse(c, i, getfield(p, $k), val(ft), child)
+                else
+                    _check_reuse(c, i, getfield(p, $k), ft, child)
+                end
+            end
+        end
+    end
+    return quote
+        $(
+            if mutable && _type_may_cycle(t)
+                :(_reuse_seen!(c, p, t) && return nothing)
+            else
+                nothing
+            end
+        )
+        child = $(mutable ? :(Val(false)) : :top)
+        fs = t.fields
+        $(checks...)
+        return nothing
+    end
+end
+function _check_reuse_structure(
+    c, i::Int, p::_BuiltinArrays, t::_BuiltinArrays, top, check_size::Val{S}=Val(true)
+) where {S}
+    _holds_derivatives(typeof(t)) || return nothing
+    !S || size(p) == size(t) || _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
+    isbitstype(eltype(t)) && return nothing
+    _reuse_seen!(c, p, t) && return nothing
+    for k in eachindex(t)
+        isassigned(p, k) &&
+            !isassigned(t, k) &&
+            _throw_reuse_definedness(c, i, "element", false)
+        isassigned(p, k) && _check_reuse(c, i, p[k], t[k], Val(false))
+    end
+    return nothing
+end
+@static if VERSION >= v"1.11-rc4"
+    function _check_reuse_structure(c, i::Int, p::MemoryRef, t::MemoryRef, _)
+        Core.memoryrefoffset(p) == Core.memoryrefoffset(t) || _throw_tangent_reuse_error(
+            c, i, "`MemoryRef` offset", Core.memoryrefoffset(t), Core.memoryrefoffset(p)
+        )
+        return _check_reuse_structure(c, i, p.mem, t.mem, Val(false))
+    end
+end
+
+@noinline function _throw_reuse_definedness(c, i::Int, what::String, prepared::Bool)
+    state(defined) = defined ? "a defined $what" : "an undefined $what"
+    return _throw_tangent_reuse_error(
+        c, i, "definedness", state(prepared), state(!prepared)
+    )
+end
+
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_pullback!!(
@@ -2240,9 +2467,16 @@ The API guarantees that tangents are initialized at zero before the first autodi
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
 identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
-A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
-variable-length containers are not traversed: callers must preserve their types, shapes,
-and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
+structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
+and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
+change type if their fdata type is unchanged; the same swap inside a vector, `Ref` or
+mutable struct is refused. Custom tangent interiors (including `IdDict` values and
+`FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
+check when the primal is also an `AbstractArray`.
+A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate
+cache. See [Known Limitations](@ref).
 
 !!! note
     Evaluates `f(x...)` twice during cache preparation: once on a deepcopy of the arguments
@@ -2285,6 +2519,7 @@ and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
         input_types_and_sizes,
         output_type_and_size,
         _prepare_aliases(tangents, fx),
+        _prepare_reuse_visited(tangents, fx),
     )
 end
 
@@ -2452,9 +2687,16 @@ will return both to their original state as part of the process of computing the
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
 identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
-A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
-variable-length containers are not traversed: callers must preserve their types, shapes,
-and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
+structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
+and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
+change type if their fdata type is unchanged; the same swap inside a vector, `Ref` or
+mutable struct is refused. Custom tangent interiors (including `IdDict` values and
+`FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
+check when the primal is also an `AbstractArray`.
+A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate
+cache. See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -2512,8 +2754,9 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     fx = (f, x...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
     _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
-    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
-    coduals = tuple_map(CoDual, fx, tangents)
+    coduals = _reuse_coduals(
+        getfield(cache, :reuse_visited), getfield(cache, :tangents), fx, args_to_zero
+    )
     if isnothing(cache.dests)
         return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
     end
@@ -2543,9 +2786,16 @@ The API guarantees that tangents are initialized at zero before the first autodi
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
 identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
-A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
-variable-length containers are not traversed: callers must preserve their types, shapes,
-and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
+structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
+and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
+change type if their fdata type is unchanged; the same swap inside a vector, `Ref` or
+mutable struct is refused. Custom tangent interiors (including `IdDict` values and
+`FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
+check when the primal is also an `AbstractArray`.
+A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate
+cache. See [Known Limitations](@ref).
 
 !!! note
     Calls `f(x...)` once during cache preparation.
@@ -2576,6 +2826,7 @@ and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
         input_types_and_sizes,
         output_type_and_size,
         _prepare_aliases(tangents, fx),
+        _prepare_reuse_visited(tangents, fx),
     )
 end
 
@@ -2602,9 +2853,16 @@ will return both to their original state as part of the process of computing the
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
 identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
-A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
-variable-length containers are not traversed: callers must preserve their types, shapes,
-and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
+structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
+and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
+change type if their fdata type is unchanged; the same swap inside a vector, `Ref` or
+mutable struct is refused. Custom tangent interiors (including `IdDict` values and
+`FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
+check when the primal is also an `AbstractArray`.
+A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate
+cache. See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -2661,8 +2919,9 @@ value_and_gradient!!(cache, f, x, y)
     fx = (f, x...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
     _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
-    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
-    coduals = tuple_map(CoDual, fx, tangents)
+    coduals = _reuse_coduals(
+        getfield(cache, :reuse_visited), getfield(cache, :tangents), fx, args_to_zero
+    )
     if isnothing(cache.dests)
         return __value_and_gradient!!(cache.rule, coduals...)
     end
@@ -3587,6 +3846,7 @@ true
     # eagerly build dual callables over reverse-mode-optimised IR that the derived path
     # never invokes.
     tangents = grad_cache.tangents
+    visited = grad_cache.reuse_visited
     grad_f = if for_rule isa DerivedFoRRule{Nothing}
         y -> begin
             val_and_grad = value_and_gradient!!(grad_cache, f, y)
@@ -3595,10 +3855,8 @@ true
     else
         y -> begin
             inner_rule = get_inner_rrule(for_rule)
-            t_f, t_y = tangents
-            t_f = set_to_zero!!(t_f)
-            t_y = set_to_zero!!(t_y)
-            val, grad = __value_and_gradient!!(inner_rule, CoDual(f, t_f), CoDual(y, t_y))
+            coduals = _reuse_coduals(visited, tangents, (f, y), (true, true))
+            val, grad = __value_and_gradient!!(inner_rule, coduals...)
             (val, grad[2])
         end
     end
@@ -3613,6 +3871,7 @@ true
         fwd_cache,
         getfield(grad_cache, :output_type_and_size),
         nothing,
+        (visited, tangents),
     )
 end
 
@@ -3674,6 +3933,7 @@ true
     # `prepare_hvp_cache` refuses `x` sharing storage with `f`; this catches later sharing.
     _check_immutable_arg_aliasing((f, x1), _throw_hessian_input_alias_error)
     _check_tangent_for_primal(x1, v)
+    _check_tangent_reuse(cache.reuse..., (f, x1))
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
     )
@@ -3797,6 +4057,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.fwd_cache,
         base.output_type_and_size,
         (_make_hessian_buffers(x1), chunked),
+        base.reuse,
     )
 end
 
@@ -4551,6 +4812,21 @@ end
 function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
     return throw_ptr_in_output_error(y)
 end
+
+# ── Checks on prepared-cache reuse ───────────────────────────────────────────────────
+#
+# Each cached call is checked against the inputs the cache was prepared with:
+#
+# - top-level types and sizes: `_check_prepared_cache` against the `TypeAndSize` records,
+#   in both modes;
+# - nested derivative storage: reverse `_check_tangent_reuse` checks sizes, compatible
+#   slot types, defined primal slots and MemoryRef offsets through structural tangents;
+#   custom tangents limit coverage. Forward refresh and snapshot walks check extents
+#   (`_refresh_all!`, `_snapshot_inputs!!`, `_check_copy_extent`);
+# - storage sharing: in reverse, `_check_tangent_aliasing` compares mutable inputs and
+#   storage at fixed positions (tuple, named-tuple and immutable struct fields); in forward,
+#   `_check_prepared_forward_aliasing`, `_check_primal_aliasing`,
+#   `_check_immutable_arg_aliasing` and `_check_seed_aliasing`.
 
 # Prepared-cache type and size for one primal: array inputs record their size, everything
 # else records `()`.

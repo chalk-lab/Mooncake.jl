@@ -396,10 +396,17 @@ New objects with the same relationships are allowed; prepare a separate cache wh
 those relationships change. Forward caches using structured gradient seeds also check
 the sharing of differentiable array leaves inside struct fields before refreshing their buffers.
 
-Callers must preserve types, shapes, and aliasing throughout the inputs, including
-parts the guard does not inspect. The guard does not traverse mutable struct interiors,
-abstractly typed fields, array elements, or other variable-length containers such
-as dictionaries. It does not establish overlap introduced through raw pointers or
+Reverse reuse checks derivative storage through tuples, named tuples, builtin arrays
+and structural tangents in `f` and `x`: sizes, compatible slot types, defined primal
+slots and `MemoryRef` offsets. Above the first mutable or array storage, immutable
+slots may change type when their fdata type is unchanged; the same swap inside a
+vector, `Ref` or mutable struct is refused. An undefined primal slot may reuse an
+initialized tangent slot. Custom tangent interiors, including `IdDict` values and
+`FunctionWrapper` captures, are not checked. Custom `AbstractArray` tangents have a
+size check when the primal is also an `AbstractArray`. Callers must preserve aliasing
+in the parts the alias guard does not inspect: it does not traverse mutable struct interiors,
+abstractly typed fields, array elements, or other variable-length containers such as
+dictionaries. It does not establish overlap introduced through raw pointers or
 `unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
 The forward per-call alias check has the same boundary, including abstractly typed
 fields and mutable functor interiors.
