@@ -241,13 +241,28 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
     return d, NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
-# Rebuild `dv` over `stored` so the primal and its dual share storage. Converting an
-# `NDualArray`'s element type must allocate a new primal, which severs it from the stored object.
+# Rebuild `val`'s dual over `stored` so the primal and its dual share storage. Converting a
+# dual's element type would allocate a new primal, severing it from the stored object.
 @inline function _fwd_dual_over_stored(
-    ::Val{N}, stored::Array{E}, dv::NDualArray
-) where {N,E<:NDualEltype}
+    w::Val{N}, stored::Array{E}, val::Lifted{<:Array{T},N}
+) where {N,E<:NDualEltype,T<:NDualEltype}
+    return _fwd_dual_over_stored(_storage_kind(E), _storage_kind(T), w, stored, val)
+end
+@inline function _fwd_dual_over_stored(
+    ::NumericStorage, ::NumericStorage, ::Val{N}, stored, val
+) where {N}
     out = zero_dual(Val(N), stored)
-    copyto!(getfield(out, :partials_block), getfield(dv, :partials_block))
+    copyto!(getfield(out, :partials_block), getfield(tangent(val), :partials_block))
+    return out
+end
+# Otherwise a numeric union holds one dual per element: rebuild each from `val`'s lanes.
+function _fwd_dual_over_stored(::Any, ::Any, ::Val{N}, stored, val) where {N}
+    out = zero_dual(Val(N), stored)
+    lanes = ntuple(k -> tangent(val, k), Val(N))
+    for i in eachindex(stored)
+        s = stored[i]
+        out[i] = tangent(_lift_from_lanes(s, map(t -> convert(typeof(s), t[i]), lanes)))
+    end
     return out
 end
 @inline _fwd_dual_over_stored(::Val, stored, _) = throw(
@@ -280,7 +295,7 @@ function frule!!(
         if stored === primal(val) || !ismutable(stored)
             tangent(val)
         else
-            _fwd_dual_over_stored(Val(N), stored, tangent(val))
+            _fwd_dual_over_stored(Val(N), stored, val)
         end
     end
     primal(store)(tangent(d), dslot, primal(key))
@@ -471,6 +486,16 @@ function _keyed_dict_rule_cases(rng_ctor, D)
             Float32[3.0, 4.0],
             :b,
         ),
+        # a numeric-union eltype has structural storage
+        (
+            false,
+            :none,
+            nothing,
+            setindex!,
+            D{Symbol,Vector{Union{Float32,Float64}}}(:a => [1.0, 2.0f0]),
+            [3.0, 4.0],
+            :b,
+        ),
         (false, :none, nothing, get, D(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, D(true => 5.0), false, 2.0),
         # Absent key with a default whose type differs from the dict value type V:
@@ -518,8 +543,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:iddict})
         d[1][1] += 1.0
         return sum(d[1])
     end
-    test_cases = Any[(
-        false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]
-    )]
+    function union_store_then_mutate(x::Vector{Float64})
+        d = IdDict{Int,Vector{Union{Float32,Float64}}}()
+        d[1] = x
+        d[1][1] *= 3
+        return sum(d[1])
+    end
+    test_cases = Any[
+        (false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]),
+        (false, :none, nothing, union_store_then_mutate, [3.0, 4.0]),
+    ]
     return test_cases, Any[]
 end
