@@ -37,7 +37,8 @@ function world_carry_agrees(x; zero_leaf=false)
         if zero_leaf
             slope = 0.0
         end
-        for (primal_value, derivative) in (world_carry_forward(f, x), world_carry_reverse(f, x))
+        for (primal_value, derivative) in
+            (world_carry_forward(f, x), world_carry_reverse(f, x))
             agrees &= primal_value ≈ expected
             agrees &= derivative ≈ slope
         end
@@ -81,14 +82,18 @@ end
         @testset "a new primitive declaration derives a new rule" begin
             Core.eval(
                 WorldCarryFixtures,
-                :(Mooncake.@zero_derivative Mooncake.DefaultCtx Tuple{typeof(leaf),Float64}),
+                :(Mooncake.@zero_derivative Mooncake.DefaultCtx Tuple{
+                    typeof(leaf),Float64
+                }),
             )
             @test world_carry_agrees(0.5; zero_leaf=true)
         end
 
         @testset "a new overlay method of a callee derives a new rule" begin
             @test world_carry_forward(WorldCarryFixtures.overlaid_top, 2.0) == (12.0, 6.0)
-            Core.eval(WorldCarryFixtures, :(Mooncake.@mooncake_overlay overlaid(x::Float64) = 10x))
+            Core.eval(
+                WorldCarryFixtures, :(Mooncake.@mooncake_overlay overlaid(x::Float64) = 10x)
+            )
             @test world_carry_forward(WorldCarryFixtures.overlaid_top, 2.0) == (40.0, 20.0)
         end
 
@@ -108,7 +113,9 @@ end
             key = Mooncake.rule_cache_key(interp, signature, false, :forward)
             @test Mooncake.cached_rule(interp, key) !== nothing
             Core.eval(WorldCarryFixtures, :(unrelated_again(x) = x))
-            @test Mooncake.cached_rule(Mooncake.get_interpreter(Mooncake.ForwardMode), key) === nothing
+            @test Mooncake.cached_rule(
+                Mooncake.get_interpreter(Mooncake.ForwardMode), key
+            ) === nothing
         end
     end
 end

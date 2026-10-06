@@ -2791,7 +2791,9 @@ function DynamicDerivedRule(debug_mode::Bool, world::UInt)
     return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
+function _copy(x::P) where {P<:DynamicDerivedRule}
+    P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
+end
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 

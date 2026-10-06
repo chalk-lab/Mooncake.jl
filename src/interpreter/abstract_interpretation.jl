@@ -57,7 +57,14 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         cache_world::UInt=world,
     ) where {C,M<:Mode}
         ip = new{C,M}(
-            meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache, cache_world
+            meta,
+            world,
+            inf_params,
+            opt_params,
+            inf_cache,
+            code_cache,
+            oc_cache,
+            cache_world,
         )
         tts = Any[
             Tuple{typeof(sum),Tuple{Int}},
@@ -407,13 +414,20 @@ unchanged.
 """
 function rule_extension_stamp()
     functions = (
-        frule!!, rrule!!, _is_primitive, tangent_type, build_primitive_frule, build_primitive_rrule
+        frule!!,
+        rrule!!,
+        _is_primitive,
+        tangent_type,
+        build_primitive_frule,
+        build_primitive_rrule,
     )
     newest = NewestMethodWorld(map(typeof, functions), UInt[0])
     Base.visit(newest, Core.methodtable)
     newest_overlay = NewestAnyMethodWorld(UInt[0])
     Base.visit(newest_overlay, mooncake_method_table)
-    return (only(newest.world), only(newest_overlay.world), length(Base.loaded_modules_array()))
+    return (
+        only(newest.world), only(newest_overlay.world), length(Base.loaded_modules_array())
+    )
 end
 
 """

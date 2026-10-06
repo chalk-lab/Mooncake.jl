@@ -609,7 +609,9 @@ function DynamicFRule(debug_mode::Bool, world::UInt)
     return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
+function _copy(x::P) where {P<:DynamicFRule}
+    P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
+end
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
