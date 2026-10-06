@@ -852,7 +852,7 @@ end
         return _holds_derivatives(fieldtype(T, :fields))
     T <: PossiblyUninitTangent && return _holds_derivatives(T.parameters[1])
     T <: Union{Tuple,NamedTuple} && return any(_holds_derivatives, fieldtypes(T))
-    T <: AbstractArray && return _holds_derivatives(eltype(T))
+    T <: Union{AbstractArray,Ptr} && return _holds_derivatives(eltype(T))
     T <: KeyedDict && return _holds_derivatives(valtype(T))
     @static if VERSION >= v"1.11-rc4"
         T <: MemoryRef && return _holds_derivatives(eltype(T))
@@ -2583,7 +2583,7 @@ end
     checks = map(dicts) do (D, suffix)
         # Resolve tangent types at runtime so custom tangent methods remain visible.
         :(
-            _dict_key_has_derivatives(tangent_type($(valtype(D)))) &&
+            _holds_derivatives(tangent_type($(valtype(D)))) &&
             _throw_dict_cache_input($D, path * $suffix)
         )
     end

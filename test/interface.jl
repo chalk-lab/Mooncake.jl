@@ -263,6 +263,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             [[1, 2]],
             [1, 2],
             StructuredPair([1, 2], 1),
+            [Ptr{Int}(8)],
+            Ref(Ptr{Int}(8)),
         )
             f = (a, b, x) -> x * x
             for w in (1, 8)

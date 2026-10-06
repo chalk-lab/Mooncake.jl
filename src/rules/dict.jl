@@ -164,22 +164,8 @@ end
 # Traverse the PRIMAL table to choose a key; derivatives are always fetched by that key.
 # The cursor is Base's cursor, including its end sentinel; the tangent's table may differ.
 # Inspect tangent types, not values: derivative-free mutable keys are safe to expose.
-function _dict_tangent_has_derivatives(T, seen=())
-    T === Union{} && return false
-    T === NoTangent && return false
-    T in seen && return false
-    T isa Union &&
-        return any(t -> _dict_tangent_has_derivatives(t, seen), Base.uniontypes(T))
-    isconcretetype(T) || return true
-    seen = (seen..., T)
-    T <: Union{AbstractArray,Ptr} && return _dict_tangent_has_derivatives(eltype(T), seen)
-    T <: KeyedDict && return _dict_tangent_has_derivatives(valtype(T), seen)
-    isprimitivetype(T) && return true
-    return any(t -> _dict_tangent_has_derivatives(t, seen), fieldtypes(T))
-end
-@generated _dict_key_has_derivatives(::Type{T}) where {T} = _dict_tangent_has_derivatives(T)
 function _check_dict_key(k)
-    !_dict_key_has_derivatives(tangent_type(typeof(k))) || throw(
+    !_holds_derivatives(tangent_type(typeof(k))) || throw(
         ArgumentError(
             "Dict and Set tangents cannot expose differentiable keys; use non-differentiable keys.",
         ),
