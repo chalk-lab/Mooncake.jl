@@ -51,7 +51,7 @@ function increment_field!!(
 end
 
 tangent_to_primal_internal!!(x::P, t::P, ::MaybeCache) where {P<:CF} = t
-primal_to_tangent_internal!!(t::P, x::P, ::MaybeCache) where {P<:CF} = x
+primal_to_tangent_internal!!(t, x::CF, ::MaybeCache) = x
 
 # Complex tangents are scalar values, not field-wise Tangent wrappers.
 friendly_tangent_cache(::CF) = FriendlyTangentCache{AsRaw}(nothing)

@@ -1036,17 +1036,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     chunk_size=union_seed_width, friendly_tangents=friendly
                 ),
             )
-            # A complex friendly seed fails in `primal_to_tangent_internal!!`, before `lift`
-            # checks the leaf type.
-            expected = if friendly && seed_value isa Complex
-                (ErrorException, "primal_to_tangent_internal!!")
-            else
-                (
-                    ArgumentError,
-                    "Tangent leaf type $(typeof(seed_value)) must match primal leaf type Float32",
-                )
-            end
-            TestUtils._test_throws(expected...) do
+            TestUtils._test_throws(
+                ArgumentError,
+                "Tangent leaf type $(typeof(seed_value)) must match primal leaf type Float32",
+            ) do
                 Mooncake.value_and_derivative!!(
                     union_seed_cache,
                     (union_seed_square, NoTangent()),
