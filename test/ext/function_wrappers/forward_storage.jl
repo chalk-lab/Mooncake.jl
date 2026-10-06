@@ -187,6 +187,12 @@ end
         @test Mooncake.value_and_derivative!!(
             cache, (call_wrapper, Mooncake.NoTangent()), (fw, dfw), (2.0, 0.0)
         ) == (6.0, 2.0)
+        @test Mooncake.value_and_derivative!!(
+            cache,
+            (call_wrapper, Mooncake.NoTangent()),
+            (fw, FW(WrapperGain(1.0))),
+            (2.0, 0.0),
+        ) == (6.0, 2.0)
         y, g = Mooncake.value_and_gradient!!(cache, call_wrapper, fw, 2.0)
         yr, gr = Mooncake.value_and_gradient!!(
             Mooncake.prepare_gradient_cache(call_wrapper, fw, 2.0; config),
