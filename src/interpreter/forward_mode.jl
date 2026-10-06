@@ -91,7 +91,7 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(interp.cache_world, (sig_or_mi, debug_mode, :forward))
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
@@ -104,6 +104,7 @@ function build_frule(
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
+            register_rule_root!(interp, oc_cache_key, sig_or_mi)
             return rule
         end
     catch e

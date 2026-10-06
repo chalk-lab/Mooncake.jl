@@ -2086,7 +2086,7 @@ function build_derived_rrule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :reverse))
+        oc_cache_key = ClosureCacheKey(interp.cache_world, (sig_or_mi, debug_mode, :reverse))
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
@@ -2115,6 +2115,7 @@ function build_derived_rrule(
             raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
+            register_rule_root!(interp, oc_cache_key, sig_or_mi)
             return rule
         end
     catch e

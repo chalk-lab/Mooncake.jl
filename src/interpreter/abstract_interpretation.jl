@@ -15,12 +15,21 @@ struct ClosureCacheKey
     key::Any
 end
 
+# `roots` maps each key of an interpreter's `oc_cache` to the `CodeInstance` of the method that
+# rule was derived from; Julia invalidates it through backedges when anything the rule inlined
+# or called changes (see `successor_interpreter`).
 struct MooncakeCache
     dict::IdDict{Core.MethodInstance,Core.CodeInstance}
+    roots::Dict{ClosureCacheKey,Core.CodeInstance}
 end
 
-MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
-Base.empty!(c::MooncakeCache) = (empty!(c.dict); c)
+function MooncakeCache()
+    return MooncakeCache(
+        IdDict{Core.MethodInstance,Core.CodeInstance}(),
+        Dict{ClosureCacheKey,Core.CodeInstance}(),
+    )
+end
+Base.empty!(c::MooncakeCache) = (empty!(c.dict); empty!(c.roots); c)
 
 # The method table used by `Mooncake.@mooncake_overlay`.
 Base.Experimental.@MethodTable mooncake_method_table
@@ -33,6 +42,8 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
     inf_cache::Vector{CC.InferenceResult}
     code_cache::MooncakeCache
     oc_cache::Dict{ClosureCacheKey,Any}
+    # The world `oc_cache` is keyed on; interpreters sharing both caches share it.
+    cache_world::UInt
     function MooncakeInterpreter(
         ::Type{C},
         ::Type{M};
@@ -43,8 +54,11 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         inf_cache::Vector{CC.InferenceResult}=CC.InferenceResult[],
         code_cache::MooncakeCache=MooncakeCache(),
         oc_cache::Dict{ClosureCacheKey,Any}=Dict{ClosureCacheKey,Any}(),
+        cache_world::UInt=world,
     ) where {C,M<:Mode}
-        ip = new{C,M}(meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache)
+        ip = new{C,M}(
+            meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache, cache_world
+        )
         tts = Any[
             Tuple{typeof(sum),Tuple{Int}},
             Tuple{typeof(sum),Tuple{Int,Int}},
@@ -336,32 +350,132 @@ const GLOBAL_INTERPRETERS = Dict(
 )
 
 """
+    const GLOBAL_CACHE_STAMPS
+
+The `rule_extension_stamp` each mode's cached rules were derived under.
+"""
+const GLOBAL_CACHE_STAMPS = Dict{Any,Any}(ForwardMode => nothing, ReverseMode => nothing)
+
+# Visits every method of the global method table, recording the newest world in which a method
+# of one of `function_types` was added. `methods(f)` costs 5x more on `_is_primitive`.
+struct NewestMethodWorld{T<:Tuple}
+    function_types::T
+    world::Vector{UInt}
+end
+
+function (newest::NewestMethodWorld)(method::Method)
+    head = Base.unwrap_unionall(method.sig).parameters[1]
+    if any(type -> head === type, newest.function_types)
+        newest.world[1] = max(newest.world[1], method.primary_world)
+    end
+    return nothing
+end
+
+"""
+    rule_extension_stamp()
+
+What rule derivation reads that Julia's backedges do not track: the newest method of each
+function it dispatches through, and the number of loaded packages (whose extensions add such
+methods). Cached rules survive a world move only while the stamp is unchanged.
+"""
+function rule_extension_stamp()
+    functions = (
+        frule!!, rrule!!, _is_primitive, tangent_type, build_primitive_frule, build_primitive_rrule
+    )
+    newest = NewestMethodWorld(map(typeof, functions), UInt[0])
+    Base.visit(newest, Core.methodtable)
+    return (only(newest.world), length(Base.loaded_modules_array()))
+end
+
+"""
+    successor_interpreter(old::MooncakeInterpreter)
+
+The interpreter for the current world after `old`'s world has passed. From Julia 1.12, when no
+method of an extension point of `rule_extension_stamp` was added, it shares `old`'s caches minus
+every inferred method and rule that Julia has since invalidated; otherwise it starts empty.
+A rule is valid exactly when the `CodeInstance` of its root method is, because Julia invalidates
+that through backedges once anything the rule inlined or called is redefined or gains a method.
+"""
+function successor_interpreter(old::MooncakeInterpreter{C,M}) where {C,M}
+    @static if VERSION >= v"1.12-"
+        stamp = rule_extension_stamp()
+        if stamp == GLOBAL_CACHE_STAMPS[M]
+            cache = old.code_cache
+            filter!(p -> p.second.max_world == typemax(UInt), cache.dict)
+            filter!(p -> p.second.max_world == typemax(UInt), cache.roots)
+            filter!(p -> haskey(cache.roots, p.first), old.oc_cache)
+            return MooncakeInterpreter(
+                C, M; code_cache=cache, oc_cache=old.oc_cache, cache_world=old.cache_world
+            )
+        end
+        GLOBAL_CACHE_STAMPS[M] = stamp
+    end
+    return MooncakeInterpreter(C, M)
+end
+
+"""
     get_interpreter(mode::Type{<:Mode})
 
 Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
-interpreter if one already exists for the current world age, otherwise creates a new one.
+interpreter if one already exists for the current world age, otherwise creates one with
+`successor_interpreter`.
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
 function get_interpreter(mode::Type{<:Mode})
-    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
-        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
+    lock(MOONCAKE_INFERENCE_LOCK) do
+        if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
+            GLOBAL_INTERPRETERS[mode] = successor_interpreter(GLOBAL_INTERPRETERS[mode])
+        end
+        return GLOBAL_INTERPRETERS[mode]
     end
-    return GLOBAL_INTERPRETERS[mode]
 end
 
 """
     get_interpreter(mode::Type{<:Mode}, world::UInt)
 
 Returns a `MooncakeInterpreter` for `mode` pinned to `world`. When `world` is the current
-world age this is equivalent to `get_interpreter(mode)` (served from the process-wide cache).
-A non-current `world` (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world)
-yields a fresh, uncached interpreter, leaving the shared current-world cache untouched.
+world age this is equivalent to `get_interpreter(mode)`. An older `world` inside the current
+cache epoch (e.g. a Lazy/Dynamic rule rebuilding at its stored prediction world) shares the
+current caches; one before it gets a fresh, uncached interpreter.
 """
 function get_interpreter(mode::Type{<:Mode}, world::UInt)
-    world == Base.get_world_counter() && return get_interpreter(mode)
-    return MooncakeInterpreter(DefaultCtx, mode; world)
+    current = get_interpreter(mode)
+    world == current.world && return current
+    world < current.cache_world && return MooncakeInterpreter(DefaultCtx, mode; world)
+    return MooncakeInterpreter(
+        DefaultCtx,
+        mode;
+        world,
+        code_cache=current.code_cache,
+        oc_cache=current.oc_cache,
+        cache_world=current.cache_world,
+    )
 end
+
+"""
+    register_rule_root!(interp::MooncakeInterpreter, key::ClosureCacheKey, sig_or_mi)
+
+Records the `CodeInstance` of the method a rule in `interp.oc_cache` was derived from, so that
+`successor_interpreter` can tell whether the rule outlives a world move. A rule without a root
+(Julia before 1.12, or a source that is not a single method) is dropped at the next world move.
+"""
+function register_rule_root!(interp::MooncakeInterpreter, key::ClosureCacheKey, sig_or_mi)
+    @static if VERSION >= v"1.12-"
+        mi = root_method_instance(interp, sig_or_mi)
+        mi === nothing && return nothing
+        ci = CC.typeinf_ext(interp, mi, CC.SOURCE_MODE_NOT_REQUIRED)
+        ci isa Core.CodeInstance && (interp.code_cache.roots[key] = ci)
+    end
+    return nothing
+end
+
+root_method_instance(::MooncakeInterpreter, mi::Core.MethodInstance) = mi
+function root_method_instance(interp::MooncakeInterpreter, tt::Type{<:Tuple})
+    matches = get_matches(CC.findall(tt, CC.method_table(interp)).matches)
+    return length(matches) == 1 ? CC.specialize_method(only(matches)) : nothing
+end
+root_method_instance(::MooncakeInterpreter, ::Any) = nothing
 
 """
     empty_mooncake_caches!()

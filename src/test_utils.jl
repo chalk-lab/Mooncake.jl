@@ -1249,7 +1249,7 @@ function test_rule(
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, debug_mode, :forward)
-                        k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
+                        k = Mooncake.ClosureCacheKey(fwd_interp.cache_world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
                 end
@@ -1257,7 +1257,7 @@ function test_rule(
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, debug_mode, :reverse)
-                        k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
+                        k = Mooncake.ClosureCacheKey(rvs_interp.cache_world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
                     end
                 end
