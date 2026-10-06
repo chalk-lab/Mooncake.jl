@@ -91,9 +91,10 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.cache_world, (sig_or_mi, debug_mode, :forward))
-        if haskey(interp.oc_cache, oc_cache_key)
-            return _copy(interp.oc_cache[oc_cache_key])
+        oc_cache_key = rule_cache_key(interp, sig_or_mi, debug_mode, :forward)
+        cached = cached_rule(interp, oc_cache_key)
+        if cached !== nothing
+            return copy_rule_at(interp, cached)
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
@@ -535,7 +536,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     end
 end
 
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
+_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, pinned_world(x.world))
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -608,7 +609,7 @@ function DynamicFRule(debug_mode::Bool, world::UInt)
     return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
+_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
