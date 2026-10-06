@@ -1528,54 +1528,39 @@ const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
 # Keep runtime-name getfield available on 1.10 for forward-over-reverse HVPs.
 # _get_lifted_field handles tuples, named tuples and structs.
-function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
-    # Val(runtime_name) would force runtime dispatch through an abstract Lifted slot.
-    _name = primal(name)
-    y = getfield(primal(x), _name)
-    P = _typeof(primal(x))
-    if tangent_type(P) == NoTangent
-        # Build canonical V even for a SimpleVector field of a NoTangent parent.
-        # TODO(#1295): the fresh partials do not alias the field's seeded storage.
-        return uninit_lifted(Val(Nw), y)
-    else
-        V_i = _get_lifted_field(tangent(x), _name)
-        _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-        return Lifted{typeof(y),Nw}(y, V_i)
+for bounds in ((), (:inbounds,))
+    bounds_args = [:($b::Lifted) for b in bounds]
+    bounds_vals = [:(primal($b)) for b in bounds]
+    @eval begin
+        function frule!!(
+            ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, $(bounds_args...)
+        ) where {Nw}
+            # Val(runtime_name) would force runtime dispatch through an abstract Lifted slot.
+            _name = primal(name)
+            y = getfield(primal(x), _name, $(bounds_vals...))
+            P = _typeof(primal(x))
+            if tangent_type(P) == NoTangent
+                # Build canonical V even for a SimpleVector field of a NoTangent parent.
+                # TODO(#1295): the fresh partials do not alias the field's seeded storage.
+                return uninit_lifted(Val(Nw), y)
+            else
+                V_i = _get_lifted_field(tangent(x), _name)
+                _check_lifted_field_ptr_lanes(V_i, Val(Nw))
+                return Lifted{typeof(y),Nw}(y, V_i)
+            end
+        end
+        # NDualRef has no _get_lifted_field method: rebuild its real/complex scalar V
+        # from parallel partials, as lgetfield does. Its only field is :x (index 1).
+        function frule!!(
+            ::Lifted{typeof(getfield),Nw},
+            x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+            name::Lifted,
+            $(bounds_args...),
+        ) where {Nw,P<:NDualEltype}
+            v = getfield(primal(x), primal(name), $(bounds_vals...))
+            return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+        end
     end
-end
-function frule!!(
-    ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
-) where {Nw}
-    _name = primal(name)
-    _inbounds = primal(inbounds)
-    y = getfield(primal(x), _name, _inbounds)
-    P = _typeof(primal(x))
-    if tangent_type(P) == NoTangent
-        # See the 2-arg `getfield` frule: canonical zero V (handles a `SimpleVector` field
-        # whose V is `Vector{Any}`, not `NoDual`), and its TODO(#1295).
-        return uninit_lifted(Val(Nw), y)
-    else
-        V_i = _get_lifted_field(tangent(x), _name)
-        _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-        return Lifted{typeof(y),Nw}(y, V_i)
-    end
-end
-# NDualRef has no _get_lifted_field method: rebuild its real/complex scalar V
-# from parallel partials, as lgetfield does. Its only field is :x (index 1).
-function frule!!(
-    ::Lifted{typeof(getfield),Nw}, x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef}, name::Lifted
-) where {Nw,P<:NDualEltype}
-    v = getfield(primal(x), primal(name))
-    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
-end
-function frule!!(
-    ::Lifted{typeof(getfield),Nw},
-    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    name::Lifted,
-    inbounds::Lifted,
-) where {Nw,P<:NDualEltype}
-    v = getfield(primal(x), primal(name), primal(inbounds))
-    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
 end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
