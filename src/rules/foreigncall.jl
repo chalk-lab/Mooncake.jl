@@ -728,6 +728,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             Val{:ccall}(),
         ),
     ]
+    @static if v"1.11-" <= VERSION < v"1.12-"
+        push!(
+            test_cases,
+            (
+                true,
+                :stability,
+                (skip_reverse=true,),
+                _foreigncall_,
+                Val(:jl_alloc_genericmemory),
+                Val(Ref{Memory{Float64}}),
+                (Val(Any), Val(Int)),
+                Val(0),
+                Val(:ccall),
+                Memory{Float64},
+                5,
+                5,
+            ),
+        )
+    end
     push!(
         test_cases,
         (

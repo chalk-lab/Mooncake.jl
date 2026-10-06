@@ -322,7 +322,8 @@ end
 # TODO: This is a workaround for forward-over-reverse. Primitives in reverse mode can get
 # inlined when building the forward rule, exposing internal ccalls that lack an frule!!.
 # For example, `dataids` is a reverse-mode primitive, but inlining it exposes
-# `jl_genericmemory_owner`. The proper fix is to prevent primitive inlining during
+# `jl_genericmemory_owner`; on 1.11 the `Memory` constructor's `rrule!!` likewise exposes
+# `jl_alloc_genericmemory`. The proper fix is to prevent primitive inlining during
 # forward-over-reverse by forwarding `inlining_policy` through `BugPatchInterpreter` to
 # `MooncakeInterpreter` during `optimise_ir!`, but this causes allocation regressions.
 # See https://github.com/chalk-lab/Mooncake.jl/pull/878 for details.
@@ -424,5 +425,21 @@ end
             :jl_alloc_array_3d, Array{P,3}, (Any, Int, Int, Int), Array{P,3}, _l, _m, _n
         )
         return Lifted{Array{P,3},Nw}(y, uninit_dual(Val(Nw), y))
+    end
+end
+
+@static if v"1.11-" <= VERSION < v"1.12-"
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_genericmemory},Nw},
+        ::Lifted{Val{Ref{Memory{P}}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Memory{P}},Nw},
+        n::Lifted{Int},
+        args::Vararg{Lifted},
+    ) where {Nw,P}
+        return frule!!(zero_lifted(Val(Nw), Memory{P}), zero_lifted(Val(Nw), undef), n)
     end
 end
