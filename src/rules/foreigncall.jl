@@ -86,11 +86,8 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-# Mutable V uses the tangent object's address, tagged Ptr{tangent_type(Nothing)} rather
-# than a per-lane partial pointer. This permits object round-trips but makes scalar loads
-# fail the pointerref coherence check: value and partials have no parallel buffer.
-# Only NoDual gets NULL; immutable differentiable V has no object address and must throw.
-# The primal address (identity/hashing/objectid) is unchanged.
+# Record the tangent object's type: it can be recovered as an object, but cannot
+# supply scalar partials at primal field offsets. NoDual has no tangent address.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
     tx = tangent(x)
@@ -108,7 +105,14 @@ function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
             ),
         )
     end
-    return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
+    return Lifted{typeof(y),Nw}(
+        y,
+        PointerDual(
+            ntuple(_ -> Ptr{Nothing}(taddr), Val(Nw)),
+            tx isa NoDual ? NoTangent : typeof(tx),
+            typeof(primal(x)),
+        ),
+    )
 end
 # Ref{<:NDualEltype} is refused at every width: a raw pointer read is invisible to the
 # optimiser, which may elide the primal Ref's store. Parallel partials would preserve
@@ -199,8 +203,9 @@ function _unsafe_pointer_to_objref_frule(
     tx = tangent(x)
     # NULL proves non-differentiability. An uninit_* placeholder instead aliases the
     # primal address: recovering it as a tangent would let derivatives mutate user data.
-    (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
-    UInt(tx[1]) == UInt(primal(x)) && throw(
+    (tx isa NoDual || _void_ptr_addr(tx[1]) == Ptr{Nothing}(0)) &&
+        return Lifted{typeof(y),Nw}(y, NoDual())
+    UInt(_void_ptr_addr(tx[1])) == UInt(primal(x)) && throw(
         ArgumentError(
             "Forward-mode AD cannot recover a tangent object from a `Ptr` with no tangent " *
             "storage behind it: the lane pointer is the primal's own address, so the recovered " *
@@ -208,7 +213,7 @@ function _unsafe_pointer_to_objref_frule(
             "mutate the primal. Take `pointer_from_objref` of a value that carries a tangent.",
         ),
     )
-    return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
+    return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(_void_ptr_addr(tx[1])))
 end
 # Numeric per-lane pointers distinguish Ref partial storage from the generic objref tag.
 # Read P at runtime: NTuple{0,Ptr{P}} erases P, causing an unbound signature parameter.
@@ -231,8 +236,7 @@ function _unsafe_pointer_to_objref_frule(
     )::Base.RefValue{NTuple{Nw,P}}
     return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
 end
-# The tangent of a `Ptr{Nothing}` carries its address alongside the erased element width; every other
-# pointer tangent IS the address.
+# Descriptors retain provenance alongside the address.
 @inline _void_ptr_addr(p::VoidPtrTangent) = p.p
 @inline _void_ptr_addr(p::Ptr) = p
 
@@ -270,10 +274,10 @@ function frule!!(
     src_partials = tangent(src)
     @inbounds for lane in 1:Nw
         IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
-            primal(dest), dest_partials[lane]
+            primal(dest), dest_partials[lane], _n
         )
         IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
-            primal(src), src_partials[lane]
+            primal(src), src_partials[lane], _n
         )
     end
     unsafe_copyto!(primal(dest), primal(src), _n)
@@ -311,6 +315,28 @@ function frule!!(
     unsafe_copyto!(primal(dest), primal(src), primal(n))
     return dest
 end
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{Ptr{T},N,V},
+    src::Lifted{Ptr{T},N,W},
+    n::Lifted,
+) where {
+    N,
+    T,
+    V<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
+    W<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
+}
+    primal(dest) === primal(src) && return dest
+    for x in (dest, src)
+        if !(tangent(x) isa NoDual)
+            for d in tangent(x)
+                IntrinsicsWrappers._check_narrowed_pointer_write(primal(x), d, primal(n))
+            end
+        end
+    end
+    unsafe_copyto!(primal(dest), primal(src), primal(n))
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
@@ -318,8 +344,19 @@ function rrule!!(
         return dest, NoPullback(ntuple(_ -> NoRData(), 4))
     end
     IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest), primal(n))
+    IntrinsicsWrappers._check_narrowed_pointer_write(primal(dest), tangent(dest), primal(n))
+    IntrinsicsWrappers._check_narrowed_pointer_write(primal(src), tangent(src), primal(n))
     IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
     _n = primal(n)
+    if tangent(dest) isa VoidPtrTangent && tangent(src) isa VoidPtrTangent
+        saved = copy(unsafe_wrap(Array, primal(dest), _n))
+        unsafe_copyto!(primal(dest), primal(src), _n)
+        function restore_nondiff_copy!!(::NoRData)
+            GC.@preserve saved unsafe_copyto!(primal(dest), pointer(saved), _n)
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return dest, restore_nondiff_copy!!
+    end
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
@@ -848,6 +885,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         # `skip_chunked`: these take a raw pointer to a float array, whose element-major partials
         # block stores each lane with stride N, so no dense per-lane buffer exists for a pointer to
         # address. The guard fires loudly at width > 1; the width-1 path is correct.
+        (false, :none, nothing, unsafe_copyto_tester, [1, 2, 3], [4, 5, 6], 2),
         (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, (skip_chunked=true,), unsafe_self_copy_tester, randn(5), 3),
         (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(6), 4),

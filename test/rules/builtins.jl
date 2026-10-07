@@ -84,11 +84,13 @@ foo_throws(e) = throw(e)
             CoDual(Ptr{Float64}(5), Ptr{Float64}(5)),
         )
         @test pb isa Mooncake.NoPullback
-        @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
+        @test res == CoDual(
+            Ptr{Int64}(5), Mooncake.VoidPtrTangent(Ptr{Nothing}(5), Float64, Float64)
+        )
 
         for N in (1, 8)
             z(x) = Mooncake.zero_lifted(Val(N), x)
-            a, da = [2.0], Float64.(1:N)
+            a, da = [2.0, 4.0], Float64.(1:N)
             GC.@preserve a da begin
                 lanes = ntuple(k -> pointer(da, k), N)
                 x = Lifted{Ptr{Float64},N}(pointer(a), lanes)
@@ -97,11 +99,70 @@ foo_throws(e) = throw(e)
                     TestUtils.test_opt(Mooncake.frule!!, map(typeof, args))
                     @test TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
                     x = Mooncake.frule!!(args...)
-                    @test tangent(x) === lanes
+                    @test if T === Ptr{Cvoid}
+                        tangent(x) isa Mooncake.PointerDual{N} &&
+                            tangent(x).lanes === map(p -> Ptr{Cvoid}(p), lanes) &&
+                            tangent(x).elt === Float64 &&
+                            tangent(x).primal_elt === Float64
+                    else
+                        tangent(x) === lanes
+                    end
                 end
                 y = Mooncake.frule!!(z(IntrinsicsWrappers.pointerref), x, z(1), z(1))
                 @test ntuple(k -> tangent(y, k), N) == Tuple(da)
+                for T in (UInt8, Int)
+                    q = Mooncake.frule!!(z(IntrinsicsWrappers.bitcast), z(Ptr{T}), x)
+                    recovered = Mooncake.frule!!(
+                        z(IntrinsicsWrappers.bitcast), z(Ptr{Float64}), q
+                    )
+                    @test tangent(recovered) === lanes
+                    TestUtils.test_rule(
+                        StableRNG(1),
+                        IntrinsicsWrappers.pointerset,
+                        q,
+                        T(0),
+                        1,
+                        1;
+                        mode=ForwardMode,
+                        chunk_size=N,
+                        throws=(ArgumentError, "Cannot store or copy"),
+                    )
+                    # Distinct primal addresses prevent the self-copy no-op exemption.
+                    dest = Lifted{Ptr{T},N}(Ptr{T}(pointer(a, 2)), tangent(q))
+                    TestUtils.test_rule(
+                        StableRNG(1),
+                        unsafe_copyto!,
+                        dest,
+                        q,
+                        1;
+                        mode=ForwardMode,
+                        chunk_size=N,
+                        throws=(ArgumentError, "Cannot store or copy"),
+                    )
+                end
+                A, B = Tuple{Int32,Int32,Float64}, Tuple{Int,Int,Float64}
+                structural = Lifted{Ptr{A},N}(
+                    Ptr{A}(pointer(a)),
+                    ntuple(k -> Ptr{Mooncake.dual_type(Val(N), A)}(lanes[k]), N),
+                )
+                erased = Mooncake.frule!!(
+                    z(IntrinsicsWrappers.bitcast), z(Ptr{Cvoid}), structural
+                )
+                TestUtils.test_rule(
+                    StableRNG(1),
+                    IntrinsicsWrappers.bitcast,
+                    Ptr{B},
+                    erased;
+                    mode=ForwardMode,
+                    chunk_size=N,
+                    throws=(ArgumentError, "to another element type is not supported"),
+                )
             end
+            # Empty copies do not need addressable derivative storage.
+            lanes = ntuple(_ -> Ptr{Float64}(0), N)
+            src = Lifted{Ptr{Float64},N}(Ptr{Float64}(16), lanes)
+            dest = Lifted{Ptr{Float64},N}(Ptr{Float64}(32), lanes)
+            @test Mooncake.frule!!(z(unsafe_copyto!), dest, src, z(0)) === dest
             for p in (Ptr{Mooncake.NoTangent}(0), Ptr{Float32}(0))
                 lanes = ntuple(_ -> p, N)
                 x = Lifted{Ptr{Float32},N}(Ptr{Float32}(0), lanes)

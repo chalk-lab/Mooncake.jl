@@ -1131,7 +1131,13 @@ _chunked_v_invariant(_p, ::Mooncake.NoTangent, ::IdDict) = true
 _chunked_v_invariant(_p, ::Mooncake.Nfwd.NDualRef, ::IdDict) = true
 # A `Ptr` slot's V is the per-lane ADDRESS tuple (the `uninit_*` bitcast placeholder), so it
 # carries no value to compare with the primal either.
-_chunked_v_invariant(_p::Ptr, ::Tuple{Vararg{Ptr}}, ::IdDict) = true
+function _chunked_v_invariant(
+    _p::Ptr,
+    ::Union{Mooncake.PointerDual,Tuple{Vararg{Union{Ptr,Mooncake.VoidPtrTangent}}}},
+    ::IdDict,
+)
+    return true
+end
 @static if isdefined(Mooncake.Nfwd, :NDualMemoryRef)
     _chunked_v_invariant(_p, ::Mooncake.Nfwd.NDualMemoryRef, ::IdDict) = true
 end
@@ -2287,7 +2293,11 @@ function _count_storages(x)
 end
 
 function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
-    (isbits(x) || x in visited) && return nothing
+    (
+        isbits(x) ||
+        x isa Union{Mooncake.VoidPtrTangent,Mooncake.PointerDual} ||
+        x in visited
+    ) && return nothing
     push!(visited, x)
     if x isa Array
         push!(seen, @static VERSION >= v"1.11-rc4" ? getfield(x, :ref).mem : x)

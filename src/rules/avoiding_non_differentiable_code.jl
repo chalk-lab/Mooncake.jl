@@ -4,12 +4,23 @@
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
 # Shift each lane pointer, including abstract-element pointers such as Ptr{Real}.
 function frule!!(
-    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
+    ::Lifted{typeof(Base.:(+)),Nw},
+    x::Lifted{P,Nw,<:NTuple{Nw,Union{Ptr,VoidPtrTangent}}},
+    y::Lifted{<:Integer},
 ) where {Nw,P<:Ptr}
     yp = primal(y)
-    # Read the V's lane pointer, not `tangent(x, lane)`: that accessor materialises lane `lane`'s
-    # REVERSE tangent, a `VoidPtrTangent` for `Ptr{Nothing}`, not the address the lane holds.
-    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x)[lane] + yp, Val(Nw)))
+    return Lifted{P,Nw}(
+        primal(x) + yp, ntuple(lane -> _shift_ptr_fdata(tangent(x)[lane], yp), Val(Nw))
+    )
+end
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),N}, x::Lifted{P,N,PointerDual{N}}, y::Lifted{<:Integer}
+) where {N,P<:Ptr}
+    d = tangent(x)
+    return Lifted{P,N}(
+        primal(x) + primal(y),
+        PointerDual(map(p -> _shift_ptr_fdata(p, primal(y)), d.lanes), d.elt, d.primal_elt),
+    )
 end
 # NoDual pointers (e.g. from bitcast) must match the primitive's full Ptr coverage.
 function frule!!(

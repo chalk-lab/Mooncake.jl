@@ -91,6 +91,7 @@ import ..Mooncake:
     frule!!,
     CoDual,
     VoidPtrTangent,
+    PointerDual,
     Lifted,
     NDual,
     NoDual,
@@ -241,7 +242,8 @@ end
 
 # Reference elements occupy pointer-sized slots. sizeof is only safe for isbits
 # elements: abstract types and even concrete String are unsized.
-@inline _elements_occupy_storage(::Type{E}) where {E} = !isbitstype(E) || sizeof(E) > 0
+@inline _elements_occupy_storage(@nospecialize(E)) =
+    !(E isa DataType && isbitstype(E)) || sizeof(E::DataType) > 0
 
 # unsafe_wrap() gives an array view for the memory pointed by p.
 # Tangent propagation happens through memory aliasing rather than explicit
@@ -268,7 +270,7 @@ function frule!!(
     # separate wraps into a fresh block would sever it. Reject the non-NULL
     # `uninit_*` placeholder first: it aliases the primal's own bytes.
     for k in 1:Nw
-        _check_fwd_tangent_ptr_addressable(primal(p), p_partials[k])
+        _check_fwd_tangent_ptr_addressable(primal(p), p_partials[k], length(primal_arr))
     end
     all(k -> p_partials[k] == p_partials[1] + (k - 1) * sizeof(T), 1:Nw) || throw(
         ArgumentError(
@@ -302,7 +304,7 @@ function frule!!(
             "aliasing at chunk width $Nw > 1. Use chunk width one or reverse mode.",
         ),
     )
-    _check_fwd_tangent_ptr_addressable(primal(p), p_partials[1])
+    _check_fwd_tangent_ptr_addressable(primal(p), p_partials[1], length(primal_arr))
     vptr = Ptr{NTuple{Nw,Ptr{R}}}(p_partials[1])
     v = unsafe_wrap(Array, vptr, _dims)
     return Lifted{Array{Ptr{R},D},Nw}(primal_arr, v)
@@ -313,7 +315,9 @@ end
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
-    p::Lifted{Ptr{T},Nw,NoDual},
+    p::Lifted{
+        Ptr{T},Nw,<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}}
+    },
     dims::Lifted,
 ) where {Nw,T}
     # A manually constructed NoDual slot can still have a differentiable pointee.
@@ -325,6 +329,11 @@ function frule!!(
             "would be read from unrelated memory.",
         ),
     )
+    if !(tangent(p) isa NoDual)
+        for d in tangent(p)
+            _check_narrowed_pointer_write(primal(p), d)
+        end
+    end
     arr = unsafe_wrap(Array, primal(p), primal(dims))
     return Lifted{typeof(arr),Nw}(arr, zero_dual(Val(Nw), arr))
 end
@@ -353,9 +362,9 @@ function rrule!!(
 ) where {T}
     # Check before wrapping: an Array over a NULL or placeholder tangent pointer
     # cannot be distinguished from valid storage by downstream consumers.
-    _check_tangent_ptr(primal(p), tangent(p), prod(primal(dims)))
+    _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
+    tangent_arr = unsafe_wrap(Array, _tangent_ptr(primal(p), tangent(p)), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -396,7 +405,7 @@ end
 # differentiable value from an interleaved object tangent (see pointerref).
 function frule!!(
     ::Lifted{typeof(atomic_pointerref),Nw},
-    x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
     order::Lifted,
 ) where {Nw,T}
     tangent_type(T) === NoTangent || throw(
@@ -413,7 +422,7 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
-    dx = tangent(x)
+    dx = _tangent_ptr(_x, tangent(x))
     _check_tangent_ptr(_x, dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
@@ -467,7 +476,7 @@ end
 # As in pointerset, an element-wise tangent layout cannot accept a bare lane store.
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),Nw},
-    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    p::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
     x::Lifted,
     order::Lifted,
 ) where {Nw,T}
@@ -477,18 +486,22 @@ function frule!!(
             "array-of-duals per-lane V; the array-of-pointers store is unsupported.",
         ),
     )
+    for d in tangent(p)
+        _check_narrowed_pointer_write(primal(p), d)
+    end
     atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    _check_tangent_ptr(primal(p), tangent(p))
+    _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
+    _check_narrowed_pointer_write(primal(p), tangent(p))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
-    old_tangent = atomic_pointerref(tangent(p), :monotonic)
-    dp = tangent(p)
+    dp = _tangent_ptr(_p, tangent(p))
+    old_tangent = atomic_pointerref(dp, :monotonic)
     function atomic_pointerset_pullback!!(::NoRData)
         dx_r = atomic_pointerref(dp, :monotonic)
         atomic_pointerset(_p, old_value, :monotonic)
@@ -515,8 +528,9 @@ const _INT2PTR_ERR_MSG =
 
 # The uninit_* placeholder aliases the primal address. Reject it with the same
 # forward error as NoDual; a correct derivative needs separate partial storage.
-@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
-    if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) && UInt(dp) == UInt(p)
+@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr, n=1)
+    if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) &&
+        (UInt(dp) == UInt(p) || (!iszero(n) && iszero(UInt(dp))))
         throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
     end
     return nothing
@@ -537,6 +551,21 @@ const _NODUAL_DIFF_PTR_MSG =
     return nothing
 end
 
+@inline _check_narrowed_pointer_write(::Ptr, ::Ptr, n=1) = nothing
+@inline function _check_narrowed_pointer_write(p::Ptr{T}, d::VoidPtrTangent, n=1) where {T}
+    _elements_occupy_storage(T) || return nothing
+    if !iszero(n) &&
+        !iszero(UInt(d.p)) &&
+        (d.elt === Nothing || _elements_occupy_storage(d.elt))
+        throw(
+            ArgumentError(
+                "Cannot store or copy through a non-differentiable pointer re-typed from differentiated storage.",
+            ),
+        )
+    end
+    return nothing
+end
+
 @intrinsic bitcast
 function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
     if T <: IEEEFloat
@@ -554,38 +583,107 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
     # Non-Ptr or NoDual-V bitcast: no forward derivative to carry.
     return Lifted{typeof(v),Nw}(v, NoDual())
 end
-# Keep lane types through Cvoid; numeric lanes record their primal element type.
+# Erasure and non-differentiable narrowing retain provenance in a fixed lane type.
 @inline function frule!!(
-    ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
-) where {Nw,T<:Ptr,P<:Ptr}
-    if T !== Ptr{Nothing}
-        for p in tangent(x)
-            if !iszero(UInt(p))
-                if eltype(p) <: NDualEltype
-                    _check_tangent_retyping_fits(typeof(p), T)
-                elseif P !== Ptr{Nothing} && _elements_occupy_storage(eltype(p))
-                    _check_tangent_retyping_fits(P, T)
+    ::Lifted{typeof(bitcast),N}, ::Lifted{Type{Ptr{B}},N}, x::Lifted{Ptr{A},N,V}
+) where {N,A,B,V<:Union{NoDual,Tuple,PointerDual}}
+    dx = tangent(x)
+    if B === Nothing || !_elements_occupy_storage(tangent_type(B))
+        dx isa NTuple{N,VoidPtrTangent} &&
+            return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
+        dx isa PointerDual && return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
+        lanes = if dx isa NoDual
+            PointerDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, A)
+        elseif dx isa NTuple{N,Ptr} && isconcretetype(eltype(dx))
+            PointerDual(map(p -> bitcast(Ptr{Nothing}, p), dx), eltype(eltype(dx)), A)
+        else
+            ntuple(Val(N)) do k
+                d = dx[k]
+                if d isa VoidPtrTangent
+                    d
+                else
+                    VoidPtrTangent(bitcast(Ptr{Nothing}, d), eltype(d), A)
                 end
             end
         end
+        return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
+    elseif dx isa PointerDual
+        EB = B <: NDualEltype ? B : Mooncake.dual_type(Val(N), B)
+        if any(p -> !iszero(UInt(p)), dx.lanes)
+            _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
+            if dx.elt !== EB && _elements_occupy_storage(dx.elt)
+                throw(
+                    ArgumentError(
+                        "Forward-mode AD cannot recover a differentiated pointer from an incompatible tangent layout.",
+                    ),
+                )
+            end
+        end
+        lanes = if dx.elt === NoTangent
+            ntuple(_ -> (Base.inferencebarrier(Ptr{EB}(0))::Ptr{EB}), Val(N))
+        else
+            map(p -> bitcast(Ptr{EB}, p), dx.lanes)
+        end
+        return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
+    elseif dx isa NTuple{N,VoidPtrTangent}
+        lanes = ntuple(Val(N)) do k
+            E = B <: NDualEltype ? B : Mooncake.dual_type(Val(N), B)
+            d = dx[k]
+            if !iszero(UInt(d.p))
+                _tangent_retyping_verdict(d.elt, d.primal_elt, B)
+                # An object tangent is not a parallel scalar partial buffer.
+                if d.elt !== E && _elements_occupy_storage(d.elt)
+                    throw(
+                        ArgumentError(
+                            "Forward-mode AD cannot recover a differentiated pointer from an incompatible tangent layout.",
+                        ),
+                    )
+                end
+            end
+            if d.elt === NoTangent
+                (Base.inferencebarrier(Ptr{E}(0))::Ptr{E})
+            else
+                bitcast(Ptr{E}, d.p)
+            end
+        end
+        return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
+    elseif dx isa NoDual
+        return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), NoDual())
     end
-    return Lifted{T,Nw}(bitcast(T, primal(x)), tangent(x))
+    ntuple(Val(length(dx))) do k
+        p = dx[k]
+        if !iszero(UInt(p))
+            if eltype(p) <: NDualEltype
+                _check_tangent_retyping_fits(typeof(p), Ptr{B})
+            elseif _elements_occupy_storage(eltype(p))
+                _check_tangent_retyping_fits(Ptr{A}, Ptr{B})
+            end
+        end
+    end
+    return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
 end
 
 # VoidPtrTangent records the original primal element type so a Cvoid hop gets the
 # same verdict as direct re-typing.
 # Hide NULL values from inference: Julia 1.10 otherwise constant-folds atomic
 # loads through them before the consumer can throw for missing storage.
-@inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
-    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_type(A), A)
+@inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx::Ptr) where {A,B}
+    TB = tangent_type(B)
+    if tangent_type(Ptr{B}) === VoidPtrTangent
+        return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), eltype(dx), A)
+    end
+    return if _elements_occupy_storage(tangent_type(A))
+        bitcast(Ptr{TB}, dx)
+    else
+        (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
+    end
 end
-@inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{Nothing}}, dx)
-    return dx
-end
-@inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{Nothing}}, dx) where {B}
+@inline function _retype_tangent_ptr(
+    ::Type{Ptr{B}}, ::Type{Ptr{A}}, dx::VoidPtrTangent
+) where {A,B}
+    tangent_type(Ptr{B}) === VoidPtrTangent && return dx
     TB = tangent_type(B)
     _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
-    # Use the static TB when possible to avoid dispatch on the runtime dx.elt.
     return if dx.elt === Nothing || (
         dx.elt === TB ? _elements_occupy_storage(TB) : _elements_occupy_storage(dx.elt)
     )
@@ -594,14 +692,12 @@ end
         (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
     end
 end
-@inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx) where {A,B}
-    TB = tangent_type(B)
-    return if _elements_occupy_storage(tangent_type(A))
-        bitcast(Ptr{TB}, dx)
-    else
-        (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
-    end
-end
+
+# Only zero-size pointees use descriptors here; provenance is checked before writes.
+@inline _tangent_ptr(::Ptr, dx::Ptr) = dx
+@inline _tangent_ptr(::Ptr{T}, dx::VoidPtrTangent) where {T} = bitcast(
+    Ptr{tangent_type(T)}, dx.p
+)
 
 # Only the same primal element type passes, including recovery from Cvoid:
 # distinct primal layouts can share a tangent type.
@@ -615,10 +711,7 @@ end
     isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
     throw(
         ArgumentError(
-            "Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: re-typing a " *
-            "differentiated pointer to another element type is not supported; write a rule " *
-            "for your function that reinterprets the memory (e.g. the one calling `reinterpret`), " *
-            "or avoid re-typing memory under AD.",
+            lazy"Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: re-typing a differentiated pointer to another element type is not supported; write a rule for your function that reinterprets the memory (e.g. the one calling `reinterpret`), or avoid re-typing memory under AD.",
         ),
     )
 end
@@ -1042,7 +1135,7 @@ end
 # math. A shortcut through the interleaving would hardcode NDual's layout.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
-    x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
     y::Lifted,
     z::Lifted,
 ) where {Nw,T}
@@ -1065,7 +1158,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
     _z = primal(z)
-    dx = tangent(x)
+    dx = _tangent_ptr(_x, tangent(x))
     _check_tangent_ptr(_x, dx)
     a = CoDual(pointerref(_x, _y, _z), fdata(pointerref(dx, _y, _z)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
@@ -1119,7 +1212,7 @@ end
 # A bare store would corrupt the stride. The coherent-lane method is more specific.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
-    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    p::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
     x::Lifted,
     idx::Lifted,
     z::Lifted,
@@ -1130,6 +1223,9 @@ function frule!!(
             "the array-of-pointers store is unsupported.",
         ),
     )
+    for d in tangent(p)
+        _check_narrowed_pointer_write(primal(p), d)
+    end
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
@@ -1137,10 +1233,11 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
     _z = primal(z)
-    _check_tangent_ptr(primal(p), tangent(p))
+    _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
+    _check_narrowed_pointer_write(primal(p), tangent(p))
     old_value = pointerref(_p, _idx, _z)
-    old_tangent = pointerref(tangent(p), _idx, _z)
-    dp = tangent(p)
+    dp = _tangent_ptr(_p, tangent(p))
+    old_tangent = pointerref(dp, _idx, _z)
     function pointerset_pullback!!(::NoRData)
         dx_r = pointerref(dp, _idx, _z)
         pointerset(_p, old_value, _idx, _z)
@@ -1523,7 +1620,10 @@ for bounds in ((), (:inbounds,))
                 # TODO(#1295): the fresh partials do not alias the field's seeded storage.
                 return uninit_lifted(Val(Nw), y)
             else
-                V_i = _get_lifted_field(tangent(x), _name)
+                V_i = _get_lifted_field(primal(x), tangent(x), _name)
+                if y isa Ptr{Nothing} && V_i isa NoDual
+                    V_i = uninit_dual(Val(Nw), y)
+                end
                 _check_lifted_field_ptr_lanes(V_i, Val(Nw))
                 return Lifted{typeof(y),Nw}(y, V_i)
             end
@@ -2329,6 +2429,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     return test_cases, memory
 end
 
+@noinline _pointer_int(v) = pointer(v)
+@noinline _pointer_cvoid(v) = Ptr{Cvoid}(pointer(v))
+@noinline _ref_cvoid(r) = Base.unsafe_convert(Ptr{Cvoid}, r)
+
 function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     cs, dcs = __pointers_to_pointers()
     (c_1, c_2, c, c_new_val) = cs
@@ -2387,6 +2491,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         # `skip_chunked`: takes a raw pointer to a float array (see the `unsafe_copyto_tester`
         # rows in `foreigncall.jl`); the lane stride leaves no buffer a pointer can address.
         (false, :none, (skip_chunked=true,), shift_through_cvoid, [1.0, 2.0], 2.0),
+        (
+            false,
+            :none,
+            (skip_chunked=true,),
+            v -> GC.@preserve(v, 3unsafe_load(Ptr{Float64}(_pointer_cvoid(v)), 2)),
+            [1.0, 2.0],
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (a=[1, 2, 3]; GC.@preserve a x * unsafe_load(_pointer_int(a), 2)),
+            2.0,
+        ),
         (false, :none, nothing, objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
@@ -2497,6 +2615,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     let x = randn(rng_ctor(1), 3)
         push!(test_cases, (false, :none, nothing, (a, b) -> sum(a .* b), x, x))
     end
+    @static if VERSION >= v"1.11"
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (skip_chunked=true,),
+                v -> GC.@preserve(v, 3unsafe_load(Ptr{Float64}(_ref_cvoid(v.ref)), 2)),
+                [1.0, 2.0],
+            ),
+        )
+    end
     return test_cases, Any[]
 end
 
@@ -2544,11 +2674,13 @@ function _builtins_throwing_rows()
         return GC.@preserve z unsafe_load(Ptr{Float64}(pointer(z)), 2)
     end
     one_tuple_load(v) = GC.@preserve v unsafe_load(Ptr{Tuple{Float64}}(pointer(v)), 2)[1]
-    function tuple_layout_copy(v)
+    function tuple_layout_copy(v, erased=false)
         a = [(Int32(1), Int32(2), v[1]), (Int32(3), Int32(4), v[2])]
         b = [(0, 0, 0.0)]
         GC.@preserve a b unsafe_copyto!(
-            pointer(b), Ptr{Tuple{Int,Int,Float64}}(pointer(a)), 1
+            pointer(b),
+            Ptr{Tuple{Int,Int,Float64}}(erased ? Ptr{Cvoid}(pointer(a)) : pointer(a)),
+            1,
         )
         return b[1][3] + v[2]
     end
@@ -2560,6 +2692,42 @@ function _builtins_throwing_rows()
     function shared_tangent_reinterpret(v)
         q = [TestResources.PointerPair(x, Int32(0)) for x in v]
         return 3 * reinterpret(TestResources.PointerPair{Float32,NTuple{3,Int32}}, q)[2].a
+    end
+    function narrowed_store(v, T, erased, atomic)
+        w = copy(v)
+        GC.@preserve w begin
+            p = Ptr{T}(pointer(w))
+            if erased == 1
+                p = Ptr{T}(Ptr{Cvoid}(pointer(w)))
+            elseif erased == 2
+                p = Ptr{T}(Ptr{Cvoid}(Ptr{UInt8}(p)))
+            end
+            x = unsafe_load(p, 1)
+            atomic ? unsafe_store!(p, x, 2, :monotonic) : unsafe_store!(p, x, 2)
+        end
+        return 3w[2]
+    end
+    function narrowed_objref_store(v)
+        r = Ref(v[1])
+        GC.@preserve r unsafe_store!(
+            Ptr{Int}(pointer_from_objref(r)), reinterpret(Int, 2.0)
+        )
+        return 3r[]
+    end
+    function narrowed_copy(v, T, erased)
+        # Padding keeps the failing forward byte-copy within the old partial buffer.
+        a = [2v[1]; fill(3v[1], 15)]
+        b = [0.0; fill(v[2], 15)]
+        GC.@preserve a b begin
+            pa = Ptr{T}(erased == 1 ? Ptr{Cvoid}(pointer(a)) : pointer(a))
+            pb = Ptr{T}(erased == 1 ? Ptr{Cvoid}(pointer(b)) : pointer(b))
+            if erased == 2
+                pa = Ptr{T}(Ptr{Cvoid}(Ptr{UInt8}(pa)))
+                pb = Ptr{T}(Ptr{Cvoid}(Ptr{UInt8}(pb)))
+            end
+            unsafe_copyto!(pb, pa, div(sizeof(Float64), sizeof(T)))
+        end
+        return b[1] + b[2]
     end
     cases = Any[
         (
@@ -2718,5 +2886,45 @@ function _builtins_throwing_rows()
             (; mode=ForwardMode, chunk_size=2),
         ),
     )
+    push!(
+        cases,
+        (
+            (ArgumentError, "to another element type is not supported"),
+            tuple_layout_copy,
+            ([1.0, 2.0], true),
+            (; mode=ForwardMode),
+        ),
+    )
+    push!(
+        cases,
+        (
+            (ArgumentError, "Cannot store or copy"),
+            narrowed_objref_store,
+            ([1.0, 2.0],),
+            (; mode=ReverseMode),
+        ),
+    )
+    for T in (UInt8, Int), erased in (0, 1, 2)
+        for atomic in (false, true)
+            push!(
+                cases,
+                (
+                    (ArgumentError, "Cannot store or copy"),
+                    narrowed_store,
+                    ([1.0, 2.0], T, erased, atomic),
+                    (;),
+                ),
+            )
+        end
+        push!(
+            cases,
+            (
+                (ArgumentError, "Cannot store or copy"),
+                narrowed_copy,
+                ([1.0, 2.0], T, erased),
+                (;),
+            ),
+        )
+    end
     return cases, Any[xv]
 end

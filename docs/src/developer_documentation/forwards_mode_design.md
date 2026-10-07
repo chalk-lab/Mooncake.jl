@@ -63,6 +63,18 @@ through `_storage_kind` before dispatching to their implementations.
 of every numeric type, but has no values or numeric partials. Its container shape
 is preserved, including when nested inside tuples or structs.
 
+`Ptr{Cvoid}` uses `PointerDual{N}`: an `NTuple{N,Ptr{Nothing}}` of lane
+addresses and one shared descriptor for the forward storage and primal element types. Erasure,
+field projection, pointer shifts, and object-pointer round trips preserve these
+fields. Recovery to a differentiated pointer requires the recorded primal element
+type and constructs a statically typed lane. Narrowing to a non-differentiable
+pointer retains the descriptor so reads and same-type recovery remain possible;
+stores and nonempty copies through those pointers refuse differentiated storage.
+Pointers to genuinely non-differentiable storage use the same canonical representation,
+marked as having no derivative storage; their reads, stores and copies remain supported.
+Reverse mode likewise uses `VoidPtrTangent` for zero-size pointee tangents, preserving
+provenance even for non-NULL pointers to genuine `NoTangent` buffers.
+
 ### Testing
 
 Suppose that we have (somehow) produced a supposed forwards-rule. To check that it is correctly implemented, we must ensure that

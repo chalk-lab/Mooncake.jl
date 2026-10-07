@@ -375,7 +375,7 @@ const NDAC_VecC64 = NDualArray{
         @test_throws ArgumentError unlift(
             Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
         )
-        # All-NoDual pointer arrays need element-wise reverse Ptr{NoTangent} reconstruction.
+        # Pointer arrays need element-wise reconstruction of their reverse tangents.
         pv = [Ptr{Int}(0), Ptr{Int}(0)]
         @test last(unlift(Mooncake.zero_lifted(Val(1), pv))) isa
             Mooncake.tangent_type(Vector{Ptr{Int}})
@@ -384,7 +384,8 @@ const NDAC_VecC64 = NDualArray{
         x = [1.0]
         @test Mooncake._materialise_lane(
             Lifted{Ptr{Nothing},1}(
-                Ptr{Nothing}(UInt(pointer(x))), (Ptr{Nothing}(UInt(pointer(x))),)
+                Ptr{Nothing}(UInt(pointer(x))),
+                Mooncake.uninit_dual(Val(1), Ptr{Nothing}(pointer(x))),
             ),
             1,
             IdDict(),
@@ -1075,6 +1076,7 @@ const NDAC_VecC64 = NDualArray{
         ptr_backing = [1.0, 2.0]
         @testset "test_lifted $(typeof(p))" for p in (
             Ptr{Nothing}(pointer(ptr_backing)),
+            (Ptr{Nothing}(pointer(ptr_backing)), 2.0),
             pointer(ptr_backing),
             Ptr{Mooncake.NoTangent}(pointer(ptr_backing)),
             Ptr{Int}(pointer(ptr_backing)),
@@ -1084,6 +1086,7 @@ const NDAC_VecC64 = NDualArray{
             (Ptr{UInt8}(pointer(ptr_backing)), 3),
         )
             test_lifted(Xoshiro(123456), p)
+            p isa Ptr && TestUtils.test_tangent_splitting(Xoshiro(123456), (p,))
         end
 
         # Task and IdDict require both seed entry points for their custom Vs. Keep them out

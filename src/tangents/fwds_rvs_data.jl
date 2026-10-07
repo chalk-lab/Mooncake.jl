@@ -340,7 +340,7 @@ end
 __verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
-__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr{Nothing}, ::VoidPtrTangent) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::VoidPtrTangent) = nothing
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     if size(p) != size(f)
@@ -902,6 +902,7 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:NoFData} = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
+@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{Ptr,VoidPtrTangent}} = F
 
 # Union types. Supported shapes:
 # - F=NoFData, R<:Union{NoRData, IEEEFloat or RData{...}}        (issue #1130)
