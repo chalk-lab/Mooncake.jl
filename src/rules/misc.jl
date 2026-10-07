@@ -247,7 +247,7 @@ end
             lane_ref = Nfwd._block_column_ref(
                 getfield(V, :partials_ref), getfield(V, :col), N
             )
-            return (getfield(lane_ref, :ptr_or_offset),)
+            return (Base.bitcast(Ptr{T}, getfield(lane_ref, :ptr_or_offset)),)
         end
         return NoDual()
     end
