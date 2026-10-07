@@ -1760,6 +1760,37 @@ end
 end
 
 @testset "reverse prepared alias partitions" begin
+    @testset "growing a reshaped vector" begin
+        # Rule tests copy arguments separately, losing this cross-argument storage alias.
+        f(x, y) = (push!(y, 0.0); y[1]=0.0; sum(x))
+        a = [1.0, 2.0]
+        b = reshape(reshape(a, 2, 1), 2)
+        @static if VERSION < v"1.11-"
+            @test_throws ArgumentError prepare_gradient_cache(f, a, b)
+            for (g, reverse_args, expected) in (
+                ((x, y, go) -> (go && push!(y, 0.0); y[1]=0.0; sum(x)), false, [0.0, 1.0]),
+                ((x, y, go) -> (y[1] *= 2; go && push!(y, 0.0); sum(x)), false, [2.0, 1.0]),
+                ((y, x, go) -> (go && push!(y, 0.0); sum(x)), true, [1.0, 1.0]),
+            )
+                a = [1.0, 2.0]
+                b = reshape(reshape(a, 2, 1), 2)
+                args = reverse_args ? (b, a) : (a, b)
+                cache = prepare_gradient_cache(g, args..., false)
+                @test_throws ArgumentError value_and_gradient!!(cache, g, args..., true)
+                # Reuse after refusal must retain the original tangent storage partition.
+                a = [1.0, 2.0]
+                b = reshape(reshape(a, 2, 1), 2)
+                args = reverse_args ? (b, a) : (a, b)
+                _, gradient = value_and_gradient!!(cache, g, args..., false)
+                @test gradient[2] ≈ expected
+            end
+        else
+            cache = prepare_gradient_cache(f, a, b)
+            value, gradient = value_and_gradient!!(cache, f, a, b)
+            @test value == 3.0
+            @test gradient[2] == [1.0, 1.0]
+        end
+    end
     @testset "constant alias metadata" for n in (2, 24)
         fx = (identity, ntuple(i -> [Float64(i)], n))
         ts = map(zero_tangent, fx)

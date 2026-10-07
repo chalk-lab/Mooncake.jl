@@ -9,6 +9,19 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## Resizing shared arrays on Julia 1.10
+
+On Julia 1.10, resizing a vector whose tangent storage is shared with another array
+header throws an `ArgumentError`. Copy the array before resizing it. Resizing can
+otherwise detach tangent storage and silently lose gradients, including on prepared
+cache reuse. Non-resizing operations on aliases remain supported.
+
+This applies to `push!`, `append!`, `resize!`, `pushfirst!`, `prepend!`, `insert!`,
+`pop!`, `popfirst!`, `deleteat!`, `splice!`, `empty!`, and reallocating `sizehint!`
+calls. The checks cover both differentiation modes at the legacy `_growbeg!`,
+`_growend!`, `_growat!`, `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!`
+rules. Arrays on Julia 1.11 and later are unaffected.
+
 ## Numerical Workarounds and Singularities
 
 Numerical workarounds can preserve function values while producing incorrect derivatives under automatic differentiation.
