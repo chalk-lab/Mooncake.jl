@@ -2,10 +2,12 @@
 # and distinguishes extents. Valid only within a call while callers root every array,
 # preventing address reuse.
 @inline _legacy_storage(x::Array) = (Base.dataids(x), length(x))
-# Reshape shared cached storage to the caller's shape. Assert its Vector eltype before
-# reshaping to keep dispatch concrete, not just the result type.
+# Keep distinct array headers over shared storage, even when the shapes match.
+# `reshape` would return the cached vector itself and couple independent resizes.
 @inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}
-    return reshape(cached::Vector{T}, sz)::Array{T,N}
+    return ccall(
+        :jl_reshape_array, Array{T,N}, (Any, Any, Any), Array{T,N}, cached::Vector{T}, sz
+    )
 end
 # Cache vec views so retrieval knows both eltype and dimensionality without copying.
 @inline _legacy_cached(x::Array) = vec(x)
@@ -108,27 +110,28 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
-# Shared vectors cannot be resized: detaching their tangent buffer loses reverse gradients.
-# Julia 1.10 jl_array_t stores isshared in bit 14 after data and length.
-@inline function _check_resizable(a::Vector, da::Vector{T}, sz=nothing) where {T}
+# Julia 1.10 jl_array_t stores flags after data and length. Bit 14 is isshared.
+# Read only: resizing cannot reconnect detached headers on the reverse pass.
+@inline function _legacy_check_resize(a::Vector, da::Vector{T}, operation, sz=nothing) where {T}
     (iszero(Base.elsize(Vector{T})) || (isconcretetype(T) && ismutabletype(T))) &&
         return nothing
     flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(da) + 2sizeof(Int)))
     iszero(flags & 0x4000) && return nothing
-    return _check_shared_resizable(a, da, sz, flags)
+    return _legacy_shared_resize(a, da, operation, sz)
 end
 
-@noinline function _check_shared_resizable(a, da, sz, da_flags)
+@noinline function _legacy_shared_resize(a, da, operation, sz)
     if sz !== nothing
         changes_storage = false
         for x in (a, da)
             GC.@preserve x begin
                 p = pointer_from_objref(x)
-                flags = x === da ? da_flags : unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
+                flags = unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
                 offset = unsafe_load(Ptr{UInt32}(p + 2sizeof(Int) + 4))
                 capacity = unsafe_load(Ptr{UInt}(p + 3sizeof(Int) + 8))
                 n = max(UInt(sz), UInt(length(x)) + offset)
-                # jl_array_sizehint shrinks owned buffers when over one eighth is released.
+                # jl_array_sizehint grows beyond capacity, or shrinks owned buffers
+                # when more than one eighth of their capacity would be released.
                 how = flags & 0x0003
                 changes_storage |=
                     n > capacity ||
@@ -139,15 +142,15 @@ end
     end
     throw(
         ArgumentError(
-            "cannot resize a $(summary(a)) on Julia 1.10: it shares memory with another " *
-            "array (for example from `reshape` or `vec`); copy it before resizing",
+            "cannot resize array $(repr(a)) with $operation on Julia 1.10: its tangent " *
+            "storage is shared with another array header; copy the array before resizing it",
         ),
     )
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._deletebeg!)
     Base._deletebeg!(primal(a), primal(d))
     Base._deletebeg!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -155,7 +158,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deletebeg!)
     delta = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -176,7 +179,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._deleteend!)
     Base._deleteend!(primal(a), primal(d))
     Base._deleteend!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -184,7 +187,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deleteend!)
     # Extract data.
     a = primal(_a)
     da = tangent(_a)
@@ -217,7 +220,7 @@ function frule!!(
     i::Dual{<:Integer},
     delta::Dual{<:Integer},
 )
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._deleteat!)
     Base._deleteat!(primal(a), primal(i), primal(delta))
     Base._deleteat!(tangent(a), primal(i), primal(delta))
     return zero_dual(nothing)
@@ -228,7 +231,7 @@ function rrule!!(
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deleteat!)
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -254,7 +257,7 @@ end
 function frule!!(
     ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
 ) where {T}
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._growbeg!)
     Base._growbeg!(primal(a), primal(d))
     Base._growbeg!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -262,7 +265,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growbeg!)
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -278,7 +281,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._growend!)
     Base._growend!(primal(a), primal(d))
     Base._growend!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -286,7 +289,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growend!)
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -304,7 +307,7 @@ end
 function frule!!(
     ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
 )
-    _check_resizable(primal(a), tangent(a))
+    _legacy_check_resize(primal(a), tangent(a), Base._growat!)
     Base._growat!(primal(a), primal(i), primal(d))
     Base._growat!(tangent(a), primal(i), primal(d))
     return zero_dual(nothing)
@@ -315,7 +318,7 @@ function rrule!!(
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growat!)
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -334,13 +337,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
-    _check_resizable(primal(x), tangent(x), primal(sz))
+    _legacy_check_resize(primal(x), tangent(x), sizehint!, primal(sz))
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
-    _check_resizable(primal(x), tangent(x), primal(sz))
+    _legacy_check_resize(primal(x), tangent(x), sizehint!, primal(sz))
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x, NoPullback(f, x, sz)

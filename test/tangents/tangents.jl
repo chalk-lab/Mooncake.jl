@@ -215,9 +215,9 @@ using DispatchDoctor: allow_unstable
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
     end
-    @testset "array storage caching preserves container identity" begin
-        a = ones(2, 2)
-        b = reshape(a, 1, 4)
+    @testset "array storage caching preserves container identity" for a in
+                                                                      (ones(2, 2), ones(4))
+        b = reshape(reshape(a, 1, 4), size(a))
         p = (a, a, b, b)
         for t in (
             zero_tangent(p),
@@ -226,6 +226,7 @@ using DispatchDoctor: allow_unstable
             _add_to_primal(p, p, true),
         )
             @test populate_address_map(p, t) isa AddressMap
+            @test t[1] !== t[3]
             @test pointer(t[1]) == pointer(t[3])
         end
     end
