@@ -53,6 +53,11 @@ struct FloatPair
     b::Float64
 end
 
+struct PointerPair{A,B}
+    a::A
+    b::B
+end
+
 mutable struct MutableFoo
     a::Float64
     b::AbstractVector

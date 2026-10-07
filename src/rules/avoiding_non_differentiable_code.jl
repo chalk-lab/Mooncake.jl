@@ -22,7 +22,7 @@ end
 # `Ptr{Cvoid}` that is a `VoidPtrTangent`, which shifts its address and keeps what it erased.
 @inline _shift_ptr_fdata(dx::Ptr, n::Integer) = iszero(UInt(dx)) ? dx : dx + n
 @inline _shift_ptr_fdata(dx::VoidPtrTangent, n::Integer) = VoidPtrTangent(
-    _shift_ptr_fdata(dx.p, n), dx.elt
+    _shift_ptr_fdata(dx.p, n), dx.elt, dx.primal_elt
 )
 
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})

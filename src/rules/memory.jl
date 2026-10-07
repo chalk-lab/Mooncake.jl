@@ -1197,9 +1197,9 @@ function rrule!!(
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
-        VoidPtrTangent(Ptr{Nothing}(0), NoTangent)
+        VoidPtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
     else
-        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), eltype(x.dx))
+        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), eltype(x.dx), eltype(primal(x)))
     end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
@@ -1215,9 +1215,13 @@ function rrule!!(
     # Stride-tagged rather than an unbacked address for a zero-size element type, as in `Memory`.
     dy = if wants_offset
         if !IntrinsicsWrappers._elements_occupy_storage(eltype(x.dx))
-            VoidPtrTangent(Ptr{Nothing}(0), NoTangent)
+            VoidPtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
         else
-            VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr_or_offset), eltype(x.dx))
+            VoidPtrTangent(
+                bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
+                eltype(x.dx),
+                eltype(primal(x)),
+            )
         end
     else
         x.dx.mem

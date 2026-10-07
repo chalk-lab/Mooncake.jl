@@ -177,7 +177,7 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     # payload whose address must never serve a differentiable load.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P)),
+        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P), P),
     )
     return y, NoPullback(f, x)
 end
@@ -679,7 +679,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             (lb=1e-3, ub=250, skip_forward=true),
             unsafe_pointer_to_objref,
             CoDual(
-                pointer_from_objref(_x), VoidPtrTangent(pointer_from_objref(_dx), Nothing)
+                pointer_from_objref(_x),
+                VoidPtrTangent(pointer_from_objref(_dx), Nothing, typeof(_x)),
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),

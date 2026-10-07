@@ -578,22 +578,23 @@ end
     return sizeof(A) == sizeof(B)
 end
 
-# VoidPtrTangent preserves the erased element type so a Cvoid hop gets the same
-# verdict as direct re-typing; checking primal types alone cannot recover it.
+# VoidPtrTangent records the original primal element type so a Cvoid hop gets the
+# same verdict as direct re-typing.
 # Hide NULL values from inference: Julia 1.10 otherwise constant-folds atomic
 # loads through them before the consumer can throw for missing storage.
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
-    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_type(A))
+    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_type(A), A)
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{Nothing}}, dx)
     return dx
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{Nothing}}, dx) where {B}
     TB = tangent_type(B)
-    _tangent_retyping_verdict(
-        dx.elt, TB, " (the element type was erased through a `Ptr{Cvoid}`)"
+    _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
+    # Use the static TB when possible to avoid dispatch on the runtime dx.elt.
+    return if dx.elt === Nothing || (
+        dx.elt === TB ? _elements_occupy_storage(TB) : _elements_occupy_storage(dx.elt)
     )
-    return if dx.elt === Nothing || _elements_occupy_storage(dx.elt)
         bitcast(Ptr{TB}, dx.p)
     else
         (Base.inferencebarrier(Ptr{TB}(0))::Ptr{TB})
@@ -608,45 +609,29 @@ end
     end
 end
 
-# Share the verdict between direct re-typing and recovery from Cvoid.
-# Equal-sized reference and inline elements are not interchangeable: writing a
-# Float64 over a Vector{Float64} reference would corrupt the GC pointer.
+# Only the same primal element type passes, including recovery from Cvoid:
+# distinct primal layouts can share a tangent type.
 @inline function _tangent_retyping_verdict(
-    @nospecialize(TA), @nospecialize(TB), whence::String
+    @nospecialize(TA), @nospecialize(A), @nospecialize(B)
 )
+    A === B && return nothing
+    TB = tangent_type(B)
     TA === Nothing && return nothing            # a tangent OBJECT, checked where it was created
-    TA === TB && return nothing
     !_elements_occupy_storage(TA) && return nothing
     isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
-    isbitstype(TA) && isbitstype(TB) && sizeof(TA) == sizeof(TB) && return nothing
-    why = if TA === NoTangent
-        "there is no tangent storage behind this address at all, so a `$TB` load or store through " *
-        "the re-typed pointer would touch memory no tangent buffer owns"
-    elseif !isbitstype(TA)
-        "the tangent storage behind this address holds `$TA` REFERENCES, not inline values, so a " *
-        "`$TB` load or store through the re-typed pointer would read or overwrite a pointer the " *
-        "garbage collector owns"
-    else
-        "the tangent storage behind this address is laid out in `$TA` elements, so a `$TB` load " *
-        "or store through the re-typed pointer would straddle two of them and corrupt both"
-    end
-    # The `Ptr{Cvoid}` round trip is recoverable — re-type between the real element types and the
-    # check can see them. A direct mismatch is not, so do not tell that caller to do what they did.
-    advice = if isempty(whence)
-        "These element types genuinely differ, so there is no sound re-typing between them."
-    else
-        "Re-type directly between the element types you differentiate through."
-    end
     throw(
         ArgumentError(
-            "Cannot re-type a tangent pointer to `Ptr{$TB}` during AD$whence: $why. $advice"
+            "Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: re-typing a " *
+            "differentiated pointer to another element type is not supported; write a rule " *
+            "for your function that reinterprets the memory (e.g. the one calling `reinterpret`), " *
+            "or avoid re-typing memory under AD.",
         ),
     )
 end
 
 @inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
-    A === Nothing && return nothing
-    return _tangent_retyping_verdict(tangent_type(A), tangent_type(B), "")
+    (A === Nothing || A === B) && return nothing
+    return _tangent_retyping_verdict(tangent_type(A), A, B)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -2548,7 +2533,24 @@ function _builtins_throwing_rows()
     function laundered_retyped_load(b, x)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
     end
-    # Equal byte widths also cannot justify re-typing reference slots as inline values.
+    # Only the same element type passes: equal byte widths, sound or not, are refused.
+    function int_float_load(v)
+        return GC.@preserve v unsafe_load(Ptr{Tuple{Int,Float64}}(pointer(v)))[2]
+    end
+    function complexf32_as_float64_load(v)
+        z = [complex(v[1], v[2]), complex(v[3], v[4])]
+        return GC.@preserve z unsafe_load(Ptr{Float64}(pointer(z)), 2)
+    end
+    one_tuple_load(v) = GC.@preserve v unsafe_load(Ptr{Tuple{Float64}}(pointer(v)), 2)[1]
+    function shared_tangent_pointer_load(v)
+        q = [TestResources.PointerPair(Int32(0), x) for x in v]
+        T = TestResources.PointerPair{NTuple{3,Int32},Float32}
+        return GC.@preserve q 3 * unsafe_load(Ptr{T}(Ptr{Cvoid}(pointer(q)))).b
+    end
+    function shared_tangent_reinterpret(v)
+        q = [TestResources.PointerPair(x, Int32(0)) for x in v]
+        return 3 * reinterpret(TestResources.PointerPair{Float32,NTuple{3,Int32}}, q)[2].a
+    end
     cases = Any[
         (
             (ArgumentError, "cannot load from or store to"),
@@ -2605,24 +2607,66 @@ function _builtins_throwing_rows()
             (zeros(UInt8, 8), 2.0),
             (; mode=ReverseMode),
         ),
+        # The same re-typing reached through `unsafe_wrap` must refuse.
         (
-            (ArgumentError, "the element type was erased"),
+            (ArgumentError, "no tangent storage"),
+            unsafe_wrap_retyped_bytes,
+            (zeros(UInt8, 8), 2.0),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "from `Ptr{Float32}`"),
             laundered_retyped_load,
             (Float32[1, 2, 3, 4], 2.0),
             (; mode=ReverseMode),
         ),
         (
-            (ArgumentError, "REFERENCES, not inline values"),
+            (ArgumentError, "from `Ptr{Vector{Float64}}`"),
             laundered_retyped_load,
             ([[1.0], [2.0]], 2.0),
             (; mode=ReverseMode),
         ),
-        # The same re-typing reached through `unsafe_wrap` rather than a load: wrapping it handed a
-        # container over unusable storage to the next consumer.
         (
-            (ArgumentError, "no tangent storage"),
-            unsafe_wrap_retyped_bytes,
-            (zeros(UInt8, 8), 2.0),
+            (ArgumentError, "to another element type is not supported"),
+            int_float_load,
+            ([1.0, 2.0],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            complexf32_as_float64_load,
+            (Float32[1, 2, 3, 4],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            one_tuple_load,
+            ([1.0, 2.0],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            v -> sum(abs2, reinterpret(ComplexF64, v)),
+            ([1.0, 2.0],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "from `Ptr{$(TestResources.PointerPair{Int32,Float32})}`"),
+            shared_tangent_pointer_load,
+            (Float32[1, 2],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (
+                ArgumentError,
+                if VERSION < v"1.11"
+                    "Cannot take `pointer_from_objref` of a `$(Base.RefValue{TestResources.PointerPair{Float32,NTuple{3,Int32}}})`"
+                else
+                    "from `Ptr{$(TestResources.PointerPair{Float32,Int32})}`"
+                end,
+            ),
+            shared_tangent_reinterpret,
+            (Float32[1, 2, 3, 4],),
             (; mode=ReverseMode),
         ),
     )
