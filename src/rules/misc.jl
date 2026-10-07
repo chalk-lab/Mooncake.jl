@@ -235,8 +235,7 @@ end
             return Nfwd.NDualArray{T,N,1,M}(primal_mem, NDualBlock{T,2}(flat, (N, len)))
         elseif name === :ptr_or_offset
             # Per-lane raw pointers require dense per-lane storage; in the element-major block
-            # a lane is strided (stride N), so only width 1 has an addressable lane. The
-            # downstream `bitcast` re-types the pointer, landing `NTuple{1,Ptr{T}}`.
+            # a lane is strided (stride N), so only width 1 has an addressable lane.
             N == 1 || throw(
                 ArgumentError(
                     "Forward-mode raw pointer (`ptr_or_offset`) of a lifted `MemoryRef{$T}` " *
@@ -248,7 +247,7 @@ end
             lane_ref = Nfwd._block_column_ref(
                 getfield(V, :partials_ref), getfield(V, :col), N
             )
-            return (getfield(lane_ref, :ptr_or_offset),)
+            return (Base.bitcast(Ptr{T}, getfield(lane_ref, :ptr_or_offset)),)
         end
         return NoDual()
     end

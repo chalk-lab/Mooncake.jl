@@ -554,28 +554,22 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
     # Non-Ptr or NoDual-V bitcast: no forward derivative to carry.
     return Lifted{typeof(v),Nw}(v, NoDual())
 end
-# Re-type lane pointers only when their stride survives; otherwise retain the
-# incoherent V so downstream consumers refuse it. Element-wise duals may be wider
-# than primals, and pointer_from_objref can supply zero-size tangent elements.
-# Restrict to Ptr targets so differentiable scalar targets still hit the refusal above.
+# Keep lane types through Cvoid; numeric lanes record their primal element type.
 @inline function frule!!(
     ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
 ) where {Nw,T<:Ptr,P<:Ptr}
-    tx = tangent(x)
-    lanes = ntuple(Val(Nw)) do k
-        p = tx[k]
-        _retyping_keeps_stride(typeof(p), T) ? bitcast(T, p) : p
+    if T !== Ptr{Nothing}
+        for p in tangent(x)
+            if !iszero(UInt(p))
+                if eltype(p) <: NDualEltype
+                    _check_tangent_retyping_fits(typeof(p), T)
+                elseif P !== Ptr{Nothing} && _elements_occupy_storage(eltype(p))
+                    _check_tangent_retyping_fits(P, T)
+                end
+            end
+        end
     end
-    return Lifted{T,Nw}(bitcast(T, primal(x)), lanes)
-end
-# Nothing erases the element type in the pointer(::Array) chain and may re-type
-# freely. NoTangent is a known zero-size sentinel, so must not re-type even to Nothing
-# (which would launder it into any type). Abstract elements have no known size.
-@inline function _retyping_keeps_stride(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
-    A === NoTangent && return false
-    A === Nothing && return true
-    (isconcretetype(A) && isconcretetype(B)) || return false
-    return sizeof(A) == sizeof(B)
+    return Lifted{T,Nw}(bitcast(T, primal(x)), tangent(x))
 end
 
 # VoidPtrTangent records the original primal element type so a Cvoid hop gets the
@@ -1875,6 +1869,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, IntrinsicsWrappers.bitcast, Int64, 5.0),
+        (
+            false,
+            :stability_and_allocs,
+            (mode=ForwardMode, oracle=(value=p, deriv=p)),
+            IntrinsicsWrappers.bitcast,
+            Ptr{Float64},
+            p,
+        ),
         (false, :stability, nothing, IntrinsicsWrappers.bswap_int, 5),
         (false, :stability, nothing, IntrinsicsWrappers.ceil_llvm, 4.1),
         (
@@ -2542,6 +2544,14 @@ function _builtins_throwing_rows()
         return GC.@preserve z unsafe_load(Ptr{Float64}(pointer(z)), 2)
     end
     one_tuple_load(v) = GC.@preserve v unsafe_load(Ptr{Tuple{Float64}}(pointer(v)), 2)[1]
+    function tuple_layout_copy(v)
+        a = [(Int32(1), Int32(2), v[1]), (Int32(3), Int32(4), v[2])]
+        b = [(0, 0, 0.0)]
+        GC.@preserve a b unsafe_copyto!(
+            pointer(b), Ptr{Tuple{Int,Int,Float64}}(pointer(a)), 1
+        )
+        return b[1][3] + v[2]
+    end
     function shared_tangent_pointer_load(v)
         q = [TestResources.PointerPair(Int32(0), x) for x in v]
         T = TestResources.PointerPair{NTuple{3,Int32},Float32}
@@ -2597,6 +2607,29 @@ function _builtins_throwing_rows()
 
         push!(cases, (err, f, (slot, args...), (; mode=ForwardMode)))
     end
+    @static if VERSION >= v"1.11"
+        for (T, v) in ((Float64, Float32[1, 2, 3, 4]), (Float32, [1.0, 2.0]))
+            push!(
+                cases,
+                (
+                    (ArgumentError, "to another element type is not supported"),
+                    v -> sum(reinterpret(T, v)),
+                    (v,),
+                    (; mode=ForwardMode),
+                ),
+            )
+        end
+    else
+        push!(
+            cases,
+            (
+                (ArgumentError, "cannot take `pointer_from_objref` of a `Ref{ComplexF64}`"),
+                v -> sum(abs2, reinterpret(ComplexF64, v)),
+                ([1.0, 2.0],),
+                (; mode=ForwardMode),
+            ),
+        )
+    end
     # Retyped zero-size storage becomes NULL on every version, including 1.10;
     # consuming it as differentiable storage must refuse.
     push!(
@@ -2618,7 +2651,7 @@ function _builtins_throwing_rows()
             (ArgumentError, "from `Ptr{Float32}`"),
             laundered_retyped_load,
             (Float32[1, 2, 3, 4], 2.0),
-            (; mode=ReverseMode),
+            (;),
         ),
         (
             (ArgumentError, "from `Ptr{Vector{Float64}}`"),
@@ -2630,25 +2663,31 @@ function _builtins_throwing_rows()
             (ArgumentError, "to another element type is not supported"),
             int_float_load,
             ([1.0, 2.0],),
-            (; mode=ReverseMode),
+            (;),
         ),
         (
             (ArgumentError, "to another element type is not supported"),
             complexf32_as_float64_load,
             (Float32[1, 2, 3, 4],),
-            (; mode=ReverseMode),
+            (;),
         ),
         (
             (ArgumentError, "to another element type is not supported"),
             one_tuple_load,
             ([1.0, 2.0],),
-            (; mode=ReverseMode),
+            (;),
         ),
         (
             (ArgumentError, "to another element type is not supported"),
             v -> sum(abs2, reinterpret(ComplexF64, v)),
             ([1.0, 2.0],),
-            (; mode=ReverseMode),
+            (; mode=VERSION < v"1.11" ? ReverseMode : nothing),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            tuple_layout_copy,
+            ([1.0, 2.0],),
+            (; mode=ForwardMode),
         ),
         (
             (ArgumentError, "from `Ptr{$(TestResources.PointerPair{Int32,Float32})}`"),

@@ -86,6 +86,30 @@ foo_throws(e) = throw(e)
         @test pb isa Mooncake.NoPullback
         @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
 
+        for N in (1, 8)
+            z(x) = Mooncake.zero_lifted(Val(N), x)
+            a, da = [2.0], Float64.(1:N)
+            GC.@preserve a da begin
+                lanes = ntuple(k -> pointer(da, k), N)
+                x = Lifted{Ptr{Float64},N}(pointer(a), lanes)
+                for T in (Ptr{Float64}, Ptr{Cvoid}, Ptr{Float64})
+                    args = (z(IntrinsicsWrappers.bitcast), z(T), x)
+                    TestUtils.test_opt(Mooncake.frule!!, map(typeof, args))
+                    @test TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
+                    x = Mooncake.frule!!(args...)
+                    @test tangent(x) === lanes
+                end
+                y = Mooncake.frule!!(z(IntrinsicsWrappers.pointerref), x, z(1), z(1))
+                @test ntuple(k -> tangent(y, k), N) == Tuple(da)
+            end
+            for p in (Ptr{Mooncake.NoTangent}(0), Ptr{Float32}(0))
+                lanes = ntuple(_ -> p, N)
+                x = Lifted{Ptr{Float32},N}(Ptr{Float32}(0), lanes)
+                y = Mooncake.frule!!(z(IntrinsicsWrappers.bitcast), z(Ptr{Float64}), x)
+                @test tangent(y) === lanes
+            end
+        end
+
         # Widening would write eight-byte cotangents across four-byte tangent slots.
         @test_throws ArgumentError rrule!!(
             zero_fcodual(bitcast),
