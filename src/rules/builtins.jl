@@ -239,12 +239,24 @@ end
 # atomic_pointermodify
 # atomic_pointerreplace
 
-# A null tangent pointer means there is no tangent storage behind the primal pointer, e.g. it
-# points into an array whose elements have no tangent (see `_tangent_data_ptr`). The pointer
-# intrinsic rules below skip tangent loads and stores through it, and give loaded values a
-# zero tangent. A `Ptr` has no zero tangent, so a loaded `Ptr` gets a null tangent pointer.
+# A null tangent pointer means there is no tangent storage behind the primal pointer, e.g.
+# it points into an array whose elements have no tangent (see `_tangent_data_ptr`). A load
+# through it is constant, so the pointer intrinsic rules below give the loaded value a zero
+# tangent. The zero tangent of a `Ptr` is a pointer to tangent storage, which doesn't exist
+# here, so a loaded `Ptr` gets a null tangent pointer. A store through it is an error unless
+# the stored value has no derivative to lose (see `_check_no_storage_store`).
 _no_storage_tangent(x::Ptr) = bitcast(tangent_type(typeof(x)), C_NULL)
 _no_storage_tangent(x) = zero_tangent(x)
+
+function _check_no_storage_store(x)
+    tangent_type(Mooncake._typeof(x)) == NoTangent && return nothing
+    x isa Ptr && x == C_NULL && return nothing
+    msg =
+        "Mooncake cannot differentiate storing a value with a tangent through a pointer " *
+        "into memory that has no tangent storage (e.g. the memory of a `Vector{UInt8}` " *
+        "or `Vector{Int}`), because the value's derivative would be lost."
+    throw(ArgumentError(msg))
+end
 
 # Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 @intrinsic atomic_pointerref
@@ -282,7 +294,11 @@ end
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
     dp = tangent(p)
-    dp == C_NULL || atomic_pointerset(dp, tangent(x), primal(order))
+    if dp == C_NULL
+        _check_no_storage_store(primal(x))
+    else
+        atomic_pointerset(dp, tangent(x), primal(order))
+    end
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -290,6 +306,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
     _order = primal(order)
     dp = tangent(p)
     has_storage = dp != C_NULL
+    has_storage || _check_no_storage_store(primal(x))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
@@ -705,7 +722,11 @@ end
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     dp = tangent(p)
-    dp == C_NULL || pointerset(dp, tangent(x), primal(idx), primal(z))
+    if dp == C_NULL
+        _check_no_storage_store(primal(x))
+    else
+        pointerset(dp, tangent(x), primal(idx), primal(z))
+    end
     return p
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
@@ -714,6 +735,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _z = primal(z)
     dp = tangent(p)
     has_storage = dp != C_NULL
+    has_storage || _check_no_storage_store(primal(x))
     old_value = pointerref(_p, _idx, _z)
     old_tangent = has_storage ? pointerref(dp, _idx, _z) : _no_storage_tangent(old_value)
     function pointerset_pullback!!(::NoRData)

@@ -10,7 +10,7 @@ function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Int
     return CoDual(primal(x) + primal(y), dx), NoPullback(f, x, y)
 end
 
-# A null tangent pointer means there is no tangent storage, so offsetting it must keep it null.
+# A null tangent pointer means there is no tangent storage, so offsetting it keeps it null.
 _tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
