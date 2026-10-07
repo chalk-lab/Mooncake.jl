@@ -90,8 +90,31 @@ is visible from its argument types.
 """
 struct NoDual end
 
+# Erased and narrowed pointers share provenance across their plain-pointer lanes.
+struct PointerDual{N}
+    lanes::NTuple{N,Ptr{Nothing}}
+    elt::Any
+    primal_elt::Any
+end
+
+@inline Base.getindex(d::PointerDual, k::Integer) = VoidPtrTangent(
+    d.lanes[k], d.elt, d.primal_elt
+)
+Base.length(::PointerDual{N}) where {N} = N
+@inline Base.iterate(d::PointerDual, k=1) = k > length(d) ? nothing : (d[k], k + 1)
+function Base.:(==)(a::PointerDual, b::PointerDual)
+    a.lanes == b.lanes && a.elt === b.elt && a.primal_elt === b.primal_elt
+end
+
 @inline function Lifted{P,N}(primal::P, rep::V) where {P,N,V}
     return Lifted{P,N,V}(primal, rep)
+end
+@inline function Lifted{Ptr{P},N}(p::Ptr{P}, ::NoDual) where {P,N}
+    if dual_type(Val(N), Ptr{P}) === PointerDual{N}
+        d = PointerDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, P)
+        return Lifted{Ptr{P},N,typeof(d)}(p, d)
+    end
+    return Lifted{Ptr{P},N,NoDual}(p, NoDual())
 end
 
 # Sharpen `P` when constructing from a `Type{X}` primal: the type-constructor frules (`_new_`,
@@ -123,9 +146,8 @@ _primal(x::Lifted) = primal(x)
 # a well-formed `Lifted{P,N,V}` slot has `V === dual_type(Val(N), P)` for concrete `P` (the
 # coherence invariant). Abstract-`P` slots are sharpened to a concrete subtype at runtime, so the
 # static V cannot be asserted — accept those.
-# `Ptr` primals are exempt too: they have no ownable derivative storage, so a non-differentiable
-# `Ptr` result legitimately carries `NoDual` rather than the per-lane `NTuple{N,Ptr}` (mirrors the
-# `Ptr` exemption in `DebugFRule`'s `verify_canonical_dual_type`; see the `pointerref`/`cglobal` rules).
+# Differentiable `Ptr` results without owned derivative storage may carry `NoDual`
+# (see the `pointerref`/`cglobal` rules and `DebugFRule`'s pointer exemption).
 function verify_lifted_type(::Lifted{P,N,V}) where {P,N,V}
     (!isconcretetype(P) || P <: Ptr) || V === dual_type(Val(N), P)
 end
@@ -237,8 +259,7 @@ end
         ),
     )
 end
-# Rebuild from the primal: Vector{Ptr{Int}} has NoDual elements in forward but needs
-# Ptr{NoTangent} addresses in reverse. Mapping NoDual to NoTangent would lose them.
+# Rebuild the container shape even when its elements have no forward partials.
 @inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
     return uninit_tangent(primal(x))
 end
@@ -254,11 +275,7 @@ end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
-# `Ptr{Nothing}`'s reverse tangent is a `VoidPtrTangent`, not the raw address the per-lane V holds,
-# so it is the second member of the `NoDual` family above: rebuild from the primal.
-@inline tangent(x::Lifted{Ptr{Nothing},N,<:Tuple}, ::Integer) where {N} = uninit_tangent(
-    primal(x)
-)
+@inline tangent(x::Lifted{P,N,<:PointerDual}, lane::Integer) where {P,N} = tangent(x)[lane]
 @inline tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N} = _materialise_lane(
     x, lane, IdDict{Any,Any}()
 )
@@ -417,10 +434,7 @@ end
         return _memoryref_at(_register_leaf(p.mem, t.mem, cache), off)
     end
 end
-# An all-`NoDual` V is a leaf only when the ELEMENT's reverse tangent is `NoTangent` too. A `Ptr`
-# to a non-differentiable element breaks that: `dual_type(Vector{Ptr{Int}})` is `Vector{NoDual}`
-# while `tangent_type` is `Vector{Ptr{NoTangent}}`, so the accessor returns the wrong shape and
-# only the element-wise path rebuilds it (through the scalar `Ptr`/`NoDual` method above).
+# An all-NoDual representation is a leaf only if its elements have NoTangent too.
 @inline function _materialise_lane(
     x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, cache::IdDict
 ) where {P,N}
@@ -883,33 +897,11 @@ end
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
 end
-# A raw `Ptr{Nothing}` carries `N` per-lane pointers: the `pointer(::Array)` chain
-# `getfield(:ref) → getfield(:ptr_or_offset) → bitcast` passes through a
-# `Ptr{Nothing}` intermediate, whose V must survive so the re-typed `Ptr{T}` after
-# the bitcast lands the per-lane partial pointers a foreigncall consumes.
-@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{Nothing}}) where {N}
-    return NTuple{N,Ptr{Nothing}}
-end
-# `Ptr{NoTangent}` is the fdata-placeholder element type carried through the reverse-mode pointer
-# chain (a `Ptr{Nothing}` bitcast to the fdata tag, later re-bitcast to a differentiable `Ptr{T}` a
-# foreigncall/BLAS consumes) — e.g. under forward-over-reverse of a `dot`/BLAS quadratic form. Like
-# `Ptr{Nothing}` it must carry the `N` per-lane partial pointers, so the `bitcast` frule's per-lane
-# output stays canonical (`V === dual_type`). This is NOT a genuine non-differentiable-element pointer
-# (`Ptr{UInt8}`/`Ptr{Int}`, which stay `NoDual` via the generic rule below); `NoTangent` is the tangent
-# sentinel and never appears as a user pointer's element type.
-@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{NoTangent}}) where {N}
-    return NTuple{N,Ptr{NoTangent}}
-end
-# Non-differentiable-element pointers (e.g. `Ptr{UInt8}`) carry no forward
-# derivative — V is `NoDual`, mirroring `tangent_type(T) === NoTangent`. Without
-# this the zero-field generic fallback returns `NTuple{N, Ptr{NoTangent}}`, which
-# doesn't match the structurally-NoDual `frule!!` outputs for such pointers (e.g.
-# the `jl_string_ptr` foreigncall). The `NDualEltype` overload above is more
-# specific and wins for differentiable element types.
-@foldable @generated function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
-    # `tangent_type($T)` resolves in the RETURNED expression (at the call world, where an
-    # extension's element-type overload is visible), never the generator body.
-    return :(tangent_type($T) === NoTangent ? NoDual : NTuple{$N,Ptr{tangent_type($T)}})
+# Erased pointers have one canonical descriptor per slot. Both the primal and
+# forward storage element types survive erasure and non-inlined call boundaries.
+@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
+    D = tangent_type(Ptr{T})
+    return D === VoidPtrTangent ? PointerDual{N} : NTuple{N,D}
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
@@ -1143,21 +1135,14 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
-# A `Ptr` to a non-differentiable element (`Ptr{Int}`, `Ptr{UInt8}`, …) has reverse tangent
-# `Ptr{NoTangent}` and canonical forward V `NoDual` (`dual_type(Ptr{T}) === NoDual`). The
-# generic method above only matches a matching `Ptr{T}` tangent, so this covers the non-diff
-# case (e.g. lifting a hand-written `CoDual{Ptr{Int},Ptr{NoTangent}}` test input).
-@inline lift(x::Ptr{T}, ::Ptr{NoTangent}) where {T} = Lifted{Ptr{T},1}(x, NoDual())
-# `Ptr{Nothing}` is the exception: its forward V is the `NTuple{1,Ptr{Nothing}}` per-lane
-# shape (cf. `pointer_from_objref`), the primal address (a raw address has no derivative).
-# More specific than the `Ptr{T}` method above (same `Ptr{NoTangent}` tangent) so it wins.
-@inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
-# `Ptr{NoTangent}` carries a real forward lane (`dual_type` gives `NTuple{1,Ptr{NoTangent}}`, not
-# `NoDual`), so it must not fall to the non-differentiable method above.
-@inline lift(x::Ptr{NoTangent}, ẋ::Ptr{NoTangent}) = Lifted{Ptr{NoTangent},1}(x, (ẋ,))
-# A `Ptr{Nothing}`'s reverse tangent is an `VoidPtrTangent`; the forward lane keeps the `uninit_*`
-# placeholder convention, as the `Ptr{NoTangent}` method above does.
-@inline lift(x::Ptr{Nothing}, ::VoidPtrTangent) = Lifted{Ptr{Nothing},1}(x, (x,))
+@inline function lift(x::Ptr{T}, dx::Ptr{NoTangent}) where {T}
+    d = tangent(CoDual(x, dx))
+    return d isa VoidPtrTangent ? lift(x, d) : Lifted{Ptr{T},1}(x, NoDual())
+end
+@inline lift(x::Ptr{NoTangent}, dx::Ptr{NoTangent}) = lift(x, tangent(CoDual(x, dx)))
+@inline lift(x::Ptr, dx::VoidPtrTangent) = Lifted{typeof(x),1}(
+    x, PointerDual((dx.p,), dx.elt, dx.primal_elt)
+)
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:NDualEltype) reverse fdata is itself a `MemoryRef{T}` (the
     # derivative storage); its forward V is the block-backed `NDualMemoryRef`. The eltype bound
@@ -1484,18 +1469,16 @@ end
     w, r
 )
 
-# A `Ptr` has no numeric partials to zero or randomise (its V is `NTuple{N,Ptr}` of pointers, never
-# a float tangent that could be read as garbage), so both seeds are the uninitialised one — and
-# critically the generic struct fallback would route a `Ptr` field through the 1-arg
-# `zero_tangent(::Ptr)`, which throws. (Constants seed via `zero_lifted`, so this path is live.)
+# Pointer lanes carry addresses and provenance, with no owned partials to zero or randomise.
+# The generic struct fallback would call `zero_tangent(::Ptr)`, which throws.
 @inline zero_dual(w::Val{N}, x::Ptr) where {N} = uninit_dual(w, x)
 @inline randn_dual(w::Val{N}, ::AbstractRNG, x::Ptr) where {N} = uninit_dual(w, x)
-# Take the lane type from `dual_type`, not from the reverse `uninit_tangent`: they agree for
-# `Ptr{Float64}` but not for `Ptr{Nothing}`, whose reverse tangent is a `VoidPtrTangent`. Each lane
-# keeps the `uninit_*` convention — the primal address as the declared pointer type, never read.
+# Each lane keeps the uninit placeholder convention: no owned tangent storage.
 @inline function uninit_dual(w::Val{N}, x::Ptr) where {N}
     V = dual_type(w, typeof(x))
     V === NoDual && return NoDual()
+    V === PointerDual{N} &&
+        return PointerDual(ntuple(_ -> Ptr{Nothing}(x), w), NoTangent, eltype(x))
     return ntuple(_ -> bitcast(fieldtype(V, 1), x), w)
 end
 
@@ -1956,7 +1939,7 @@ end
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
 # `Ptr` lane: 0-dimension placeholder (see the isbits terminal above) — return it unchanged and
 # do not advance the cursor.
-_basis_seed!!(v::Ptr, _slots, _cursor, _dict) = v
+_basis_seed!!(v::Union{Ptr,VoidPtrTangent,PointerDual}, _slots, _cursor, _dict) = v
 function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}
     cursor[] += 1
     c = cursor[]

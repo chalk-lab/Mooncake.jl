@@ -150,7 +150,10 @@ for order in ((), (:order,))
             # A NoDual parent can have a differentiable field (e.g. DataType.parameters).
             # TODO(#1295): fresh partials do not alias the pass's seeded field storage.
             tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
-            V_i = _get_lifted_field(tangent(x), f)
+            V_i = _get_lifted_field(primal(x), tangent(x), f)
+            if primal_field isa Ptr{Nothing} && V_i isa NoDual
+                V_i = uninit_dual(Val(Nw), primal_field)
+            end
             _check_lifted_field_ptr_lanes(V_i, Val(Nw))
             return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
         end
@@ -167,6 +170,7 @@ for order in ((), (:order,))
     end
 end
 
+@inline _get_lifted_field(p, V, name) = _get_lifted_field(V, name)
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
 @inline _coerce_backing_field(::Type{F}, v) where {F<:PossiblyUninitTangent} = F(v)
 @inline _coerce_backing_field(::Type, v) = v
@@ -247,7 +251,7 @@ end
             lane_ref = Nfwd._block_column_ref(
                 getfield(V, :partials_ref), getfield(V, :col), N
             )
-            return (Base.bitcast(Ptr{T}, getfield(lane_ref, :ptr_or_offset)),)
+            return PointerDual((getfield(lane_ref, :ptr_or_offset),), T, T)
         end
         return NoDual()
     end
@@ -258,15 +262,15 @@ end
     end
     # Element-wise refs project .mem and a width-1 pointer typed for the dual element,
     # so unsafe_copyto! uses the correct stride (as in the 1.10 jl_array_ptr rule).
-    @inline function _get_lifted_field(V::MemoryRef, name::Union{Symbol,Int})
+    @inline function _get_lifted_field(
+        p::MemoryRef{P}, V::MemoryRef, name::Union{Symbol,Int}
+    ) where {P}
         name = name isa Int ? fieldname(typeof(V), name) : name
         name === :mem && return getfield(V, :mem)
-        # Only a differentiable element (element-wise dual `Memory`, not `Memory{NoDual}`) carries a
-        # tangent pointer; a non-differentiable element's pointer stays `NoDual`.
         if name === :ptr_or_offset
             E = eltype(getfield(V, :mem))
             E === NoDual && return NoDual()
-            return (Base.bitcast(Ptr{E}, getfield(V, :ptr_or_offset)),)
+            return PointerDual((getfield(V, :ptr_or_offset),), E, P)
         end
         return NoDual()
     end
@@ -281,7 +285,9 @@ end
 # at wider widths. Every _get_lifted_field caller building a slot must check this;
 # the projection itself cannot see Nw. Coherent NTuple{Nw,Ptr} values pass through.
 @inline function _check_lifted_field_ptr_lanes(V_i, ::Val{Nw}) where {Nw}
-    if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
+    if Nw > 1 &&
+        V_i isa Union{PointerDual,Tuple{Vararg{Union{Ptr,VoidPtrTangent}}}} &&
+        length(V_i) != Nw
         throw(
             ArgumentError(
                 "Forward-mode raw pointer of lifted element-wise storage is unsupported at chunk " *

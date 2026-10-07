@@ -316,7 +316,9 @@ We've already seen a couple of primitive types (`Float64` and `Int`).
 The basic story here is that all primitive types require an explicit specification of what their tangent type must be.
 
 One interesting case are `Ptr` types.
-The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`.
+The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`, except
+for erased pointers and zero-size pointee tangents, which use `VoidPtrTangent` to
+retain the storage provenance.
 For example
 ```julia
 julia> tangent_type(Ptr{Float64})
@@ -340,19 +342,24 @@ tangent_type(::Type{<:Type}) = NoTangent
 
 tangent_type(::Type{<:TypeVar}) = NoTangent
 
-@unstable @foldable tangent_type(::Type{Ptr{P}}) where {P} = Ptr{tangent_type(P)}
+@unstable @foldable function tangent_type(::Type{Ptr{P}}) where {P}
+    T = tangent_type(P)
+    return isbitstype(T) && sizeof(T) == 0 ? VoidPtrTangent : Ptr{T}
+end
 
 """
     VoidPtrTangent
 
-Tangent of a `Ptr{Cvoid}`, whose pointee type is erased. Such pointers can come from
+Tangent of an erased pointer or a pointer with a zero-size pointee tangent.
+These pointers retain provenance so non-differentiable reads cannot hide stores
+into differentiated storage. Such pointers can come from
 `unsafe_convert(Ptr{Cvoid}, p)` (including `unsafe_copyto!` and `pointer(::Array)`) or
 from storage with no tangent; the primal type alone cannot distinguish them.
 
 `elt` records the tangent element type and `primal_elt` the primal element type,
 so `_tangent_retyping_verdict` can refuse re-typing to a different primal element type.
-For `pointer_from_objref`, `primal_elt` is the object type; for zero/uninit placeholders,
-it is `Nothing`.
+For `pointer_from_objref`, `primal_elt` is the object type; placeholders retain the
+pointer's declared element type.
 
 Two marker element types have special meanings:
 - `NoTangent`: no differentiable storage; refuse differentiable widening. Also the
@@ -628,12 +635,7 @@ end
 # Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
 # placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
 function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
-    return bitcast(Ptr{tangent_type(P)}, x)
-end
-# An erased pointer reached as a FIELD has no tangent buffer of its own to point at, so it takes the
-# placeholder with no storage recorded, and a later widening to a differentiable element is refused.
-function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
-    return VoidPtrTangent(x, NoTangent, Nothing)
+    return uninit_tangent(x)
 end
 # Cache the `SimpleVector` itself to preserve aliasing, before filling to break cycles.
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
@@ -720,8 +722,13 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # primal address to Ptr{tangent_type(P)}. The result must NOT be dereferenced — it is a
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
-@inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
-@inline uninit_tangent(x::Ptr{Nothing}) = VoidPtrTangent(x, NoTangent, Nothing)
+@inline function uninit_tangent(x::Ptr{P}) where {P}
+    return if tangent_type(typeof(x)) === VoidPtrTangent
+        VoidPtrTangent(Ptr{Nothing}(x), NoTangent, P)
+    else
+        bitcast(Ptr{tangent_type(P)}, x)
+    end
+end
 
 """
     randn_tangent(rng::AbstractRNG, x::P) where {P}
@@ -1189,7 +1196,7 @@ _add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
 set_to_zero_internal!!(::SetToZeroCache, t::VoidPtrTangent) = t
 _scale_internal(::MaybeCache, ::Float64, t::VoidPtrTangent) = t
 _dot_internal(::MaybeCache, ::VoidPtrTangent, ::VoidPtrTangent) = 0.0
-_add_to_primal_internal(::MaybeCache, x::Ptr{Nothing}, ::VoidPtrTangent, ::Bool) = x
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::VoidPtrTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool

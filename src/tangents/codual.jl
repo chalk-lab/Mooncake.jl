@@ -3,6 +3,16 @@ struct CoDual{Tx,Tdx}
     dx::Tdx
 end
 
+# Legacy rule inputs may supply an actual zero-size tangent buffer.
+@inline function CoDual(x::Ptr{P}, dx::Ptr{T}) where {P,T}
+    d = if tangent_type(typeof(x)) === VoidPtrTangent
+        VoidPtrTangent(Ptr{Nothing}(dx), T, P)
+    else
+        dx
+    end
+    return CoDual{typeof(x),typeof(d)}(x, d)
+end
+
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function CoDual(x::Type{P}, dx::NoFData) where {P}
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoFData}(P, dx)
