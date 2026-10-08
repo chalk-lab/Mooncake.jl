@@ -320,6 +320,10 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
+    if x isa ReshapedArray && !(x isa StridedArray) && parent(x) isa StridedArray
+        p, dp = parent(x), _fields(tangent(x_dx)).parent
+        return viewify(n, x_dx isa Dual ? Dual(p, dp) : CoDual(p, dp), incx)
+    end
     if x isa Union{Array,AbstractVector}
         step = _blas_walk_step(x, incx, n)
         step === nothing && _throw_no_walk_step(x, incx)
@@ -2671,6 +2675,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
             P[3 0; 4 0; 9 0],
         ),
     )
+    for dims in ((2, 6), (12,)), n in (4, 6)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                n == 4 ? nothing : (throws=(ArgumentError, "does not support operand"),),
+                A -> BLAS.nrm2(n, reshape(view(A, :, 1:2:5), dims), 1),
+                reshape(P.(1:24), 4, 6),
+            ),
+        )
+    end
     push!(test_cases, (false, :none, nothing, BLAS.nrm2, randn(rng, P, 105)))
 
     #
