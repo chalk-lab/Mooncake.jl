@@ -386,6 +386,21 @@ This is only really a problem for tangent / fdata / rdata generation functionali
 As a work-around, AD testing functionality permits users to pass in `CoDual`s.
 So if you are testing something involving a pointer, you will need to construct its tangent yourself, and pass a `CoDual` to e.g. `Mooncake.TestUtils.test_rule`.
 
+Forward mode supports ordinary and atomic stores through `pointer(::Array{Any})`
+at every chunk width: each boxed shadow slot receives the complete forward value.
+Boxed stores and copies retain the storage owner and apply a GC write barrier to
+both primal and shadow writes, including reverse-mode restoration. Stores through
+hand-built `Ptr{Any}` values without a known boxed shadow and owner are refused
+with an `ArgumentError` before mutation when the pointer carries tangent storage,
+even for non-differentiable values. Forward stores with no tangent storage are allowed.
+Address-only round trips from `Ptr{Any}` through
+`Ptr{Cvoid}` or `Ptr{UInt8}` preserve unknown shadow provenance and are allowed.
+Forward copies between boxed pointers require known boxed shadows. Copies through
+pointers narrowed or erased from boxed slots are refused when they move data,
+even with unknown shadows. Zero-byte copies and copies onto the same pointer
+are allowed.
+Boxed pointer loads remain unsupported in forward mode.
+
 While pointers tend to be a low-level implementation detail in Julia code, you could in principle actually be interested in differentiating a function of a pointer.
 In this case, you will not be able to use `Mooncake.value_and_gradient!!` as this requires the use of `zero_tangent`.
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.

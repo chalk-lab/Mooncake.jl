@@ -21,7 +21,11 @@ function frule!!(
     d.elt === NoTangent || iszero(primal(y)) || _check_ptr_descriptor_offset(d)
     return Lifted{P,N}(
         primal(x) + primal(y),
-        PointerDual(map(p -> _shift_ptr_fdata(p, primal(y)), d.lanes), d.elt, d.primal_elt),
+        PointerDual(
+            map(p -> _shift_ptr_fdata(p, primal(y)), d.lanes),
+            d.elt,
+            getfield(d, :primal_elt),
+        ),
     )
 end
 # NoDual pointers (e.g. from bitcast) must match the primitive's full Ptr coverage.
@@ -70,7 +74,7 @@ end
 end
 @inline function _shift_ptr_fdata(::Type, dx::VoidPtrTangent, n::Integer)
     dx.elt === NoTangent || iszero(n) || _check_ptr_descriptor_offset(dx)
-    return VoidPtrTangent(_shift_ptr_fdata(dx.p, n), dx.elt, dx.primal_elt)
+    return VoidPtrTangent(_shift_ptr_fdata(dx.p, n), dx.elt, getfield(dx, :primal_elt))
 end
 function rrule!!(
     f::CoDual{typeof(Base.:(+))}, x::CoDual{Ptr{P}}, y::CoDual{<:Integer}
@@ -418,7 +422,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
         )
     end
     for offset in (0, 1, 8, -8)
-        push!(test_cases, (false, :none, (; mode=ReverseMode), objref_shift, [1.25, 2.5], offset))
+        push!(
+            test_cases,
+            (false, :none, (; mode=ReverseMode), objref_shift, [1.25, 2.5], offset),
+        )
     end
     return test_cases, Any[]
 end

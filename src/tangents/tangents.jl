@@ -317,8 +317,8 @@ The basic story here is that all primitive types require an explicit specificati
 
 One interesting case are `Ptr` types.
 The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`, except
-for erased pointers and zero-size pointee tangents, which use `VoidPtrTangent` to
-retain the storage provenance.
+for erased pointers, boxed `Ptr{Any}` slots, and zero-size pointee tangents, which
+use `VoidPtrTangent` to retain storage provenance and, for boxed stores, owners.
 For example
 ```julia
 julia> tangent_type(Ptr{Float64})
@@ -379,6 +379,34 @@ struct VoidPtrTangent
     primal_elt::Any
 end
 
+_tangent_fields(::Type{VoidPtrTangent}) = ()
+
+# A boxed slot needs its owner for GC-safe writes; raw seeds have no owner.
+@static if VERSION >= v"1.11-rc4"
+    struct BoxedPointerStorage
+        primal::Memory{Any}
+        shadow::Memory{Any}
+    end
+    BoxedPointerStorage(a::Array{Any}, d::Array{Any}) = BoxedPointerStorage(
+        a.ref.mem, d.ref.mem
+    )
+else
+    struct BoxedPointerStorage
+        primal::Vector{Any}
+        shadow::Vector{Any}
+    end
+    BoxedPointerStorage(a::Array{Any}, d::Array{Any}) = BoxedPointerStorage(vec(a), vec(d))
+end
+
+# Copying a Ptr preserves its address, so its owners must also remain the same objects.
+Base.deepcopy_internal(x::BoxedPointerStorage, ::IdDict) = x
+
+@inline function Base.getproperty(d::VoidPtrTangent, name::Symbol)
+    value = getfield(d, name)
+    return name === :primal_elt && value isa BoxedPointerStorage ? Any : value
+end
+
+tangent_type(::Type{Ptr{Any}}) = VoidPtrTangent
 tangent_type(::Type{Ptr{Nothing}}) = VoidPtrTangent
 
 tangent_type(::Type{<:Ptr}) = NoTangent

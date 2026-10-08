@@ -430,6 +430,12 @@ function frule!!(
         )
     y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
+    if P === Any
+        return Lifted{Ptr{P},N}(
+            y,
+            PointerDual((Ptr{Nothing}(dy),), E, BoxedPointerStorage(primal(a), tangent(a))),
+        )
+    end
     return Lifted{Ptr{P},N}(y, ntuple(_ -> dy, Val(N)))
 end
 # Array{NoDual} has no addressable derivative at any width: returning its pointer
@@ -457,7 +463,19 @@ function rrule!!(
 ) where {T,V}
     y = CoDual(
         ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a)),
-        ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a)),
+        # 1.10 gives zero-size elements a non-null address; NULL marks absent storage.
+        if IntrinsicsWrappers._elements_occupy_storage(V)
+            dp = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
+            if T === Any
+                VoidPtrTangent(
+                    Ptr{Nothing}(dp), V, BoxedPointerStorage(primal(a), tangent(a))
+                )
+            else
+                dp
+            end
+        else
+            Ptr{V}(0)
+        end,
     )
     return y, NoPullback(ntuple(_ -> NoRData(), 7))
 end
