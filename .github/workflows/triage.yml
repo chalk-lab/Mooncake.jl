@@ -1,0 +1,72 @@
+name: Contributor triage
+
+on:
+  pull_request:
+    paths:
+      - '.github/APPROVED_CONTRIBUTORS'
+      - '.github/scripts/triage*'
+      - '.github/workflows/triage.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/APPROVED_CONTRIBUTORS'
+      - '.github/scripts/triage*'
+      - '.github/workflows/triage.yml'
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Apply changes (requires TRIAGE_START_DATE; otherwise preview only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: node --test .github/scripts/triage.test.mjs
+
+  triage:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: contributor-triage
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Preview or apply triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIAGE_START_DATE: ${{ vars.TRIAGE_START_DATE }}
+          TRIAGE_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || github.event_name == 'schedule' && vars.TRIAGE_APPLY == 'true' }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [[ -n "$TRIAGE_START_DATE" ]]; then
+            args+=(--since "$TRIAGE_START_DATE")
+          fi
+          if [[ "$TRIAGE_APPLY" == 'true' ]]; then
+            args+=(--apply)
+          fi
+          node .github/scripts/triage.mjs "${args[@]}"
