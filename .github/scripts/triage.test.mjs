@@ -7,9 +7,7 @@ const author = { login: 'outside-author', id: 101, type: 'User' };
 const contributor = { login: 'Approved-Contributor', id: 202, type: 'User' };
 const other = { login: 'other-person', id: 303, type: 'User' };
 const bot = { login: 'github-actions[bot]', id: 404, type: 'Bot' };
-const maintainer = { login: 'Repo-Maintainer', id: 505, type: 'User' };
 const approved = new Set(['approved-contributor']);
-const maintainers = new Set(['repo-maintainer']);
 const at = (date) => Date.parse(date);
 const item = (pr = false) => ({
   number: 7, state: 'open', user: author, author_association: 'CONTRIBUTOR',
@@ -24,23 +22,24 @@ const feedback = comment(11, contributor, '2026-01-03T12:00:00Z');
 const reminder = comment(22, bot, '2026-01-25T12:00:00Z',
   '<!-- mooncake-triage:v1:reminder:comment:11 -->');
 const snapshot = (pr = true) => ({ item: item(pr), timeline: [], reviews: [], reviewComments: [] });
-const decide = (data, now = '2026-02-01T12:00:00Z', since = '2026-01-01') => evaluate({ maintainers, ...data }, {
+const decide = (data, now = '2026-02-01T12:00:00Z', since = '2026-01-01') => evaluate(data, {
   approved, now: at(now), since: at(since),
 });
 
-test('allowlist accepts empty input, validates names, and stays distinct from maintainer access', () => {
+test('allowlist accepts empty input, validates names, and alone determines contributor status', () => {
   assert.deepEqual(parseApproved('# approved\nApproved-Contributor # name\n\n'), approved);
   for (const text of ['', ' \n\t', '# empty\n']) {
     assert.deepEqual(parseApproved(text), new Set());
   }
   assert.throws(() => parseApproved('two names'), /usernames/);
   parseApproved(readFileSync(new URL('../APPROVED_CONTRIBUTORS', import.meta.url), 'utf8'));
-  assert.equal(decide({ item: { ...item(), user: contributor } }).reason, 'Approved author');
-  assert.equal(decide({ item: { ...item(), user: maintainer } }).reason, 'Maintainer author');
-  assert.equal(evaluate({ item: { ...item(), user: maintainer }, maintainers }, {
+  assert.equal(decide({ item: { ...item(), user: contributor } }).reason, 'Contributor author');
+  assert.equal(evaluate({ item: { ...item(), user: contributor } }, {
     approved: parseApproved(''), now: at('2026-02-01T12:00:00Z'), since: 0,
-  }).reason, 'Maintainer author');
-  assert.equal(decide({ item: item() }).action, 'close'); // GitHub CONTRIBUTOR badge is not approval.
+  }).action, 'close');
+  for (const author_association of ['OWNER', 'MEMBER', 'CONTRIBUTOR']) {
+    assert.equal(decide({ item: { ...item(), author_association } }).action, 'close');
+  }
 });
 
 for (const pr of [false, true]) {
@@ -71,15 +70,15 @@ test('issue exemptions use label/comment actors, not current labels or bot activ
   assert.equal(decide(data).reason, 'Contributor triaged issue');
 });
 
-test('only maintainer keep-open or reopening overrides PR triage; approval alone cannot', () => {
+test('only listed contributors can exempt PRs with keep-open or reopening', () => {
   const data = snapshot();
   for (const event of ['reopened', 'labeled']) {
-    for (const actor of [author, other, bot, contributor, maintainer]) {
+    for (const actor of [author, other, bot, contributor]) {
       data.timeline = [{ event, actor, label: { name: 'keep-open' } }];
-      assert.equal(decide(data).action, actor === maintainer ? 'keep' : 'close');
+      assert.equal(decide(data).action, actor === contributor ? 'keep' : 'close');
     }
   }
-  data.timeline = [{ event: 'labeled', actor: maintainer, label: { name: 'bug' } }];
+  data.timeline = [{ event: 'labeled', actor: contributor, label: { name: 'bug' } }];
   assert.equal(decide(data).action, 'close');
 });
 
@@ -151,7 +150,7 @@ test('delayed reminders grant a full seven days; spoofed or superseded reminders
 });
 
 // Fake the wire API, not the policy. Recorded writes are checked separately below.
-function fixture(data, now = '2026-02-01T12:00:00Z', permissions = { 'repo-maintainer': 'write' }) {
+function fixture(data, now = '2026-02-01T12:00:00Z') {
   const calls = [];
   let onCall = () => {};
   const api = async (method, path, options = {}) => {
@@ -163,7 +162,6 @@ function fixture(data, now = '2026-02-01T12:00:00Z', permissions = { 'repo-maint
       if (path.includes('/timeline?')) return structuredClone(data.timeline);
       if (path.includes('/reviews?')) return structuredClone(data.reviews);
       if (path.includes('/pulls/7/comments?')) return structuredClone(data.reviewComments);
-      if (path.includes('/collaborators/')) return { permission: permissions[path.split('/')[4]] ?? 'none' };
       assert.equal(path, 'repos/example/repo/issues/7');
       return structuredClone(data.item);
     }
@@ -195,39 +193,15 @@ test('non-human authors never receive inactivity reminders or closures', async (
   }
 });
 
-test('GitHub permissions independently grant author exemption and maintainer engagement', async () => {
-  for (const permission of ['admin', 'write', 'read', 'none']) {
-    const f = fixture(snapshot(), undefined, { [author.login]: permission });
-    assert.equal((await f.run(false))[0].action, ['admin', 'write'].includes(permission) ? 'keep' : 'close');
-    assert.deepEqual(f.writes(), []);
-  }
-  const issue = fixture({ ...snapshot(false), timeline: [{ ...feedback, user: maintainer, actor: maintainer }] });
-  assert.equal((await issue.run())[0].reason, 'Contributor triaged issue');
-  const pr = fixture({ ...snapshot(), reviews: [{
-    id: 42, user: maintainer, state: 'COMMENTED', submitted_at: feedback.created_at,
-  }] });
-  assert.equal((await pr.run())[0].action, 'remind');
-  const lookups = pr.calls.filter((call) => call.path.includes('/collaborators/'));
-  assert.equal(lookups.length, 2); // Author and reviewer once each, despite the write recheck.
-  assert.ok(lookups.every((call) => !call.path.includes('github-actions')));
-});
-
-test('permission failures block writes; cached roles expire between scans', async () => {
-  const permissions = { 'repo-maintainer': 'write' };
-  const f = fixture({ ...snapshot(), timeline: [{ event: 'reopened', actor: maintainer }] }, undefined, permissions);
-  assert.equal((await f.run())[0].reason, 'Maintainer override');
-  permissions['repo-maintainer'] = 'read';
-  assert.equal((await f.run(false))[0].action, 'close');
+test('scans use the current contributor list without permission lookups', async () => {
+  const f = fixture({ ...snapshot(), timeline: [{ event: 'reopened', actor: contributor }] });
+  assert.equal((await f.run(false))[0].reason, 'Contributor override');
+  const [result] = await runTriage({
+    api: f.api, repo: 'example/repo', approved: new Set(), since: 0, now: at('2026-02-01'),
+  });
+  assert.equal(result.action, 'close');
+  assert.ok(f.calls.every((call) => !call.path.includes('/collaborators/')));
   assert.deepEqual(f.writes(), []);
-  for (const failure of ['403', '404', '429', '500']) {
-    const g = fixture(snapshot());
-    g.hook((method, path) => { if (path.includes('/collaborators/')) throw new Error(failure); });
-    assert.equal((await g.run())[0].action, 'error');
-    assert.deepEqual(g.writes(), []);
-  }
-  const g = fixture(snapshot(), undefined, { [author.login]: 'unexpected-role' });
-  assert.equal((await g.run())[0].action, 'error');
-  assert.deepEqual(g.writes(), []);
 });
 
 test('dry-run produces the same decision as apply without posting or patching anything', async () => {
@@ -290,7 +264,7 @@ test('rechecks before writes and before closure; late responses and overrides wi
 
   const g = fixture({ ...snapshot(), timeline: [feedback, reminder] });
   g.hook((method) => {
-    if (method === 'POST') g.data.timeline.push({ event: 'reopened', actor: maintainer });
+    if (method === 'POST') g.data.timeline.push({ event: 'reopened', actor: contributor });
   });
   assert.equal((await g.run())[0].reason, 'Activity changed before closing');
   assert.equal(g.data.item.state, 'open');

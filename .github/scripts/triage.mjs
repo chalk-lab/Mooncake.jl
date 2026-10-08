@@ -25,20 +25,18 @@ export function parseApproved(text) {
 
 // Tests may scale a day; the production CLI always uses real 24-hour days.
 // Pure policy evaluation: the clock and GitHub history are supplied by the caller.
-export function evaluate({ item, timeline = [], reviews = [], reviewComments = [], maintainers = new Set() }, {
+export function evaluate({ item, timeline = [], reviews = [], reviewComments = [] }, {
   approved, now, since, dayMs = DAY,
 }) {
-  const maintainer = (user) => isHuman(user) && maintainers.has(user.login.toLowerCase());
-  const trusted = (user) => maintainer(user) || (isHuman(user) && approved.has(user.login.toLowerCase()));
+  const isContributor = (user) => isHuman(user) && approved.has(user.login.toLowerCase());
   const keep = (reason) => ({ action: 'keep', reason });
   if (item.state !== 'open') return keep('Already closed');
   if (timestamp(item.created_at) < since) return keep('Before rollout date');
   if (!isHuman(item.user)) return keep('Non-human author');
-  if (maintainer(item.user)) return keep('Maintainer author');
-  if (trusted(item.user)) return keep('Approved author');
-  if (timeline.some((event) => maintainer(event.actor) && (
+  if (isContributor(item.user)) return keep('Contributor author');
+  if (timeline.some((event) => isContributor(event.actor) && (
     event.event === 'reopened' || (event.event === 'labeled' && event.label.name === 'keep-open')
-  ))) return keep('Maintainer override');
+  ))) return keep('Contributor override');
 
   const comments = timeline.filter((event) => event.event === 'commented');
   const unengaged = () => {
@@ -49,8 +47,8 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
   };
 
   if (!item.pull_request) {
-    const triaged = comments.some((comment) => trusted(comment.user)) || timeline.some(
-      (event) => event.event === 'labeled' && trusted(event.actor),
+    const triaged = comments.some((comment) => isContributor(comment.user)) || timeline.some(
+      (event) => event.event === 'labeled' && isContributor(event.actor),
     );
     return triaged ? keep('Contributor triaged issue') : unengaged();
   }
@@ -76,7 +74,7 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
       at: Math.max(timestamp(comment.created_at), review?.submitted_at ? timestamp(review.submitted_at) : 0),
     });
   }
-  const feedback = interactions.filter((entry) => trusted(entry.user)).sort(
+  const feedback = interactions.filter((entry) => isContributor(entry.user)).sort(
     (a, b) => b.at - a.at || a.key.localeCompare(b.key),
   )[0];
   if (!feedback) return unengaged();
@@ -102,7 +100,7 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
   return { action: 'close', key: feedback.key, reason: 'No author response seven days after reminder' };
 }
 
-async function loadSnapshot(api, repo, number, permissions) {
+async function loadSnapshot(api, repo, number) {
   const base = `repos/${repo}`;
   const item = await api('GET', `${base}/issues/${number}`);
   const timeline = await api('GET', `${base}/issues/${number}/timeline?per_page=100`, { paginate: true });
@@ -110,33 +108,17 @@ async function loadSnapshot(api, repo, number, permissions) {
     ? await api('GET', `${base}/pulls/${number}/reviews?per_page=100`, { paginate: true }) : [];
   const reviewComments = item.pull_request
     ? await api('GET', `${base}/pulls/${number}/comments?per_page=100`, { paginate: true }) : [];
-  const users = [item.user, ...timeline.flatMap((event) => [event.actor, event.user]),
-    ...reviews.map((review) => review.user), ...reviewComments.map((comment) => comment.user)];
-  const maintainers = new Set();
-  for (const user of users.filter(isHuman)) {
-    const login = user.login.toLowerCase();
-    if (!permissions.has(login)) {
-      const { permission } = await api('GET', `${base}/collaborators/${encodeURIComponent(login)}/permission`);
-      // GitHub maps maintain/custom write roles to write, and triage roles to read.
-      if (!['admin', 'write', 'read', 'none'].includes(permission)) {
-        throw new Error(`Unknown repository permission for ${login}: ${permission}`);
-      }
-      permissions.set(login, permission);
-    }
-    if (['admin', 'write'].includes(permissions.get(login))) maintainers.add(login);
-  }
-  return { item, timeline, reviews, reviewComments, maintainers };
+  return { item, timeline, reviews, reviewComments };
 }
 
 export async function runTriage({ api, repo, approved, since, now = Date.now(), apply = false, dayMs = DAY }) {
   const items = await api('GET', `repos/${repo}/issues?state=open&per_page=100`, { paginate: true });
   const results = [];
-  const permissions = new Map(); // Cache within this scan only; refresh roles on the next run.
   const options = { approved, since, now, dayMs };
   for (const item of items) {
     const result = { number: item.number, kind: item.pull_request ? 'pr' : 'issue' };
     try {
-      let snapshot = await loadSnapshot(api, repo, item.number, permissions);
+      let snapshot = await loadSnapshot(api, repo, item.number);
       const decision = evaluate(snapshot, options);
       Object.assign(result, decision);
       if (apply && decision.action !== 'keep') {
@@ -144,7 +126,7 @@ export async function runTriage({ api, repo, approved, since, now = Date.now(), 
           const next = evaluate(current, options);
           return next.action === decision.action && next.key === decision.key;
         };
-        snapshot = await loadSnapshot(api, repo, item.number, permissions);
+        snapshot = await loadSnapshot(api, repo, item.number);
         if (!unchanged(snapshot)) {
           results.push({ ...result, action: 'keep', reason: 'Activity changed before writing' });
           continue;
@@ -169,11 +151,11 @@ export async function runTriage({ api, repo, approved, since, now = Date.now(), 
             await api('POST', commentsPath, { body: {
               body: `Closing automatically under the [triage policy](${policy}): ${decision.reason.toLowerCase()}. `
                 + 'This is not a judgment about the report or fix. For reconsideration, reply here and '
-                + 'ask a maintainer to reopen it or add `keep-open`.\n\n' + notice,
+                + 'ask a listed contributor to reopen it or add `keep-open`.\n\n' + notice,
             } });
           }
           // Recheck after posting as well: a reply or override can arrive during the write.
-          if (!unchanged(await loadSnapshot(api, repo, item.number, permissions))) {
+          if (!unchanged(await loadSnapshot(api, repo, item.number))) {
             results.push({ ...result, action: 'keep', reason: 'Activity changed before closing' });
             continue;
           }
