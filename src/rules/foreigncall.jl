@@ -77,6 +77,24 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(_foreigncall_),Vararg}
 
+# Boxed arrays keep one full forward value per slot; every lane shares its address.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(pointer),Array{Any}}
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(pointer),Array{Any},Integer}
+function frule!!(
+    ::Lifted{typeof(pointer),N},
+    a::Lifted{<:Array{Any},N,<:Array{Any}},
+    i::Lifted=zero_lifted(Val(N), 1),
+) where {N}
+    return Lifted{Ptr{Any},N}(
+        pointer(primal(a), primal(i)),
+        PointerDual(
+            ntuple(_ -> Ptr{Nothing}(pointer(tangent(a), primal(i))), Val(N)),
+            Any,
+            BoxedPointerStorage(primal(a), tangent(a)),
+        ),
+    )
+end
+
 #
 # Rules to handle / avoid foreigncall nodes
 #
@@ -268,6 +286,35 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{Ptr{Any},N,PointerDual{N}},
+    src::Lifted{Ptr{Any},N,PointerDual{N}},
+    n::Lifted,
+) where {N}
+    (iszero(primal(n)) || primal(dest) === primal(src)) && return dest
+    dd, ds = tangent(dest), tangent(src)
+    (
+        dd.elt !== Any ||
+        ds.elt !== Any ||
+        dd.primal_elt !== Any ||
+        ds.primal_elt !== Any ||
+        iszero(UInt(dd.lanes[1])) ||
+        iszero(UInt(ds.lanes[1]))
+    ) && throw(
+        ArgumentError("Forward-mode boxed pointer copy requires known boxed shadows.")
+    )
+    dest_storage, di, ddi = IntrinsicsWrappers._boxed_store_indices(primal(dest), dd)
+    src_storage, si, dsi = IntrinsicsWrappers._boxed_store_indices(primal(src), ds)
+    count = primal(n)
+    checkbounds(dest_storage.primal, di:(di + count - 1))
+    checkbounds(dest_storage.shadow, ddi:(ddi + count - 1))
+    checkbounds(src_storage.primal, si:(si + count - 1))
+    checkbounds(src_storage.shadow, dsi:(dsi + count - 1))
+    copyto!(dest_storage.primal, di, src_storage.primal, si, count)
+    copyto!(dest_storage.shadow, ddi, src_storage.shadow, dsi, count)
+    return dest
+end
 # Per-lane pointers cover both scalar partial buffers and nested-array element duals;
 # their element type need not match the primal pointer's.
 function frule!!(
@@ -320,6 +367,10 @@ function frule!!(
     src::Lifted{Ptr{T},Nw,NoDual},
     n::Lifted,
 ) where {Nw,T}
+    (iszero(primal(n)) || primal(dest) === primal(src)) && return dest
+    T === Any && throw(
+        ArgumentError("Forward-mode boxed pointer copy requires known boxed shadows.")
+    )
     unsafe_copyto!(primal(dest), primal(src), primal(n))
     return dest
 end
@@ -334,7 +385,10 @@ function frule!!(
     V<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
     W<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
 }
-    primal(dest) === primal(src) && return dest
+    (iszero(primal(n)) || primal(dest) === primal(src)) && return dest
+    T === Any && throw(
+        ArgumentError("Forward-mode boxed pointer copy requires known boxed shadows.")
+    )
     for x in (dest, src)
         if !(tangent(x) isa NoDual)
             for d in tangent(x)
@@ -345,6 +399,41 @@ function frule!!(
     unsafe_copyto!(primal(dest), primal(src), primal(n))
     return dest
 end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{Ptr{Any}},
+    src::CoDual{Ptr{Any}},
+    n::CoDual,
+)
+    count = primal(n)
+    (iszero(count) || primal(dest) === primal(src)) &&
+        return dest, NoPullback(ntuple(_ -> NoRData(), 4))
+    ds, di, ddi = IntrinsicsWrappers._boxed_store_indices(primal(dest), tangent(dest))
+    ss, si, dsi = IntrinsicsWrappers._boxed_store_indices(primal(src), tangent(src))
+    dr, sr = di:(di + count - 1), si:(si + count - 1)
+    ddr, dsr = ddi:(ddi + count - 1), dsi:(dsi + count - 1)
+    checkbounds(ds.primal, dr)
+    checkbounds(ds.shadow, ddr)
+    checkbounds(ss.primal, sr)
+    checkbounds(ss.shadow, dsr)
+    old_value, old_tangent = ds.primal[dr], ds.shadow[ddr]
+    copyto!(ds.primal, di, ss.primal, si, count)
+    copyto!(ds.shadow, ddi, ss.shadow, dsi, count)
+    function boxed_copy_pullback!!(::NoRData)
+        output_tangent = ds.shadow[ddr]
+        copyto!(ds.primal, di, old_value, 1, count)
+        copyto!(ds.shadow, ddi, old_tangent, 1, count)
+        cache = IdDict{Any,Any}()
+        for k in 1:count
+            ss.shadow[dsi + k - 1] = increment_internal!!(
+                cache, ss.shadow[dsi + k - 1], output_tangent[k]
+            )
+        end
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, boxed_copy_pullback!!
+end
+
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
@@ -1010,6 +1099,41 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             Base.get_world_counter(),
         ),
     ]
+    function boxed_pointer_copy(p, q, v, T, n, offset)
+        unsafe_copyto!(T(p) + offset, T(q) + offset, n)
+        return 2v
+    end
+    boxed_a, boxed_b = Any[1.25, 1.25], Any[2.5, 2.5]
+    boxed_da, boxed_db = Any[1.0, 1.0], Any[2.0, 2.0]
+    append!(memory, (boxed_a, boxed_b, boxed_da, boxed_db))
+    for T in (Ptr{Any}, Ptr{Cvoid}, Ptr{UInt8}), kind in (:empty, :self, :copy)
+        for offset in (0, sizeof(Ptr))
+            opts = if kind === :copy && T !== Ptr{Cvoid}
+                (mode=ForwardMode, throws=ArgumentError)
+            else
+                (mode=ForwardMode, skip_chunked=true, oracle=(value=2.5, deriv=2.0))
+            end
+            slot = kind === :copy && T !== Ptr{Cvoid} ? lift : CoDual
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    opts,
+                    boxed_pointer_copy,
+                    slot(pointer(boxed_a), pointer(boxed_da)),
+                    slot(
+                        pointer(kind === :self ? boxed_a : boxed_b),
+                        pointer(kind === :self ? boxed_da : boxed_db),
+                    ),
+                    slot(1.25, 1.0),
+                    T,
+                    kind === :empty ? 0 : (T === Ptr{Any} ? 1 : sizeof(Ptr)),
+                    offset,
+                ),
+            )
+        end
+    end
     return test_cases, memory
 end
 
@@ -1160,6 +1284,31 @@ function _foreigncall_throwing_rows()
             (; mode=ForwardMode),
         ),
     )
+    for N in (1, 8)
+        a, b = zero_lifted(Val(N), Any[1.25]), zero_lifted(Val(N), Any[2.5])
+        z(x) = zero_lifted(Val(N), x)
+        slots(x) = (
+            frule!!(z(pointer), x),
+            Lifted{Ptr{Any},N}(pointer(primal(x)), NoDual()),
+            Lifted{Ptr{Any},N}(
+                pointer(primal(x)),
+                ntuple(_ -> VoidPtrTangent(Ptr{Nothing}(pointer(tangent(x))), Any, Any), N),
+            ),
+        )
+        for (i, p) in enumerate(slots(a)), (j, q) in enumerate(slots(b))
+            i == j == 1 && continue
+            push!(
+                cases,
+                (
+                    (ArgumentError, "known boxed shadows"),
+                    unsafe_copyto!,
+                    (p, q, 1),
+                    (; mode=ForwardMode, chunk_size=N),
+                ),
+            )
+        end
+        append!(memory, (a, b))
+    end
     # Reverse refuses threading rather than returning an incorrect gradient.
     push!(
         cases,

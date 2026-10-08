@@ -321,3 +321,29 @@ end
         end
     end
 end
+
+@testset "boxed pointer cast cache reuse" begin
+    rows, _ = Mooncake.derived_rule_test_cases(StableRNG, Val(:builtins))
+    for (_, _, _, f, args...) in rows
+        occursin("boxed_pointer_input", string(f)) || continue
+        p, v, T = map(x -> x isa CoDual ? primal(x) : x, args)
+        g = (p, v, T) -> f(p, sum(v), T)
+        for N in (1, 8)
+            z(x) = Mooncake.zero_lifted(Val(N), x)
+            cache = Mooncake.prepare_derivative_cache(
+                g, p, fill(v / 8, 8), T; config=Mooncake.Config(chunk_size=N)
+            )
+            for (addr, v, seed) in ((0, 1.25, 1.0), (16, 2.5, -2.0), (0, -1.75, 3.0))
+                p = p isa Tuple ? (Ptr{Any}(addr),) : Ptr{Any}(addr)
+                dv = z(fill(v / 8, 8))
+                for k in 1:N, j in 1:8
+                    tangent(dv).partials_block[k, j] = k * seed / 8
+                end
+                y = Mooncake.value_and_derivative!!(cache, z(g), z(p), dv, z(T))
+                factor = iszero(addr) ? 2 : 3
+                @test primal(y) == factor * v
+                @test ntuple(k -> tangent(y, k), N) == ntuple(k -> factor * k * seed, N)
+            end
+        end
+    end
+end

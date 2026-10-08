@@ -92,6 +92,7 @@ import ..Mooncake:
     CoDual,
     VoidPtrTangent,
     PointerDual,
+    BoxedPointerStorage,
     Lifted,
     NDual,
     NoDual,
@@ -494,6 +495,15 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
     else
+        if dx isa Ptr{Any}
+            storage, _, idx = _boxed_store_indices(_x, tangent(x))
+            function boxed_atomic_pointerref_pullback!!(da)
+                value = increment_rdata!!(atomic_pointerref(dx, :monotonic), da)
+                _atomic_boxed_store!(storage.shadow, value, idx, :monotonic)
+                return NoRData(), NoRData(), NoRData()
+            end
+            return a, boxed_atomic_pointerref_pullback!!
+        end
         function atomic_pointerref_pullback!!(da)
             atomic_pointerset(
                 dx, increment_rdata!!(atomic_pointerref(dx, :monotonic), da), :monotonic
@@ -504,7 +514,76 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     end
 end
 
+# A raw pointer cannot identify the GC object that owns a boxed slot.
+@inline function _boxed_store_indices(p::Ptr{Any}, d, i=1)
+    storage = getfield(d, :primal_elt)
+    storage isa BoxedPointerStorage || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    dp = d isa PointerDual ? d.lanes[1] : d.p
+    offset = UInt(p) - UInt(pointer(storage.primal))
+    shadow_offset = UInt(dp) - UInt(pointer(storage.shadow))
+    (offset | shadow_offset) % sizeof(Ptr) == 0 ||
+        throw(ArgumentError("Unaligned boxed pointer store."))
+    idx = Int(offset ÷ sizeof(Ptr)) + i
+    shadow_idx = Int(shadow_offset ÷ sizeof(Ptr)) + i
+    checkbounds(storage.primal, idx)
+    checkbounds(storage.shadow, shadow_idx)
+    return storage, idx, shadow_idx
+end
+
+# Atomic stores need the actual owner in the remembered set, just like setindex!.
+# This is jl_gc_wb_back from Julia's julia.h (GC_OLD_MARKED == 3).
+@inline function _atomic_boxed_store!(a, x, i, order)
+    owner = @static if VERSION >= v"1.11-rc4"
+        a isa Array ? a.ref.mem : a
+    else
+        # Julia 1.10's jl_array_data_owner: reshapes may share another array's buffer.
+        GC.@preserve a begin
+            addr = Ptr{UInt8}(pointer_from_objref(a))
+            flags = unsafe_load(Ptr{UInt16}(addr + 2sizeof(Ptr)))
+            if flags & 3 == 3
+                unsafe_pointer_to_objref(
+                    unsafe_load(
+                        Ptr{Ptr{Cvoid}}(addr + (5 + max(0, ndims(a) - 2))sizeof(Ptr))
+                    ),
+                )
+            else
+                a
+            end
+        end
+    end
+    GC.@preserve a owner x begin
+        Intrinsics.atomic_pointerset(pointer(a, i), x, order)
+        flags = unsafe_load(Ptr{UInt}(pointer_from_objref(owner)) - sizeof(UInt))
+        flags & 3 == 3 && ccall(:jl_gc_queue_root, Cvoid, (Any,), owner)
+    end
+    return nothing
+end
+
 @intrinsic atomic_pointerset
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),N},
+    p::Lifted{Ptr{Any},N,PointerDual{N}},
+    x::Lifted,
+    order::Lifted,
+) where {N}
+    d = tangent(p)
+    if !(getfield(d, :primal_elt) isa BoxedPointerStorage) &&
+        all(p -> iszero(UInt(p)), d.lanes)
+        atomic_pointerset(primal(p), primal(x), primal(order))
+        return p
+    end
+    (d.elt !== Any || d.primal_elt !== Any || iszero(UInt(d.lanes[1]))) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
+    storage, idx, shadow_idx = _boxed_store_indices(primal(p), d)
+    _atomic_boxed_store!(storage.primal, primal(x), idx, primal(order))
+    _atomic_boxed_store!(storage.shadow, tangent(x), shadow_idx, primal(order))
+    return p
+end
 # Exact Ptr{T} lanes admit scalar and coherent pointer stores; element-wise
 # Ptr{S} lanes need the guard below. Non-differentiable elements write only the primal.
 function frule!!(
@@ -513,6 +592,14 @@ function frule!!(
     x::Lifted,
     order::Lifted,
 ) where {Nw,T}
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    (T === Any || T === Ptr{Any}) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     _order = primal(order)
     atomic_pointerset(primal(p), primal(x), _order)
     if tangent_type(T) !== NoTangent
@@ -533,6 +620,18 @@ function frule!!(
     x::Lifted,
     order::Lifted,
 ) where {Nw,T}
+    if T === Any
+        atomic_pointerset(primal(p), primal(x), primal(order))
+        return p
+    end
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    (T === Any || T === Ptr{Any}) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     _check_nodual_diff_ptr(T)
     atomic_pointerset(primal(p), primal(x), primal(order))
     return p
@@ -544,6 +643,14 @@ function frule!!(
     x::Lifted,
     order::Lifted,
 ) where {Nw,T}
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    T === Ptr{Any} && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     tangent_type(T) === NoTangent || throw(
         ArgumentError(
             "atomic_pointerset into a differentiable `Ptr{$T}` with an element-wise " *
@@ -556,9 +663,32 @@ function frule!!(
     atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
+function rrule!!(
+    f::CoDual{typeof(atomic_pointerset)}, p::CoDual{Ptr{Any}}, x::CoDual, order
+)
+    storage, idx, shadow_idx = _boxed_store_indices(primal(p), tangent(p))
+    old_value = atomic_pointerref(primal(p), :monotonic)
+    old_tangent = atomic_pointerref(Ptr{Any}(tangent(p).p), :monotonic)
+    dx = zero_tangent(primal(x), tangent(x))
+    _atomic_boxed_store!(storage.primal, primal(x), idx, primal(order))
+    _atomic_boxed_store!(storage.shadow, dx, shadow_idx, :monotonic)
+    function boxed_atomic_pullback!!(::NoRData)
+        dx_r = atomic_pointerref(Ptr{Any}(tangent(p).p), :monotonic)
+        _atomic_boxed_store!(storage.primal, old_value, idx, :monotonic)
+        _atomic_boxed_store!(storage.shadow, old_tangent, shadow_idx, :monotonic)
+        return NoRData(), NoRData(), rdata(dx_r), NoRData()
+    end
+    return p, boxed_atomic_pullback!!
+end
+
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _check_pointer_copy(eltype(_p))
+    Base.allocatedinline(eltype(typeof(primal(p)))) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
     _order = primal(order)
     _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
     _check_narrowed_pointer_write(primal(p), tangent(p))
@@ -619,10 +749,11 @@ end
 
 @inline _check_narrowed_pointer_write(::Ptr, ::Ptr, n=1) = nothing
 @inline function _check_narrowed_pointer_write(p::Ptr{T}, d::VoidPtrTangent, n=1) where {T}
-    _elements_occupy_storage(T) || return nothing
-    if !iszero(n) &&
-        !iszero(UInt(d.p)) &&
-        (d.elt === Nothing || _elements_occupy_storage(d.elt))
+    (T === Any || !_elements_occupy_storage(T)) && return nothing
+    if !iszero(n) && (
+        d.primal_elt === Any ||
+        (!iszero(UInt(d.p)) && (d.elt === Nothing || _elements_occupy_storage(d.elt)))
+    )
         throw(
             ArgumentError(
                 "Cannot store or copy through a non-differentiable pointer re-typed from differentiated storage.",
@@ -674,9 +805,17 @@ end
         end
         return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
     elseif dx isa PointerDual
+        if B === Any
+            dx.primal_elt !== Any && throw(
+                ArgumentError(
+                    "Forward-mode boxed pointer recovery requires matching primal provenance.",
+                ),
+            )
+            return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
+        end
         EB = B <: NDualEltype ? B : Mooncake.dual_type(Val(N), B)
         if any(p -> !iszero(UInt(p)), dx.lanes)
-            _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
+            _tangent_retyping_verdict(dx.elt, getfield(dx, :primal_elt), B)
             if dx.elt !== EB && _elements_occupy_storage(dx.elt)
                 throw(
                     ArgumentError(
@@ -696,7 +835,7 @@ end
             E = B <: NDualEltype ? B : Mooncake.dual_type(Val(N), B)
             d = dx[k]
             if !iszero(UInt(d.p))
-                _tangent_retyping_verdict(d.elt, d.primal_elt, B)
+                _tangent_retyping_verdict(d.elt, getfield(d, :primal_elt), B)
                 # An object tangent is not a parallel scalar partial buffer.
                 if d.elt !== E && _elements_occupy_storage(d.elt)
                     throw(
@@ -753,7 +892,7 @@ end
     if !Base.allocatedinline(B) && dx.primal_elt isa Pair{Any,Any}
         return bitcast(Ptr{TB}, dx.p)
     end
-    iszero(UInt(dx.p)) || _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
+    iszero(UInt(dx.p)) || _tangent_retyping_verdict(dx.elt, getfield(dx, :primal_elt), B)
     return if dx.elt === Nothing || (
         dx.elt === TB ? _elements_occupy_storage(TB) : _elements_occupy_storage(dx.elt)
     )
@@ -779,6 +918,7 @@ end
         A = A.second
     end
     A === B && return nothing
+    A isa BoxedPointerStorage && return _tangent_retyping_verdict(TA, Any, B)
     TB = tangent_type(B)
     !_elements_occupy_storage(TA) && return nothing
     isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
@@ -1240,6 +1380,14 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
     else
+        if dx isa Ptr{Any}
+            storage, _, idx = _boxed_store_indices(_x, tangent(x), _y)
+            function boxed_pointerref_pullback!!(da)
+                storage.shadow[idx] = increment_rdata!!(pointerref(dx, _y, _z), da)
+                return NoRData(), NoRData(), NoRData(), NoRData()
+            end
+            return a, boxed_pointerref_pullback!!
+        end
         function pointerref_pullback!!(da)
             pointerset(dx, increment_rdata!!(pointerref(dx, _y, _z), da), _y, _z)
             return NoRData(), NoRData(), NoRData(), NoRData()
@@ -1249,6 +1397,34 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
+# Julia compiler workaround: pointerset can store an untagged stack payload and crash.
+# The non-atomic form of atomic_pointerset boxes correctly; see boxed_store_inline.
+# This raw wrapper has no write barrier; AD boxed stores must use their storage owner.
+@inline function pointerset(p::Ptr{Any}, x, i::Int, a::Int)
+    Intrinsics.atomic_pointerset(p + (i - 1) * sizeof(Ptr), x, :not_atomic)
+    return p
+end
+function frule!!(
+    ::Lifted{typeof(pointerset),N},
+    p::Lifted{Ptr{Any},N,PointerDual{N}},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {N}
+    d = tangent(p)
+    if !(getfield(d, :primal_elt) isa BoxedPointerStorage) &&
+        all(p -> iszero(UInt(p)), d.lanes)
+        pointerset(primal(p), primal(x), primal(idx), primal(z))
+        return p
+    end
+    (d.elt !== Any || d.primal_elt !== Any || iszero(UInt(d.lanes[1]))) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
+    storage, i, j = _boxed_store_indices(primal(p), d, primal(idx))
+    storage.primal[i] = primal(x)
+    storage.shadow[j] = tangent(x)
+    return p
+end
 # Exact Ptr{T} lanes admit scalar and coherent pointer stores; element-wise
 # Ptr{S} lanes need the guard below. Non-differentiable elements write only the primal.
 function frule!!(
@@ -1258,6 +1434,14 @@ function frule!!(
     idx::Lifted,
     z::Lifted,
 ) where {Nw,T}
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    (T === Any || T === Ptr{Any}) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     _idx = primal(idx)
     _z = primal(z)
     pointerset(primal(p), primal(x), _idx, _z)
@@ -1280,6 +1464,18 @@ function frule!!(
     idx::Lifted,
     z::Lifted,
 ) where {Nw,T}
+    if T === Any
+        pointerset(primal(p), primal(x), primal(idx), primal(z))
+        return p
+    end
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    (T === Any || T === Ptr{Any}) && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     _check_nodual_diff_ptr(T)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
@@ -1293,6 +1489,14 @@ function frule!!(
     idx::Lifted,
     z::Lifted,
 ) where {Nw,T}
+    Base.allocatedinline(T) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
+    T === Ptr{Any} && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
     tangent_type(T) === NoTangent || throw(
         ArgumentError(
             "pointerset into a differentiable `Ptr{$T}` with an element-wise array-of-duals per-lane V; " *
@@ -1305,9 +1509,29 @@ function frule!!(
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
+function rrule!!(::CoDual{typeof(pointerset)}, p::CoDual{Ptr{Any}}, x, idx, z)
+    storage, i, j = _boxed_store_indices(primal(p), tangent(p), primal(idx))
+    old_value, old_tangent = storage.primal[i], storage.shadow[j]
+    dx = zero_tangent(primal(x), tangent(x))
+    storage.primal[i] = primal(x)
+    storage.shadow[j] = dx
+    function boxed_pointerset_pullback!!(::NoRData)
+        dx_r = storage.shadow[j]
+        storage.primal[i] = old_value
+        storage.shadow[j] = old_tangent
+        return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
+    end
+    return p, boxed_pointerset_pullback!!
+end
+
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _check_pointer_copy(eltype(_p))
+    Base.allocatedinline(eltype(typeof(primal(p)))) || throw(
+        ArgumentError(
+            "Boxed pointer store requires a known boxed shadow and storage owner."
+        ),
+    )
     _idx = primal(idx)
     _z = primal(z)
     _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
@@ -2528,10 +2752,81 @@ end
 @noinline _pointer_cvoid(v) = Ptr{Cvoid}(pointer(v))
 @noinline _ref_cvoid(r) = Base.unsafe_convert(Ptr{Cvoid}, r)
 
+_boxed_store_gc_value(v) = TestResources.FloatPair(v, -2v)
+_boxed_store_gc_read(a, v) = (a[2]::TestResources.FloatPair).b + v
+_boxed_store_gc(v, atomic) = -v
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_boxed_store_gc),Float64,Bool}
+function frule!!(::Lifted{typeof(_boxed_store_gc),N}, v::Lifted, atomic::Lifted) where {N}
+    z(x) = zero_lifted(Val(N), x)
+    a = z(Any[:left, nothing, :right])
+    GC.gc(true)
+    GC.gc(true)
+    pointer_rule = build_frule(pointer, primal(a), 1; chunk_size=N)
+    p = pointer_rule(z(pointer), a, z(primal(atomic) ? 2 : 1))
+    maker = build_frule(_boxed_store_gc_value, primal(v); chunk_size=N)
+    x = maker(z(_boxed_store_gc_value), v)
+    GC.@preserve a x begin
+        if primal(atomic)
+            frule!!(z(IntrinsicsWrappers.atomic_pointerset), p, x, z(:monotonic))
+        else
+            frule!!(z(IntrinsicsWrappers.pointerset), p, x, z(2), z(1))
+        end
+        for _ in 1:3
+            GC.gc(false)
+        end
+        GC.gc(true)
+        reader = build_frule(_boxed_store_gc_read, primal(a), primal(v); chunk_size=N)
+        return reader(z(_boxed_store_gc_read), a, v)
+    end
+end
+
 function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     cs, dcs = __pointers_to_pointers()
     (c_1, c_2, c, c_new_val) = cs
     (dc_1, dc_2, dc, dc_new_val) = dcs
+
+    @noinline boxed_store!(p, x, atomic) =
+        atomic ? Core.Intrinsics.atomic_pointerset(p, x, :monotonic) : unsafe_store!(p, x)
+    function boxed_store(v, atomic, nondiff, route)
+        r = Any[0, 0]
+        x = nondiff ? 2 : TestResources.TypeStableMutableStruct{Float64}(v, -2v)
+        GC.@preserve r x begin
+            p = pointer(r)
+            p = if route === :byte
+                Ptr{Any}(Ptr{UInt8}(p))
+            elseif route === :void
+                Ptr{Any}(Ptr{Cvoid}(p))
+            else
+                p
+            end
+            boxed_store!(p + sizeof(Ptr), x, atomic)
+        end
+        return if nondiff
+            v * (r[2]::Int)
+        else
+            (r[2]::TestResources.TypeStableMutableStruct{Float64}).b
+        end
+    end
+
+    function boxed_store_nondiff(p, v, atomic)
+        boxed_store!(p, 2, atomic)
+        return 2v
+    end
+
+    function boxed_store_inline(v)
+        r = Any[0]
+        GC.@preserve r begin
+            IntrinsicsWrappers.pointerset(pointer(r), v, 1, 1)
+            return r[1]
+        end
+    end
+
+    @noinline boxed_pointer_address(p, v) = iszero(UInt(p)) ? 2v : 3v
+    @noinline boxed_pointer_cast(T, p) = Ptr{Any}(T(p))
+    boxed_pointer_input(p, v, T) = boxed_pointer_address(
+        boxed_pointer_cast(T, p isa Tuple ? p[1] : p), v
+    )
+    boxed_pointer_output(v) = (value=2v, context=Ptr{Any}(0))
 
     function f_pointerset(x)
         c_1 = Ref(x)
@@ -2778,6 +3073,68 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             ),
         )
     end
+    for atomic in (false, true), nondiff in (false, true), route in (:direct, :byte, :void)
+        push!(
+            test_cases, (false, :none, nothing, boxed_store, 1.25, atomic, nondiff, route)
+        )
+    end
+    boxed_nondiff = Any[1]
+    for atomic in (false, true)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (
+                    mode=ForwardMode,
+                    skip_chunked=true,
+                    throws=(ArgumentError, "known boxed shadow"),
+                ),
+                boxed_store_nondiff,
+                lift(pointer(boxed_nondiff), pointer(boxed_nondiff)),
+                lift(1.25, 1.0),
+                atomic,
+            ),
+        )
+    end
+    push!(test_cases, (false, :none, nothing, boxed_store_inline, 2.0))
+    for N in (1, 8), atomic in (false, true)
+        push!(
+            test_cases,
+            (false, :none, (mode=ForwardMode, chunk_size=N), _boxed_store_gc, 1.25, atomic),
+        )
+    end
+    for T in (Ptr{Any}, Ptr{Cvoid}, Ptr{UInt8}), wrap in (identity, tuple)
+        p = wrap(Ptr{Any}(0))
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, skip_chunked=true, oracle=(value=2.5, deriv=2.0)),
+                boxed_pointer_input,
+                CoDual(p, p),
+                CoDual(1.25, 1.0),
+                T,
+            ),
+        )
+    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (
+                mode=ForwardMode,
+                oracle=(
+                    value=(value=2.5, context=Ptr{Any}(0)),
+                    deriv=(value=2.0, context=uninit_tangent(Ptr{Any}(0))),
+                ),
+            ),
+            boxed_pointer_output,
+            CoDual(1.25, 1.0),
+        ),
+    )
     Base.@noinline pointer_passthrough(p) = p
     Base.@noinline pointer_erase(p) = Ptr{Cvoid}(p)
     function byte_buffer_pointer_address(v, ::Val{hop}) where {hop}
@@ -2900,7 +3257,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     for a in ([(Int32(1), Int32(2), 3.0)], [(3.0,)], [Ptr{Float64}(0)])
         push!(test_cases, (true, :none, (; mode=ForwardMode, chunk_size=1), pointer, a))
     end
-    return test_cases, Any[]
+    return test_cases, Any[boxed_nondiff]
 end
 
 function _builtins_throwing_rows()
@@ -3364,6 +3721,84 @@ function _builtins_throwing_rows()
             ),
         )
     end
+    for T in (Any, UInt8, Cvoid)
+        push!(
+            cases,
+            (
+                (ArgumentError, "to another element type is not supported"),
+                a -> Ptr{Float64}(Ptr{T}(pointer(a))),
+                (Any[1],),
+                (; mode=ForwardMode),
+            ),
+        )
+    end
+    for atomic in (false, true)
+        f = a -> GC.@preserve a begin
+            p = Ptr{UInt8}(pointer(a))
+            if atomic
+                Core.Intrinsics.atomic_pointerset(p, 0x00, :monotonic)
+            else
+                unsafe_store!(p, 0x00)
+            end
+            nothing
+        end
+        push!(
+            cases,
+            (
+                (ArgumentError, "through a non-differentiable pointer re-typed"),
+                f,
+                (Any[1],),
+                (; mode=ForwardMode),
+            ),
+        )
+    end
+    boxed_memory = Any[]
+    for N in (1, 8),
+        T in (Any, Ptr{Any}), atomic in (false, true),
+        value in (T === Any ? (2.0, 2) : (2.0,))
+
+        a = T === Any ? Any[1.25] : Ptr{Any}[C_NULL]
+        d = ntuple(_ -> tangent(zero_lifted(Val(N), a)), N)
+        p = if N == 1 && T === Any
+            lift(pointer(a), pointer(d[1]))
+        else
+            Lifted{Ptr{T},N}(pointer(a), map(pointer, d))
+        end
+        z(x) = zero_lifted(Val(N), x)
+        x = if T === Any
+            z(value)
+        else
+            Lifted{Ptr{Any},N}(
+                Ptr{Any}(0), PointerDual(ntuple(_ -> Ptr{Nothing}(0), N), Any, Any)
+            )
+        end
+        f = atomic ? IntrinsicsWrappers.atomic_pointerset : IntrinsicsWrappers.pointerset
+        args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
+        push!(
+            cases,
+            (
+                (ArgumentError, "known boxed shadow"),
+                f,
+                args,
+                (; mode=ForwardMode, chunk_size=N),
+            ),
+        )
+        if T === Any
+            descriptor = PointerDual(map(q -> Ptr{Nothing}(pointer(q)), d), Any, Any)
+            p = Lifted{Ptr{Any},N}(pointer(a), descriptor)
+            args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
+            push!(
+                cases,
+                (
+                    (ArgumentError, "known boxed shadow"),
+                    f,
+                    args,
+                    (; mode=ForwardMode, chunk_size=N),
+                ),
+            )
+        end
+        push!(boxed_memory, a, d)
+    end
     if VERSION >= v"1.11-rc4"
         for width in (1, 8)
             opts = (; mode=ForwardMode, chunk_size=width)
@@ -3461,5 +3896,5 @@ function _builtins_throwing_rows()
             ),
         )
     end
-    return cases, Any[xv]
+    return cases, Any[xv, boxed_memory]
 end

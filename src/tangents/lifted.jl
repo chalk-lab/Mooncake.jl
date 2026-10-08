@@ -97,13 +97,22 @@ struct PointerDual{N}
     primal_elt::Any
 end
 
+_tangent_fields(::Type{<:PointerDual}) = ()
+
+@inline function Base.getproperty(d::PointerDual, name::Symbol)
+    value = getfield(d, name)
+    return name === :primal_elt && value isa BoxedPointerStorage ? Any : value
+end
+
 @inline Base.getindex(d::PointerDual, k::Integer) = VoidPtrTangent(
-    d.lanes[k], d.elt, d.primal_elt
+    d.lanes[k], d.elt, getfield(d, :primal_elt)
 )
 Base.length(::PointerDual{N}) where {N} = N
 @inline Base.iterate(d::PointerDual, k=1) = k > length(d) ? nothing : (d[k], k + 1)
 function Base.:(==)(a::PointerDual, b::PointerDual)
-    a.lanes == b.lanes && a.elt === b.elt && a.primal_elt === b.primal_elt
+    a.lanes == b.lanes &&
+        a.elt === b.elt &&
+        getfield(a, :primal_elt) === getfield(b, :primal_elt)
 end
 
 @inline function Lifted{P,N}(primal::P, rep::V) where {P,N,V}
@@ -902,7 +911,11 @@ end
 # forward storage element types survive erasure and non-inlined call boundaries.
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
     D = tangent_type(Ptr{T})
-    return D === VoidPtrTangent ? PointerDual{N} : NTuple{N,Ptr{dual_type(Val(N), T)}}
+    return if D === VoidPtrTangent || T === Any
+        PointerDual{N}
+    else
+        NTuple{N,Ptr{dual_type(Val(N), T)}}
+    end
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
@@ -1136,13 +1149,16 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+@inline lift(x::Ptr{Any}, dx::Ptr{Any}) = Lifted{Ptr{Any},1}(
+    x, PointerDual((Ptr{Nothing}(dx),), NoTangent, Any)
+)
 @inline function lift(x::Ptr{T}, dx::Ptr{NoTangent}) where {T}
     d = tangent(CoDual(x, dx))
     return d isa VoidPtrTangent ? lift(x, d) : Lifted{Ptr{T},1}(x, NoDual())
 end
 @inline lift(x::Ptr{NoTangent}, dx::Ptr{NoTangent}) = lift(x, tangent(CoDual(x, dx)))
 @inline lift(x::Ptr, dx::VoidPtrTangent) = Lifted{typeof(x),1}(
-    x, PointerDual((dx.p,), dx.elt, dx.primal_elt)
+    x, PointerDual((dx.p,), dx.elt, getfield(dx, :primal_elt))
 )
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:NDualEltype) reverse fdata is itself a `MemoryRef{T}` (the

@@ -1199,7 +1199,15 @@ function rrule!!(
     elseif eltype(x.dx) === NoTangent
         VoidPtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
     else
-        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), eltype(x.dx), eltype(primal(x)))
+        VoidPtrTangent(
+            bitcast(Ptr{Nothing}, x.dx.ptr),
+            eltype(x.dx),
+            if eltype(primal(x)) === Any
+                BoxedPointerStorage(primal(x), x.dx)
+            else
+                eltype(primal(x))
+            end,
+        )
     end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
@@ -1220,7 +1228,11 @@ function rrule!!(
             VoidPtrTangent(
                 bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
                 eltype(x.dx),
-                eltype(primal(x)),
+                if eltype(primal(x)) === Any
+                    BoxedPointerStorage(primal(x).mem, x.dx.mem)
+                else
+                    eltype(primal(x))
+                end,
             )
         end
     else

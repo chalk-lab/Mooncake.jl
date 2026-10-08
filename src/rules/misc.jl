@@ -270,7 +270,11 @@ end
         if name === :ptr_or_offset
             E = eltype(getfield(V, :mem))
             E === NoDual && return NoDual()
-            return PointerDual((getfield(V, :ptr_or_offset),), E, P)
+            return PointerDual(
+                (getfield(V, :ptr_or_offset),),
+                E,
+                P === Any ? BoxedPointerStorage(p.mem, V.mem) : P,
+            )
         end
         return NoDual()
     end
