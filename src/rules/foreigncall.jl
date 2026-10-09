@@ -136,10 +136,12 @@ end
 # Admit layout-identical structs/Refs and objects with no differentiable payload.
 @inline function _objref_tangent_layout_matches(::Type{P}) where {P}
     T = tangent_type(P)
+    T === NoTangent && return true
+    P <: DenseArray && return true
     T <: MutableTangent || return false
     NT = fieldtype(T, :fields)
     # Empty payloads may supply an address to foreigncalls, but must be tagged NoTangent
-    # by _objref_tangent_elt so later differentiable loads cannot access absent storage.
+    # by _objref_payload_types so later differentiable loads cannot access absent storage.
     sizeof(NT) === 0 && return true
     fieldcount(NT) === fieldcount(P) || return false
     for i in 1:fieldcount(P)
@@ -155,12 +157,21 @@ end
     return isbitstype(T) ? (true, sizeof(T)) : (false, sizeof(Ptr{Nothing}))
 end
 
-# What lies behind a `pointer_from_objref` tangent address: `Nothing` when the tangent is an object
-# whose layout matches the primal's (checked above, so a later load is sound), `NoTangent` when the
-# tangent has no payload at all.
-@inline function _objref_tangent_elt(::Type{P}) where {P}
+# A single field exposes its payload type; multiple fields expose the whole layout.
+@inline function _objref_payload_types(::Type{P}) where {P}
     T = tangent_type(P)
-    return sizeof(fieldtype(T, :fields)) === 0 ? NoTangent : Nothing
+    T === NoTangent && return (NoTangent, P)
+    P <: DenseArray && return (T, Pair{Any,Any}(P, P))
+    NT = fieldtype(T, :fields)
+    sizeof(NT) === 0 && return (NoTangent, P)
+    if fieldcount(P) === 1
+        F = fieldtype(NT, 1)
+        return (
+            F <: PossiblyUninitTangent ? fieldtype(F, 1) : F,
+            Pair{Any,Any}(P, fieldtype(P, 1)),
+        )
+    end
+    return (NT, Pair{Any,Any}(P, NamedTuple{fieldnames(P),Tuple{fieldtypes(P)...}}))
 end
 
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
@@ -178,11 +189,12 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
             ),
         )
     end
-    # Nothing tags a layout-checked object, not a uniform buffer; NoTangent tags an empty
-    # payload whose address must never serve a differentiable load.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P), P),
+        VoidPtrTangent(
+            tangent(x) isa NoFData ? Ptr{Nothing}(0) : pointer_from_objref(tangent(x)),
+            _objref_payload_types(P)...,
+        ),
     )
     return y, NoPullback(f, x)
 end
@@ -205,11 +217,12 @@ function _unsafe_pointer_to_objref_frule(
     x::Lifted{<:Ptr},
 ) where {Nw}
     y = unsafe_pointer_to_objref(primal(x))
+    tangent_type(typeof(y)) === NoTangent && return zero_lifted(Val(Nw), y)
     tx = tangent(x)
-    # NULL proves non-differentiability. An uninit_* placeholder instead aliases the
-    # primal address: recovering it as a tangent would let derivatives mutate user data.
-    (tx isa NoDual || _void_ptr_addr(tx[1]) == Ptr{Nothing}(0)) &&
-        return Lifted{typeof(y),Nw}(y, NoDual())
+    # NULL lanes lack storage; uninit placeholders alias the primal bytes.
+    if tx isa NoDual || iszero(UInt(_void_ptr_addr(tx[1])))
+        _check_tangent_ptr(Ptr{tangent_type(typeof(y))}(0), 1)
+    end
     UInt(_void_ptr_addr(tx[1])) == UInt(primal(x)) && throw(
         ArgumentError(
             "Forward-mode AD cannot recover a tangent object from a `Ptr` with no tangent " *
@@ -246,10 +259,11 @@ end
 @inline _void_ptr_addr(p::Ptr) = p
 
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(
-        unsafe_pointer_to_objref(primal(x)),
-        unsafe_pointer_to_objref(_void_ptr_addr(tangent(x))),
-    )
+    py = unsafe_pointer_to_objref(primal(x))
+    tangent_type(typeof(py)) === NoTangent && return zero_fcodual(py), NoPullback(f, x)
+    dx = _void_ptr_addr(tangent(x))
+    _check_tangent_ptr(Ptr{tangent_type(typeof(py))}(dx), 1)
+    y = CoDual(py, unsafe_pointer_to_objref(dx))
     return y, NoPullback(f, x)
 end
 
@@ -775,7 +789,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
-                VoidPtrTangent(pointer_from_objref(_dx), Nothing, typeof(_x)),
+                VoidPtrTangent(
+                    pointer_from_objref(_dx), Float64, Pair{Any,Any}(typeof(_x), Float64)
+                ),
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),

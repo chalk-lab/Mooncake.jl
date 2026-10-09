@@ -337,6 +337,21 @@ An example implementation of this is provided [here](developer_documentation/cus
 
 ## Tangent Generation and Pointers
 
+Reverse mode refuses raw pointer loads and stores that copy mutable
+structs with inline differentiable fields, including `unsafe_load` /
+`unsafe_store!` and atomic variants: cotangents of these copies cannot
+be propagated back to their sources. Copies whose differentiable data
+is held only in referenced children share those children's tangents
+and remain supported. The guard uses primal field types conservatively;
+a custom tangent does not override an inline primal float field.
+Boxed reference slots and isbits loads are unaffected.
+To recover an object from `pointer_from_objref`, use
+`unsafe_pointer_to_objref`; casts through boxed or mutable pointer
+types are supported. Non-differentiable casts retain pointer provenance;
+recovery with a NULL tangent address is refused.
+Casts to inline targets must match the payload element type, so
+reading individual float fields of a multi-field object is refused.
+
 _**The Problem**_
 
 
