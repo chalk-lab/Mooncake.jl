@@ -10,13 +10,15 @@ function frule!!(
 ) where {Nw,P<:Ptr}
     yp = primal(y)
     return Lifted{P,Nw}(
-        primal(x) + yp, ntuple(lane -> _shift_ptr_fdata(tangent(x)[lane], yp), Val(Nw))
+        primal(x) + yp,
+        ntuple(lane -> _shift_ptr_fdata(eltype(P), tangent(x)[lane], yp), Val(Nw)),
     )
 end
 function frule!!(
     ::Lifted{typeof(Base.:(+)),N}, x::Lifted{P,N,PointerDual{N}}, y::Lifted{<:Integer}
 ) where {N,P<:Ptr}
     d = tangent(x)
+    d.elt === NoTangent || iszero(primal(y)) || _check_ptr_descriptor_offset(d)
     return Lifted{P,N}(
         primal(x) + primal(y),
         PointerDual(map(p -> _shift_ptr_fdata(p, primal(y)), d.lanes), d.elt, d.primal_elt),
@@ -29,15 +31,51 @@ function frule!!(
     p = primal(x) + primal(y)
     return Lifted{typeof(p),Nw}(p, NoDual())
 end
-# `@is_primitive` above claims EVERY `Ptr`, so this must shift whatever a pointer's fdata is. For a
-# `Ptr{Cvoid}` that is a `VoidPtrTangent`, which shifts its address and keeps what it erased.
-@inline _shift_ptr_fdata(dx::Ptr, n::Integer) = iszero(UInt(dx)) ? dx : dx + n
-@inline _shift_ptr_fdata(dx::VoidPtrTangent, n::Integer) = VoidPtrTangent(
-    _shift_ptr_fdata(dx.p, n), dx.elt, dx.primal_elt
-)
+@is_primitive MinimalCtx Tuple{typeof(-),Ptr,Integer}
+function frule!!(
+    ::Lifted{typeof(-),N}, x::Lifted{<:Ptr,N}, y::Lifted{<:Integer,N}
+) where {N}
+    return frule!!(zero_lifted(Val(N), +), x, zero_lifted(Val(N), -primal(y)))
+end
+function rrule!!(::CoDual{typeof(-)}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
+    return rrule!!(zero_fcodual(+), x, zero_fcodual(-primal(y)))
+end
 
-function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), _shift_ptr_fdata(tangent(x), primal(y))),
+@inline _ptr_stride(::Type{T}) where {T} =
+    Base.allocatedinline(T) ? sizeof(T) : sizeof(Ptr{Nothing})
+@inline function _check_ptr_byte_offset(::Type{P}, ::Type{T}, zero_offset::Bool) where {P,T}
+    (zero_offset || iszero(_ptr_stride(T)) || _ptr_stride(P) == _ptr_stride(T)) &&
+        return nothing
+    throw(
+        ArgumentError(
+            "Cannot offset a tangent pointer for `Ptr{$P}` by primal bytes: its tangent element `$T` has a different storage stride. Use element indexing or write a rule for the enclosing function.",
+        ),
+    )
+end
+# Keep the dynamic call off equal-layout, no-tangent and zero-offset paths.
+@inline function _check_ptr_descriptor_offset(d::Union{VoidPtrTangent,PointerDual})
+    d.elt === Nothing || d.elt === d.primal_elt || _check_ptr_descriptor_stride(d)
+    return nothing
+end
+@noinline function _check_ptr_descriptor_stride(d::Union{VoidPtrTangent,PointerDual})
+    d.primal_elt isa Pair{Any,Any} && return nothing
+    absent = d isa VoidPtrTangent ? iszero(UInt(d.p)) : all(p -> iszero(UInt(p)), d.lanes)
+    absent || _check_ptr_byte_offset(d.primal_elt, d.elt, false)
+    return nothing
+end
+@inline _shift_ptr_fdata(dx::Ptr, n::Integer) = iszero(UInt(dx)) ? dx : dx + n
+@inline function _shift_ptr_fdata(::Type{P}, dx::Ptr{T}, n::Integer) where {P,T}
+    iszero(UInt(dx)) || _check_ptr_byte_offset(P, T, iszero(n))
+    return _shift_ptr_fdata(dx, n)
+end
+@inline function _shift_ptr_fdata(::Type, dx::VoidPtrTangent, n::Integer)
+    dx.elt === NoTangent || iszero(n) || _check_ptr_descriptor_offset(dx)
+    return VoidPtrTangent(_shift_ptr_fdata(dx.p, n), dx.elt, dx.primal_elt)
+end
+function rrule!!(
+    f::CoDual{typeof(Base.:(+))}, x::CoDual{Ptr{P}}, y::CoDual{<:Integer}
+) where {P}
+    return CoDual(primal(x) + primal(y), _shift_ptr_fdata(P, tangent(x), primal(y))),
     NoPullback(f, x, y)
 end
 
@@ -162,17 +200,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
     test_cases = vcat(
         Any[
             # Rules to avoid pointer type conversions.
-            (
-                true,
-                :stability_and_allocs,
-                nothing,
-                +,
-                CoDual(
-                    bitcast(Ptr{Float64}, pointer_from_objref(_x)),
-                    bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
-                ),
-                2,
-            ),
+            map(Iterators.product((+, -), (2, 1024))) do (op, offset)
+                return (
+                    true,
+                    :stability_and_allocs,
+                    nothing,
+                    op,
+                    CoDual(
+                        bitcast(Ptr{Float64}, pointer_from_objref(_x)),
+                        bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
+                    ),
+                    offset,
+                )
+            end...,
 
             # Rules for handling Atomic read operations.
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
@@ -292,6 +332,22 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
         @show x
     end
 
+    function byte_buffer_shift(v, ::Type{T}, ::Type{P}, offset) where {T,P}
+        a = zeros(UInt8, 64)
+        return GC.@preserve a begin
+            p = Ptr{P}(Ptr{T}(pointer(a))) + offset
+            p == C_NULL ? 0.0 : v[2]^2 + v[3]
+        end
+    end
+
+    function objref_shift(v, offset)
+        r = Ref(v[1])
+        return GC.@preserve r begin
+            p = pointer_from_objref(r) + offset
+            p == C_NULL ? 0.0 : 3v[2]
+        end
+    end
+
     test_cases = vcat(
         Any[
             (
@@ -351,5 +407,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
             (false, :none, nothing, testloggingmacro9, rand(1:100)),
         ],
     )
+    for T in (TestResources.OneField{Float64}, TestResources.PointerPair{Int,Float64}),
+        P in (Cvoid, UInt8),
+        width in (0, 1, 8)
+
+        opts = width == 0 ? (; mode=ReverseMode) : (; mode=ForwardMode, chunk_size=width)
+        push!(
+            test_cases,
+            (false, :none, opts, byte_buffer_shift, collect(1.0:8.0), T, P, sizeof(T)),
+        )
+    end
+    for offset in (0, 1, 8, -8)
+        push!(test_cases, (false, :none, (; mode=ReverseMode), objref_shift, [1.25, 2.5], offset))
+    end
     return test_cases, Any[]
 end

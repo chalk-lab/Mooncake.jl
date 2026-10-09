@@ -424,6 +424,7 @@ function rrule!!(
 ) where {T}
     # Check before wrapping: an Array over a NULL or placeholder tangent pointer
     # cannot be distinguished from valid storage by downstream consumers.
+    _check_narrowed_pointer_write(primal(p), tangent(p))
     _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, _tangent_ptr(primal(p), tangent(p)), primal(dims))
@@ -593,6 +594,7 @@ const _INT2PTR_ERR_MSG =
 # The uninit_* placeholder aliases the primal address. Reject it with the same
 # forward error as NoDual; a correct derivative needs separate partial storage.
 @inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr, n=1)
+    iszero(n) && return nothing
     if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) &&
         (UInt(dp) == UInt(p) || (!iszero(n) && iszero(UInt(dp))))
         throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
@@ -602,7 +604,7 @@ end
 
 const _NODUAL_DIFF_PTR_MSG =
     "Forward-mode AD cannot load from or store to a `Ptr` whose pointee is a differentiable " *
-    "scalar but whose forward representation is `NoDual`: there are no per-lane partial " *
+    "element but whose forward representation is `NoDual`: there are no per-lane partial " *
     "pointers behind it, so the derivative cannot be carried. This typically arises from " *
     "reinterpreting a non-differentiable buffer (a `Vector{UInt8}`, say) as a differentiable " *
     "element type; allocate the buffer with that element type instead."
@@ -611,7 +613,7 @@ const _NODUAL_DIFF_PTR_MSG =
 # scalar differentiable pointee needs per-lane pointers. Do not replace missing
 # storage with a zero dual: that would silently discard a derivative.
 @inline function _check_nodual_diff_ptr(::Type{T}) where {T}
-    T <: NDualEltype && throw(ArgumentError(_NODUAL_DIFF_PTR_MSG))
+    T <: Ptr || tangent_type(T) === NoTangent || throw(ArgumentError(_NODUAL_DIFF_PTR_MSG))
     return nothing
 end
 
@@ -712,6 +714,7 @@ end
         end
         return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
     elseif dx isa NoDual
+        _check_tangent_retyping_fits(Ptr{A}, Ptr{B})
         return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), NoDual())
     end
     ntuple(Val(length(dx))) do k
@@ -750,7 +753,7 @@ end
     if !Base.allocatedinline(B) && dx.primal_elt isa Pair{Any,Any}
         return bitcast(Ptr{TB}, dx.p)
     end
-    _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
+    iszero(UInt(dx.p)) || _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
     return if dx.elt === Nothing || (
         dx.elt === TB ? _elements_occupy_storage(TB) : _elements_occupy_storage(dx.elt)
     )
@@ -803,7 +806,9 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        _check_tangent_retyping_fits(typeof(_x), T)
+        if !(tangent(x) isa Ptr && iszero(UInt(tangent(x))))
+            _check_tangent_retyping_fits(typeof(_x), T)
+        end
         dv = _retype_tangent_ptr(T, typeof(_x), tangent(x))
     elseif T <: Ptr && _x isa Union{Int,UInt}
         throw(ArgumentError(_INT2PTR_ERR_MSG))
@@ -2773,6 +2778,125 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             ),
         )
     end
+    Base.@noinline pointer_passthrough(p) = p
+    Base.@noinline pointer_erase(p) = Ptr{Cvoid}(p)
+    function byte_buffer_pointer_address(v, ::Val{hop}) where {hop}
+        a = zeros(UInt8, 64)
+        return GC.@preserve a begin
+            p = Ptr{TestResources.OneField{Float64}}(Ptr{Cvoid}(pointer(a)))
+            q = Ptr{ComplexF64}(
+                if hop === :erased
+                    Ptr{Cvoid}(p)
+                elseif hop === :direct
+                    p
+                elseif hop === :void
+                    pointer_erase(p)
+                else
+                    pointer_passthrough(p)
+                end,
+            )
+            q == C_NULL ? 0.0 : 3 * v[2]
+        end
+    end
+    function nondiff_memory_pointer_address(v, element)
+        a = fill(element, length(v))
+        return GC.@preserve a begin
+            p = pointer(getfield(getfield(a, :ref), :mem))
+            p == C_NULL ? 0.0 : 3v[2]
+        end
+    end
+    function numeric_memory_pointer_consumer(v, ::Val{wrap}) where {wrap}
+        a = wrap ? zeros(UInt64, length(v)) : copy(v)
+        b = copy(v)
+        return GC.@preserve a b begin
+            p = pointer(getfield(getfield(a, :ref), :mem))
+            if wrap
+                c_wrapped = unsafe_wrap(Array, Ptr{UInt64}(p), length(a))
+                c_wrapped[2] == 0 ? 3 * v[2] : 0.0
+            else
+                q = pointer(getfield(getfield(b, :ref), :mem))
+                unsafe_copyto!(q, p, 0)
+                3 * b[2]
+            end
+        end
+    end
+    function nondiff_pointer_wrap(v, memory)
+        a = zeros(UInt64, length(v))
+        a = memory ? getfield(getfield(a, :ref), :mem) : a
+        return GC.@preserve a begin
+            b = unsafe_wrap(Array, pointer(a), length(a))
+            b[2] = 0
+            3v[2] + b[2]
+        end
+    end
+    for width in (0, 1, 8)
+        opts = width == 0 ? (; mode=ReverseMode) : (; mode=ForwardMode, chunk_size=width)
+        for hop in (width == 0 ? (:direct, :void, :noinline) : (:erased,))
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    opts,
+                    byte_buffer_pointer_address,
+                    collect(1.0:8.0),
+                    Val(hop),
+                ),
+            )
+        end
+        for memory in (VERSION < v"1.11-rc4" ? (false,) : (false, true))
+            push!(
+                test_cases,
+                (false, :none, opts, nondiff_pointer_wrap, collect(1.0:8.0), memory),
+            )
+        end
+        width == 0 && continue
+        if VERSION >= v"1.11-rc4"
+            for element in (TestResources.OneField(1), nothing)
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        opts,
+                        nondiff_memory_pointer_address,
+                        collect(1.0:8.0),
+                        element,
+                    ),
+                )
+            end
+            for wrap in (false, true)
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        opts,
+                        numeric_memory_pointer_consumer,
+                        collect(1.0:8.0),
+                        Val(wrap),
+                    ),
+                )
+            end
+        end
+    end
+    function typed_pointer_load(v, ::Type{T}, erased) where {T}
+        a = [T(zero(fieldtype(T, 1)), x) for x in v]
+        GC.@preserve a begin
+            n = T === TestResources.FloatPair ? sizeof(T) : 0
+            p = erased ? Ptr{T}(Ptr{Cvoid}(pointer(a)) + n) : pointer(a) + n
+            return unsafe_load(p, iszero(n) ? 2 : 1).b
+        end
+    end
+
+    for T in (TestResources.PointerPair{Int,Float64}, TestResources.FloatPair),
+        erased in (false, true)
+
+        push!(
+            test_cases,
+            (false, :none, (; mode=ReverseMode), typed_pointer_load, [1.0, 3.0], T, erased),
+        )
+    end
     return test_cases, Any[]
 end
 
@@ -2784,6 +2908,9 @@ function _builtins_throwing_rows()
     pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
     # NoDual on a scalar differentiable pointee means missing partial storage.
     ndslot = Lifted{Ptr{Float64},1,NoDual}(ptr, NoDual())
+    ndstructslot = Lifted{Ptr{TestResources.OneField{Float64}},1}(
+        Ptr{TestResources.OneField{Float64}}(ptr), NoDual()
+    )
     # A non-NULL uninit_* placeholder aliases primal bytes; supply it explicitly
     # because forward Ptr seeding cannot express this slot.
     phslot = Lifted{Ptr{Float64},1}(ptr, (ptr,))
@@ -2810,6 +2937,57 @@ function _builtins_throwing_rows()
     # A Cvoid hop must not launder widening across tangent element boundaries.
     function laundered_retyped_load(b, x)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
+    end
+    function shifted_pair_load(v, ::Type{T}, erased) where {T}
+        a = [T(zero(fieldtype(T, 1)), x) for x in v]
+        return GC.@preserve a begin
+            p = pointer(a)
+            q = erased ? Ptr{T}(Ptr{Cvoid}(p) + sizeof(T)) : p - -sizeof(T)
+            3 * unsafe_load(q).b
+        end
+    end
+    function shifted_vec_load(v)
+        a = [(VecElement(x), VecElement(2x), VecElement(3x)) for x in v]
+        return GC.@preserve a 3 * unsafe_load(pointer(a, 2))[1].value
+    end
+    function shifted_pair_copy(
+        v, ::Val{erased}, ::Val{shifted_dest}
+    ) where {erased,shifted_dest}
+        T = TestResources.PointerPair{NTuple{2,Int},Float64}
+        a = [TestResources.PointerPair((0, 0), x) for x in v]
+        b = [TestResources.PointerPair((0, 0), 0.0) for _ in v]
+        GC.@preserve a b begin
+            p = pointer(a)
+            q = if erased === :field
+                Ptr{T}(getfield(getfield(a, :ref), :ptr_or_offset) + sizeof(T))
+            elseif erased
+                Ptr{T}(Ptr{Cvoid}(p) + sizeof(T))
+            else
+                p + sizeof(T)
+            end
+            unsafe_copyto!(shifted_dest ? pointer(b) + sizeof(T) : pointer(b), q, 1)
+        end
+        return 3 * b[shifted_dest ? 2 : 1].b
+    end
+    function retyped_struct_memory_pointer_load(v, erased)
+        a = TestResources.OneField.(v)
+        return GC.@preserve a begin
+            p = pointer(getfield(getfield(a, :ref), :mem))
+            q = if erased === :integer
+                Ptr{ComplexF64}(Ptr{UInt64}(p))
+            else
+                erased ? Ptr{ComplexF64}(Ptr{Cvoid}(p)) : Ptr{ComplexF64}(p)
+            end
+            z = unsafe_load(q, 2)
+            3 * (real(z) + imag(z))
+        end
+    end
+    function memory_pointer_load(v, shifted)
+        a = [TestResources.PointerPair(0, x) for x in v]
+        GC.@preserve a begin
+            p = pointer(getfield(getfield(a, :ref), :mem))
+            return unsafe_load(shifted ? p + sizeof(eltype(a)) : p, shifted ? 1 : 2).b
+        end
     end
     # Only the same element type passes: equal byte widths, sound or not, are refused.
     function int_float_load(v)
@@ -2889,10 +3067,12 @@ function _builtins_throwing_rows()
         )
         return 3r[]
     end
-    function narrowed_copy(v, T, erased)
+    function narrowed_copy(v, T, erased, memory=false)
         # Padding keeps the failing forward byte-copy within the old partial buffer.
         a = [2v[1]; fill(3v[1], 15)]
         b = [0.0; fill(v[2], 15)]
+        a = memory ? getfield(getfield(a, :ref), :mem) : a
+        b = memory ? getfield(getfield(b, :ref), :mem) : b
         GC.@preserve a b begin
             pa = Ptr{T}(erased == 1 ? Ptr{Cvoid}(pointer(a)) : pointer(a))
             pb = Ptr{T}(erased == 1 ? Ptr{Cvoid}(pointer(b)) : pointer(b))
@@ -2904,7 +3084,35 @@ function _builtins_throwing_rows()
         end
         return b[1] + b[2]
     end
+    function numeric_memory_pointer_address(v, T, integer)
+        return GC.@preserve v begin
+            p = pointer(getfield(getfield(v, :ref), :mem))
+            q = Ptr{T}(integer ? Ptr{UInt64}(p) : Ptr{Cvoid}(p))
+            q == C_NULL ? 0.0 : 3v[2]
+        end
+    end
+    function narrowed_wrap(v, memory)
+        a = copy(v)
+        a = memory ? getfield(getfield(a, :ref), :mem) : a
+        return GC.@preserve a begin
+            b = unsafe_wrap(Array, Ptr{UInt64}(pointer(a)), length(a))
+            b[2] = 0
+            3a[2]
+        end
+    end
     cases = Any[
+        (
+            ArgumentError,
+            IntrinsicsWrappers.pointerref,
+            (ndstructslot, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            ArgumentError,
+            IntrinsicsWrappers.bitcast,
+            (Ptr{TestResources.OneField{Float64}}, ndslot),
+            (; mode=ForwardMode),
+        ),
         (
             (ArgumentError, "cannot load from or store to"),
             unsafe_wrap,
@@ -3144,6 +3352,103 @@ function _builtins_throwing_rows()
                 (ArgumentError, "Cannot store or copy"),
                 narrowed_copy,
                 ([1.0, 2.0], T, erased),
+                (;),
+            ),
+        )
+    end
+    if VERSION >= v"1.11-rc4"
+        for width in (1, 8)
+            opts = (; mode=ForwardMode, chunk_size=width)
+            for T in (UInt8, Int), erased in (0, 1, 2)
+                push!(
+                    cases,
+                    (
+                        (ArgumentError, "Cannot store or copy"),
+                        narrowed_copy,
+                        ([1.0, 2.0], T, erased, true),
+                        opts,
+                    ),
+                )
+            end
+            for T in (TestResources.OneField{Float64}, ComplexF64), integer in (false, true)
+                push!(
+                    cases,
+                    (
+                        (ArgumentError, "to another element type"),
+                        numeric_memory_pointer_address,
+                        (collect(1.0:8.0), T, integer),
+                        opts,
+                    ),
+                )
+            end
+        end
+        for erased in (false, true, :integer), width in (1, 8)
+            push!(
+                cases,
+                (
+                    ArgumentError,
+                    retyped_struct_memory_pointer_load,
+                    (collect(1.0:8.0), erased),
+                    (; mode=ForwardMode, chunk_size=width),
+                ),
+            )
+        end
+        for shifted in (false, true), width in (1, 8)
+            push!(
+                cases,
+                (
+                    ArgumentError,
+                    memory_pointer_load,
+                    ([1.0, 3.0], shifted),
+                    (; mode=ForwardMode, chunk_size=width),
+                ),
+            )
+        end
+    end
+    for memory in (VERSION < v"1.11-rc4" ? (false,) : (false, true)), width in (0, 1, 8)
+        message = !memory && width > 1 ? "width 8 > 1" : "Cannot store or copy"
+        push!(
+            cases,
+            (
+                (ArgumentError, message),
+                narrowed_wrap,
+                (collect(1.0:8.0), memory),
+                width == 0 ? (; mode=ReverseMode) : (; mode=ForwardMode, chunk_size=width),
+            ),
+        )
+    end
+    for T in
+        (TestResources.PointerPair{Int,Float64}, TestResources.PointerPair{Int32,Float32}),
+        erased in (false, true)
+
+        push!(
+            cases,
+            (
+                (ArgumentError, "Ptr{$T}"),
+                shifted_pair_load,
+                (fieldtype(T, 2)[1, 2, 3, 4], T, erased),
+                (;),
+            ),
+        )
+    end
+    push!(
+        cases,
+        (
+            (ArgumentError, "VecElement{Float32}"),
+            shifted_vec_load,
+            (Float32[1, 2, 3, 4],),
+            (;),
+        ),
+    )
+    for erased in (VERSION < v"1.11-rc4" ? (false, true) : (false, true, :field)),
+        shifted_dest in (false, true)
+
+        push!(
+            cases,
+            (
+                (ArgumentError, "different storage stride"),
+                shifted_pair_copy,
+                ([1.0, 3.0, 5.0, 7.0], Val(erased), Val(shifted_dest)),
                 (;),
             ),
         )

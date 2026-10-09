@@ -274,9 +274,37 @@ end
         end
         return NoDual()
     end
-    # Element-wise `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
-    # non-diff metadata; element access goes through `memoryrefget`, not here.
-    @inline _get_lifted_field(::Memory, _) = NoDual()
+    # Raw Memory pointers retain the element type of their structural storage.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Memory{E}, name::Union{Symbol,Int}
+    ) where {P,E}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        return if name === :ptr && tangent_type(P) !== NoTangent
+            PointerDual((Ptr{Nothing}(pointer(V)),), E, P)
+        else
+            NoDual()
+        end
+    end
+    # Numeric Memory uses the element-major NDualArray representation.  Its `:ptr`
+    # field still needs the same provenance descriptor as structural Memory: at
+    # width one the lane points at the parallel partials buffer; at wider widths
+    # the partials are interleaved, so retain a non-null address only as a
+    # provenance marker and let pointer loads/stores refuse the incoherent lanes.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Nfwd.NDualArray{E,N,1,A}, name::Union{Symbol,Int}
+    ) where {P,E,N,A<:Memory}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        name === :ptr || return NoDual()
+        tangent_type(P) === NoTangent && return NoDual()
+        lanes = if N == 1
+            block = getfield(V, :partials_block)
+            (Ptr{Nothing}(pointer(getfield(block, :parent))),)
+        else
+            q = Ptr{Nothing}(pointer(getfield(V, :primal)))
+            ntuple(_ -> q, Val(N))
+        end
+        return PointerDual(lanes, E, P)
+    end
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()

@@ -366,6 +366,8 @@ function rrule!!(
         return dest, restore_nondiff_copy!!
     end
 
+    _check_ptr_byte_offset(T, tangent_type(T), iszero(_n))
+
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
     ddest_copy = Vector{T}(undef, _n)
@@ -837,6 +839,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         return x
     end
 
+    function zero_shift_copy(v, ::Val{erased}) where {erased}
+        T = TestResources.PointerPair{NTuple{2,Int},Float64}
+        a = [TestResources.PointerPair((0, 0), x) for x in v]
+        b = [TestResources.PointerPair((0, 0), 0.0) for _ in v]
+        GC.@preserve a b begin
+            p = pointer(a)
+            q = erased ? Ptr{T}(Ptr{Cvoid}(p) + 0) : p + 0
+            unsafe_copyto!(pointer(b), q, length(a))
+        end
+        return b[2].b
+    end
+
     _a, _da = randn(5), randn(5)
     _b, _db = randn(4), randn(4)
     ptr_a, ptr_da = pointer(_a), pointer(_da)
@@ -844,6 +858,22 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     memory = Any[_x, _a, _da, _b, _db]
 
     test_cases = [
+        (
+            false,
+            :none,
+            (; mode=ForwardMode, skip_chunked=true),
+            zero_shift_copy,
+            [1.0, 3.0],
+            Val(false),
+        ),
+        (
+            false,
+            :none,
+            (; mode=ForwardMode, skip_chunked=true),
+            zero_shift_copy,
+            [1.0, 3.0],
+            Val(true),
+        ),
         (false, :none, nothing, reshape, randn(5, 4), (4, 5)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10)),
         (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
@@ -1075,6 +1105,21 @@ function _foreigncall_throwing_rows()
             cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
         )
     end
+    function mismatched_pointer_copy(v)
+        a = [TestResources.PointerPair(0, x) for x in v]
+        b = [TestResources.PointerPair(0, 0.0) for _ in v]
+        GC.@preserve a b unsafe_copyto!(pointer(b), pointer(a), length(a))
+        return b[2].b
+    end
+    push!(
+        cases,
+        (
+            (ArgumentError, "different storage stride"),
+            mismatched_pointer_copy,
+            ([1.0, 2.0],),
+            (; mode=ReverseMode),
+        ),
+    )
     copy_bytes = zeros(UInt8, 24)
     push!(memory, copy_bytes)
     # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers, and the source has none: it is
