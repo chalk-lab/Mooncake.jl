@@ -274,9 +274,33 @@ end
         end
         return NoDual()
     end
-    # Element-wise `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
-    # non-diff metadata; element access goes through `memoryrefget`, not here.
-    @inline _get_lifted_field(::Memory, _) = NoDual()
+    # Raw Memory pointers retain the element type of their structural storage.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Memory{E}, name::Union{Symbol,Int}
+    ) where {P,E}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        return if name === :ptr && tangent_type(P) !== NoTangent
+            PointerDual((Ptr{Nothing}(pointer(V)),), E, P)
+        else
+            NoDual()
+        end
+    end
+    # Numeric Memory marks stride-N lanes with the primal address for pointer comparisons.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Nfwd.NDualArray{E,N,1,A}, name::Union{Symbol,Int}
+    ) where {P,E,N,A<:Memory}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        name === :ptr || return NoDual()
+        tangent_type(P) === NoTangent && return NoDual()
+        lanes = if N == 1
+            block = getfield(V, :partials_block)
+            (Ptr{Nothing}(pointer(getfield(block, :parent))),)
+        else
+            q = Ptr{Nothing}(pointer(getfield(V, :primal)))
+            ntuple(_ -> q, Val(N))
+        end
+        return PointerDual(lanes, E, P)
+    end
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
@@ -684,5 +708,34 @@ function derived_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
         (false, :none, nothing, () -> copy(Set())),
     ]
+    @static if VERSION >= v"1.11-"
+        function memory_pointer_load(x)
+            m = x.ref.mem
+            return GC.@preserve m unsafe_load(pointer(m), 2)^2
+        end
+        function memory_pointer_copy(x)
+            m = x.ref.mem
+            y = Memory{eltype(x)}(undef, length(x))
+            GC.@preserve m y unsafe_copyto!(pointer(y), pointer(m), length(x))
+            return sum(abs2, y)
+        end
+        for f in (memory_pointer_load, memory_pointer_copy), chunk_size in (1, 8)
+            opts = if chunk_size == 1
+                (;)
+            else
+                (; throws=(ArgumentError, "lifted `Memory`"))
+            end
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (; mode=ForwardMode, chunk_size, opts...),
+                    f,
+                    collect(1.0:8.0),
+                ),
+            )
+        end
+    end
     return test_cases, Any[]
 end
