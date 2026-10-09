@@ -440,7 +440,14 @@ in the parts the alias guard does not inspect: it does not traverse mutable stru
 abstractly typed fields, array elements, or other variable-length containers such as
 dictionaries. It does not establish overlap introduced through raw pointers or
 `unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
-The forward per-call alias check has the same boundary, including abstractly typed
+Every forward prepared-cache entry point preserves the prepared storage and object
+sharing at fixed positions, including sharing between the callable and its arguments.
+Preparing with distinct arrays and reusing with one array at both positions raises
+`Mooncake.PreparedCacheError`, even for caller-supplied native directions. Derivative
+and Jacobian calls permit offset changes that preserve these sharing relationships.
+Unchanged sharing remains supported for derivative and Jacobian calls; forward gradients
+refuse derivative storage shared across arguments, including the callable.
+The prepared sharing check has the same boundary, including abstractly typed
 fields and mutable functor interiors.
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
