@@ -356,16 +356,22 @@ into differentiated storage. Such pointers can come from
 `unsafe_convert(Ptr{Cvoid}, p)` (including `unsafe_copyto!` and `pointer(::Array)`) or
 from storage with no tangent; the primal type alone cannot distinguish them.
 
-`elt` records the tangent element type and `primal_elt` the primal element type,
-so `_tangent_retyping_verdict` can refuse re-typing to a different primal element type.
+`elt` records the tangent element type and `primal_elt` the primal
+element type. `_tangent_retyping_verdict` refuses cross-type reads.
+Empty payloads and placeholders use the following convention:
 For `pointer_from_objref`, `primal_elt` is the object type; placeholders retain the
 pointer's declared element type.
+For nonempty object payloads, `elt` is the tangent payload type and
+`primal_elt` is a `Pair{Any,Any}` of object and primal payload types. This
+keeps boxed or mutable round trips valid without cross-type inline
+payload reads. Raw loads and stores that copy mutable structs with
+inline differentiable fields are refused. A sole field supplies the
+payload types; multiple fields supply their field NamedTuples. Empty
+payloads record `NoTangent` and the object type; zero/uninit tags
+record `NoTangent` and the pointer's declared element type.
 
-Two marker element types have special meanings:
-- `NoTangent`: no differentiable storage; refuse differentiable widening. Also the
-  actual tangent element type for non-differentiable buffers.
-- `Nothing`: a tangent object address from `pointer_from_objref`, whose rule checks
-  that the tangent shares the primal's layout, rather than a uniform element buffer.
+`NoTangent` marks absent differentiable storage and is also the actual
+tangent element type for non-differentiable buffers.
 """
 struct VoidPtrTangent
     p::Ptr{Nothing}

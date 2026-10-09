@@ -1,6 +1,17 @@
 @testset "foreigncall" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:foreigncall))
 
+    @testset "NULL tangent object recovery" begin
+        r = Ref(1.0)
+        GC.@preserve r for dx in (
+            Ptr{Nothing}(0), Mooncake.VoidPtrTangent(Ptr{Nothing}(0), NoTangent, typeof(r))
+        )
+            @test_throws ArgumentError rrule!!(
+                zero_fcodual(unsafe_pointer_to_objref), CoDual(pointer_from_objref(r), dx)
+            )
+        end
+    end
+
     # Zero derivatives alone cannot distinguish canonical V from an incorrect NoDual
     # for matching-methods' Vector{Any}. Check shape explicitly alongside the registry.
     @testset "world-counter / matching-methods canonical V (width $N)" for N in (1, 2)

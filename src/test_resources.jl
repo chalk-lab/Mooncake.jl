@@ -67,6 +67,49 @@ end
 
 Base.:(==)(a::MutableFoo, b::MutableFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
 
+mutable struct ArrayOnly
+    a::Vector{Float64}
+end
+
+struct MaybePointerChild
+    a::Vector{Float64}
+    MaybePointerChild() = new()
+    MaybePointerChild(a::Vector{Float64}) = new(a)
+end
+
+struct PointerChildTuple
+    xs::Tuple{Vararg{Vector{Float64}}}
+end
+
+struct PointerInlineArray <: AbstractArray{Float64,0}
+    x::Float64
+end
+Base.size(::PointerInlineArray) = ()
+Base.getindex(x::PointerInlineArray) = x.x
+
+primitive type PointerPrimitiveInteger <: Integer 64 end
+Mooncake.tangent_type(::Type{PointerPrimitiveInteger}) = Float64
+Mooncake.zero_tangent_internal(::PointerPrimitiveInteger, ::Mooncake.MaybeCache) = 0.0
+Mooncake.zero_rdata(::PointerPrimitiveInteger) = 0.0
+pointer_integer_value(x::PointerPrimitiveInteger) = reinterpret(Float64, x)
+@is_primitive MinimalCtx Mooncake.ReverseMode Tuple{
+    typeof(pointer_integer_value),PointerPrimitiveInteger
+}
+function Mooncake.rrule!!(::CoDual{typeof(pointer_integer_value)}, x::CoDual)
+    return CoDual(pointer_integer_value(primal(x)), Mooncake.NoFData()),
+    dy -> (Mooncake.NoRData(), dy)
+end
+
+mutable struct PointerInteger <: Integer
+    b::Float64
+    PointerInteger(b::Float64) = new(b)
+end
+
+mutable struct PointerChildren{A,B}
+    a::A
+    b::B
+end
+
 mutable struct NonDifferentiableFoo
     x::Int
     y::Bool

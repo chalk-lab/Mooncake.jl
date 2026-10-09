@@ -240,6 +240,68 @@ end
     return nothing
 end
 
+# Build this predicate from primal field types: `tangent_type` widens nested
+# `Vararg` fields to `Any`.
+function _primal_inline(
+    T, seen=Set{Any}(); root=false, primitive=T -> tangent_type(T) !== NoTangent
+)
+    T isa TypeVar && return _primal_inline(T.ub, seen; root=root, primitive=primitive)
+    T isa Union && return _primal_inline(T.a, seen; root=root, primitive=primitive) ||
+           _primal_inline(T.b, seen; root=root, primitive=primitive)
+    T isa UnionAll && return _primal_inline(T.body, seen; root=root, primitive=primitive)
+    T isa DataType || return true
+    T <: Tuple && return any(
+        _primal_inline(Base.unwrapva(F), seen; primitive=primitive) for
+        F in Base.unwrap_unionall(T).parameters
+    )
+    (T === Any || isabstracttype(T) || !isconcretetype(T)) && return true
+    (
+        T <: Ptr ||
+        (isdefined(Base, :Memory) && T <: Base.Memory) ||
+        (isdefined(Base, :MemoryRef) && T <: Base.MemoryRef)
+    ) && return false
+    !root && ismutabletype(T) && return false
+    T <: Integer && isprimitivetype(T) && return primitive(T)
+    T <: Union{Char,Symbol,Nothing} && return false
+    T in seen && return true
+    fieldcount(T) == 0 && return T <: Number
+    push!(seen, T)
+    inline = any(_primal_inline(F, seen; primitive=primitive) for F in fieldtypes(T))
+    delete!(seen, T)
+    return inline
+end
+
+# Keep an ordinary entry point for Julia 1.10 introspection with abstract Type arguments.
+@inline function _check_pointer_copy(T::Type)
+    _check_pointer_copy_static(T)
+    return nothing
+end
+
+@generated function _check_pointer_copy_static(::Type{T}) where {T}
+    primitives = Any[]
+    inline =
+        isconcretetype(T) &&
+        ismutabletype(T) &&
+        !(T <: Array) &&
+        _primal_inline(T; root=true, primitive=P -> (push!(primitives, P); false))
+    # Emit tangent queries so registrations made after this generator are visible.
+    inline = foldl(primitives; init=inline) do result, P
+        :($result || tangent_type($P) !== NoTangent)
+    end
+    return quote
+        if $inline
+            throw(
+                ArgumentError(
+                    "Raw pointer access copying a mutable struct through `Ptr{$T}` is " *
+                    "not supported in reverse-mode AD; use `unsafe_pointer_to_objref` to " *
+                    "recover the original object, or write a custom rule for the access.",
+                ),
+            )
+        end
+        nothing
+    end
+end
+
 # Reference elements occupy pointer-sized slots. sizeof is only safe for isbits
 # elements: abstract types and even concrete String are unsized.
 @inline _elements_occupy_storage(@nospecialize(E)) =
@@ -421,6 +483,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
+    _check_pointer_copy(eltype(_x))
     _order = primal(order)
     dx = _tangent_ptr(_x, tangent(x))
     _check_tangent_ptr(_x, dx)
@@ -494,6 +557,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
+    _check_pointer_copy(eltype(_p))
     _order = primal(order)
     _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
     _check_narrowed_pointer_write(primal(p), tangent(p))
@@ -683,6 +747,9 @@ end
 ) where {A,B}
     tangent_type(Ptr{B}) === VoidPtrTangent && return dx
     TB = tangent_type(B)
+    if !Base.allocatedinline(B) && dx.primal_elt isa Pair{Any,Any}
+        return bitcast(Ptr{TB}, dx.p)
+    end
     _tangent_retyping_verdict(dx.elt, dx.primal_elt, B)
     return if dx.elt === Nothing || (
         dx.elt === TB ? _elements_occupy_storage(TB) : _elements_occupy_storage(dx.elt)
@@ -699,14 +766,17 @@ end
     Ptr{tangent_type(T)}, dx.p
 )
 
-# Only the same primal element type passes, including recovery from Cvoid:
-# distinct primal layouts can share a tangent type.
+# Inline payload reads must keep the primal element type, even through Cvoid.
+# Objref casts to boxed or mutable types also support object recovery.
 @inline function _tangent_retyping_verdict(
     @nospecialize(TA), @nospecialize(A), @nospecialize(B)
 )
+    if A isa Pair{Any,Any}
+        !Base.allocatedinline(B) && return nothing
+        A = A.second
+    end
     A === B && return nothing
     TB = tangent_type(B)
-    TA === Nothing && return nothing            # a tangent OBJECT, checked where it was created
     !_elements_occupy_storage(TA) && return nothing
     isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
     throw(
@@ -1156,6 +1226,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
+    _check_pointer_copy(eltype(_x))
     _y = primal(y)
     _z = primal(z)
     dx = _tangent_ptr(_x, tangent(x))
@@ -1231,6 +1302,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
+    _check_pointer_copy(eltype(_p))
     _idx = primal(idx)
     _z = primal(z)
     _check_tangent_ptr(primal(p), _tangent_ptr(primal(p), tangent(p)))
@@ -2423,6 +2495,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             ),
         )
     end
+    children = TestResources.PointerChildren(Ref(1.0), [2.0])
+    dchildren = randn_tangent(rng_ctor(123), children)
+    push!(memory, children, dchildren)
+    push!(
+        test_cases,
+        (
+            true,
+            :stability,
+            (mode=ReverseMode,),
+            IntrinsicsWrappers.pointerref,
+            CoDual(
+                Ptr{typeof(children)}(pointer_from_objref(children)),
+                Ptr{typeof(dchildren)}(pointer_from_objref(dchildren)),
+            ),
+            1,
+            1,
+        ),
+    )
     throwing_rows, throwing_memory = _builtins_throwing_rows()
     test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
     memory = vcat(Any[memory...], throwing_memory)
@@ -2474,9 +2564,25 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     end
     # Own-address reads are refused in forward mode but supported in reverse.
     # Shifting an erased pointer must preserve its erased tangent element type.
-    ref_objref_roundtrip(x) = pointerref(
-        bitcast(Ptr{Float64}, pointer_from_objref(Ref(x))), 1, 1
-    )
+    function ref_objref_roundtrip(x)
+        r = Ref(x)
+        return GC.@preserve r pointerref(
+            bitcast(Ptr{typeof(x)}, pointer_from_objref(r)), 1, 1
+        )
+    end
+    function typed_objref_roundtrip(r, T=typeof(r))
+        return GC.@preserve r (unsafe_pointer_to_objref(
+            Ptr{T}(pointer_from_objref(r))
+        )::typeof(r)).b
+    end
+    function objref_narrowed_roundtrip(r, T)
+        return GC.@preserve r (unsafe_pointer_to_objref(
+            Ptr{typeof(r)}(Ptr{T}(pointer_from_objref(r)))
+        )::typeof(r)).b
+    end
+    function objref_child_copy(r)
+        return GC.@preserve r unsafe_load(Ptr{typeof(r)}(pointer_from_objref(r)))
+    end
     function shift_through_cvoid(b::Vector{Float64}, x::Float64)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b)) + 8))
     end
@@ -2506,6 +2612,45 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             2.0,
         ),
         (false, :none, nothing, objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            typed_objref_roundtrip,
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
+        ),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            typed_objref_roundtrip,
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
+            TestResources.TypeUnstableMutableStruct,
+        ),
+        ((
+            false,
+            :none,
+            (mode=ReverseMode,),
+            objref_narrowed_roundtrip,
+            TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
+            T,
+        ) for T in (TestResources.NonDifferentiableFoo, String))...,
+        ((false, :none, (mode=ReverseMode,), objref_child_copy, r) for r in (
+            Ref(TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0)),
+            Ref([1.0, 2.0]),
+            Ref{Tuple{Vararg{Vector{Float64}}}}(([1.0, 2.0], [3.0, 4.0])),
+            TestResources.ArrayOnly([1.0, 2.0]),
+            Ref(TestResources.MaybePointerChild([1.0, 2.0])),
+            Ref(TestResources.PointerChildTuple(([1.0, 2.0], [3.0, 4.0]))),
+            TestResources.PointerChildren(Ref(1.0), [2.0]),
+            TestResources.PointerChildren{
+                Union{Nothing,TestResources.MaybePointerChild},
+                Union{Nothing,TestResources.MaybePointerChild},
+            }(
+                TestResources.MaybePointerChild([1.0, 2.0]),
+                TestResources.MaybePointerChild([3.0, 4.0]),
+            ),
+        ))...,
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
@@ -2540,7 +2685,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             ref_objref_roundtrip,
             5.0,
         ),
-        (false, :none, (mode=ReverseMode,), ref_objref_roundtrip, 5.0),
+        ((false, :none, (mode=ReverseMode,), ref_objref_roundtrip, x) for
+         x in (5.0, 5.0f0, 1.0 + 2.0im, (1.0f0, 2.0f0)))...,
         (
             # skip_chunked: raw pointers cannot address stride-N lanes of a float array's
             # partials block (as in foreigncall.jl's unsafe_copyto_tester).
@@ -2672,6 +2818,35 @@ function _builtins_throwing_rows()
     function complexf32_as_float64_load(v)
         z = [complex(v[1], v[2]), complex(v[3], v[4])]
         return GC.@preserve z unsafe_load(Ptr{Float64}(pointer(z)), 2)
+    end
+    function objref_retyped_load(v)
+        r = Ref((v[1], v[2]))
+        return GC.@preserve r unsafe_load(Ptr{Float64}(pointer_from_objref(r)))
+    end
+    function objref_copy_load(r)
+        return GC.@preserve r unsafe_load(Ptr{typeof(r)}(pointer_from_objref(r))).b
+    end
+    function objref_primitive_copy(r)
+        return GC.@preserve r TestResources.pointer_integer_value(
+            unsafe_load(Ptr{typeof(r)}(pointer_from_objref(r)))[]
+        )
+    end
+    function objref_inline_array_load(v)
+        r = Ref(TestResources.PointerInlineArray(v[1]))
+        return GC.@preserve r unsafe_load(Ptr{typeof(r)}(pointer_from_objref(r)))[][]
+    end
+    function objref_copy_store(r)
+        return GC.@preserve r begin
+            unsafe_store!(Ptr{typeof(r)}(pointer_from_objref(r)), r)
+            r.b
+        end
+    end
+    function objref_field_load(r)
+        return GC.@preserve r unsafe_load(Ptr{Float64}(pointer_from_objref(r)))
+    end
+    function objref_complex_retyped_load(v)
+        r = Ref(complex(v[1], v[2]))
+        return GC.@preserve r unsafe_load(Ptr{Float64}(pointer_from_objref(r)), 2)
     end
     one_tuple_load(v) = GC.@preserve v unsafe_load(Ptr{Tuple{Float64}}(pointer(v)), 2)[1]
     function tuple_layout_copy(v, erased=false)
@@ -2838,6 +3013,53 @@ function _builtins_throwing_rows()
             complexf32_as_float64_load,
             (Float32[1, 2, 3, 4],),
             (;),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            objref_retyped_load,
+            (Float32[1, 2],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            objref_complex_retyped_load,
+            ([1.5, 2.0],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "to another element type is not supported"),
+            objref_field_load,
+            (TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),),
+            (; mode=ReverseMode),
+        ),
+        (
+            (
+                (ArgumentError, "copying a mutable struct"),
+                objref_copy_load,
+                (r,),
+                (; mode=ReverseMode),
+            ) for r in (
+                TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),
+                TestResources.PointerInteger(1.0),
+            )
+        )...,
+        (
+            (ArgumentError, "copying a mutable struct"),
+            objref_primitive_copy,
+            (Ref(reinterpret(TestResources.PointerPrimitiveInteger, 1.0)),),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "copying a mutable struct"),
+            objref_inline_array_load,
+            ([1.0],),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "copying a mutable struct"),
+            objref_copy_store,
+            (TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0),),
+            (; mode=ReverseMode),
         ),
         (
             (ArgumentError, "to another element type is not supported"),

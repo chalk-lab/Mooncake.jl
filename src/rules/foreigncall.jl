@@ -138,7 +138,7 @@ end
     T <: MutableTangent || return false
     NT = fieldtype(T, :fields)
     # Empty payloads may supply an address to foreigncalls, but must be tagged NoTangent
-    # by _objref_tangent_elt so later differentiable loads cannot access absent storage.
+    # by _objref_payload_types so later differentiable loads cannot access absent storage.
     sizeof(NT) === 0 && return true
     fieldcount(NT) === fieldcount(P) || return false
     for i in 1:fieldcount(P)
@@ -154,12 +154,18 @@ end
     return isbitstype(T) ? (true, sizeof(T)) : (false, sizeof(Ptr{Nothing}))
 end
 
-# What lies behind a `pointer_from_objref` tangent address: `Nothing` when the tangent is an object
-# whose layout matches the primal's (checked above, so a later load is sound), `NoTangent` when the
-# tangent has no payload at all.
-@inline function _objref_tangent_elt(::Type{P}) where {P}
-    T = tangent_type(P)
-    return sizeof(fieldtype(T, :fields)) === 0 ? NoTangent : Nothing
+# A single field exposes its payload type; multiple fields expose the whole layout.
+@inline function _objref_payload_types(::Type{P}) where {P}
+    NT = fieldtype(tangent_type(P), :fields)
+    sizeof(NT) === 0 && return (NoTangent, P)
+    if fieldcount(P) === 1
+        F = fieldtype(NT, 1)
+        return (
+            F <: PossiblyUninitTangent ? fieldtype(F, 1) : F,
+            Pair{Any,Any}(P, fieldtype(P, 1)),
+        )
+    end
+    return (NT, Pair{Any,Any}(P, NamedTuple{fieldnames(P),Tuple{fieldtypes(P)...}}))
 end
 
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
@@ -177,11 +183,9 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
             ),
         )
     end
-    # Nothing tags a layout-checked object, not a uniform buffer; NoTangent tags an empty
-    # payload whose address must never serve a differentiable load.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P), P),
+        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_payload_types(P)...),
     )
     return y, NoPullback(f, x)
 end
@@ -241,10 +245,14 @@ end
 @inline _void_ptr_addr(p::Ptr) = p
 
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(
-        unsafe_pointer_to_objref(primal(x)),
-        unsafe_pointer_to_objref(_void_ptr_addr(tangent(x))),
+    dx = _void_ptr_addr(tangent(x))
+    iszero(UInt(dx)) && throw(
+        ArgumentError(
+            "Cannot recover an object through a NULL tangent pointer; a cast through a " *
+            "pointer element type with no tangent can discard the tangent address.",
+        ),
     )
+    y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(dx))
     return y, NoPullback(f, x)
 end
 
@@ -717,7 +725,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
-                VoidPtrTangent(pointer_from_objref(_dx), Nothing, typeof(_x)),
+                VoidPtrTangent(
+                    pointer_from_objref(_dx), Float64, Pair{Any,Any}(typeof(_x), Float64)
+                ),
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
