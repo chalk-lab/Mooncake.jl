@@ -1,6 +1,6 @@
 name: Claude review
 
-# Manual only: a maintainer comments `@claude review` on a PR (fork PRs included).
+# Manual only: a maintainer comments `/claude-review` on a PR (fork PRs included).
 # Claude reads the PR with read-only tools; a separate step posts its findings as a review.
 # See .github/claude_review.py.
 #
@@ -22,7 +22,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      startsWith(github.event.comment.body, '@claude review') &&
+      startsWith(github.event.comment.body, '/claude-review') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -100,4 +100,5 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           EYES_REACTION_ID: ${{ steps.ack.outputs.reaction_id }}
+          REQUESTER: ${{ github.event.comment.user.login }}
         run: python base/.github/claude_review.py post
