@@ -73,7 +73,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TS
     input_types_and_sizes::TIS
     # Top-level type/size signature for y = f(x...).
     output_type_and_size::TOS
-    aliases::TS
+    sharing::TS
     reuse_visited::TV
 end
 
@@ -248,57 +248,6 @@ function _throw_prepared_cache_aliasing_error(li::String, lj::String)
         ),
     )
 end
-"""
-    _mutable_tangent_paths(T::Type)
-
-Field paths to storage leaves through concrete immutable containers. Mutable objects and
-`MemoryRef`s are leaves. `:fields` and `:value` steps unwrap native tangent representations;
-`_path_expr` skips those steps on primals. Abstract fields and mutable interiors require the
-caller to preserve their aliasing, as documented in `known_limitations.md`.
-"""
-function _mutable_tangent_paths(
-    @nospecialize(T::Type), path=(), out=Vector{Any}(); primal=false
-)
-    if Base.ismutabletype(T)
-        push!(out, path)
-    elseif VERSION >= v"1.11-rc4" && T <: MemoryRef
-        push!(out, path)
-    elseif !primal && T <: Tangent
-        _mutable_tangent_paths(fieldtype(T, :fields), (path..., :fields), out)
-    elseif !primal && T <: PossiblyUninitTangent
-        _mutable_tangent_paths(T.parameters[1], (path..., :value), out)
-    elseif (primal || T <: Union{Tuple,NamedTuple}) && isconcretetype(T) && !isbitstype(T)
-        for (k, FT) in enumerate(fieldtypes(T))
-            _mutable_tangent_paths(FT, (path..., k), out; primal)
-        end
-    end
-    return out
-end
-
-# `tangents[i][p1][p2]...` as an expression, and the same position as a label for the error.
-function _path_expr(base::Symbol, i::Int, path)
-    return foldl(path; init=:($base[$i])) do e, k
-        if k === :fields
-            base === :tangents ? :(_alias_field($e, :fields)) : e
-        elseif k === :value
-            base === :tangents ? :(is_init($e) ? val($e) : nothing) : e
-        else
-            :(_alias_field($e, $k))
-        end
-    end
-end
-@inline _alias_field(x, i) = isdefined(x, i) ? getfield(x, i) : nothing
-function _alias_label(i::Int, path, @nospecialize(T::Type))
-    label = i == 1 ? "`f" : "`x$(i - 1)"
-    for k in path
-        if k !== :fields && k !== :value
-            label *= T <: Tuple ? "[$k]" : ".$(fieldname(T, k))"
-        end
-        T = k === :value ? T.parameters[1] : fieldtype(T, k)
-    end
-    return label * "`"
-end
-
 # Field paths from `T` to its storage leaves. Abstract fields and mutable interiors are not
 # entered: they can change between calls without changing the type.
 function _storage_leaf_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
@@ -327,6 +276,7 @@ function _storage_leaves(@nospecialize(fx::Type), first_arg=0)
     end
     return rows
 end
+@foldable _has_storage_leaves(::Type{T}) where {T} = !isempty(_storage_leaf_paths(T))
 @inline _leaf_field(x, k) =
     tangent_type(typeof(x)) === NoTangent || !isdefined(x, k) ? nothing : getfield(x, k)
 
@@ -557,107 +507,6 @@ end
     return nothing
 end
 
-# Share the storage paths between native tangents and call-time primals. Tangent wrapper
-# steps are marked so `_path_expr` can skip them when indexing the primal.
-function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool; primal=false)
-    leaves = Tuple{Int,Any}[]
-    for (i, P) in enumerate(T.parameters)
-        if leafwise
-            for path in _mutable_tangent_paths(P; primal)
-                push!(leaves, (i, path))
-            end
-        elseif Base.ismutabletype(P)
-            push!(leaves, (i, ()))
-        end
-    end
-    return leaves
-end
-
-# Compare storage leaves, including those reached through immutable fields, without a
-# per-call graph walk. Mutable interiors and abstract fields remain unchecked.
-# Structured gradient seeds require both partitions to agree (`bidirectional`); friendly
-# JVPs only refuse shared tangent storage for distinct primals.
-function _alias_checks(
-    @nospecialize(tangents::Type),
-    bidirectional::Bool,
-    label=(i, p) -> _alias_label(i, p, tangents.parameters[i]),
-)
-    # Compare leaves across the whole signature, including two leaves of one argument.
-    leaves = _aliasable_positions(tangents, true)
-    n = length(leaves)
-    # Limit quadratic codegen to 256 pairs; larger signatures use a linear runtime pass.
-    # The runtime pass allocates maps, so small signatures retain the unrolled path.
-    if n * (n - 1) ÷ 2 > 256
-        ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
-        fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
-        labels = Expr(:tuple, (label(i, p) for (i, p) in leaves)...)
-        return :(_check_alias_partition($ts, $fs, $labels, $bidirectional))
-    end
-    bad = bidirectional ? :(same_primal != same_tangent) : :(same_tangent && !same_primal)
-    checks = Expr(:block)
-    for a in 1:n, b in (a + 1):n
-        (i, pi), (j, pj) = leaves[a], leaves[b]
-        ti, tj = _path_expr(:tangents, i, pi), _path_expr(:tangents, j, pj)
-        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
-        li, lj = label(i, pi), label(j, pj)
-        push!(
-            checks.args,
-            quote
-                let same_primal = (_storage_id($fi) === _storage_id($fj)),
-                    same_tangent = (_storage_id($ti) === _storage_id($tj))
-
-                    $bad &&
-                        (
-                            _holds_derivatives(tangent_type(typeof($fi))) ||
-                            _holds_derivatives(tangent_type(typeof($fj)))
-                        ) &&
-                        _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
-                end
-            end,
-        )
-    end
-    return checks
-end
-
-@noinline Base.@nospecializeinfer function _alias_storage_index!(
-    storage::IdDict, @nospecialize(id), object::Int
-)
-    return get!(storage, id, object)
-end
-
-# Runtime form of the same pairwise contract for signatures too wide to unroll. Each
-# repeated tangent must still name its first primal; bidirectional checks add the inverse.
-@noinline function _check_alias_partition(
-    tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
-)
-    first_tangent = IdDict{Any,Int}()
-    first_primal = bidirectional ? IdDict{Any,Int}() : nothing
-    for k in eachindex(tangents)
-        t = _alias_storage_index!(first_tangent, _storage_id(tangents[k]), k)
-        (_storage_id(primals[t]) === _storage_id(primals[k])) ||
-            !(
-                _holds_derivatives(tangent_type(typeof(primals[t]))) ||
-                _holds_derivatives(tangent_type(typeof(primals[k])))
-            ) ||
-            _throw_prepared_cache_aliasing_error(labels[t], labels[k], false)
-        if bidirectional
-            f = _alias_storage_index!(first_primal, _storage_id(primals[k]), k)
-            (_storage_id(tangents[f]) === _storage_id(tangents[k])) ||
-                !(
-                    _holds_derivatives(tangent_type(typeof(primals[f]))) ||
-                    _holds_derivatives(tangent_type(typeof(primals[k])))
-                ) ||
-                _throw_prepared_cache_aliasing_error(labels[f], labels[k], true)
-        end
-    end
-    return nothing
-end
-
-_prepare_aliases(tangents::Tuple, fx::Tuple) = _sharing(fx)
-function _check_tangent_aliasing(prepared::Tuple, tangents::Tuple, fx::Tuple)
-    _check_sharing(prepared, fx, Val(:same))
-end
-
 # `empty!(::IdDict)` discards its table capacity (and allocates on Julia 1.11+).
 # Clear references in place so successful and rejected checks both reuse the table.
 function _empty_alias_map!(d::IdDict)
@@ -666,41 +515,6 @@ function _empty_alias_map!(d::IdDict)
     end
     d.count = d.ndel = 0
     return d
-end
-
-# A friendly forward cache shares prepared tangent buffers. Distinct call-time primals
-# cannot write different seeds into one buffer; separate buffers for aliased primals are valid.
-@generated function _check_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
-    return Expr(:block, _alias_checks(tangents, false), :(return nothing))
-end
-
-# A forward gradient's per-argument basis ranges cannot represent shared storage;
-# `value_and_derivative!!` can, using a caller-supplied shared seed.
-# Check mutable top-level arguments per call using `_storage_id`, including Array/Memory
-# pairs. Immutable identity is value equality. Nested sharing and sharing with `f` are
-# checked at preparation by `_inputs_share_storage` to avoid per-call traversal.
-# Generate literal indices: dynamic indexing of the heterogeneous tuple is type-unstable.
-@generated function _check_primal_aliasing(x::Tuple)
-    checks = Expr(:block)
-    leaves = _aliasable_positions(x, false)
-    for a in eachindex(leaves), b in (a + 1):length(leaves)
-        i, j = leaves[a][1], leaves[b][1]
-        push!(
-            checks.args,
-            :(
-                (_storage_id(x[$i]) === _storage_id(x[$j])) &&
-                (
-                    _holds_derivatives(tangent_type(typeof(x[$i]))) ||
-                    _holds_derivatives(tangent_type(typeof(x[$j])))
-                ) &&
-                _throw_gradient_arg_alias_error($i, $j)
-            ),
-        )
-    end
-    return quote
-        $checks
-        return nothing
-    end
 end
 
 # Derivative capacity is a type property: a mutable leaf can acquire values inside `f`.
@@ -722,25 +536,17 @@ end
     return true
 end
 
-function _throw_gradient_arg_alias_error(i::Int, j::Int)
-    throw(
-        ArgumentError(
-            "Forward-mode `value_and_gradient!!` does not support arguments $i and $j sharing " *
-            "one storage — the same mutable object, or an `Array` passed alongside its backing " *
-            "`Memory`: the gradient is assembled from one standard-basis tangent_dim range per " *
-            "argument, which cannot represent a storage that occupies two of them. Use " *
-            "`value_and_derivative!!` with one tangent shared across those positions, or use " *
-            "reverse mode.",
-        ),
-    )
-end
-
 # Count the SAME tangents jointly and per argument: only cross-position sharing changes
 # the count; repeated leaves within one argument and equal scalars do not.
-# This catches nested sharing and sharing with `f`, unlike `_check_primal_aliasing`.
+# This catches nested sharing and sharing with `f` at preparation.
 # The full graph walk runs only at preparation; call-time guards cover fixed immutable paths
 # and structured array leaves. A Jacobian's single input range covers aliased captures too.
 function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
+    partition = _sharing(fx)
+    leaves = _storage_leaves(typeof(fx))
+    for k in eachindex(partition)
+        leaves[k][3] == leaves[partition[k][1]][3] || return true
+    end
     shared_dim != sum(tangent_dim, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
     # they do not, so that version reads it off the primals instead; see `_any_shared_storage!`.
@@ -880,72 +686,9 @@ end
     return nothing
 end
 
-# Immutable wrappers can acquire aliases on reuse, including aliases to captured storage.
-# Enumerate their fixed fields at compile time; ordinary scalar/array calls pay no graph walk.
-@inline function _check_immutable_arg_aliasing(fx::Tuple)
-    return _check_immutable_arg_aliasing(fx, _throw_prepared_cache_aliasing_error)
-end
-@generated function _check_immutable_arg_aliasing(fx::Tuple, throw_alias)
-    leaves = _aliasable_positions(fx, true; primal=true)
-    if length(leaves) > 4 &&
-        any(leaf -> !isempty(leaf[2]) || !Base.ismutabletype(fx.parameters[leaf[1]]), leaves)
-        entries = map(leaves) do (i, p)
-            :($(_path_expr(:fx, i, p)), $i, $(_alias_label(i, p, fx.parameters[i])))
-        end
-        return :(_check_immutable_storage_leaves(
-            Tuple{Any,Int,String}[$(entries...)], throw_alias
-        ))
-    end
-    checks = Expr(:block)
-    for a in eachindex(leaves), b in (a + 1):length(leaves)
-        i, pi = leaves[a]
-        j, pj = leaves[b]
-        # The existing top-level mutable guard already covers these pairs.
-        isempty(pi) &&
-            isempty(pj) &&
-            Base.ismutabletype(fx.parameters[i]) &&
-            Base.ismutabletype(fx.parameters[j]) &&
-            continue
-        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
-        li, lj = _alias_label(i, pi, fx.parameters[i]),
-        _alias_label(j, pj, fx.parameters[j])
-        push!(
-            checks.args,
-            quote
-                if (_storage_id($fi) === _storage_id($fj)) &&
-                    ($i != $j || $fi !== $fj) &&
-                    (
-                        _holds_derivatives(tangent_type(typeof($fi))) ||
-                        _holds_derivatives(tangent_type(typeof($fj)))
-                    )
-                    throw_alias($li, $lj)
-                end
-            end,
-        )
-    end
-    push!(checks.args, :(return nothing))
-    return checks
-end
-
-@noinline function _check_immutable_storage_leaves(
-    leaves::Vector{Tuple{Any,Int,String}}, throw_alias
-)
-    seen = IdDict{Any,Tuple{Any,Int,String}}()
-    for (x, i, label) in leaves
-        previous = get!(seen, _storage_id(x), (x, i, label))
-        if (previous[1] !== x || previous[2] != i) && (
-            _holds_derivatives(tangent_type(typeof(previous[1]))) ||
-            _holds_derivatives(tangent_type(typeof(x)))
-        )
-            throw_alias(previous[3], label)
-        end
-    end
-    return nothing
-end
-
 function _throw_gradient_input_alias_error()
     throw(
-        ArgumentError(
+        PreparedCacheError(
             "Forward-mode `value_and_gradient!!` does not support two arguments over one " *
             "storage — `f` holding the same array that is also passed as an argument, say. " *
             "Each argument carries its own tangent storage, so the sweep gives the shared " *
@@ -1242,33 +985,32 @@ is shown by the cache.
             nothing
         end
     end
+    sharing = _sharing(fx)
+    seed_sharing = if gradient_seed isa StructuredGradSeed
+        _sharing(_seed_array_inputs(map(tangent, gradient_seed.arg_seeds), Base.tail(fx)))
+    else
+        nothing
+    end
     input_tangents, friendly_gradients, gradient_workspace = if config.friendly_tangents
         # `input_ts` is already built for the dimension count and has not been written to.
         (
             input_ts,
             map(_forward_friendly_cache, fx, _copy_output(fx)),
-<<<<<<< HEAD
-            Ref{Union{Nothing,typeof(input_ts)}}(nothing),
             _ForwardWorkspace{typeof(sharing),typeof(input_ts),typeof(seed_sharing)}(
                 typeof(input_ts), sharing, seed_sharing, nothing
             ),
->>>>>>> 55da721cdb (fixup! interface: unify prepared-cache sharing validation)
         )
     else
         # Keep the lazy workspace concretely typed without evaluating more tangents.
         (
             nothing,
             nothing,
-<<<<<<< HEAD
-            Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(
-                nothing
             _ForwardWorkspace{
                 typeof(sharing),
                 Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
                 typeof(seed_sharing),
             }(
                 Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}, sharing, seed_sharing, nothing
->>>>>>> 55da721cdb (fixup! interface: unify prepared-cache sharing validation)
             ),
         )
     end
@@ -1297,7 +1039,12 @@ Returns a `Lifted` containing the result of applying forward-mode AD to compute 
 tangent values in `f` and `x`.
 """
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
-    _check_dict_cache_inputs(map(primal, fx))
+    input_primals = map(primal, fx)
+    _check_dict_cache_inputs(input_primals)
+    _check_prepared_cache(cache.input_types_and_sizes, input_primals)
+    _check_sharing(
+        cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+    )
     return _value_and_derivative!!(cache, fx...)
 end
 
@@ -1386,7 +1133,9 @@ snapshotted — a callable that mutates its own fields is not restored.
         input_primals = tuple_map(first, fx)
         _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
         # Types and sizes match when only the aliasing differs, so the check above cannot see it.
-        _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
+        _check_sharing(
+            cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+        )
         tuple_map(
             cache.input_tangents, input_friendly_tangents, ntuple(identity, Val(M))
         ) do t, d, i
@@ -1449,6 +1198,9 @@ end
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
+    _check_sharing(
+        cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+    )
     input_tangents = tuple_map(last, fx)
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
 
@@ -1646,6 +1398,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     _check_cache_constants(cache.single_rule, (f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
+    _check_sharing(cache.gradient_workspace.sharing, (f, x), Val(:same), Val(:derivative))
     total_dim = length(x)
     # No input dimensions: the chunk width resolves to zero, so there is no seed to sweep and no
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
@@ -1735,7 +1488,7 @@ end
     y_cache = cache.y_cache
     total_dim, Ty = _check_reverse_reuse(
         cache.input_types_and_sizes,
-        cache.aliases,
+        cache.sharing,
         cache.reuse_visited,
         cache.tangents,
         (f, x),
@@ -2272,8 +2025,8 @@ end
 end
 
 # A reverse cache pairs each call's inputs with the tangents `_zero_tangents` built at
-# preparation, which record the prepared sizes, abstract-slot types and definedness. Every
-# reverse entry point reusing them pairs through here, so none can skip the check.
+# preparation, which record the prepared sizes, abstract-slot types and definedness.
+# Sweeps validate through the same owner once, before pairing their first row.
 @inline function _reuse_coduals(
     types_and_sizes, sharing, visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple
 )
@@ -2293,15 +2046,29 @@ end
     _check_prepared_cache(types_and_sizes, fx)
     # Keep output and caller-direction errors at their original admission positions.
     result = after_envelope()
-    _check_sharing(sharing, fx, Val(:same))
+    # Unwrap inside this zero-derivative boundary: differentiating the type-parameter
+    # lookup widens large partitions and boxes the owner's lifted arguments.
+    partition = sharing isa Val ? typeof(sharing).parameters[1] : sharing
+    _check_sharing(partition, fx, Val(:same))
     after_sharing()
     _check_tangent_reuse(visited, tangents, fx)
     return result
 end
 
-@inline function _reuse_coduals(visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple)
+@inline function _check_reverse_reuse(
+    types_and_sizes,
+    sharing,
+    visited,
+    tangents,
+    fx,
+    before_envelope::E,
+    ::Val{:sharing_first},
+) where {E}
+    _check_sharing(sharing, fx, Val(:same))
+    result = before_envelope()
+    _check_prepared_cache(types_and_sizes, fx)
     _check_tangent_reuse(visited, tangents, fx)
-    return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
+    return result
 end
 
 @generated function _check_tangent_reuse(visited, tangents::Tuple, fx::Tuple)
@@ -2898,7 +2665,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     fx = (f, x...)
     coduals = _reuse_coduals(
         cache.input_types_and_sizes,
-        cache.aliases,
+        cache.sharing,
         getfield(cache, :reuse_visited),
         getfield(cache, :tangents),
         fx,
@@ -3070,7 +2837,7 @@ value_and_gradient!!(cache, f, x, y)
     fx = (f, x...)
     coduals = _reuse_coduals(
         cache.input_types_and_sizes,
-        cache.aliases,
+        cache.sharing,
         getfield(cache, :reuse_visited),
         getfield(cache, :tangents),
         fx,
@@ -3207,7 +2974,7 @@ IEEEFloat array leaves, including mixed leaf eltypes, and isbits nondifferentiab
 possibly-uninitialised fields, non-isbits NoDual state, or a differentiable `f` use the
 generic chunked path, which allocates a fresh seed per chunk.
 
-Arguments that share derivative-carrying storage are refused. Forward mode gives each
+Arguments that share derivative-carrying storage raise `PreparedCacheError`. Forward mode gives each
 argument its own tangent storage, so two arguments over one array are two independent directions rather than
 one shared derivative, and the standard-basis sweep cannot represent that. Repeated leaves
 *within* one argument are supported when they are identical (`===`) after traversing
@@ -3251,22 +3018,21 @@ end
     _check_cache_constants(cache.single_rule, (f, x...))
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
-    _check_primal_aliasing(x)
     _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
-    _check_immutable_arg_aliasing((f, x...))
+    _check_sharing(cache.gradient_workspace.sharing, (f, x...), Val(:same), Val(:forward))
     input_primals = (f, x...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
-    native_gradients = let workspace = cache.gradient_workspace[]
+    native_gradients = let workspace = cache.gradient_workspace.gradients
         if isnothing(workspace)
             workspace = _zero_tangents(input_primals)
-            cache.gradient_workspace[] = workspace
+            cache.gradient_workspace.gradients = workspace
             workspace
         else
             zeroed = tuple_map(set_to_zero!!, workspace)
-            cache.gradient_workspace[] = zeroed
+            cache.gradient_workspace.gradients = zeroed
             zeroed
         end
     end
@@ -3443,8 +3209,12 @@ function value_and_gradient!!(
     # Leading `x1` binds T; a bare Vararg leaves it unbound at N=0 (Aqua).
     xs = (x1, xs_rest...)
     N = Nm1 + 1
-    _check_primal_aliasing(xs)
     _check_gradient_input_aliasing(cache)
+    if _has_storage_leaves(F) === false
+        _check_sharing(cache.gradient_workspace.sharing, xs, Val(:same), Val(1))
+    else
+        _check_sharing(cache.gradient_workspace.sharing, (f, xs...), Val(:same))
+    end
     seed = cache.gradient_seed
     # Only destructure flat tuple seeds; other shapes use the generic method's dispatch.
     # `invoke` avoids re-entering this float-vector method.
@@ -3783,11 +3553,6 @@ function _seed_array_inputs(v::NamedTuple{ns}, x) where {ns}
     return _cat_leaves(map(n -> _seed_array_inputs(getfield(v, n), getfield(x, n)), ns))
 end
 
-@generated function _check_seed_aliasing(tangents::Tuple, fx::Tuple)
-    checks = _alias_checks(tangents, true, (i, _) -> "structured array leaf $i")
-    return Expr(:block, checks, :(return nothing))
-end
-
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
@@ -3796,7 +3561,9 @@ function _structured_gradient!!(
     # The leaf table fixes the alias partition, including arrays inside struct fields.
     _restore_seed_bindings!(seed.bindings)
     arrays = _seed_array_inputs(map(tangent, seed.arg_seeds), xs)
-    _check_seed_aliasing(map(row -> row[2], seed.leaves), arrays)
+    _check_sharing(
+        cache.gradient_workspace.seed_sharing, arrays, Val(:same), Val(:structured)
+    )
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
@@ -4001,6 +3768,9 @@ true
     # never invokes.
     tangents = grad_cache.tangents
     visited = grad_cache.reuse_visited
+    types_and_sizes = grad_cache.input_types_and_sizes
+    # `lift` boxes this closure on 1.10; keep the fixed partition out of its runtime payload.
+    sharing = Val(grad_cache.sharing)
     grad_f = if for_rule isa DerivedFoRRule{Nothing}
         y -> begin
             val_and_grad = value_and_gradient!!(grad_cache, f, y)
@@ -4009,7 +3779,9 @@ true
     else
         y -> begin
             inner_rule = get_inner_rrule(for_rule)
-            coduals = _reuse_coduals(visited, tangents, (f, y), (true, true))
+            coduals = _reuse_coduals(
+                types_and_sizes, sharing, visited, tangents, (f, y), (true, true)
+            )
             val, grad = __value_and_gradient!!(inner_rule, coduals...)
             (val, grad[2])
         end
@@ -4025,7 +3797,7 @@ true
         fwd_cache,
         getfield(grad_cache, :output_type_and_size),
         nothing,
-        (visited, tangents),
+        (types_and_sizes, typeof(sharing).parameters[1], visited, tangents),
     )
 end
 
@@ -4081,13 +3853,13 @@ true
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    _check_prepared_cache(
-        getfield(cache.fwd_cache, :input_types_and_sizes), (cache.grad_f, x1)
+    _check_reverse_reuse(
+        cache.reuse..., (f, x1), Returns(nothing), () -> _check_tangent_for_primal(x1, v)
     )
-    # `prepare_hvp_cache` refuses `x` sharing storage with `f`; this catches later sharing.
-    _check_immutable_arg_aliasing((f, x1), _throw_hessian_input_alias_error)
-    _check_tangent_for_primal(x1, v)
-    _check_tangent_reuse(cache.reuse..., (f, x1))
+    return _value_and_hvp!!(cache, v, x1)
+end
+
+@inline function _value_and_hvp!!(cache::HVPCache, v, x1)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
     )
@@ -4251,8 +4023,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
     end
 end
 
-# Ignores the labels `_check_immutable_arg_aliasing` passes: the message names `f` and `x`.
-function _throw_hessian_input_alias_error(_...)
+function _throw_hessian_input_alias_error()
     throw(
         ArgumentError(
             "`value_and_hvp!!` and `value_gradient_and_hessian!!` do not support inputs that " *
@@ -4318,23 +4089,30 @@ H
     )
     hb = cache.hess_buffers
     hb === nothing && _throw_not_hessian_cache()
-    _check_immutable_arg_aliasing((f, x1), _throw_hessian_input_alias_error)
     buf, chunked = hb
-    T = _check_vector_argument(x1; caller=(value_gradient_and_hessian!!), cache=cache)
     H = buf.H
     g = buf.grad
     v = buf.v
-    n = length(x1)
-    # Buffer sizes are fixed at cache build time; reject mismatched inputs before
-    # indexing `v`/`H`, otherwise the sweep below raises a raw `BoundsError`.
-    n == length(v) || throw(
-        ArgumentError(
-            "input vector has length $n but cache was prepared for length $(length(v)); " *
-            "rebuild via `prepare_hessian_cache`",
-        ),
+    T, n = _check_reverse_reuse(
+        cache.reuse...,
+        (f, x1),
+        () -> begin
+            local T = _check_vector_argument(
+                x1; caller=(value_gradient_and_hessian!!), cache=cache
+            )
+            local n = length(x1)
+            n == length(v) || throw(
+                ArgumentError(
+                    "input vector has length $n but cache was prepared for length $(length(v)); " *
+                    "rebuild via `prepare_hessian_cache`",
+                ),
+            )
+            (T, n)
+        end,
+        Val(:sharing_first),
     )
     if n == 0
-        fval, _, _ = value_and_hvp!!(cache, f, v, x1)
+        fval, _, _ = _value_and_hvp!!(cache, v, x1)
         return fval, g, H
     end
     # Chunked forward-over-reverse: when `prepare_hessian_cache` built a width-W variant of
@@ -4356,7 +4134,7 @@ H
     for i in 1:n
         e[1] = one(T)
         copyto!(v, i, e, 1, 1)
-        fval, grad_alias, hvp = value_and_hvp!!(cache, f, v, x1)
+        fval, grad_alias, hvp = _value_and_hvp!!(cache, v, x1)
         if i == 1
             value = fval
             g .= grad_alias
@@ -4977,10 +4755,12 @@ end
 #   slot types, defined primal slots and MemoryRef offsets through structural tangents;
 #   custom tangents limit coverage. Forward refresh and snapshot walks check extents
 #   (`_refresh_all!`, `_snapshot_inputs!!`, `_check_copy_extent`);
-# - storage sharing: in reverse, `_check_sharing` compares prepared partitions of inputs and
-#   storage at fixed positions (tuple, named-tuple and immutable struct fields); in forward,
-#   `_check_prepared_forward_aliasing`, `_check_primal_aliasing`,
-#   `_check_immutable_arg_aliasing` and `_check_seed_aliasing`.
+# - fixed-position storage sharing: `_check_sharing` compares `_sharing` partitions;
+#   every entry preserves storage and object sharing with `:same`. Derivative/Jacobian
+#   calls allow offsets to move; reverse and gradient calls also preserve relative offsets.
+# - reverse `_check_reverse_reuse` owns the envelope, fixed sharing and nested checks
+#   before `_reuse_coduals` pairs inputs, including the derived HVP closure. Variable
+#   positions remain the paired walk's responsibility.
 
 # Prepared-cache type and size for one primal: array inputs record their size, everything
 # else records `()`.
