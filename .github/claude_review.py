@@ -5,7 +5,8 @@ Two subcommands, run as separate workflow steps:
   run   Review the PR checkout with the Claude Agent SDK (read-only tools) and write the
         result to $REVIEW_OUT. Has no GitHub token; authenticates to Anthropic through
         workload identity federation (ANTHROPIC_FEDERATION_RULE_ID and friends).
-  post  Turn $REVIEW_OUT into a PR review. Stdlib only; uses GITHUB_TOKEN. Never runs
+  post  Turn $REVIEW_OUT into a PR review, then swap the 👀 on the triggering comment for
+        🚀 (posted) or 😕 (failed). Stdlib only; uses GITHUB_TOKEN. Never runs
         model-generated code, only validates and forwards the JSON.
 """
 
@@ -165,10 +166,10 @@ def commentable_lines(diff):
     return lines
 
 
-def github(method, url, payload):
+def github(method, url, payload=None):
     req = urllib.request.Request(
         f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/{url}",
-        data=json.dumps(payload).encode(),
+        data=None if payload is None else json.dumps(payload).encode(),
         method=method,
         headers={
             "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
@@ -177,10 +178,28 @@ def github(method, url, payload):
         },
     )
     with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+        body = resp.read()
+        return json.loads(body) if body else None
+
+
+def react(ok):
+    """Replace the 👀 on the triggering comment with the outcome."""
+    comment = f"issues/comments/{os.environ['TRIGGER_COMMENT_ID']}/reactions"
+    github("POST", comment, {"content": "rocket" if ok else "confused"})
+    github("DELETE", f"{comment}/{os.environ['EYES_REACTION_ID']}")
 
 
 def post():
+    try:
+        ok = post_review()
+    except Exception:
+        react(False)
+        raise
+    react(ok)
+    return 0 if ok else 1
+
+
+def post_review():
     env = os.environ
     pr = env["PR_NUMBER"]
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
@@ -190,9 +209,8 @@ def post():
         out = {"review": None, "subtype": "no_output"}
     review = out.get("review")
     if not isinstance(review, dict):
-        body = f"Claude review failed (`{out.get('subtype')}`). See the [run log]({run_url})."
-        github("POST", f"issues/{pr}/comments", {"body": body})
-        return 1
+        print(f"no review to post: {out.get('subtype')} {out.get('errors')}")
+        return False
 
     valid = commentable_lines(open(os.path.join(env["REVIEW_INPUT_DIR"], "pr.diff")).read())
     comments, unplaced = [], []
@@ -226,7 +244,7 @@ def post():
         },
     )
     print(f"posted review: {len(comments)} inline, {len(unplaced)} in body")
-    return 0
+    return True
 
 
 if __name__ == "__main__":

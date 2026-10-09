@@ -37,9 +37,12 @@ jobs:
       REVIEW_OUT: ${{ github.workspace }}/review.json
     steps:
       - name: Acknowledge
+        id: ack
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes --silent
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes --jq .id)
+          echo "reaction_id=$id" >> "$GITHUB_OUTPUT"
 
       # Trusted copy of the reviewer and the repo's AGENTS.md/CLAUDE.md, from main.
       - uses: actions/checkout@v6
@@ -102,8 +105,10 @@ jobs:
           exit "$status"
 
       - name: Post review
-        if: always() && steps.pr.outcome == 'success'
+        if: always() && steps.ack.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          TRIGGER_COMMENT_ID: ${{ github.event.comment.id }}
+          EYES_REACTION_ID: ${{ steps.ack.outputs.reaction_id }}
         run: python -I base/.github/claude_review.py post
