@@ -36,16 +36,17 @@ jobs:
       REVIEW_INPUT_DIR: ${{ github.workspace }}/review-input
       REVIEW_OUT: ${{ github.workspace }}/review.json
     steps:
-      - name: Acknowledge
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes --silent
-
       # Trusted copy of the reviewer and the repo's AGENTS.md/CLAUDE.md, from main.
       - uses: actions/checkout@v6
         with:
           path: base
           persist-credentials: false
+
+      - name: Post progress comment
+        id: progress
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I base/.github/claude_review.py start
 
       - name: Fetch PR metadata and diff
         id: pr
@@ -81,6 +82,9 @@ jobs:
           CLAUDE_EFFORT: high
           CLAUDE_MAX_BUDGET_USD: '10'
           CLAUDE_TASK_BUDGET: '400000'
+          # Only for update_progress; the script drops it before starting Claude.
+          GITHUB_TOKEN: ${{ github.token }}
+          PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
         run: |
           # GitHub OIDC tokens last about five minutes and each may be exchanged only
           # once, so keep a fresh one on disk for the SDK to re-read when it refreshes.
@@ -102,8 +106,9 @@ jobs:
           exit "$status"
 
       - name: Post review
-        if: always() && steps.pr.outcome == 'success'
+        if: always() && steps.progress.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
         run: python -I base/.github/claude_review.py post

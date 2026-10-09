@@ -1,12 +1,15 @@
 """Manual Claude PR review, driven by .github/workflows/ClaudeReview.yml.
 
-Two subcommands, run as separate workflow steps:
+Subcommands, run as separate workflow steps:
 
-  run   Review the PR checkout with the Claude Agent SDK (read-only tools) and write the
-        result to $REVIEW_OUT. Has no GitHub token; authenticates to Anthropic through
-        workload identity federation (ANTHROPIC_FEDERATION_RULE_ID and friends).
-  post  Turn $REVIEW_OUT into a PR review. Stdlib only; uses GITHUB_TOKEN. Never runs
-        model-generated code, only validates and forwards the JSON.
+  start Post the progress comment on the PR. Stdlib only.
+  run   Review the PR checkout with the Claude Agent SDK and write the result to
+        $REVIEW_OUT. Claude has read-only tools plus `update_progress`, which can only
+        edit the progress comment; the GitHub token stays in this process and is removed
+        from the environment Claude runs in. Authenticates to Anthropic through workload
+        identity federation (ANTHROPIC_FEDERATION_RULE_ID and friends).
+  post  Turn $REVIEW_OUT into a PR review and finish the progress comment. Stdlib only.
+        Never runs model-generated code, only validates and forwards the JSON.
 """
 
 import json
@@ -15,7 +18,11 @@ import re
 import sys
 import urllib.request
 
+# Read once, then dropped from the environment that Claude's process inherits.
+GITHUB_TOKEN = os.environ.pop("GITHUB_TOKEN", None)
+
 SEVERITIES = ["Bug", "Risk", "Nit"]
+MAX_PROGRESS_UPDATES = 40
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -78,6 +85,11 @@ issues, papers), look it up on GitHub, the package docs, or arXiv rather than gu
 Work in priority order, riskiest parts first, and spend lookups where they change a
 verdict.
 
+Keep a short markdown checklist of your review plan in the PR's progress comment with
+`update_progress`: post it once you have read the diff, then tick items off as you finish
+them. List steps only (for example "- [x] Read the diff", "- [ ] Compare the pullback with
+the frule"); findings go only in your final output.
+
 Return each concrete issue as a comment on a line the PR adds or changes: `path` relative
 to the repo root, `line` in the new version of the file. Put anything that cannot be tied
 to such a line in the summary. Keep the summary short; if nothing significant is wrong,
@@ -88,9 +100,35 @@ say so briefly rather than padding the review.
 def run():
     import asyncio
 
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+    from claude_agent_sdk import (
+        ClaudeAgentOptions,
+        ResultMessage,
+        create_sdk_mcp_server,
+        query,
+        tool,
+    )
 
     env = os.environ
+    updates = 0
+
+    @tool(
+        "update_progress",
+        "Replace the checklist shown in the PR's progress comment.",
+        {"markdown": str},
+    )
+    async def update_progress(args):
+        nonlocal updates
+        if updates >= MAX_PROGRESS_UPDATES:
+            return {"content": [{"type": "text", "text": "Update limit reached; carry on."}]}
+        updates += 1
+        # Model text: capped, can't ping anyone, no raw HTML.
+        text = str(args.get("markdown", ""))[:4000].replace("@", "@\u200b").replace("<", "&lt;")
+        try:
+            set_progress("Claude is reviewing this PR", text)
+        except OSError as e:
+            return {"content": [{"type": "text", "text": f"Update failed ({e}); carry on."}]}
+        return {"content": [{"type": "text", "text": "Updated."}]}
+
     pr_dir = os.path.abspath(env["PR_DIR"])
     input_dir = os.path.abspath(env["REVIEW_INPUT_DIR"])
     guidance = [
@@ -115,7 +153,15 @@ def run():
         # The only tools that exist: read the checkouts and the web allowlist. No shell,
         # no edits. Anything not explicitly allowed is denied rather than prompted.
         tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
-        allowed_tools=["Read", "Grep", "Glob", "WebSearch", *web],
+        allowed_tools=[
+            "Read",
+            "Grep",
+            "Glob",
+            "WebSearch",
+            *web,
+            "mcp__progress__update_progress",
+        ],
+        mcp_servers={"progress": create_sdk_mcp_server("progress", tools=[update_progress])},
         permission_mode="dontAsk",
         cwd=pr_dir,
         add_dirs=[os.path.abspath(env["BASE_DIR"]), input_dir],
@@ -165,13 +211,36 @@ def commentable_lines(diff):
     return lines
 
 
+def run_url():
+    env = os.environ
+    return f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
+
+
+def set_progress(title, markdown=""):
+    """Rewrite the progress comment."""
+    parts = [f"**{title}**", markdown.strip(), f"<sub>[run]({run_url()})</sub>"]
+    body = "\n\n".join(p for p in parts if p)
+    github("PATCH", f"issues/comments/{os.environ['PROGRESS_COMMENT_ID']}", {"body": body})
+
+
+def start():
+    comment = github(
+        "POST",
+        f"issues/{os.environ['PR_NUMBER']}/comments",
+        {"body": f"**Claude is reviewing this PR**\n\n<sub>[run]({run_url()})</sub>"},
+    )
+    with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+        f.write(f"comment_id={comment['id']}\n")
+    return 0
+
+
 def github(method, url, payload):
     req = urllib.request.Request(
         f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/{url}",
         data=json.dumps(payload).encode(),
         method=method,
         headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
@@ -183,15 +252,13 @@ def github(method, url, payload):
 def post():
     env = os.environ
     pr = env["PR_NUMBER"]
-    run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
     try:
         out = json.load(open(env["REVIEW_OUT"]))
     except (OSError, ValueError):
         out = {"review": None, "subtype": "no_output"}
     review = out.get("review")
     if not isinstance(review, dict):
-        body = f"Claude review failed (`{out.get('subtype')}`). See the [run log]({run_url})."
-        github("POST", f"issues/{pr}/comments", {"body": body})
+        set_progress(f"Claude review failed (`{out.get('subtype')}`)")
         return 1
 
     valid = commentable_lines(open(os.path.join(env["REVIEW_INPUT_DIR"], "pr.diff")).read())
@@ -206,16 +273,16 @@ def post():
             unplaced.append(f"- `{c.get('path')}:{c.get('line')}` {text}")
 
     cost = out.get("cost_usd")
-    footer = (
-        f"<sub>Claude review · {out.get('model')} · "
-        f"{'$%.2f' % cost if cost is not None else 'cost n/a'} · "
-        f"{out.get('duration_s')}s · [run]({run_url})</sub>"
+    stats = (
+        f"{out.get('model')} · {'$%.2f' % cost if cost is not None else 'cost n/a'} · "
+        f"{out.get('duration_s')}s"
     )
+    footer = f"<sub>Claude review · {stats} · [run]({run_url()})</sub>"
     parts = [review.get("summary", "").strip()]
     if unplaced:
         parts.append("**Comments outside the diff**\n" + "\n".join(unplaced))
     parts.append(footer)
-    github(
+    posted = github(
         "POST",
         f"pulls/{pr}/reviews",
         {
@@ -225,9 +292,14 @@ def post():
             "comments": comments,
         },
     )
+    n = len(comments) + len(unplaced)
+    set_progress(
+        f"Claude review done: [{n} comment{'s' * (n != 1)}]({posted['html_url']})",
+        f"<sub>{stats}</sub>",
+    )
     print(f"posted review: {len(comments)} inline, {len(unplaced)} in body")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit({"run": run, "post": post}[sys.argv[1]]())
+    sys.exit({"start": start, "run": run, "post": post}[sys.argv[1]]())
