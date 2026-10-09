@@ -31,17 +31,14 @@ jobs:
       cancel-in-progress: true
     env:
       PR_NUMBER: ${{ github.event.issue.number }}
-      BASE_DIR: ${{ github.workspace }}/base
-      PR_DIR: ${{ github.workspace }}/pr
-      REVIEW_INPUT_DIR: ${{ github.workspace }}/review-input
-      REVIEW_OUT: ${{ github.workspace }}/review.json
+      COMMENT_ID: ${{ github.event.comment.id }}
     steps:
       - name: Acknowledge
         id: ack
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes --jq .id)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes --jq .id)
           echo "reaction_id=$id" >> "$GITHUB_OUTPUT"
 
       # Trusted copy of the reviewer and the repo's AGENTS.md/CLAUDE.md, from main.
@@ -50,15 +47,16 @@ jobs:
           path: base
           persist-credentials: false
 
-      - name: Fetch PR metadata and diff
+      - name: Fetch PR diff
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "$REVIEW_INPUT_DIR"
-          gh pr view "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --json title,headRefOid > "$REVIEW_INPUT_DIR/pr.json"
-          gh pr diff "$PR_NUMBER" -R "$GITHUB_REPOSITORY" > "$REVIEW_INPUT_DIR/pr.diff"
-          echo "head_sha=$(jq -r .headRefOid "$REVIEW_INPUT_DIR/pr.json")" >> "$GITHUB_OUTPUT"
+          head_sha() { gh pr view "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid; }
+          sha=$(head_sha)
+          gh pr diff "$PR_NUMBER" -R "$GITHUB_REPOSITORY" > pr.diff
+          [ "$(head_sha)" = "$sha" ] || { echo "::error::PR head moved while fetching the diff"; exit 1; }
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
 
       # The untrusted PR head, pinned to the SHA the diff was taken from. Only read, never run.
       - uses: actions/checkout@v6
@@ -71,23 +69,18 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Claude Agent SDK
-        run: pip install --quiet 'claude-agent-sdk==0.2.165'
+      - run: pip install --quiet 'claude-agent-sdk==0.2.165'
 
       - name: Review
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.CLAUDE_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.CLAUDE_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.CLAUDE_SERVICE_ACCOUNT_ID }}
-          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc/token
-          CLAUDE_MODEL: claude-opus-5-5
-          CLAUDE_EFFORT: high
-          CLAUDE_MAX_BUDGET_USD: '10'
-          CLAUDE_TASK_BUDGET: '400000'
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc-token
+          PR_TITLE: ${{ github.event.issue.title }}
         run: |
           # GitHub OIDC tokens last about five minutes and each may be exchanged only
           # once, so keep a fresh one on disk for the SDK to re-read when it refreshes.
-          mkdir -p "$(dirname "$ANTHROPIC_IDENTITY_TOKEN_FILE")"
           fetch_token() {
             curl -sSf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
@@ -96,19 +89,15 @@ jobs:
           }
           fetch_token
           (while sleep 120; do fetch_token || true; done) &
-          refresher=$!
+          trap "kill $!" EXIT
           # Claude's process gets no means to mint more tokens.
-          status=0
           env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
-            python -I base/.github/claude_review.py run || status=$?
-          kill "$refresher"
-          exit "$status"
+            python base/.github/claude_review.py run
 
       - name: Post review
         if: always() && steps.ack.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          TRIGGER_COMMENT_ID: ${{ github.event.comment.id }}
           EYES_REACTION_ID: ${{ steps.ack.outputs.reaction_id }}
-        run: python -I base/.github/claude_review.py post
+        run: python base/.github/claude_review.py post
