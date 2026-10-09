@@ -7,7 +7,7 @@ Mooncake.jl has a number of known qualitative limitations, which we document her
 While `Mooncake.jl` should now work on a very large subset of the language, there remain things that you should expect not to work. A non-exhaustive list of things to bear in mind includes:
 1. It is always necessary to produce hand-written rules for `ccall`s (and, more generally, foreigncall nodes). We have rules for many `ccall`s, but not all. If you encounter a foreigncall without a hand-written rule, you should get an informative error message which tells you what is going on and how to deal with it.
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
-1. AD restricts `reinterpret` and pointer re-typing, including through `Ptr{Cvoid}`, to the same primal element type when derivative storage is required; write a rule for the enclosing function otherwise. Reads through pointers narrowed to non-differentiable elements remain admitted, but stores and nonempty copies through such pointers over differentiated storage raise `ArgumentError`.
+1. Element access and stores through `reinterpret` between `T` and `Complex{T}` (`T <: IEEEFloat`) are supported for ordinary Array/Memory storage and views, preserving aliases with the parent. Other reinterpretations and pointer re-typing are restricted, including through `Ptr{Cvoid}`, to the same primal element type when derivative storage is required; write a rule for the enclosing function otherwise. Reads through pointers narrowed to non-differentiable elements remain admitted, but stores and nonempty copies through such pointers over differentiated storage raise `ArgumentError`.
 1. Nonzero pointer byte shifts raise `ArgumentError` when the tangent storage stride differs from the primal element stride, including through erased or narrowed pointers. Use typed element indexing where supported, or write a rule for the enclosing function. Zero shifts remain supported. Reverse pointer `unsafe_copyto!` also refuses differing strides; forward copies and array/MemoryRef copies use their own element strides. Forward pointers from derivative-carrying `Memory` retain their source element type: re-typing to a different differentiable element type is refused. Numeric Memory permits same-type derivative access at width one; widths greater than one refuse derivative loads and stores because lanes are interleaved. Address-only casts and shifts over storage with no tangent are supported except for forward transport of a struct pointer through a non-inlined call, which can raise `TypeError`; Symbol-selected transport can also terminate Julia before returning a derivative. Narrowed stores, nonempty copies, and `unsafe_wrap` over differentiated storage raise `ArgumentError`.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 1. Prepared caches refuse `Dict`s whose values can carry derivatives, including those nested in `f`, struct fields, tuples, named tuples, array element types or `Ref`s; pass values in a `Vector`/`NamedTuple`, build the `Dict` inside the function, or use rule-taking forms (abstract or `Any`-typed storage is inspected by runtime type at preparation only, so preserve those types on reuse).
@@ -441,7 +441,18 @@ elements in both modes, even if BLAS can read other elements of its parent.
 Pass a view covering every visited address. `BLAS.dot`, `BLAS.dotc` and `BLAS.dotu`
 also accept walks outside a view when every visited address stays in its backing
 array. BLAS level-1 rules refuse `ReinterpretArray` operands in both modes,
-including generic routes that reach these rules, such as `LinearAlgebra.dot` and
-`axpy!` on reinterpreted arrays.
+including generic routes that reach these rules. Direct `LinearAlgebra.dot` between
+vectors of the same element type supports operands reinterpreting `T` ↔ `Complex{T}`
+(`T <: IEEEFloat`). High-level matrix multiplication on `reinterpret(Float64, z)`
+and Cholesky on `Symmetric(reinterpret(Float64, z))` also differentiate correctly
+through the element-access rules. These rules require the same `T`/`Complex{T}`
+layout throughout the backing storage, including views, reshapes, and nested
+reinterprets; an incompatible inner reinterpret throws `ArgumentError` naming the
+access. Wrapped `Float16` and `ComplexF16` `dot` operands (including views of
+reinterpreted vectors) work through generic element access. Wrapped `dot` operands that reach
+BLAS (`Float32`, `Float64`, `ComplexF32`, `ComplexF64`), `axpy!`, and `scal!`
+remain refused with `BLAS does not support operand`.
+`reinterpret(reshape, …)` remains refused by the pointer re-typing, object-pointer,
+or chunk-width guards; ordinary `reshape(reinterpret(T, x), …)` is supported.
 A bare `Ptr` operand has no owning array, so its walk is not bounds-checked and
 staying within the buffer is the caller's responsibility.
