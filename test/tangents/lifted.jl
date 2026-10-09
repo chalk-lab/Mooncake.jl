@@ -1065,8 +1065,10 @@ const NDAC_VecC64 = NDualArray{
                 Union{Float64,Int},
                 Complex{Float64},
                 Vector{Any},
+                Ptr{Tuple{Int32,Int32,Float64}},
+                Ptr{Ptr{Float64}},
             ),
-            N in (1, 2, 3)
+            N in (1, 2, 3, 8)
 
             test_lifted_type(P, Val(N))
         end

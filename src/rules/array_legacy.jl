@@ -406,8 +406,7 @@ function frule!!(
     block_parent = getfield(getfield(tangent(a), :partials_block), :parent)
     return Lifted{Ptr{T},N}(y, (ccall(:jl_array_ptr, Ptr{T}, (Any,), block_parent),))
 end
-# Element-wise arrays (e.g. Matrix{Real} via _unsafe_copyto!) yield one Ptr{E}.
-# Only width 1 is addressable; wider interleaved lanes must throw locally.
+# Pointer elements share their full forward value across lanes.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -418,18 +417,20 @@ function frule!!(
     a::Lifted{<:Array,N,<:Array{E}},
 ) where {P,E,N}
     # Structural values interleave lanes instead of providing parallel partial buffers.
-    N == 1 || throw(
-        ArgumentError(
-            "Forward-mode raw pointer (`jl_array_ptr`) of a lifted `Array` with element-wise " *
-            "dual element `$E` is unsupported at chunk width $N > 1: the $N lanes are " *
-            "interleaved in one element-wise array, so lane partials are not " *
-            "addressable through a forward pointer. " *
-            "Differentiate at chunk width 1.",
-        ),
-    )
+    N == 1 ||
+        (P isa DataType && P <: Ptr) ||
+        throw(
+            ArgumentError(
+                "Forward-mode raw pointer (`jl_array_ptr`) of a lifted `Array` with element-wise " *
+                "dual element `$E` is unsupported at chunk width $N > 1: the $N lanes are " *
+                "interleaved in one element-wise array, so lane partials are not " *
+                "addressable through a forward pointer. " *
+                "Differentiate at chunk width 1.",
+            ),
+        )
     y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
-    return Lifted{Ptr{P},N}(y, (dy,))
+    return Lifted{Ptr{P},N}(y, ntuple(_ -> dy, Val(N)))
 end
 # Array{NoDual} has no addressable derivative at any width: returning its pointer
 # would let bitcast read unrelated heap contents as partials. Use canonical NoDual,

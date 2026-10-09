@@ -180,10 +180,11 @@ end
 
 # A pointer value may carry a null tangent; counted accesses still require storage.
 function _check_tangent_ptr(dp::Ptr{T}) where {T}
-    return T <: Ptr ? dp != C_NULL : _check_tangent_ptr(dp, 1)
+    return T <: Union{Ptr,VoidPtrTangent} ? dp != C_NULL : _check_tangent_ptr(dp, 1)
 end
 
 _null_tangent(::Ptr{T}) where {T} = T == NoTangent ? NoTangent() : T(C_NULL)
+_null_tangent(::Ptr{VoidPtrTangent}) = VoidPtrTangent(Ptr{Nothing}(0), NoTangent, Nothing)
 
 """
     module IntrinsicsWrappers
@@ -360,6 +361,7 @@ end
 # NULL is safe for empty operations and zero-size tangent elements.
 @inline function _check_tangent_ptr(x, dx, n=1)
     iszero(n) && return nothing
+    dx isa Ptr{<:Union{Ptr,VoidPtrTangent}} && iszero(UInt(dx)) && return nothing
     if dx isa Ptr && _elements_occupy_storage(eltype(dx))
         if iszero(UInt(dx))
             msg =
@@ -551,6 +553,20 @@ function frule!!(
     return Lifted{typeof(arr),Nw}(arr, zero_dual(Val(Nw), arr))
 end
 
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),N},
+    ::Lifted{<:Type{<:Array},N},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    dims::Lifted,
+) where {N,P}
+    d = tangent(p)
+    all(==(d[1]), d) ||
+        throw(ArgumentError("Structural pointer lanes must share one forward value."))
+    _check_fwd_tangent_ptr_addressable(primal(p), d[1], prod(primal(dims)))
+    a = unsafe_wrap(Array, primal(p), primal(dims))
+    return Lifted{typeof(a),N}(a, unsafe_wrap(Array, d[1], primal(dims)))
+end
+
 # Other differentiable pointees have no supported array V. The primitive covers
 # every Ptr, so refuse explicitly rather than falling through to a MethodError.
 function frule!!(
@@ -593,6 +609,20 @@ end
 
 # Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 @intrinsic atomic_pointerref
+function frule!!(
+    ::Lifted{typeof(atomic_pointerref),N},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    order::Lifted,
+) where {N,P}
+    a = atomic_pointerref(primal(p), primal(order))
+    d = tangent(p)
+    all(iszero ∘ UInt, d) &&
+        return Lifted{Ptr{P},N}(a, Mooncake.zero_dual(Val(N), Ptr{P}(0)))
+    all(==(d[1]), d) ||
+        throw(ArgumentError("Structural pointer lanes must share one forward value."))
+    _check_fwd_tangent_ptr_addressable(primal(p), d[1])
+    return Lifted{Ptr{P},N}(a, atomic_pointerref(d[1], primal(order)))
+end
 # As in pointerref, _scalar_ndual packs real or complex lanes into canonical V.
 function frule!!(
     ::Lifted{typeof(atomic_pointerref),Nw},
@@ -662,6 +692,23 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
 end
 
 @intrinsic atomic_pointerset
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),N},
+    p::Lifted{Ptr{Ptr{P}},N,NTuple{N,Ptr{V}}},
+    x::Lifted{Ptr{P},N,V},
+    order::Lifted,
+) where {N,P,V<:Union{Tuple,PointerDual}}
+    P === Any && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
+    all(iszero ∘ UInt, tangent(p)) || throw(
+        ArgumentError(
+            "atomic_pointerset into a differentiable `Ptr{Ptr{$P}}` with an element-wise array-of-duals per-lane V; the array-of-pointers store is unsupported.",
+        ),
+    )
+    atomic_pointerset(primal(p), primal(x), primal(order))
+    return p
+end
 # Exact Ptr{T} lanes admit scalar and coherent pointer stores; element-wise
 # Ptr{S} lanes need the guard below. Non-differentiable elements write only the primal.
 function frule!!(
@@ -1394,6 +1441,21 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
+function frule!!(
+    ::Lifted{typeof(pointerref),N},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    i::Lifted,
+    alignment::Lifted,
+) where {N,P}
+    a = pointerref(primal(p), primal(i), primal(alignment))
+    d = tangent(p)
+    all(iszero ∘ UInt, d) &&
+        return Lifted{Ptr{P},N}(a, Mooncake.zero_dual(Val(N), Ptr{P}(0)))
+    all(==(d[1]), d) ||
+        throw(ArgumentError("Structural pointer lanes must share one forward value."))
+    _check_fwd_tangent_ptr_addressable(primal(p), d[1])
+    return Lifted{Ptr{P},N}(a, pointerref(d[1], primal(i), primal(alignment)))
+end
 # _scalar_ndual builds NDual for real elements and Complex{NDual} for complex ones.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
@@ -1474,6 +1536,24 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
+function frule!!(
+    ::Lifted{typeof(pointerset),N},
+    p::Lifted{Ptr{Ptr{P}},N,NTuple{N,Ptr{V}}},
+    x::Lifted{Ptr{P},N,V},
+    i::Lifted,
+    alignment::Lifted,
+) where {N,P,V<:Union{Tuple,PointerDual}}
+    P === Any && throw(
+        ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
+    )
+    all(iszero ∘ UInt, tangent(p)) || throw(
+        ArgumentError(
+            "pointerset into a differentiable `Ptr{Ptr{$P}}` with an element-wise array-of-duals per-lane V; the array-of-pointers store is unsupported.",
+        ),
+    )
+    pointerset(primal(p), primal(x), primal(i), primal(alignment))
+    return p
+end
 # Exact Ptr{T} lanes admit scalar and coherent pointer stores; element-wise
 # Ptr{S} lanes need the guard below. Non-differentiable elements write only the primal.
 function frule!!(
@@ -1927,7 +2007,7 @@ for bounds in ((), (:inbounds,))
                 # TODO(#1295): the fresh partials do not alias the field's seeded storage.
                 return uninit_lifted(Val(Nw), y)
             else
-                V_i = _get_lifted_field(primal(x), tangent(x), _name)
+                V_i = _get_lifted_field(primal(x), tangent(x), _name, Val(Nw))
                 if y isa Ptr{Nothing} && V_i isa NoDual
                     V_i = uninit_dual(Val(Nw), y)
                 end
@@ -3147,6 +3227,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             test_cases,
             (false, :none, (; mode=ReverseMode), typed_pointer_load, [1.0, 3.0], T, erased),
         )
+    end
+    for a in ([(Int32(1), Int32(2), 3.0)], [(3.0,)], [Ptr{Float64}(0)])
+        push!(test_cases, (true, :none, (; mode=ForwardMode, chunk_size=1), pointer, a))
     end
     return test_cases, Any[]
 end

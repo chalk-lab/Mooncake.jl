@@ -892,8 +892,9 @@ end
     DT = dual_type(Val(N), T)
     return isconcretetype(DT) ? NamedTuple{names,DT} : Any
 end
-# `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}`: N parallel partial pointers, one per lane.
-# Matches reverse-mode `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
+# `Ptr{T}` canonical V — N parallel pointers to the forward storage for `T`, one per lane.
+# Numeric pointees retain the scalar per-lane form; structural pointees point at their lifted
+# element layout. Erased pointers retain their descriptor representation below.
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
 end
@@ -901,7 +902,7 @@ end
 # forward storage element types survive erasure and non-inlined call boundaries.
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
     D = tangent_type(Ptr{T})
-    return D === VoidPtrTangent ? PointerDual{N} : NTuple{N,D}
+    return D === VoidPtrTangent ? PointerDual{N} : NTuple{N,Ptr{dual_type(Val(N), T)}}
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is

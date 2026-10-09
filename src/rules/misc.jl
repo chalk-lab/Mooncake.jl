@@ -150,7 +150,7 @@ for order in ((), (:order,))
             # A NoDual parent can have a differentiable field (e.g. DataType.parameters).
             # TODO(#1295): fresh partials do not alias the pass's seeded field storage.
             tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
-            V_i = _get_lifted_field(primal(x), tangent(x), f)
+            V_i = _get_lifted_field(primal(x), tangent(x), f, Val(Nw))
             if primal_field isa Ptr{Nothing} && V_i isa NoDual
                 V_i = uninit_dual(Val(Nw), primal_field)
             end
@@ -170,6 +170,7 @@ for order in ((), (:order,))
     end
 end
 
+@inline _get_lifted_field(p, V, name, ::Val) = _get_lifted_field(p, V, name)
 @inline _get_lifted_field(p, V, name) = _get_lifted_field(V, name)
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
 @inline _coerce_backing_field(::Type{F}, v) where {F<:PossiblyUninitTangent} = F(v)
@@ -273,6 +274,14 @@ end
             return PointerDual((getfield(V, :ptr_or_offset),), E, P)
         end
         return NoDual()
+    end
+    @inline function _get_lifted_field(
+        p::MemoryRef{Ptr{P}}, V::MemoryRef, name::Union{Symbol,Int}, ::Val{N}
+    ) where {P,N}
+        name = name isa Int ? fieldname(typeof(V), name) : name
+        name === :mem && return getfield(V, :mem)
+        name === :ptr_or_offset || return NoDual()
+        return PointerDual(ntuple(_ -> V.ptr_or_offset, Val(N)), eltype(V.mem), Ptr{P})
     end
     # Raw Memory pointers retain the element type of their structural storage.
     @inline function _get_lifted_field(
