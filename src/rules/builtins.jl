@@ -739,9 +739,10 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
-    _y = sqrt_llvm_fast(primal(x))
+    _x = primal(x)
+    _y = sqrt_llvm_fast(_x)
     function llvm_sqrt_fast_pullback!!(dy)
-        dx = nan_tangent_guard(dy, dy / (2 * _y))
+        dx = nan_tangent_guard(dy, dy / (2 * _x))
         return NoRData(), dx
     end
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
