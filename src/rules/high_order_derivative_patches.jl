@@ -358,8 +358,12 @@ end
 end
 
 # Alias metadata depends on identities, not differentiable values.
-@zero_derivative MinimalCtx Tuple{typeof(_prepare_aliases),Tuple,Tuple}
-@zero_derivative MinimalCtx Tuple{typeof(_check_tangent_aliasing),NamedTuple,Tuple,Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(_sharing),Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(_check_sharing),Tuple,Tuple,Val}
+@zero_derivative MinimalCtx Tuple{typeof(_check_sharing),Tuple,Tuple,Val,Val}
+@zero_derivative MinimalCtx Tuple{
+    typeof(_check_reverse_reuse),Tuple,Tuple,Union{NoCache,_ReuseVisited},Tuple,Tuple
+}
 # HVP treats reuse validation and its scratch table as non-differentiable.
 @zero_derivative MinimalCtx Tuple{
     typeof(_check_tangent_reuse),Union{NoCache,_ReuseVisited},Tuple,Tuple
@@ -443,3 +447,6 @@ end
         return frule!!(zero_lifted(Val(Nw), Memory{P}), zero_lifted(Val(Nw), undef), n)
     end
 end
+
+@zero_derivative MinimalCtx Tuple{typeof(_prepare_aliases),Tuple,Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(_check_tangent_aliasing),Tuple,Tuple,Tuple}

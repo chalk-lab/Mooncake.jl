@@ -57,7 +57,7 @@ end
 
 # Cache parameters keep the rule, reusable buffers, and input/output signatures concrete.
 # HVPCache is shared by HVP and Hessian calls.
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA,TV}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TS<:Tuple,TV}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
@@ -73,7 +73,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA
     input_types_and_sizes::TIS
     # Top-level type/size signature for y = f(x...).
     output_type_and_size::TOS
-    aliases::TA
+    aliases::TS
     reuse_visited::TV
 end
 
@@ -114,6 +114,18 @@ const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 struct GradientChunkSize
     width::Int
     auto::Bool
+end
+
+mutable struct _ForwardWorkspace{S,T,SS}
+    const sharing::S
+    const seed_sharing::SS
+    gradients::Union{Nothing,T}
+
+    function _ForwardWorkspace{S,T,SS}(
+        ::Type{T}, sharing::S, seed_sharing::SS, gradients::Union{Nothing,T}
+    ) where {S,T,SS}
+        new{S,T,SS}(sharing, seed_sharing, gradients)
+    end
 end
 
 struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB,FA,FZ}
@@ -287,6 +299,37 @@ function _alias_label(i::Int, path, @nospecialize(T::Type))
     return label * "`"
 end
 
+# Field paths from `T` to its storage leaves. Abstract fields and mutable interiors are not
+# entered: they can change between calls without changing the type.
+function _storage_leaf_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
+    if Base.ismutabletype(T) || (VERSION >= v"1.11-rc4" && T <: MemoryRef)
+        push!(out, path)
+    elseif isconcretetype(T) && !isbitstype(T)
+        for (k, FT) in enumerate(fieldtypes(T))
+            _storage_leaf_paths(FT, (path..., k), out)
+        end
+    end
+    return out
+end
+
+# One row per leaf of the tuple type `fx`: the expression reading it, its label in errors
+# ("`x1.a[2]`"), its argument position, and its declared type.
+function _storage_leaves(@nospecialize(fx::Type), first_arg=0)
+    rows = NTuple{4,Any}[]
+    for (i, P) in enumerate(fx.parameters), path in _storage_leaf_paths(P)
+        e, label, T = :(fx[$i]), (i + first_arg == 1 ? "`f" : "`x$(i + first_arg - 1)"), P
+        for k in path
+            e = :(_leaf_field($e, $k))
+            label *= T <: Tuple ? "[$k]" : ".$(fieldname(T, k))"
+            T = fieldtype(T, k)
+        end
+        push!(rows, (e, label * "`", i, T))
+    end
+    return rows
+end
+@inline _leaf_field(x, k) =
+    tangent_type(typeof(x)) === NoTangent || !isdefined(x, k) ? nothing : getfield(x, k)
+
 # Use the same storage identity for primals and tangents: an Array and its backing
 # Memory are distinct objects but share accumulation storage, as do reshaped arrays.
 @inline _storage_id(@nospecialize(x)) = x
@@ -316,6 +359,202 @@ end
     end
 else
     @inline _storage_id(x::Array) = Base.dataids(x)
+end
+
+# The key identifying a leaf's storage while it is live. Arrays, `Memory` and `MemoryRef`s key
+# on the owning `Memory` (`_storage_id`), so `reshape`, `view` (through its parent) and an
+# `Array` beside its `Memory` meet at one key; any other mutable object is its own storage.
+# A leaf that cannot carry a derivative, or an undefined field, gets key 0 and is never shared.
+@inline _storage_key(x) = UInt(pointer_from_objref(x))
+@inline _storage_key(::Nothing) = UInt(0)
+@static if VERSION >= v"1.11-rc4"
+    @inline _storage_key(x::Memory) = UInt(pointer_from_objref(_storage_id(x)))
+    @inline _storage_key(x::MemoryRef) = _storage_key(x.mem)
+    @inline function _storage_key(x::Array)
+        owner = _storage_id(getfield(x, :ref).mem)
+        # Only a zero-length owner cannot be shared: `empty!` can retain nonempty storage.
+        return UInt(pointer_from_objref(isempty(owner) ? x : owner))
+    end
+else
+    @inline _storage_key(x::Array) = only(Base.dataids(x))
+end
+
+# For each leaf, the first leaf with the same key (itself when unshared). Keys are a
+# homogeneous tuple, so the loop indexes them without boxing at any leaf count.
+@inline function _representatives(keys::NTuple{N,UInt}) where {N}
+    return ntuple(Val(N)) do k
+        key = keys[k]
+        r = k
+        if key != 0
+            if VERSION < v"1.11" || N < 24
+                for j in 1:(k - 1)
+                    keys[j] == key && (r=j; break)
+                end
+            else
+                @inbounds @simd for j in 1:(k - 1)
+                    r = min(r, ifelse(keys[j] == key, j, k))
+                end
+            end
+        end
+        r
+    end
+end
+
+"""
+    _sharing(fx::Tuple)
+
+Partition of the fixed-path storage leaves of `fx` into shared storages, as a tuple with one
+`(first leaf sharing the storage, element offset relative to it, first leaf that is the same
+object)` entry per leaf. Two tuples of the same type with the same sharing give the same
+value, so a cache records it at preparation and compares it per call.
+
+The object relation preserves mutable identity separately from backing storage. Two Array
+headers over one window share accumulation but not extent: `push!` changes only one header.
+"""
+@generated function _sharing(fx::Tuple)
+    leaves = _storage_leaves(fx)
+    N = length(leaves)
+    keys, offsets, objects = Expr(:tuple), Expr(:tuple), Expr(:tuple)
+    for (e, _, _, T) in leaves
+        # Capacity is a type property: an empty array can be filled inside `f`.
+        carries = :(_holds_derivatives(tangent_type($T)))
+        push!(keys.args, :($carries ? _storage_key($e) : UInt(0)))
+        push!(offsets.args, :(_storage_offset($e)))
+        push!(
+            objects.args,
+            if Base.ismutabletype(T)
+                :($carries && $e !== nothing ? UInt(pointer_from_objref($e)) : UInt(0))
+            else
+                UInt(0)
+            end,
+        )
+    end
+    unshared = ntuple(identity, N)
+    refs = Tuple(VERSION >= v"1.11-rc4" && leaf[4] <: MemoryRef for leaf in leaves)
+    return quote
+        $(Expr(:meta, :inline))
+        reps = _representatives($keys)
+        # Offsets and objects matter only within a shared group; most calls have none.
+        reps === $unshared &&
+            return _partition(reps, $(ntuple(Returns(0), N)), reps, Val($refs))
+        return _partition(reps, $offsets, _representatives($objects), Val($refs))
+    end
+end
+@inline function _partition(
+    reps::NTuple{N,Int}, offsets, objects, ::Val{refs}
+) where {N,refs}
+    return ntuple(Val(N)) do k
+        object = objects[k]
+        if refs[k]
+            for j in 1:(k - 1)
+                if refs[j] && reps[j] == reps[k] && offsets[j] == offsets[k]
+                    object = j
+                    break
+                end
+            end
+        end
+        (reps[k], offsets[k] - offsets[reps[k]], object)
+    end
+end
+
+"""
+    _check_sharing(prepared, fx, Val(policy))
+
+Check the partition of fixed-position derivative storage. `:same` preserves storage,
+object identity and relative offsets; derivative/Jacobian calls preserve the first two.
+Mutable interiors and array elements belong to the paired reuse walk.
+"""
+@generated function _check_sharing(
+    prepared, fx::Tuple, ::Val{policy}, (::Val{first_arg})=Val(0)
+) where {policy,first_arg}
+    policy === :same || error("Unknown sharing policy: $policy")
+    leaves = _storage_leaves(fx, first_arg isa Symbol ? 0 : first_arg)
+    # A different set of positions belongs to the caller's type/arity admission check.
+    length(leaves) == fieldcount(prepared) || return :(nothing)
+    labels = if first_arg === :structured
+        Expr(:tuple, ("structured array leaf $i" for i in eachindex(leaves))...)
+    else
+        Expr(:tuple, (l for (_, l, _, _) in leaves)...)
+    end
+    test = if first_arg === :derivative
+        quote
+            different = false
+            for k in eachindex(now)
+                different |= now[k][1] != prepared[k][1] || now[k][3] != prepared[k][3]
+            end
+            different
+        end
+    else
+        :(now !== prepared)
+    end
+    return quote
+        $(Expr(:meta, :inline))
+        now = _sharing(fx)
+        $test && _throw_sharing_changed(
+            prepared,
+            now,
+            $labels,
+            Val($(QuoteNode(policy))),
+            Val($(QuoteNode(first_arg))),
+        )
+        return nothing
+    end
+end
+
+@noinline function _throw_sharing_changed(
+    prepared, now, labels, ::Val{policy}, ::Val{context}
+) where {policy,context}
+    # Report object-identity conflicts before storage conflicts, matching the
+    # nested pair order used by the current sharing check.
+    if context === 0 && length(now) * (length(now) - 1) ÷ 2 > 256
+        for k in eachindex(now)
+            for (field, relation) in ((3, "object"), (1, "storage"))
+                found, expected = now[k][field], prepared[k][field]
+                found == expected || _throw_prepared_cache_aliasing_error(
+                    labels[min(found, expected)], labels[k], found < expected, relation
+                )
+            end
+            j = now[k][1]
+            j == k ||
+                now[k][2] == prepared[k][2] ||
+                throw(
+                    PreparedCacheError(
+                        "Cached autodiff call has a relative storage offset mismatch between $(labels[k]) and $(labels[j]). " *
+                        "Prepare a separate cache for these array offsets.",
+                    ),
+                )
+        end
+        return nothing
+    end
+    for a in eachindex(now), b in (a + 1):length(now)
+        same_object = now[a][3] == now[b][3]
+        same_storage = now[a][1] == now[b][1]
+        if context === :derivative && same_storage != (prepared[a][1] == prepared[b][1])
+            _throw_prepared_cache_aliasing_error(labels[a], labels[b], same_storage)
+        end
+        if context === :forward &&
+            same_storage &&
+            now[a][2] - now[b][2] != prepared[a][2] - prepared[b][2]
+            _throw_prepared_cache_aliasing_error(labels[a], labels[b])
+        end
+        same_object == (prepared[a][3] == prepared[b][3]) ||
+            _throw_prepared_cache_aliasing_error(
+                labels[a], labels[b], same_object, "object"
+            )
+        same_storage == (prepared[a][1] == prepared[b][1]) ||
+            _throw_prepared_cache_aliasing_error(labels[a], labels[b], same_storage)
+        if context !== :derivative &&
+            same_storage &&
+            now[a][2] - now[b][2] != prepared[a][2] - prepared[b][2]
+            throw(
+                PreparedCacheError(
+                    "Cached autodiff call has a relative storage offset mismatch between $(labels[a]) and $(labels[b]). " *
+                    "Prepare a separate cache for these array offsets.",
+                ),
+            )
+        end
+    end
+    return nothing
 end
 
 # Share the storage paths between native tangents and call-time primals. Tangent wrapper
@@ -380,6 +619,12 @@ function _alias_checks(
     return checks
 end
 
+@noinline Base.@nospecializeinfer function _alias_storage_index!(
+    storage::IdDict, @nospecialize(id), object::Int
+)
+    return get!(storage, id, object)
+end
+
 # Runtime form of the same pairwise contract for signatures too wide to unroll. Each
 # repeated tangent must still name its first primal; bidirectional checks add the inverse.
 @noinline function _check_alias_partition(
@@ -408,100 +653,9 @@ end
     return nothing
 end
 
-# Snapshot primal storage sharing independently of tangent seeding. In particular, legacy
-# array tangents can have distinct headers over the same storage.
-@generated function _prepare_aliases(tangents::Tuple, fx::Tuple)
-    leaves = _aliasable_positions(tangents, true)
-    fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
-    ids = Expr(
-        :tuple,
-        (
-            :(
-                let object = get!(objects, primals[$k], $k)
-                    (
-                        object,
-                        _alias_storage_index!(storage, _storage_id(primals[$k]), object),
-                        _storage_offset(primals[$k]),
-                    )
-                end
-            ) for k in eachindex(leaves)
-        )...,
-    )
-    workspace =
-        length(leaves) * (length(leaves) - 1) ÷ 2 > 256 ? :((objects, storage)) : :(nothing)
-    return quote
-        primals = $fs
-        objects = IdDict{Any,Int}()
-        storage = VERSION >= v"1.11-rc4" ? IdDict{Any,Int}() : Dict{UInt,Int}()
-        partition = $ids
-        _empty_alias_map!(objects)
-        _empty_alias_map!(storage)
-        (partition=partition, workspace=($workspace))
-    end
-end
-
-# Immutable fields are checked; mutable interiors and abstract fields remain unchecked.
-# See `known_limitations.md` for the caller's responsibilities.
-function _alias_checks(@nospecialize(tangents::Type))
-    leaves = _aliasable_positions(tangents, true)
-    n = length(leaves)
-    if n * (n - 1) ÷ 2 > 256
-        fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
-        labels = Expr(
-            :tuple, (_alias_label(i, p, tangents.parameters[i]) for (i, p) in leaves)...
-        )
-        return :(_check_alias_partition(aliases, $fs, $labels, workspace))
-    end
-    checks = Expr(:block)
-    for a in 1:n
-        i, pi = leaves[a]
-        fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi, tangents.parameters[i])
-        for b in (a + 1):n
-            j, pj = leaves[b]
-            fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj, tangents.parameters[j])
-            push!(
-                checks.args,
-                quote
-                    same_object = $fi === $fj
-                    same_object == (aliases[$a][1] == aliases[$b][1]) ||
-                        !(
-                            _holds_derivatives(tangent_type(typeof($fi))) ||
-                            _holds_derivatives(tangent_type(typeof($fj)))
-                        ) ||
-                        _throw_prepared_cache_aliasing_error(
-                            $li, $lj, same_object, "object"
-                        )
-                    same_storage = (_storage_id($fi) === _storage_id($fj))
-                    same_storage == (aliases[$a][2] == aliases[$b][2]) ||
-                        !(
-                            _holds_derivatives(tangent_type(typeof($fi))) ||
-                            _holds_derivatives(tangent_type(typeof($fj)))
-                        ) ||
-                        _throw_prepared_cache_aliasing_error($li, $lj, same_storage)
-                    same_storage && _check_alias_offset(
-                        aliases[$a][3] - aliases[$b][3], $fi, $fj, $li, $lj
-                    )
-                end,
-            )
-        end
-    end
-    return checks
-end
-
-# Only relative offsets within a shared storage group constrain cache reuse.
-@inline function _check_alias_offset(offset::Int, a, b, la::String, lb::String)
-    offset == _storage_offset(a) - _storage_offset(b) ||
-        !(
-            _holds_derivatives(tangent_type(typeof(a))) ||
-            _holds_derivatives(tangent_type(typeof(b)))
-        ) ||
-        throw(
-            PreparedCacheError(
-                "Cached autodiff call has a relative storage offset mismatch between $la and $lb. " *
-                "Prepare a separate cache for these array offsets.",
-            ),
-        )
-    return nothing
+_prepare_aliases(tangents::Tuple, fx::Tuple) = _sharing(fx)
+function _check_tangent_aliasing(prepared::Tuple, tangents::Tuple, fx::Tuple)
+    _check_sharing(prepared, fx, Val(:same))
 end
 
 # `empty!(::IdDict)` discards its table capacity (and allocates on Julia 1.11+).
@@ -512,64 +666,6 @@ function _empty_alias_map!(d::IdDict)
     end
     d.count = d.ndel = 0
     return d
-end
-_empty_alias_map!(d::Dict) = empty!(d)
-
-# A typed address map avoids boxing legacy data pointers on the wide-signature path.
-# Keep an IdDict key boxed once across lookup and insertion.
-@noinline Base.@nospecializeinfer function _alias_storage_index!(
-    storage::IdDict, @nospecialize(id), object::Int
-)
-    return get!(storage, id, object)
-end
-@inline _alias_storage_index!(::Dict{UInt,Int}, x, object::Int) = object
-@inline _alias_storage_index!(storage::Dict{UInt,Int}, id::Tuple{UInt}, object::Int) = get!(
-    storage, only(id), object
-)
-
-@noinline function _check_alias_partition(
-    aliases::Tuple, primals::Tuple, labels::Tuple, workspace
-)
-    objects, storage = workspace
-    try
-        for k in eachindex(primals)
-            object = get!(objects, primals[k], k)
-            buffer = _alias_storage_index!(storage, _storage_id(primals[k]), object)
-            for (f, expected, relation) in
-                ((object, aliases[k][1], "object"), (buffer, aliases[k][2], "storage"))
-                f == expected ||
-                    !(
-                        _holds_derivatives(
-                            tangent_type(typeof(primals[min(f, expected)]))
-                        ) || _holds_derivatives(tangent_type(typeof(primals[k])))
-                    ) ||
-                    _throw_prepared_cache_aliasing_error(
-                        labels[min(f, expected)], labels[k], f < expected, relation
-                    )
-            end
-            buffer == k || _check_alias_offset(
-                aliases[k][3] - aliases[buffer][3],
-                primals[k],
-                primals[buffer],
-                labels[k],
-                labels[buffer],
-            )
-        end
-    finally
-        _empty_alias_map!(objects)
-        _empty_alias_map!(storage)
-    end
-    return nothing
-end
-
-@generated function _check_tangent_aliasing(state::NamedTuple, tangents::Tuple, fx::Tuple)
-    return Expr(
-        :block,
-        :(aliases = state.partition),
-        :(workspace = state.workspace),
-        _alias_checks(tangents),
-        :(return nothing),
-    )
 end
 
 # A friendly forward cache shares prepared tangent buffers. Distinct call-time primals
@@ -1151,15 +1247,28 @@ is shown by the cache.
         (
             input_ts,
             map(_forward_friendly_cache, fx, _copy_output(fx)),
+<<<<<<< HEAD
             Ref{Union{Nothing,typeof(input_ts)}}(nothing),
+            _ForwardWorkspace{typeof(sharing),typeof(input_ts),typeof(seed_sharing)}(
+                typeof(input_ts), sharing, seed_sharing, nothing
+            ),
+>>>>>>> 55da721cdb (fixup! interface: unify prepared-cache sharing validation)
         )
     else
         # Keep the lazy workspace concretely typed without evaluating more tangents.
         (
             nothing,
             nothing,
+<<<<<<< HEAD
             Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(
                 nothing
+            _ForwardWorkspace{
+                typeof(sharing),
+                Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
+                typeof(seed_sharing),
+            }(
+                Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}, sharing, seed_sharing, nothing
+>>>>>>> 55da721cdb (fixup! interface: unify prepared-cache sharing validation)
             ),
         )
     end
@@ -1623,26 +1732,35 @@ end
 ) where {F}
     _check_dict_cache_inputs((f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
-    _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
-    total_dim = length(x)
     y_cache = cache.y_cache
-    Ty = _check_jacobian_output(y_cache, eltype(x))
+    total_dim, Ty = _check_reverse_reuse(
+        cache.input_types_and_sizes,
+        cache.aliases,
+        cache.reuse_visited,
+        cache.tangents,
+        (f, x),
+        () -> (length(x), _check_jacobian_output(y_cache, eltype(x))),
+    )
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dim)
     # Reverse mode restores any in-place mutation of `x` on the pullback, so — unlike the
     # forward `(::FCache)` method above, which snapshots `x` explicitly — each
-    # `value_and_pullback!!` call below leaves `x` unchanged with no snapshot here.
+    # pullback below leaves `x` unchanged with no snapshot here.
     # Also covers an empty INPUT: `J` is already `length(y) x total_dim`, so a
     # zero-dimension input gives the `n x 0` Jacobian with no sweep to run.
     if isempty(ȳ) || total_dim == 0
-        y, _ = value_and_pullback!!(cache, ȳ, f, x)
+        y, _ = _value_and_pullback!!(
+            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, cache.tangents))
+        )
         return y, J
     end
 
     local y
     @inbounds for row in 1:length(ȳ)
         ȳ[row] = one(Ty)
-        val, pb = value_and_pullback!!(cache, ȳ, f, x)
+        val, pb = _value_and_pullback!!(
+            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, cache.tangents))
+        )
         row == 1 && (y = val)
         J[row, :] .= pb[2]
         ȳ[row] = zero(Ty)
@@ -2156,6 +2274,31 @@ end
 # A reverse cache pairs each call's inputs with the tangents `_zero_tangents` built at
 # preparation, which record the prepared sizes, abstract-slot types and definedness. Every
 # reverse entry point reusing them pairs through here, so none can skip the check.
+@inline function _reuse_coduals(
+    types_and_sizes, sharing, visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple
+)
+    _check_reverse_reuse(types_and_sizes, sharing, visited, tangents, fx)
+    return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
+end
+
+@inline function _check_reverse_reuse(
+    types_and_sizes,
+    sharing,
+    visited,
+    tangents,
+    fx,
+    after_envelope::E=Returns(nothing),
+    after_sharing::S=Returns(nothing),
+) where {E,S}
+    _check_prepared_cache(types_and_sizes, fx)
+    # Keep output and caller-direction errors at their original admission positions.
+    result = after_envelope()
+    _check_sharing(sharing, fx, Val(:same))
+    after_sharing()
+    _check_tangent_reuse(visited, tangents, fx)
+    return result
+end
+
 @inline function _reuse_coduals(visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple)
     _check_tangent_reuse(visited, tangents, fx)
     return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
@@ -2519,7 +2662,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _prepare_aliases(tangents, fx),
+        _sharing(fx),
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2753,11 +2896,18 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
-    _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
     coduals = _reuse_coduals(
-        getfield(cache, :reuse_visited), getfield(cache, :tangents), fx, args_to_zero
+        cache.input_types_and_sizes,
+        cache.aliases,
+        getfield(cache, :reuse_visited),
+        getfield(cache, :tangents),
+        fx,
+        args_to_zero,
     )
+    return _value_and_pullback!!(cache, ȳ, coduals)
+end
+
+@inline function _value_and_pullback!!(cache::Cache, ȳ, coduals::Tuple)
     if isnothing(cache.dests)
         return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
     end
@@ -2765,7 +2915,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     value, pb = __value_and_pullback!!(
         cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
     )
-    friendly_pb = _to_friendly(getfield(cache, :dests), fx, pb)
+    friendly_pb = _to_friendly(getfield(cache, :dests), tuple_map(primal, coduals), pb)
     return value, friendly_pb
 end
 
@@ -2826,7 +2976,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _prepare_aliases(tangents, fx),
+        _sharing(fx),
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2918,10 +3068,13 @@ value_and_gradient!!(cache, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
-    _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
     coduals = _reuse_coduals(
-        getfield(cache, :reuse_visited), getfield(cache, :tangents), fx, args_to_zero
+        cache.input_types_and_sizes,
+        cache.aliases,
+        getfield(cache, :reuse_visited),
+        getfield(cache, :tangents),
+        fx,
+        args_to_zero,
     )
     if isnothing(cache.dests)
         return __value_and_gradient!!(cache.rule, coduals...)
@@ -4824,7 +4977,7 @@ end
 #   slot types, defined primal slots and MemoryRef offsets through structural tangents;
 #   custom tangents limit coverage. Forward refresh and snapshot walks check extents
 #   (`_refresh_all!`, `_snapshot_inputs!!`, `_check_copy_extent`);
-# - storage sharing: in reverse, `_check_tangent_aliasing` compares mutable inputs and
+# - storage sharing: in reverse, `_check_sharing` compares prepared partitions of inputs and
 #   storage at fixed positions (tuple, named-tuple and immutable struct fields); in forward,
 #   `_check_prepared_forward_aliasing`, `_check_primal_aliasing`,
 #   `_check_immutable_arg_aliasing` and `_check_seed_aliasing`.
