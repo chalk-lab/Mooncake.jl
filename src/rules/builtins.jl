@@ -2897,6 +2897,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             (false, :none, (; mode=ReverseMode), typed_pointer_load, [1.0, 3.0], T, erased),
         )
     end
+    for a in ([(Int32(1), Int32(2), 3.0)], [(3.0,)], [Ptr{Float64}(0)])
+        push!(test_cases, (true, :none, (; mode=ForwardMode, chunk_size=1), pointer, a))
+    end
     return test_cases, Any[]
 end
 

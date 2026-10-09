@@ -145,6 +145,7 @@ foo_throws(e) = throw(e)
                     Ptr{A}(pointer(a)),
                     ntuple(k -> Ptr{Mooncake.dual_type(Val(N), A)}(lanes[k]), N),
                 )
+                @test typeof(structural) === Mooncake.lifted_type(Val(N), Ptr{A})
                 erased = Mooncake.frule!!(
                     z(IntrinsicsWrappers.bitcast), z(Ptr{Cvoid}), structural
                 )
