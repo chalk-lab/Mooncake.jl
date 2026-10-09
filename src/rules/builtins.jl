@@ -3175,7 +3175,12 @@ function _builtins_throwing_rows()
             cases,
             (
                 (ArgumentError, "cannot take `pointer_from_objref` of a `Ref{ComplexF64}`"),
-                v -> sum(abs2, reinterpret(ComplexF64, v)),
+                v -> begin
+                    r = Ref(complex(v[1], v[2]))
+                    GC.@preserve r unsafe_load(
+                        Ptr{Float64}(Base.unsafe_convert(Ptr{ComplexF64}, r))
+                    )
+                end,
                 ([1.0, 2.0],),
                 (; mode=ForwardMode),
             ),
@@ -3277,7 +3282,7 @@ function _builtins_throwing_rows()
         ),
         (
             (ArgumentError, "to another element type is not supported"),
-            v -> sum(abs2, reinterpret(ComplexF64, v)),
+            v -> GC.@preserve(v, abs2(unsafe_load(Ptr{ComplexF64}(pointer(v))))),
             ([1.0, 2.0],),
             (; mode=VERSION < v"1.11" ? ReverseMode : nothing),
         ),

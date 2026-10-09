@@ -2154,6 +2154,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
             x...;
             interface_only,
             perf_flag,
+            unsafe_perturb=opts isa NamedTuple ? get(opts, :unsafe_perturb, false) : false,
             is_primitive=(!derived),
             mode,
             skip_chunked,
