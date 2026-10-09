@@ -132,11 +132,17 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
+    if primal(dest) === primal(src)
+        return dest, NoPullback(ntuple(_ -> NoRData(), 4))
+    end
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest), primal(n))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
     _n = primal(n)
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
     ddest_copy = Vector{T}(undef, _n)
+    ddest_out = similar(ddest_copy)
     pdest = primal(dest)
     ddest = tangent(dest)
     unsafe_copyto!(pointer(dest_copy), pdest, _n)
@@ -149,12 +155,13 @@ function rrule!!(
 
     function unsafe_copyto!_pb!!(::NoRData)
 
-        # Increment dsrc.
-        _increment_pointer!(dsrc, ddest, _n)
+        # Snapshot cotangents before restoring potentially overlapping destination storage.
+        unsafe_copyto!(pointer(ddest_out), ddest, _n)
 
         # Restore initial state.
         unsafe_copyto!(pdest, pointer(dest_copy), _n)
         unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+        GC.@preserve ddest_out _increment_pointer!(dsrc, pointer(ddest_out), _n)
 
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -469,6 +476,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, "5", UInt(3)),
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
+            unsafe_copyto!,
+            ptr_a,
+            ptr_b,
+            2,
+        ),
+        (
+            true,
+            :none,
+            (mode=ReverseMode,),
+            unsafe_copyto!,
+            zero_fcodual(ptr_a),
+            zero_fcodual(ptr_b),
+            0,
+        ),
     ]
     memory = Any[_x, _dx, _a, _da, _b, _db]
     return test_cases, memory
@@ -495,6 +520,25 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
+        (false, :none, nothing, x -> unsafe_copyto_tester(x, x, 2), randn(5)),
+        (false, :none, nothing, function (::Val{p}, a) where {p}
+            unsafe_copyto!(p, p, 1)
+            return a * a
+        end, Val(ptr_a), 3.0),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x) + 8, pointer(x), 2); x),
+            [2.0, 3.0, 4.0],
+        ),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> (GC.@preserve x unsafe_copyto!(pointer(x), pointer(x) + 8, 2); x),
+            [2.0, 3.0, 4.0],
+        ),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             false,

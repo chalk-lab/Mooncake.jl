@@ -52,6 +52,8 @@ sr(n::Int) = StableRNG(n)
                 # Structured tangents: the adjoint is dense, so it has to be projected
                 # onto what the wrapper stores. `Symmetric` folds rather than masks.
                 (:none, true, logsumexp, UpperTriangular(randn(sr(20), P, 4, 4))),
+                (:none, true, logsumexp, UnitUpperTriangular(zeros(P, 2, 2))),
+                (:none, true, logsumexp, UnitLowerTriangular(zeros(P, 2, 2))),
                 (:none, true, logsumexp, Diagonal(randn(sr(21), P, 4))),
                 (:none, true, logsumexp, Symmetric(randn(sr(22), P, 4, 4))),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
@@ -77,6 +79,20 @@ sr(n::Int) = StableRNG(n)
                     view(randn(sr(7), P, 5, 4), 1:5, 1:4),
                 ),
                 (:none, true, logsumexp!, [P(1.0)], [P(2.0), P(2.0)]),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    view(UnitUpperTriangular(zeros(P, 2, 2)), 1:1, 2:2),
+                    ones(P, 1, 1),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    view(UnitLowerTriangular(zeros(P, 2, 2)), 2:2, 1:1),
+                    ones(P, 1, 1),
+                ),
                 (:none, true, logsumexp!, [P(1.0)], view([P(2.0), P(2.0)], 1:2)),
                 (:none, true, logsumexp!, view([P(1.0)], 1:1), view([P(2.0), P(2.0)], 1:2)),
                 # not a primitive because the two inputs have different eltypes, but we can
@@ -98,6 +114,30 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log1mlogistic, -P(0.9)),
                 (:allocs, false, logit1mexp, -P(0.6)),
             ]
+            for W in (UnitUpperTriangular, UnitLowerTriangular)
+                x = W(randn(sr(24), P, 2, 2))
+                V = if W === UnitUpperTriangular
+                    UnitLowerTriangular
+                else
+                    UnitUpperTriangular
+                end
+                push!(
+                    cases,
+                    (:none, true, logsumexp, view(x, [2, 1, 2], [2, 1])),
+                    (:none, true, Core.kwcall, (; dims=:), logsumexp, reshape(x, 4)),
+                    (
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims=1),
+                        logsumexp,
+                        Adjoint(view(x, :, :)),
+                    ),
+                    (:none, true, logsumexp!, zeros(P, 1, 2), Transpose(view(x, :, :))),
+                    (:none, true, logsumexp, Diagonal(reshape(x, 4))),
+                    (:none, true, logsumexp, V(view(x, :, :))),
+                )
+            end
             @static if isdefined(LogExpFunctions, :logabstanh)
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(0.3)))
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(1.5)))
@@ -106,6 +146,16 @@ sr(n::Int) = StableRNG(n)
         end...,
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+    end
+
+    @testset "nested unit-triangular reverse rules" begin
+        for W in (UnitUpperTriangular, UnitLowerTriangular)
+            x = W(randn(sr(24), 2, 2))
+            # Forward arrayify throws "Cannot convert Matrix{Float64} to UnitUpperTriangular" here.
+            for V in (UpperTriangular, LowerTriangular)
+                test_rule(sr(123456), logsumexp, V(x); mode=Mooncake.ReverseMode)
+            end
+        end
     end
 
     @testset "zero multipliers and inactive directions" begin
@@ -185,6 +235,21 @@ sr(n::Int) = StableRNG(n)
                 result = f(x, NDual(y, (one(y),)))
                 @test result.value === f(x, y)
                 @test only(result.partials) == b
+            end
+        end
+    end
+
+    @testset "unit-triangular HVPs" begin
+        # First-order rule checks cannot detect a lost derivative of the structural mask.
+        for (T, i) in ((UnitUpperTriangular, 3), (UnitLowerTriangular, 2))
+            f(x) = logsumexp(T(reshape(x, 2, 2)))
+            x = zeros(4)
+            cache = Mooncake.prepare_hvp_cache(f, x)
+            p = inv(2 + 2exp(1))
+            for a in (0.0, 1.0)
+                v = zeros(4)
+                v[i] = a
+                @test Mooncake.value_and_hvp!!(cache, f, v, x)[3] ≈ p * (1 - p) * v
             end
         end
     end

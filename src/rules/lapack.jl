@@ -90,7 +90,7 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
 
     # Compute pullback using Seth's method.
     _dF = tril(L'dL, -1) + UpperTriangular(dU * U')
-    dA .= (inv(L') * _dF * inv(U'))[invperm(p), :]
+    dA .= _rvs_zero.((inv(L') * _dF * inv(U'))[invperm(p), :], all(iszero, dA))
 
     # Restore initial state.
     A .= A_copy
@@ -112,6 +112,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.trtrs!, primal(B_dB), primal(A_dA))
 
     # Extract data.
     uplo = primal(_uplo)
@@ -149,6 +150,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.trtrs!, primal(_B), primal(_A))
     # Extract everything and make a copy of B for the reverse-pass.
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
@@ -159,15 +161,16 @@ function rrule!!(
     trtrs!(uplo, trans, diag, A, B)
 
     function trtrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
 
         # Compute cotangent of B.
-        LAPACK.trtrs!(uplo, trans == 'N' ? 'T' : 'N', diag, A, dB)
+        _rvs_blas!(LAPACK.trtrs!, zero_seed, uplo, trans == 'N' ? 'T' : 'N', diag, A, dB)
 
         # Compute cotangent of A.
         if trans == 'N'
-            dA .-= tri!(dB * B', uplo, diag)
+            dA .-= _rvs_zero.(tri!(dB * B', uplo, diag), zero_seed)
         else
-            dA .-= tri!(B * dB', uplo, diag)
+            dA .-= _rvs_zero.(tri!(B * dB', uplo, diag), zero_seed)
         end
 
         # Restore initial state.
@@ -191,6 +194,7 @@ function frule!!(
     _ipiv::Dual{<:AbstractVector{Int}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.getrs!, primal(B_dB), primal(A_dA))
 
     # Extract data.
     trans = primal(_trans)
@@ -226,6 +230,7 @@ function rrule!!(
     _ipiv::CoDual{<:AbstractVector{Int}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.getrs!, primal(_B), primal(_A))
 
     # Extract data.
     trans = _trans.x
@@ -265,15 +270,16 @@ function rrule!!(
     end
 
     function getrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
         if trans == 'N'
 
             # Run pullback for inv(U) * B.
-            LAPACK.trtrs!('U', 'T', 'N', A, dB)
-            dA .-= tri!(dB * B', 'U', 'N')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'U', 'T', 'N', A, dB)
+            dA .-= _rvs_zero.(tri!(dB * B', 'U', 'N'), zero_seed)
 
             # Run pullback for inv(L) * B.
-            LAPACK.trtrs!('L', 'T', 'U', A, dB)
-            dA .-= tri!(dB * B1', 'L', 'U')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'L', 'T', 'U', A, dB)
+            dA .-= _rvs_zero.(tri!(dB * B1', 'L', 'U'), zero_seed)
 
             # Undo permutation.
             dB .= dB[ip, :]
@@ -284,12 +290,12 @@ function rrule!!(
             B .= B[p, :]
 
             # Run pullback for inv(L^T) * B.
-            LAPACK.trtrs!('L', 'N', 'U', A, dB)
-            dA .-= tri!(B * dB', 'L', 'U')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'L', 'N', 'U', A, dB)
+            dA .-= _rvs_zero.(tri!(B * dB', 'L', 'U'), zero_seed)
 
             # Run pullback for inv(U^T) * B.
-            LAPACK.trtrs!('U', 'N', 'N', A, dB)
-            dA .-= tri!(B1 * dB', 'U', 'N')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'U', 'N', 'N', A, dB)
+            dA .-= _rvs_zero.(tri!(B1 * dB', 'U', 'N'), zero_seed)
         end
 
         # Restore initial state.
@@ -344,6 +350,7 @@ function rrule!!(
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
 
     function getri_pb!!(::NoRData)
+        zero_seed = all(iszero, dA)
         # Pivot.
         A .= A[:, p]
         dA .= dA[:, p]
@@ -351,7 +358,7 @@ function rrule!!(
         # Cotangent w.r.t. L.
         dL = -(A' * dA) / UnitLowerTriangular(A_copy)'
         dU = -(UpperTriangular(A_copy)' \ (dA * A'))
-        dA .= tri!(dL, 'L', 'U') .+ tri!(dU, 'U', 'N')
+        dA .= _rvs_zero.(tri!(dL, 'L', 'U') .+ tri!(dU, 'U', 'N'), zero_seed)
 
         # Restore initial state.
         A .= A_copy
@@ -408,6 +415,7 @@ function rrule!!(
     _, info = potrf!(uplo, A)
 
     function potrf_pb!!(::NoRData)
+        zero_seed = all(iszero, dA)
         dA2 = dA
 
         # Compute cotangents.
@@ -418,14 +426,14 @@ function rrule!!(
             tmp = dA2'L
             tmp .*= E'
             B = rdiv!(ldiv!(L', tmp), L)
-            dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
+            dA .= _rvs_zero.(__sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1), zero_seed)
         else
             E = UpperTriangular(__E(P, N))
             U = UpperTriangular(A)
             tmp = U * dA2'
             tmp .*= E'
             B = rdiv!(ldiv!(U, tmp), U')
-            dA .= __sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1)
+            dA .= _rvs_zero.(__sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1), zero_seed)
         end
 
         # Restore initial state.
@@ -470,6 +478,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.potrs!, primal(B_dB), primal(A_dA))
 
     # Extract args and take a copy of B.
     uplo = primal(_uplo)
@@ -500,6 +509,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.potrs!, primal(_B), primal(_A))
 
     # Extract args and take a copy of B.
     uplo = _uplo.x
@@ -511,16 +521,21 @@ function rrule!!(
     potrs!(uplo, A, B)
 
     function potrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
 
         # Compute cotangents.
         if uplo == 'L'
             tmp = __sym!(B_copy * dB') / LowerTriangular(A)'
-            dA .-= 2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp))
-            LinearAlgebra.LAPACK.potrs!('L', A, dB)
+            dA .-= _rvs_zero.(
+                2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp)), zero_seed
+            )
+            _rvs_blas!(LinearAlgebra.LAPACK.potrs!, zero_seed, 'L', A, dB)
         else
             tmp = UpperTriangular(A)' \ __sym!(B_copy * dB')
-            dA .-= 2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)')
-            LinearAlgebra.LAPACK.potrs!('U', A, dB)
+            dA .-= _rvs_zero.(
+                2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)'), zero_seed
+            )
+            _rvs_blas!(LinearAlgebra.LAPACK.potrs!, zero_seed, 'U', A, dB)
         end
 
         # Restore initial state.
@@ -544,6 +559,8 @@ end
         A_dA::Dual{<:AbstractMatrix{P}},
         _uplo::Dual{Char},
     ) where {P<:BlasFloat}
+        primal(A_dA) === primal(B_dB) ||
+            _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
 
@@ -557,16 +574,20 @@ end
         A_dA::CoDual{<:AbstractMatrix{P}},
         _uplo::CoDual{Char},
     ) where {P<:BlasFloat}
+        same = primal(A_dA) === primal(B_dB)
+        same || _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
-        uplo = primal(_uplo)
+        uplo = uppercase(primal(_uplo))
 
         B_copy = copy(B)
-        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(B, A, primal(_uplo))
         # fill dB with zeros in the copied region
-        zero_tri!(dB, uplo)
+        same || zero_tri!(dB, uplo)
 
         function lacpy_pb!!(::NoRData)
+            # An identity copy must preserve the one shared cotangent buffer.
+            same && return (NoRData(), NoRData(), NoRData(), NoRData())
             if uplo == 'U'
                 dA .+= UpperTriangular(dB)
             elseif uplo == 'L'
@@ -672,19 +693,29 @@ automatically via the two-argument overload below.
 function _accum_sym_logdet!(
     ddata::StridedMatrix{P}, Sinv::StridedMatrix{P}, ȳ::P, uplo::Char
 ) where {P}
+    # Specialise on the zero seed so the hot loop carries no mask.
+    if iszero(ȳ)
+        _accum_sym_logdet!(ddata, Sinv, ȳ, uplo, Val(true))
+    else
+        _accum_sym_logdet!(ddata, Sinv, ȳ, uplo, Val(false))
+    end
+end
+@inline function _accum_sym_logdet!(
+    ddata, Sinv, ȳ, uplo, ::Val{zero_seed}
+) where {zero_seed}
     n = size(ddata, 1)
     if uplo == 'U'
         @inbounds for j in 1:n
             for i in 1:(j - 1)
-                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+                ddata[i, j] += _rvs_zero(2 * ȳ * Sinv[i, j], zero_seed)
             end
-            ddata[j, j] += ȳ * Sinv[j, j]
+            ddata[j, j] += _rvs_zero(ȳ * Sinv[j, j], zero_seed)
         end
     else
         @inbounds for j in 1:n
-            ddata[j, j] += ȳ * Sinv[j, j]
+            ddata[j, j] += _rvs_zero(ȳ * Sinv[j, j], zero_seed)
             for i in (j + 1):n
-                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+                ddata[i, j] += _rvs_zero(2 * ȳ * Sinv[i, j], zero_seed)
             end
         end
     end
@@ -770,7 +801,7 @@ function rrule!!(
     function det_sym_pb!!(ȳ::P)
         # Zero gradient for singular S (approximate; see frule!! for details).
         isnothing(Sinv) && return NoRData(), NoRData()
-        _accum_sym_logdet!(ddata, Sinv, ȳ * d)
+        _accum_sym_logdet!(ddata, Sinv, _rvs_mul(d, ȳ))
         return NoRData(), NoRData()
     end
     return CoDual(d, NoFData()), det_sym_pb!!
@@ -971,6 +1002,33 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
+    test_cases = Any[test_cases...]
+    for P in complexPs
+        append!(test_cases, _lapack_alias_test_cases(P))
+    end
+    @static if VERSION > v"1.11-"
+        for P in complexPs
+            flags = (false, :none, (throws=(DimensionMismatch, nothing),))
+            for (uplo, dims) in (('u', (2, 1)), ('l', (1, 2)))
+                push!(
+                    test_cases,
+                    (flags..., LAPACK.lacpy!, zeros(P, 1, 1), ones(P, dims), uplo),
+                )
+            end
+            push!(
+                test_cases,
+                (
+                    false,
+                    :stability,
+                    nothing,
+                    LAPACK.lacpy!,
+                    zeros(P, 2, 2),
+                    P[1 2; 3 4],
+                    'u',
+                ),
+            )
+        end
+    end
     memory = Any[]
     return test_cases, memory
 end
@@ -1006,4 +1064,28 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
     )
     memory = Any[]
     return test_cases, memory
+end
+
+function _lapack_alias_test_cases(P)
+    A = P[2 1; 1 3]
+    flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
+    rows = Any[]
+    if P <: Real
+        append!(
+            rows,
+            [
+                (flags..., LAPACK.trtrs!, 'U', 'N', 'N', A, A),
+                (flags..., LAPACK.getrs!, 'N', A, [1, 2], A),
+                (flags..., LAPACK.potrs!, 'U', A, A),
+            ],
+        )
+    end
+    @static if VERSION > v"1.11-"
+        for uplo in ('U', 'L', 'A')
+            push!(rows, (false, :stability, nothing, LAPACK.lacpy!, A, A, uplo))
+        end
+        B = P[1 2; 3 4; 5 6]
+        push!(rows, (flags..., LAPACK.lacpy!, view(B, 1:2, :), view(B, 2:3, :), 'A'))
+    end
+    return rows
 end

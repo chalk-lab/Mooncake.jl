@@ -207,6 +207,41 @@ end
 @inactive_intrinsic and_int
 @inactive_intrinsic ashr_int
 
+# NULL is safe for empty operations and zero-size tangent elements.
+@inline function _check_tangent_ptr(x, dx, n=1)
+    iszero(n) && return nothing
+    if dx isa Ptr && _elements_occupy_storage(eltype(dx))
+        if iszero(UInt(dx))
+            msg =
+                "Cannot differentiate a load or store through a `Ptr` with no tangent " *
+                "storage behind it. The pointer derives from a buffer whose element " *
+                "type is non-differentiable (a `Vector{UInt8}`, say), so no derivative " *
+                "buffer exists to read or write and its tangent pointer is NULL. " *
+                "Reinterpreting such a buffer as a differentiable element type under AD " *
+                "is not supported; allocate it with the differentiable element type " *
+                "instead."
+            throw(ArgumentError(msg))
+        end
+        # The non-NULL uninit_* placeholder aliases the primal's own bytes.
+        if x isa Ptr && UInt(dx) == UInt(x)
+            msg =
+                "Cannot differentiate a load or store through a `Ptr` whose tangent is " *
+                "the placeholder that the `uninit_*` convention builds from the " *
+                "pointer's own address. There is no derivative buffer behind it, so " *
+                "writing a derivative through it would land in the primal buffer. This " *
+                "arises when a bare `Ptr` reaches AD as a differentiable input; " *
+                "differentiate the underlying array instead, so a real tangent buffer " *
+                "exists."
+            throw(ArgumentError(msg))
+        end
+    end
+    return nothing
+end
+
+# Reference elements occupy pointer-sized slots. sizeof is only safe for isbits
+# elements: abstract types and even concrete String are unsized.
+@inline _elements_occupy_storage(::Type{E}) where {E} = !isbitstype(E) || sizeof(E) > 0
+
 # unsafe_wrap() gives an array view for the memory pointed by p.
 # Tangent propagation happens through memory aliasing rather than explicit
 # computation in the pullback. Downstream rules write directly into 
@@ -226,6 +261,9 @@ function rrule!!(
     p::CoDual{<:Ptr{T}},
     dims::CoDual,
 ) where {T}
+    # Check before wrapping: an Array over a NULL or placeholder tangent pointer
+    # cannot be distinguished from valid storage by downstream consumers.
+    _check_tangent_ptr(primal(p), tangent(p), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
@@ -250,6 +288,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
+    _check_tangent_ptr(_x, dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
@@ -275,6 +314,7 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
+    _check_tangent_ptr(primal(p), tangent(p))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
@@ -668,6 +708,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
+    _check_tangent_ptr(_x, dx)
     a = CoDual(pointerref(_x, _y, _z), fdata(pointerref(dx, _y, _z)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
@@ -690,6 +731,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
     _z = primal(z)
+    _check_tangent_ptr(primal(p), tangent(p))
     old_value = pointerref(_p, _idx, _z)
     old_tangent = pointerref(tangent(p), _idx, _z)
     dp = tangent(p)
@@ -1597,6 +1639,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
         end
     end
+    flags = (
+        false,
+        :none,
+        (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
+    )
+    append!(
+        test_cases,
+        [
+            (flags..., IntrinsicsWrappers.pointerref, p, 1, 1),
+            (flags..., IntrinsicsWrappers.pointerset, p, 2.0, 1, 1),
+            (flags..., unsafe_wrap, Array, p, (5,)),
+        ],
+    )
     return test_cases, memory
 end
 
@@ -1712,6 +1767,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+            x -> unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (1,)),
+            zeros(UInt8, 8),
+        ),
+        (
+            false,
+            :none,
+            (mode=ReverseMode,),
+            x -> sum(unsafe_wrap(Array, Ptr{Float64}(pointer(x)), (0,))),
+            zeros(UInt8, 8),
+        ),
     ]
     return test_cases, Any[]
 end
