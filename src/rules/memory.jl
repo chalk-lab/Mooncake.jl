@@ -754,6 +754,46 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
+# Tangent memory whose elements take up no space (e.g. `Memory{NoTangent}`) has no storage,
+# so there is nothing a pointer into it could point at. For `MemoryRef`s, `ptr_or_offset` is
+# then an index rather than an address. Use a null pointer for these, which the pointer
+# intrinsic rules treat as "no tangent storage". Otherwise a pointer into the tangent memory
+# is only usable if the tangent memory mirrors the primal memory byte for byte. If it
+# doesn't (e.g. the tangent of `Tuple{Int,Float64}` is `Tuple{NoTangent,Float64}`), loads
+# and stores through it would use the wrong offsets, so this is an error.
+function _tangent_data_ptr(ptr::Ptr, ::Memory{P}, ::Memory{V}) where {P,V}
+    Base.elsize(Memory{V}) == 0 && return Ptr{NoTangent}(C_NULL)
+    _tangent_layout_mirrors(P, V) || throw(ArgumentError(_layout_mismatch_msg(P, V)))
+    return bitcast(Ptr{NoTangent}, ptr)
+end
+
+@generated _tangent_layout_mirrors(::Type{P}, ::Type{V}) where {P,V} = _layout_mirrors(P, V)
+
+# Whether elements of type `V` (a tangent type) are laid out exactly like elements of type
+# `P`.
+function _layout_mirrors(P::Type, V::Type)
+    P === V && return true
+    # Both stored as references, so each slot holds a pointer in both memories.
+    !Base.allocatedinline(P) && !Base.allocatedinline(V) && return true
+    (P isa DataType && V isa DataType) || return false
+    (Base.allocatedinline(P) && Base.allocatedinline(V)) || return false
+    V <: Tangent && (V = fieldtype(V, :fields))
+    sizeof(P) == sizeof(V) || return false
+    n = fieldcount(P)
+    (n > 0 && n == fieldcount(V)) || return false
+    for i in 1:n
+        fieldoffset(P, i) == fieldoffset(V, i) || return false
+        _layout_mirrors(fieldtype(P, i), fieldtype(V, i)) || return false
+    end
+    return true
+end
+
+function _layout_mismatch_msg(P::Type, V::Type)
+    return "Mooncake does not support pointer access into memory with elements of " *
+           "type $P: its tangent type, $V, has a different memory layout, so tangents " *
+           "would be loaded and stored at the wrong offsets."
+end
+
 function frule!!(
     ::Dual{typeof(lgetfield)},
     x::Dual{<:Memory,<:Memory},
@@ -762,7 +802,11 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
+    dy = if wants_length
+        NoTangent()
+    else
+        _tangent_data_ptr(tangent(x).ptr, primal(x), tangent(x))
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -773,7 +817,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : bitcast(Ptr{NoTangent}, x.dx.ptr)
+    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.x, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -785,7 +829,8 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
+    dx = tangent(x)
+    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -796,7 +841,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1252,6 +1297,86 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
+
+        # Loads and stores through pointers into arrays whose elements have no tangent, so
+        # there is no tangent storage behind the pointer. See `_tangent_data_ptr`.
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                p = Ptr{Ptr{Cvoid}}(pointer(v, 2))
+                GC.@preserve v Core.Intrinsics.atomic_pointerset(p, C_NULL, :monotonic)
+                return x * length(v)
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                GC.@preserve v pointerset(Ptr{Ptr{Cvoid}}(pointer(v, 2)), C_NULL, 1, 1)
+                return x * length(v)
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                p = Ptr{Ptr{Cvoid}}(pointer(v, 2))
+                q = GC.@preserve v Core.Intrinsics.atomic_pointerref(p, :monotonic)
+                return q == C_NULL ? x : 2x
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                q = GC.@preserve v unsafe_load(Ptr{Ptr{Cvoid}}(pointer(v, 2)))
+                return q == C_NULL ? x : 2x
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                m = Memory{String}(undef, 2)
+                m[1] = "a"
+                m[2] = "b"
+                p = Ptr{Ptr{Cvoid}}(pointer(m, 2))
+                GC.@preserve m Core.Intrinsics.atomic_pointerset(p, C_NULL, :monotonic)
+                return x * length(m)
+            end),
+            2.0,
+        ),
+        # `reinterpret(Float64, ::Vector{UInt8})` loads through a pointer into tangent
+        # memory with no storage. `reinterpret(ComplexF64, ::Vector{Float64})` has a
+        # mirrored layout.
+        (
+            false,
+            :none,
+            nothing,
+            x -> sum(abs2, reinterpret(ComplexF64, x)),
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> x * reinterpret(Float64, UInt8[0, 0, 0, 0, 0, 0, 0, 64])[1],
+            2.0,
+        ),
     ]
     memory = Any[]
     return test_cases, memory
