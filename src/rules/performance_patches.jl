@@ -161,6 +161,31 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Derived rebuilds a dual at every scalar store; this rule builds numeric storage once.
+# The direct rule reduces forward cost on Julia 1.10 through 1.12.
+for T in (Float32, Float64)
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof(hvcat),Tuple{Vararg{Int}},$T,Vararg{$T}
+        }
+        function frule!!(
+            ::Lifted{typeof(hvcat),N},
+            rows::Lifted{<:Tuple{Vararg{Int}},N},
+            x::Lifted{$T,N},
+            xs::Lifted{$T,N}...,
+        ) where {N}
+            values = (x, xs...)
+            y = hvcat(primal(rows), map(primal, values)...)
+            v = zero_dual(Val(N), y)
+            block = getfield(v, :partials_block)
+            @inbounds for j in axes(y, 2), i in axes(y, 1), k in 1:N
+                block[k, i, j] = tangent(values[(i - 1) * size(y, 2) + j], k)
+            end
+            return Lifted{typeof(y),N}(y, v)
+        end
+    end
+end
+
 # Without this, `A * B` differentiates through the in-place `gemm!` rule, which copies the
 # output buffer so that the pullback can restore it. `*` allocates that buffer fresh, so
 # the copy is pure overhead.
@@ -520,6 +545,59 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     sum_sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
+        map([Float32, Float64]) do T
+            (false, :none, (mode=ForwardMode,), hvcat, (2, 2), T.(1:4)...)
+        end,
+        map([Float32, Float64]) do T
+            (false, :none, (mode=ForwardMode,), hvcat, (3, 3, 3), T.(1:9)...)
+        end,
+        map([Float32, Float64]) do T
+            (false, :none, (mode=ForwardMode,), hvcat, (1,), T(1))
+        end,
+        map([Float32, Float64]) do T
+            (false, :none, (mode=ForwardMode,), hvcat, (4, 4, 4, 4), T.(1:16)...)
+        end,
+        [
+            (
+                false,
+                :none,
+                (mode=ForwardMode, throws=DimensionMismatch, primal=true),
+                hvcat,
+                (2, 1, 1),
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+            ),
+            (
+                false,
+                :none,
+                (mode=ForwardMode, throws=ArgumentError, primal=true),
+                hvcat,
+                (2, 2),
+                1.0,
+                2.0,
+                3.0,
+            ),
+            (
+                false,
+                :none,
+                (mode=ForwardMode, throws=ArgumentError, primal=true),
+                hvcat,
+                (3, 3, 3),
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+                7.0,
+                8.0,
+            ),
+        ],
+
         # sum(x)
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -698,6 +776,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 Symmetric(randn(rng, P, 3, 3), :L),
             )
         end,
+
+        # Exercise the hvcat primitive inside a derived function.
+        (
+            false,
+            :none,
+            nothing,
+            (a, b, c, d) -> hvcat((2, 2), a, b, c, d),
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+        ),
+        # Check correctness for mixed Float32/Float64 literals.
+        (false, :none, nothing, hvcat, (2, 2), 1.0f0, 2.0, 3.0f0, 4.0),
 
         # Complex Hermitian: forward wraps lanes, reverse stays derived because folding
         # onto the stored triangle needs conjugation. Check both against finite differences.
