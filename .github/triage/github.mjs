@@ -20,19 +20,10 @@ export async function runTriage({ api, repo, apply = false, now = Date.now(), ..
   for (const item of items) {
     const result = { number: item.number, kind: item.pull_request ? 'pr' : 'issue' };
     try {
-      let snapshot = await loadSnapshot(api, repo, item.number);
+      const snapshot = await loadSnapshot(api, repo, item.number);
       const decision = evaluate(snapshot, options);
       Object.assign(result, decision);
       if (apply && decision.action !== 'keep') {
-        const unchanged = (current) => {
-          const next = evaluate(current, options);
-          return next.action === decision.action && next.key === decision.key;
-        };
-        snapshot = await loadSnapshot(api, repo, item.number);
-        if (!unchanged(snapshot)) {
-          results.push({ ...result, action: 'keep', reason: 'Activity changed before writing' });
-          continue;
-        }
         const commentsPath = `repos/${repo}/issues/${item.number}/comments`;
         const policy = `https://github.com/${repo}/blob/HEAD/.github/triage/README.md`;
         if (decision.action === 'remind') {
@@ -57,8 +48,9 @@ export async function runTriage({ api, repo, apply = false, now = Date.now(), ..
                 + `ask a listed contributor to reopen it or add \`${options.overrideLabel}\`.\n\n` + notice,
             } });
           }
-          // Recheck after posting as well: a reply or override can arrive during the write.
-          if (!unchanged(await loadSnapshot(api, repo, item.number))) {
+          // Recheck after posting: a reply or override can arrive during the write.
+          const next = evaluate(await loadSnapshot(api, repo, item.number), options);
+          if (next.action !== decision.action || next.key !== decision.key) {
             results.push({ ...result, action: 'keep', reason: 'Activity changed before closing' });
             continue;
           }

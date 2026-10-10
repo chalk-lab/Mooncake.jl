@@ -73,24 +73,14 @@ test('re-closing after an author reopen posts a fresh notice, but a failed close
   }
 });
 
-test('rechecks before writes and before closure; late responses and overrides win', async () => {
+test('rechecks before closure; late responses and overrides win', async () => {
   const f = fixture({ ...snapshot(), timeline: [feedback, reminder] });
-  let reads = 0;
-  f.hook((method, path) => {
-    if (method === 'GET' && path.endsWith('/issues/7') && ++reads === 2) {
-      f.data.timeline.push(comment(88, author, '2026-01-31T12:00:00Z'));
-    }
+  f.hook((method) => {
+    if (method === 'POST') f.data.timeline.push({ event: 'reopened', actor: contributor });
   });
-  assert.equal((await f.run())[0].reason, 'Activity changed before writing');
-  assert.deepEqual(f.writes(), []);
-
-  const g = fixture({ ...snapshot(), timeline: [feedback, reminder] });
-  g.hook((method) => {
-    if (method === 'POST') g.data.timeline.push({ event: 'reopened', actor: contributor });
-  });
-  assert.equal((await g.run())[0].reason, 'Activity changed before closing');
-  assert.equal(g.data.item.state, 'open');
-  assert.equal(g.writes().filter((call) => call.method === 'PATCH').length, 0);
+  assert.equal((await f.run())[0].reason, 'Activity changed before closing');
+  assert.equal(f.data.item.state, 'open');
+  assert.equal(f.writes().filter((call) => call.method === 'PATCH').length, 0);
 });
 
 test('failed history reads never produce writes; partial writes are recoverable without duplicate comments', async () => {
@@ -120,16 +110,4 @@ test('transport flattens every page, uses explicit GET, and rejects writes by de
   await assert.rejects(api('POST', 'example/path'), /Writes are disabled/);
   const failing = githubApi({ exec: () => { throw new Error('page 2 failed'); } });
   await assert.rejects(failing('GET', 'example/path', { paginate: true }), /page 2 failed/);
-});
-
-test('sandbox day scaling reaches the writer without writing in dry-run', async () => {
-  const data = snapshot();
-  data.timeline = [comment(11, contributor, '2026-01-01T12:00:00Z'),
-    { ...reminder, created_at: '2026-01-01T12:16:00Z' }];
-  const f = fixture(data);
-  const result = await runTriage({
-    api: f.api, repo: 'example/repo', approved, since: 0,
-    now: at('2026-01-01T12:23:00Z'), dayMs: 60_000,
-  });
-  assert.equal(result[0].action, 'close');
 });

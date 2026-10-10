@@ -1,8 +1,8 @@
 // Pure policy evaluation: the clock, configuration and GitHub history are supplied by the caller.
-export const DAY = 24 * 60 * 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
 export const DEFAULTS = {
   botLogin: 'github-actions[bot]', overrideLabel: 'keep-open',
-  engageDays: 14, replyDays: 14, graceDays: 7, dayMs: DAY,
+  engageDays: 14, replyDays: 14, graceDays: 7,
 };
 
 export const marker = (kind, key) => `<!-- mooncake-triage:v1:${kind}:${key} -->`;
@@ -23,10 +23,9 @@ export function parseApproved(text) {
   return new Set(names.map((name) => name.toLowerCase()));
 }
 
-// Tests may scale a day; the production CLI always uses real 24-hour days.
 export function evaluate({ item, timeline = [], reviews = [], reviewComments = [] }, options) {
   const {
-    approved, now, since, botLogin, overrideLabel, engageDays, replyDays, graceDays, dayMs,
+    approved, now, since, botLogin, overrideLabel, engageDays, replyDays, graceDays,
   } = { ...DEFAULTS, ...options };
   const isContributor = (user) => isHuman(user) && approved.has(user.login.toLowerCase());
   const keep = (reason) => ({ action: 'keep', reason });
@@ -40,7 +39,7 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
 
   const comments = timeline.filter((event) => event.event === 'commented');
   const unengaged = () => {
-    const due = timestamp(item.created_at) + engageDays * dayMs;
+    const due = timestamp(item.created_at) + engageDays * DAY;
     return now < due ? keep(`Within initial ${engageDays} days`) : {
       action: 'close', key: 'unengaged', reason: `No contributor engagement in ${engageDays} days`,
     };
@@ -85,7 +84,7 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
     || timeline.some((event) => event.event === 'review_requested' && byAuthor(event.actor)
       && timestamp(event.created_at) >= feedback.at);
   if (responded) return keep('Author responded; awaiting contributors');
-  if (now < feedback.at + replyDays * dayMs) return keep('Within feedback response period');
+  if (now < feedback.at + replyDays * DAY) return keep('Within feedback response period');
 
   const reminder = comments.filter((comment) => isBot(comment.user, botLogin)
     && comment.body?.includes(marker('reminder', feedback.key))
@@ -96,6 +95,6 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
     action: 'remind', key: feedback.key, feedbackUrl: feedback.url,
     reason: `Contributor feedback unanswered for ${replyDays} days`,
   };
-  if (now < timestamp(reminder.created_at) + graceDays * dayMs) return keep('Within reminder grace period');
+  if (now < timestamp(reminder.created_at) + graceDays * DAY) return keep('Within reminder grace period');
   return { action: 'close', key: feedback.key, reason: `No author response ${graceDays} days after reminder` };
 }

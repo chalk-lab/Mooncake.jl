@@ -10,8 +10,8 @@ export function configuration(args, env) {
     since: { type: 'string' }, apply: { type: 'boolean', default: false },
   } });
   if (!/^[\w.-]+\/[\w.-]+$/.test(values.repo || '')) throw new Error('Supply --repo OWNER/REPO');
-  if (values.apply && (!values.since || env.GITHUB_ACTIONS !== 'true')) {
-    throw new Error('--apply requires an explicit --since date and GitHub Actions with GITHUB_TOKEN');
+  if (values.apply && !values.since) {
+    throw new Error('--apply requires an explicit --since date');
   }
   const date = values.since || '1970-01-01';
   const since = timestamp(date);

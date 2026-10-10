@@ -130,15 +130,3 @@ test('delayed reminders grant a full seven days; spoofed or superseded reminders
   data.timeline.push(comment(45, author, '2026-02-14T12:00:00Z'));
   assert.equal(decide(data, '2026-02-15T12:00:00Z').action, 'keep');
 });
-
-test('sandbox day scaling preserves 14:7 timing', async () => {
-  const data = snapshot();
-  data.timeline = [comment(11, contributor, '2026-01-01T12:00:00Z')];
-  const scaled = (time) => evaluate(data, { approved, since: 0, now: at(time), dayMs: 60_000 });
-  assert.equal(scaled('2026-01-01T12:13:59.999Z').action, 'keep');
-  assert.equal(scaled('2026-01-01T12:14:00Z').action, 'remind');
-  data.timeline.push({ ...reminder, created_at: '2026-01-01T12:16:00Z' });
-  assert.equal(scaled('2026-01-01T12:22:59.999Z').action, 'keep');
-  assert.equal(scaled('2026-01-01T12:23:00Z').action, 'close');
-  assert.equal(decide(data, '2026-01-01T12:23:00Z').action, 'keep'); // Production still uses days.
-});
