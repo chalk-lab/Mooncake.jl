@@ -1616,6 +1616,22 @@ end
 #     (N == 1, N > 8, or no NfwdCache on the cache).
 #
 # fcache derivative chunk execution
+
+# An array input's friendly tangent may be any array of its size, e.g. the `Array` that
+# `similar(x)` gives for a `SubArray` or `Transpose` `x`. It is copied into a zeroed copy of
+# `x`, so entries it does not cover (a view's parent outside the view) get zero tangent.
+_friendly_input_to_tangent!!(t, x, dx) = primal_to_tangent!!(t, dx)
+function _friendly_input_to_tangent!!(t, x::P, dx::AbstractArray) where {P<:AbstractArray}
+    dx isa P && return primal_to_tangent!!(t, dx)
+    size(dx) == size(x) || throw(
+        DimensionMismatch("tangent has size $(size(dx)), but primal has size $(size(x))")
+    )
+    zeroed = tangent_to_primal_internal!!(
+        _copy_output(x), zero_tangent(x), IdDict{Any,Any}()
+    )
+    return primal_to_tangent!!(t, copyto!(zeroed, dx))
+end
+
 @noinline function _fcache_derivative_chunked_loop!!(
     cache::ForwardCache, ::Val{N}, x_dx::Vararg{Tuple,M}; friendly_tangents::Bool
 ) where {N,M}
@@ -1636,7 +1652,10 @@ end
         lane_tangents = tuple_map(t -> t isa NTangent ? t[lane] : t, input_tangents)
         return if friendly_tangents
             native_tangents = tuple_map(
-                primal_to_tangent!!, cache.input_tangents, lane_tangents
+                _friendly_input_to_tangent!!,
+                cache.input_tangents,
+                input_primals,
+                lane_tangents,
             )
             cache.rule(tuple_map(Dual, input_primals, native_tangents)...)
         else
@@ -2122,7 +2141,10 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     )
 
     input_tangents = tuple_map(
-        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
+        _friendly_input_to_tangent!!,
+        cache.input_tangents,
+        input_primals,
+        input_friendly_tangents,
     )
     N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
