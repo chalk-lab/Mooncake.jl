@@ -9,9 +9,8 @@ and features. We want the list of open issues and pull requests to be a fair pic
 of what is actually being worked on, so a bot closes items that have stalled. This
 page explains when, and how to make sure your work stays open.
 
-A closure is not a judgment on the report or the fix. Nothing is lost: the
-discussion stays where it is, and a maintainer can reopen it at any time. Just
-leave a comment.
+Closing an issue or PR doesn't mean we've rejected it. If you'd like it reopened,
+leave a comment and a maintainer can reopen it.
 
 ## Approved contributors
 
