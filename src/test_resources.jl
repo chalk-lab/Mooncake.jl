@@ -896,6 +896,14 @@ end
 # this returned NaN for both value and derivative, where the primal is 1.0 and the derivative 0.
 removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
 
+# Julia 1.10's Xoshiro seeding path reinterprets a byte buffer as UInt64 and
+# stores through the resulting pointer. The buffer and local Refs are wholly
+# non-differentiable, so this must remain an ordinary registry case.
+function test_xoshiro_seed_pointer(x::Vector{Float64})
+    r = Xoshiro(1)
+    return x[1] * 2 + Float64(rand(r, UInt8) == 0)
+end
+
 function generate_test_functions()
     return Any[
         (false, :allocs, nothing, const_tester),
@@ -903,6 +911,7 @@ function generate_test_functions()
         (false, :allocs, nothing, identity, 5.0),
         (false, :allocs, nothing, foo, 5.0),
         (false, :none, nothing, removable_singularity_tester, 0.0),
+        (false, :none, (lb=1e-3, ub=1_000), test_xoshiro_seed_pointer, randn(2)),
         (false, :allocs, nothing, non_differentiable_foo, 5),
         (false, :allocs, nothing, bar, 5.0, 4.0),
         (false, :allocs, nothing, unused_expression, 5.0, 1),

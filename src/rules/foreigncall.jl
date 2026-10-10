@@ -105,11 +105,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
 # Record the tangent object's type: it can be recovered as an object, but cannot
-# supply scalar partials at primal field offsets. NoDual has no tangent address.
+# supply scalar partials at primal field offsets. Derivative-free storage has no
+# tangent address, even when its structural representation is mutable.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
     tx = tangent(x)
-    taddr = if tx isa NoDual
+    has_derivatives = _holds_derivatives(typeof(tx))
+    taddr = if !has_derivatives
         Ptr{tangent_type(Nothing)}(0)
     elseif ismutable(tx)
         bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tx))
@@ -127,7 +129,7 @@ function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
         y,
         PointerDual(
             ntuple(_ -> Ptr{Nothing}(taddr), Val(Nw)),
-            tx isa NoDual ? NoTangent : typeof(tx),
+            has_derivatives ? typeof(tx) : NoTangent,
             typeof(primal(x)),
         ),
     )
@@ -808,6 +810,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             _x,
         ),
         (true, :stability, (mode=ReverseMode,), pointer_from_objref, _x),
+        (true, :stability, nothing, pointer_from_objref, Ref(UInt64(1))),
         (
             # _dx is a reverse tangent, not canonical forward V, so skip_forward is required.
             true,
