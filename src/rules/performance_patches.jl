@@ -168,18 +168,39 @@ for T in (Float32, Float64)
         @is_primitive DefaultCtx ForwardMode Tuple{
             typeof(hvcat),Tuple{Vararg{Int}},$T,Vararg{$T}
         }
-        function frule!!(
+        @inline function frule!!(
             ::Lifted{typeof(hvcat),N},
             rows::Lifted{<:Tuple{Vararg{Int}},N},
-            x::Lifted{$T,N},
-            xs::Lifted{$T,N}...,
-        ) where {N}
-            values = (x, xs...)
-            y = hvcat(primal(rows), map(primal, values)...)
-            v = zero_dual(Val(N), y)
+            x::Lifted{$T,N,V},
+            xs::Vararg{Lifted{$T,N,V}},
+        ) where {N,V}
+            rs = primal(rows)
+            K = length(xs) + 1
+            y =
+                if isempty(rs) ||
+                    first(rs) < 0 ||
+                    length(rs) * first(rs) != K ||
+                    !all(==(first(rs)), rs)
+                    primals = Vector{$T}(undef, K)
+                    for q in 1:K
+                        primals[q] = primal(q == 1 ? x : xs[q - 1])
+                    end
+                    hvcat(rs, primals...)::Matrix{$T}
+                else
+                    Matrix{$T}(undef, length(rs), first(rs))
+                end
+            v = uninit_dual(Val(N), y)
             block = getfield(v, :partials_block)
-            @inbounds for j in axes(y, 2), i in axes(y, 1), k in 1:N
-                block[k, i, j] = tangent(values[(i - 1) * size(y, 2) + j], k)
+            @inbounds y[1, 1] = primal(x)
+            @inbounds for k in 1:N
+                block[k, 1, 1] = tangent(x, k)
+            end
+            @inbounds for j in axes(y, 2), i in (1 + (j == 1)):size(y, 1)
+                value = xs[(i - 1) * size(y, 2) + j - 1]::Lifted{$T,N,V}
+                y[i, j] = primal(value)
+                for k in 1:N
+                    block[k, i, j] = tangent(value, k)
+                end
             end
             return Lifted{typeof(y),N}(y, v)
         end
@@ -547,6 +568,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sum_sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
+    hvcat_throws = map(((), (-1,))) do rows
+        try
+            Base.hvcat(rows, 1.0)
+        catch e
+            return (typeof(e), sprint(showerror, e))
+        end
+        error("Expected Base.hvcat($rows, 1.0) to throw")
+    end
     test_cases = vcat(
         map([Float32, Float64]) do T
             (false, :none, (mode=ForwardMode,), hvcat, (2, 2), T.(1:4)...)
@@ -598,6 +627,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 6.0,
                 7.0,
                 8.0,
+            ),
+            (
+                false,
+                :none,
+                (mode=ForwardMode, throws=hvcat_throws[1], primal=true),
+                hvcat,
+                (),
+                1.0,
+            ),
+            (
+                false,
+                :none,
+                (mode=ForwardMode, throws=hvcat_throws[2], primal=true),
+                hvcat,
+                (-1,),
+                1.0,
             ),
         ],
 
