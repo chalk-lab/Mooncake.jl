@@ -10,6 +10,15 @@
                 zero_fcodual(unsafe_pointer_to_objref), CoDual(pointer_from_objref(r), dx)
             )
         end
+        for N in (1, 8)
+            r = Ref(UInt64(1))
+            p = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(N), pointer_from_objref),
+                Mooncake.zero_lifted(Val(N), r),
+            )
+            @test tangent(p).elt === NoTangent
+            @test all(iszero ∘ UInt, tangent(p).lanes)
+        end
     end
 
     # Zero derivatives alone cannot distinguish canonical V from an incorrect NoDual
