@@ -1088,7 +1088,7 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    # `ptr_or_offset.dx` is an `VoidPtrTangent`: the address plus what it is laid out in. The
+    # `ptr_or_offset.dx` is an `PtrTangent`: the address plus what it is laid out in. The
     # tangent `MemoryRef` wants the address alone.
     dy = _new_(MemoryRef{tangent_type(P)}, _void_ptr_addr(ptr_or_offset.dx), mem.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
@@ -1197,9 +1197,9 @@ function rrule!!(
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
-        VoidPtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
+        PtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
     else
-        VoidPtrTangent(
+        PtrTangent(
             bitcast(Ptr{Nothing}, x.dx.ptr),
             eltype(x.dx),
             if eltype(primal(x)) === Any
@@ -1223,9 +1223,9 @@ function rrule!!(
     # Stride-tagged rather than an unbacked address for a zero-size element type, as in `Memory`.
     dy = if wants_offset
         if !IntrinsicsWrappers._elements_occupy_storage(eltype(x.dx))
-            VoidPtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
+            PtrTangent(Ptr{Nothing}(0), NoTangent, eltype(primal(x)))
         else
-            VoidPtrTangent(
+            PtrTangent(
                 bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
                 eltype(x.dx),
                 if eltype(primal(x)) === Any

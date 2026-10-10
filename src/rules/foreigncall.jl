@@ -87,7 +87,7 @@ function frule!!(
 ) where {N}
     return Lifted{Ptr{Any},N}(
         pointer(primal(a), primal(i)),
-        PointerDual(
+        PtrDual(
             ntuple(_ -> Ptr{Nothing}(pointer(tangent(a), primal(i))), Val(N)),
             Any,
             BoxedPointerStorage(primal(a), tangent(a)),
@@ -127,7 +127,7 @@ function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     end
     return Lifted{typeof(y),Nw}(
         y,
-        PointerDual(
+        PtrDual(
             ntuple(_ -> Ptr{Nothing}(taddr), Val(Nw)),
             has_derivatives ? typeof(tx) : NoTangent,
             typeof(primal(x)),
@@ -205,7 +205,7 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     end
     y = CoDual(
         pointer_from_objref(primal(x)),
-        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_payload_types(P)...),
+        PtrTangent(pointer_from_objref(tangent(x)), _objref_payload_types(P)...),
     )
     return y, NoPullback(f, x)
 end
@@ -261,7 +261,7 @@ function _unsafe_pointer_to_objref_frule(
     return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
 end
 # Descriptors retain provenance alongside the address.
-@inline _void_ptr_addr(p::VoidPtrTangent) = p.p
+@inline _void_ptr_addr(p::PtrTangent) = p.p
 @inline _void_ptr_addr(p::Ptr) = p
 
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
@@ -290,8 +290,8 @@ end
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),N},
-    dest::Lifted{Ptr{Any},N,PointerDual{N}},
-    src::Lifted{Ptr{Any},N,PointerDual{N}},
+    dest::Lifted{Ptr{Any},N,PtrDual{N}},
+    src::Lifted{Ptr{Any},N,PtrDual{N}},
     n::Lifted,
 ) where {N}
     (iszero(primal(n)) || primal(dest) === primal(src)) && return dest
@@ -384,8 +384,8 @@ function frule!!(
 ) where {
     N,
     T,
-    V<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
-    W<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}},
+    V<:Union{NoDual,PtrDual,Tuple{PtrTangent,Vararg{PtrTangent}}},
+    W<:Union{NoDual,PtrDual,Tuple{PtrTangent,Vararg{PtrTangent}}},
 }
     (iszero(primal(n)) || primal(dest) === primal(src)) && return dest
     T === Any && throw(
@@ -447,7 +447,7 @@ function rrule!!(
     IntrinsicsWrappers._check_narrowed_pointer_write(primal(src), tangent(src), primal(n))
     IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src), primal(n))
     _n = primal(n)
-    if tangent(dest) isa VoidPtrTangent && tangent(src) isa VoidPtrTangent
+    if tangent(dest) isa PtrTangent && tangent(src) isa PtrTangent
         saved = copy(unsafe_wrap(Array, primal(dest), _n))
         unsafe_copyto!(primal(dest), primal(src), _n)
         function restore_nondiff_copy!!(::NoRData)
@@ -819,7 +819,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
-                VoidPtrTangent(
+                PtrTangent(
                     pointer_from_objref(_dx), Float64, Pair{Any,Any}(typeof(_x), Float64)
                 ),
             ),
@@ -1295,7 +1295,7 @@ function _foreigncall_throwing_rows()
             Lifted{Ptr{Any},N}(pointer(primal(x)), NoDual()),
             Lifted{Ptr{Any},N}(
                 pointer(primal(x)),
-                ntuple(_ -> VoidPtrTangent(Ptr{Nothing}(pointer(tangent(x))), Any, Any), N),
+                ntuple(_ -> PtrTangent(Ptr{Nothing}(pointer(tangent(x))), Any, Any), N),
             ),
         )
         for (i, p) in enumerate(slots(a)), (j, q) in enumerate(slots(b))

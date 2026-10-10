@@ -90,26 +90,28 @@ is visible from its argument types.
 """
 struct NoDual end
 
+# Forward counterpart of `PtrTangent`: per-lane addresses plus the same provenance, kept
+# through casts and non-inlined calls.
 # Erased and narrowed pointers share provenance across their plain-pointer lanes.
-struct PointerDual{N}
+struct PtrDual{N}
     lanes::NTuple{N,Ptr{Nothing}}
     elt::Any
     primal_elt::Any
 end
 
-_tangent_fields(::Type{<:PointerDual}) = ()
+_tangent_fields(::Type{<:PtrDual}) = ()
 
-@inline function Base.getproperty(d::PointerDual, name::Symbol)
+@inline function Base.getproperty(d::PtrDual, name::Symbol)
     value = getfield(d, name)
     return name === :primal_elt && value isa BoxedPointerStorage ? Any : value
 end
 
-@inline Base.getindex(d::PointerDual, k::Integer) = VoidPtrTangent(
+@inline Base.getindex(d::PtrDual, k::Integer) = PtrTangent(
     d.lanes[k], d.elt, getfield(d, :primal_elt)
 )
-Base.length(::PointerDual{N}) where {N} = N
-@inline Base.iterate(d::PointerDual, k=1) = k > length(d) ? nothing : (d[k], k + 1)
-function Base.:(==)(a::PointerDual, b::PointerDual)
+Base.length(::PtrDual{N}) where {N} = N
+@inline Base.iterate(d::PtrDual, k=1) = k > length(d) ? nothing : (d[k], k + 1)
+function Base.:(==)(a::PtrDual, b::PtrDual)
     a.lanes == b.lanes &&
         a.elt === b.elt &&
         getfield(a, :primal_elt) === getfield(b, :primal_elt)
@@ -119,8 +121,8 @@ end
     return Lifted{P,N,V}(primal, rep)
 end
 @inline function Lifted{Ptr{P},N}(p::Ptr{P}, ::NoDual) where {P,N}
-    if dual_type(Val(N), Ptr{P}) === PointerDual{N}
-        d = PointerDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, P)
+    if dual_type(Val(N), Ptr{P}) === PtrDual{N}
+        d = PtrDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, P)
         return Lifted{Ptr{P},N,typeof(d)}(p, d)
     end
     return Lifted{Ptr{P},N,NoDual}(p, NoDual())
@@ -284,7 +286,7 @@ end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
-@inline tangent(x::Lifted{P,N,<:PointerDual}, lane::Integer) where {P,N} = tangent(x)[lane]
+@inline tangent(x::Lifted{P,N,<:PtrDual}, lane::Integer) where {P,N} = tangent(x)[lane]
 @inline tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N} = _materialise_lane(
     x, lane, IdDict{Any,Any}()
 )
@@ -911,8 +913,8 @@ end
 # forward storage element types survive erasure and non-inlined call boundaries.
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
     D = tangent_type(Ptr{T})
-    return if D === VoidPtrTangent || T === Any
-        PointerDual{N}
+    return if D === PtrTangent || T === Any
+        PtrDual{N}
     else
         NTuple{N,Ptr{dual_type(Val(N), T)}}
     end
@@ -1150,15 +1152,15 @@ end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
 @inline lift(x::Ptr{Any}, dx::Ptr{Any}) = Lifted{Ptr{Any},1}(
-    x, PointerDual((Ptr{Nothing}(dx),), NoTangent, Any)
+    x, PtrDual((Ptr{Nothing}(dx),), NoTangent, Any)
 )
 @inline function lift(x::Ptr{T}, dx::Ptr{NoTangent}) where {T}
     d = tangent(CoDual(x, dx))
-    return d isa VoidPtrTangent ? lift(x, d) : Lifted{Ptr{T},1}(x, NoDual())
+    return d isa PtrTangent ? lift(x, d) : Lifted{Ptr{T},1}(x, NoDual())
 end
 @inline lift(x::Ptr{NoTangent}, dx::Ptr{NoTangent}) = lift(x, tangent(CoDual(x, dx)))
-@inline lift(x::Ptr, dx::VoidPtrTangent) = Lifted{typeof(x),1}(
-    x, PointerDual((dx.p,), dx.elt, getfield(dx, :primal_elt))
+@inline lift(x::Ptr, dx::PtrTangent) = Lifted{typeof(x),1}(
+    x, PtrDual((dx.p,), dx.elt, getfield(dx, :primal_elt))
 )
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:NDualEltype) reverse fdata is itself a `MemoryRef{T}` (the
@@ -1494,8 +1496,8 @@ end
 @inline function uninit_dual(w::Val{N}, x::Ptr) where {N}
     V = dual_type(w, typeof(x))
     V === NoDual && return NoDual()
-    V === PointerDual{N} &&
-        return PointerDual(ntuple(_ -> Ptr{Nothing}(x), w), NoTangent, eltype(x))
+    V === PtrDual{N} &&
+        return PtrDual(ntuple(_ -> Ptr{Nothing}(x), w), NoTangent, eltype(x))
     return ntuple(_ -> bitcast(fieldtype(V, 1), x), w)
 end
 
@@ -1956,7 +1958,7 @@ end
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
 # `Ptr` lane: 0-dimension placeholder (see the isbits terminal above) — return it unchanged and
 # do not advance the cursor.
-_basis_seed!!(v::Union{Ptr,VoidPtrTangent,PointerDual}, _slots, _cursor, _dict) = v
+_basis_seed!!(v::Union{Ptr,PtrTangent,PtrDual}, _slots, _cursor, _dict) = v
 function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}
     cursor[] += 1
     c = cursor[]

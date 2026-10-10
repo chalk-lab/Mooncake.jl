@@ -428,8 +428,7 @@ function frule!!(
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
     if P === Any
         return Lifted{Ptr{P},N}(
-            y,
-            PointerDual((Ptr{Nothing}(dy),), E, BoxedPointerStorage(primal(a), tangent(a))),
+            y, PtrDual((Ptr{Nothing}(dy),), E, BoxedPointerStorage(primal(a), tangent(a)))
         )
     end
     return Lifted{Ptr{P},N}(y, (dy,))
@@ -463,9 +462,7 @@ function rrule!!(
         if IntrinsicsWrappers._elements_occupy_storage(V)
             dp = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
             if T === Any
-                VoidPtrTangent(
-                    Ptr{Nothing}(dp), V, BoxedPointerStorage(primal(a), tangent(a))
-                )
+                PtrTangent(Ptr{Nothing}(dp), V, BoxedPointerStorage(primal(a), tangent(a)))
             else
                 dp
             end

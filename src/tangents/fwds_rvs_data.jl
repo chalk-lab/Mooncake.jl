@@ -212,7 +212,7 @@ end
 end
 
 fdata_type(::Type{T}) where {T<:Ptr} = T
-fdata_type(::Type{VoidPtrTangent}) = VoidPtrTangent
+fdata_type(::Type{PtrTangent}) = PtrTangent
 
 @generated function fdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{fdata_type($(P.a)),fdata_type($(P.b))})
@@ -340,7 +340,7 @@ end
 __verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
-__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::VoidPtrTangent) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::PtrTangent) = nothing
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     if size(p) != size(f)
@@ -501,7 +501,7 @@ end
 end
 
 rdata_type(::Type{<:Ptr}) = NoRData
-rdata_type(::Type{VoidPtrTangent}) = NoRData
+rdata_type(::Type{PtrTangent}) = NoRData
 
 @generated function rdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{rdata_type($(P.a)),rdata_type($(P.b))})
@@ -902,7 +902,7 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:NoFData} = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
-@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{Ptr,VoidPtrTangent}} = F
+@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{Ptr,PtrTangent}} = F
 
 # Union types. Supported shapes:
 # - F=NoFData, R<:Union{NoRData, IEEEFloat or RData{...}}        (issue #1130)
@@ -1027,7 +1027,7 @@ tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
 tangent(f::Ptr, ::NoRData) = f
-tangent(f::VoidPtrTangent, ::NoRData) = f
+tangent(f::PtrTangent, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)

@@ -84,9 +84,8 @@ foo_throws(e) = throw(e)
             CoDual(Ptr{Float64}(5), Ptr{Float64}(5)),
         )
         @test pb isa Mooncake.NoPullback
-        @test res == CoDual(
-            Ptr{Int64}(5), Mooncake.VoidPtrTangent(Ptr{Nothing}(5), Float64, Float64)
-        )
+        @test res ==
+            CoDual(Ptr{Int64}(5), Mooncake.PtrTangent(Ptr{Nothing}(5), Float64, Float64))
 
         for N in (1, 8)
             z(x) = Mooncake.zero_lifted(Val(N), x)
@@ -100,7 +99,7 @@ foo_throws(e) = throw(e)
                     @test TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
                     x = Mooncake.frule!!(args...)
                     @test if T === Ptr{Cvoid}
-                        tangent(x) isa Mooncake.PointerDual{N} &&
+                        tangent(x) isa Mooncake.PtrDual{N} &&
                             tangent(x).lanes === map(p -> Ptr{Cvoid}(p), lanes) &&
                             tangent(x).elt === Float64 &&
                             tangent(x).primal_elt === Float64

@@ -251,7 +251,7 @@ end
             lane_ref = Nfwd._block_column_ref(
                 getfield(V, :partials_ref), getfield(V, :col), N
             )
-            return PointerDual((getfield(lane_ref, :ptr_or_offset),), T, T)
+            return PtrDual((getfield(lane_ref, :ptr_or_offset),), T, T)
         end
         return NoDual()
     end
@@ -270,7 +270,7 @@ end
         if name === :ptr_or_offset
             E = eltype(getfield(V, :mem))
             E === NoDual && return NoDual()
-            return PointerDual(
+            return PtrDual(
                 (getfield(V, :ptr_or_offset),),
                 E,
                 P === Any ? BoxedPointerStorage(p.mem, V.mem) : P,
@@ -284,7 +284,7 @@ end
     ) where {P,E}
         name = name isa Int ? fieldname(typeof(p), name) : name
         return if name === :ptr && tangent_type(P) !== NoTangent
-            PointerDual((Ptr{Nothing}(pointer(V)),), E, P)
+            PtrDual((Ptr{Nothing}(pointer(V)),), E, P)
         else
             NoDual()
         end
@@ -307,7 +307,7 @@ end
             q = Ptr{Nothing}(pointer(getfield(V, :primal)))
             ntuple(_ -> q, Val(N))
         end
-        return PointerDual(lanes, E, P)
+        return PtrDual(lanes, E, P)
     end
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
@@ -318,7 +318,7 @@ end
 # the projection itself cannot see Nw. Coherent NTuple{Nw,Ptr} values pass through.
 @inline function _check_lifted_field_ptr_lanes(V_i, ::Val{Nw}) where {Nw}
     if Nw > 1 &&
-        V_i isa Union{PointerDual,Tuple{Vararg{Union{Ptr,VoidPtrTangent}}}} &&
+        V_i isa Union{PtrDual,Tuple{Vararg{Union{Ptr,PtrTangent}}}} &&
         length(V_i) != Nw
         throw(
             ArgumentError(

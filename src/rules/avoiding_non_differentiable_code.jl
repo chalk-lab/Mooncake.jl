@@ -5,7 +5,7 @@
 # Shift each lane pointer, including abstract-element pointers such as Ptr{Real}.
 function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw},
-    x::Lifted{P,Nw,<:NTuple{Nw,Union{Ptr,VoidPtrTangent}}},
+    x::Lifted{P,Nw,<:NTuple{Nw,Union{Ptr,PtrTangent}}},
     y::Lifted{<:Integer},
 ) where {Nw,P<:Ptr}
     yp = primal(y)
@@ -15,13 +15,13 @@ function frule!!(
     )
 end
 function frule!!(
-    ::Lifted{typeof(Base.:(+)),N}, x::Lifted{P,N,PointerDual{N}}, y::Lifted{<:Integer}
+    ::Lifted{typeof(Base.:(+)),N}, x::Lifted{P,N,PtrDual{N}}, y::Lifted{<:Integer}
 ) where {N,P<:Ptr}
     d = tangent(x)
     d.elt === NoTangent || iszero(primal(y)) || _check_ptr_descriptor_offset(d)
     return Lifted{P,N}(
         primal(x) + primal(y),
-        PointerDual(
+        PtrDual(
             map(p -> _shift_ptr_fdata(p, primal(y)), d.lanes),
             d.elt,
             getfield(d, :primal_elt),
@@ -57,13 +57,13 @@ end
     )
 end
 # Keep the dynamic call off equal-layout, no-tangent and zero-offset paths.
-@inline function _check_ptr_descriptor_offset(d::Union{VoidPtrTangent,PointerDual})
+@inline function _check_ptr_descriptor_offset(d::Union{PtrTangent,PtrDual})
     d.elt === Nothing || d.elt === d.primal_elt || _check_ptr_descriptor_stride(d)
     return nothing
 end
-@noinline function _check_ptr_descriptor_stride(d::Union{VoidPtrTangent,PointerDual})
+@noinline function _check_ptr_descriptor_stride(d::Union{PtrTangent,PtrDual})
     d.primal_elt isa Pair{Any,Any} && return nothing
-    absent = d isa VoidPtrTangent ? iszero(UInt(d.p)) : all(p -> iszero(UInt(p)), d.lanes)
+    absent = d isa PtrTangent ? iszero(UInt(d.p)) : all(p -> iszero(UInt(p)), d.lanes)
     absent || _check_ptr_byte_offset(d.primal_elt, d.elt, false)
     return nothing
 end
@@ -72,9 +72,9 @@ end
     iszero(UInt(dx)) || _check_ptr_byte_offset(P, T, iszero(n))
     return _shift_ptr_fdata(dx, n)
 end
-@inline function _shift_ptr_fdata(::Type, dx::VoidPtrTangent, n::Integer)
+@inline function _shift_ptr_fdata(::Type, dx::PtrTangent, n::Integer)
     dx.elt === NoTangent || iszero(n) || _check_ptr_descriptor_offset(dx)
-    return VoidPtrTangent(_shift_ptr_fdata(dx.p, n), dx.elt, getfield(dx, :primal_elt))
+    return PtrTangent(_shift_ptr_fdata(dx.p, n), dx.elt, getfield(dx, :primal_elt))
 end
 function rrule!!(
     f::CoDual{typeof(Base.:(+))}, x::CoDual{Ptr{P}}, y::CoDual{<:Integer}

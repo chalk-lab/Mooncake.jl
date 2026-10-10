@@ -520,8 +520,7 @@ end
 # Derivative capacity is a type property: a mutable leaf can acquire values inside `f`.
 @foldable function _holds_derivatives(::Type{T}) where {T}
     T === Union{} && return false
-    (T === NoTangent || T === NoDual || T === VoidPtrTangent || T <: PointerDual) &&
-        return false
+    (T === NoTangent || T === NoDual || T === PtrTangent || T <: PtrDual) && return false
     T isa Union && return _holds_derivatives(T.a) || _holds_derivatives(T.b)
     isconcretetype(T) || return true
     T <: Union{Tangent,MutableTangent,ImmutableDual,MutableDual} &&
@@ -4815,7 +4814,7 @@ end
 
 @inline tangent_dim(t) = tangent_dim(t, IdDict{Any,Any}())
 @inline tangent_dim(::NoTangent, ::IdDict{Any,Any}) = 0
-@inline tangent_dim(::VoidPtrTangent, ::IdDict{Any,Any}) = 0
+@inline tangent_dim(::PtrTangent, ::IdDict{Any,Any}) = 0
 @inline function tangent_dim(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
     return Nfwd.primal_dim(t)
 end

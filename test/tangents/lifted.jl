@@ -389,7 +389,7 @@ const NDAC_VecC64 = NDualArray{
             ),
             1,
             IdDict(),
-        ) isa Mooncake.VoidPtrTangent
+        ) isa Mooncake.PtrTangent
     end
 
     @testset "a canonical NoDual over a non-`NoTangent` primal is not refused" begin
