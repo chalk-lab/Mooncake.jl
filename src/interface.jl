@@ -73,7 +73,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TS
     input_types_and_sizes::TIS
     # Top-level type/size signature for y = f(x...).
     output_type_and_size::TOS
-    sharing::TS
+    aliasing::TS
     reuse_visited::TV
 end
 
@@ -117,14 +117,14 @@ struct GradientChunkSize
 end
 
 mutable struct _ForwardWorkspace{S,T,SS}
-    const sharing::S
-    const seed_sharing::SS
+    const aliasing::S
+    const seed_aliasing::SS
     gradients::Union{Nothing,T}
 
     function _ForwardWorkspace{S,T,SS}(
-        ::Type{T}, sharing::S, seed_sharing::SS, gradients::Union{Nothing,T}
+        ::Type{T}, aliasing::S, seed_aliasing::SS, gradients::Union{Nothing,T}
     ) where {S,T,SS}
-        new{S,T,SS}(sharing, seed_sharing, gradients)
+        new{S,T,SS}(aliasing, seed_aliasing, gradients)
     end
 end
 
@@ -351,17 +351,17 @@ end
 end
 
 """
-    _sharing(fx::Tuple)
+    _aliasing(fx::Tuple)
 
 Partition of the fixed-path storage leaves of `fx` into shared storages, as a tuple with one
-`(first leaf sharing the storage, element offset relative to it, first leaf that is the same
-object)` entry per leaf. Two tuples of the same type with the same sharing give the same
+`(first leaf aliasing the storage, element offset relative to it, first leaf that is the same
+object)` entry per leaf. Two tuples of the same type with the same aliasing give the same
 value, so a cache records it at preparation and compares it per call.
 
 The object relation preserves mutable identity separately from backing storage. Two Array
 headers over one window share accumulation but not extent: `push!` changes only one header.
 """
-@generated function _sharing(fx::Tuple)
+@generated function _aliasing(fx::Tuple)
     leaves = _storage_leaves(fx)
     N = length(leaves)
     keys, offsets, objects = Expr(:tuple), Expr(:tuple), Expr(:tuple)
@@ -408,16 +408,16 @@ end
 end
 
 """
-    _check_sharing(prepared, fx, Val(policy))
+    _check_aliasing(prepared, fx, Val(policy))
 
 Check the partition of fixed-position derivative storage. `:same` preserves storage,
 object identity and relative offsets; derivative/Jacobian calls preserve the first two.
 Mutable interiors and array elements belong to the paired reuse walk.
 """
-@generated function _check_sharing(
+@generated function _check_aliasing(
     prepared, fx::Tuple, ::Val{policy}, (::Val{first_arg})=Val(0)
 ) where {policy,first_arg}
-    policy === :same || error("Unknown sharing policy: $policy")
+    policy === :same || error("Unknown aliasing policy: $policy")
     leaves = _storage_leaves(fx, first_arg isa Symbol ? 0 : first_arg)
     # A different set of positions belongs to the caller's type/arity admission check.
     length(leaves) == fieldcount(prepared) || return :(nothing)
@@ -439,8 +439,8 @@ Mutable interiors and array elements belong to the paired reuse walk.
     end
     return quote
         $(Expr(:meta, :inline))
-        now = _sharing(fx)
-        $test && _throw_sharing_changed(
+        now = _aliasing(fx)
+        $test && _throw_aliasing_changed(
             prepared,
             now,
             $labels,
@@ -451,11 +451,11 @@ Mutable interiors and array elements belong to the paired reuse walk.
     end
 end
 
-@noinline function _throw_sharing_changed(
+@noinline function _throw_aliasing_changed(
     prepared, now, labels, ::Val{policy}, ::Val{context}
 ) where {policy,context}
     # Report object-identity conflicts before storage conflicts, matching the
-    # nested pair order used by the current sharing check.
+    # nested pair order used by the current aliasing check.
     if context === 0 && length(now) * (length(now) - 1) ÷ 2 > 256
         for k in eachindex(now)
             for (field, relation) in ((3, "object"), (1, "storage"))
@@ -535,19 +535,19 @@ end
     return true
 end
 
-# Count the SAME tangents jointly and per argument: only cross-position sharing changes
+# Count the SAME tangents jointly and per argument: only cross-position aliasing changes
 # the count; repeated leaves within one argument and equal scalars do not.
-# This catches nested sharing and sharing with `f` at preparation.
+# This catches nested aliasing and aliasing with `f` at preparation.
 # The full graph walk runs only at preparation; call-time guards cover fixed immutable paths
 # and structured array leaves. A Jacobian's single input range covers aliased captures too.
 function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
-    partition = _sharing(fx)
+    partition = _aliasing(fx)
     leaves = _storage_leaves(typeof(fx))
     for k in eachindex(partition)
         leaves[k][3] == leaves[partition[k][1]][3] || return true
     end
     shared_dim != sum(tangent_dim, ts; init=0) && return true
-    # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
+    # 1.11+ reads the aliasing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
     # they do not, so that version reads it off the primals instead; see `_any_shared_storage!`.
     return @static if VERSION >= v"1.11-rc4"
         _any_shared_storage(ts)
@@ -812,7 +812,7 @@ directional derivative. The `Lifted` interface returns the rule output (a `Lifte
 and computes one derivative per lane of the supplied `Lifted` width — width-1 unless the
 caller built wider (chunked) slots.
 
-Positions sharing differentiable storage must share tangent storage, including through
+Positions aliasing differentiable storage must share tangent storage, including through
 `reshape`, `view`, and captured fields. Supplied tangents are not checked for this:
 conflicting tangents at a shared storage give an undefined direction without an error.
 Build `Lifted` inputs jointly when their primals share storage; independently lifted slots
@@ -984,9 +984,9 @@ is shown by the cache.
             nothing
         end
     end
-    sharing = _sharing(fx)
-    seed_sharing = if gradient_seed isa StructuredGradSeed
-        _sharing(_seed_array_inputs(map(tangent, gradient_seed.arg_seeds), Base.tail(fx)))
+    aliasing = _aliasing(fx)
+    seed_aliasing = if gradient_seed isa StructuredGradSeed
+        _aliasing(_seed_array_inputs(map(tangent, gradient_seed.arg_seeds), Base.tail(fx)))
     else
         nothing
     end
@@ -995,8 +995,8 @@ is shown by the cache.
         (
             input_ts,
             map(_forward_friendly_cache, fx, _copy_output(fx)),
-            _ForwardWorkspace{typeof(sharing),typeof(input_ts),typeof(seed_sharing)}(
-                typeof(input_ts), sharing, seed_sharing, nothing
+            _ForwardWorkspace{typeof(aliasing),typeof(input_ts),typeof(seed_aliasing)}(
+                typeof(input_ts), aliasing, seed_aliasing, nothing
             ),
         )
     else
@@ -1005,13 +1005,13 @@ is shown by the cache.
             nothing,
             nothing,
             _ForwardWorkspace{
-                typeof(sharing),
+                typeof(aliasing),
                 Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
-                typeof(seed_sharing),
+                typeof(seed_aliasing),
             }(
                 Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
-                sharing,
-                seed_sharing,
+                aliasing,
+                seed_aliasing,
                 nothing,
             ),
         )
@@ -1044,8 +1044,8 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
     _check_dict_cache_inputs(input_primals)
     _check_prepared_cache(cache.input_types_and_sizes, input_primals)
-    _check_sharing(
-        cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+    _check_aliasing(
+        cache.gradient_workspace.aliasing, input_primals, Val(:same), Val(:derivative)
     )
     return _value_and_derivative!!(cache, fx...)
 end
@@ -1135,8 +1135,8 @@ snapshotted — a callable that mutates its own fields is not restored.
         input_primals = tuple_map(first, fx)
         _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
         # Types and sizes match when only the aliasing differs, so the check above cannot see it.
-        _check_sharing(
-            cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+        _check_aliasing(
+            cache.gradient_workspace.aliasing, input_primals, Val(:same), Val(:derivative)
         )
         tuple_map(
             cache.input_tangents, input_friendly_tangents, ntuple(identity, Val(M))
@@ -1198,8 +1198,8 @@ end
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
-    _check_sharing(
-        cache.gradient_workspace.sharing, input_primals, Val(:same), Val(:derivative)
+    _check_aliasing(
+        cache.gradient_workspace.aliasing, input_primals, Val(:same), Val(:derivative)
     )
     input_tangents = tuple_map(last, fx)
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
@@ -1396,7 +1396,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     _check_cache_constants(cache.single_rule, (f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
-    _check_sharing(cache.gradient_workspace.sharing, (f, x), Val(:same), Val(:derivative))
+    _check_aliasing(cache.gradient_workspace.aliasing, (f, x), Val(:same), Val(:derivative))
     total_dim = length(x)
     # No input dimensions: the chunk width resolves to zero, so there is no seed to sweep and no
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
@@ -1486,7 +1486,7 @@ end
     y_cache = cache.y_cache
     total_dim, Ty = _check_reverse_reuse(
         cache.input_types_and_sizes,
-        cache.sharing,
+        cache.aliasing,
         cache.reuse_visited,
         cache.tangents,
         (f, x),
@@ -2026,43 +2026,43 @@ end
 # preparation, which record the prepared sizes, abstract-slot types and definedness.
 # Sweeps validate through the same owner once, before pairing their first row.
 @inline function _reuse_coduals(
-    types_and_sizes, sharing, visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple
+    types_and_sizes, aliasing, visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple
 )
-    _check_reverse_reuse(types_and_sizes, sharing, visited, tangents, fx)
+    _check_reverse_reuse(types_and_sizes, aliasing, visited, tangents, fx)
     return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
 end
 
 @inline function _check_reverse_reuse(
     types_and_sizes,
-    sharing,
+    aliasing,
     visited,
     tangents,
     fx,
     after_envelope::E=Returns(nothing),
-    after_sharing::S=Returns(nothing),
+    after_aliasing::S=Returns(nothing),
 ) where {E,S}
     _check_prepared_cache(types_and_sizes, fx)
     # Keep output and caller-direction errors at their original admission positions.
     result = after_envelope()
     # Unwrap inside this zero-derivative boundary: differentiating the type-parameter
     # lookup widens large partitions and boxes the owner's lifted arguments.
-    partition = sharing isa Val ? typeof(sharing).parameters[1] : sharing
-    _check_sharing(partition, fx, Val(:same))
-    after_sharing()
+    partition = aliasing isa Val ? typeof(aliasing).parameters[1] : aliasing
+    _check_aliasing(partition, fx, Val(:same))
+    after_aliasing()
     _check_tangent_reuse(visited, tangents, fx)
     return result
 end
 
 @inline function _check_reverse_reuse(
     types_and_sizes,
-    sharing,
+    aliasing,
     visited,
     tangents,
     fx,
     before_envelope::E,
-    ::Val{:sharing_first},
+    ::Val{:aliasing_first},
 ) where {E}
-    _check_sharing(sharing, fx, Val(:same))
+    _check_aliasing(aliasing, fx, Val(:same))
     result = before_envelope()
     _check_prepared_cache(types_and_sizes, fx)
     _check_tangent_reuse(visited, tangents, fx)
@@ -2368,14 +2368,14 @@ inside the function, or use rule-taking forms. Abstract or `Any`-typed storage i
 using its contents' runtime types at preparation only; preserve those types on cache reuse.
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and how arguments sharing
+including the `config.friendly_tangents` output-tangent contract and how arguments aliasing
 one storage are handled.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
-identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
 and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
@@ -2427,7 +2427,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _sharing(fx),
+        _aliasing(fx),
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2595,7 +2595,7 @@ will return both to their original state as part of the process of computing the
 
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
-identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
 and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
@@ -2619,7 +2619,7 @@ cache. See [Known Limitations](@ref).
     `Array` alongside its backing `Memory` — share one cotangent buffer, so each of those
     positions reports the whole accumulated cotangent rather than its own share of it. Do
     not add them together. Which arguments share a storage is part of the shape the cache
-    was prepared for: where Mooncake can see the sharing (top-level arguments, and mutables
+    was prepared for: where Mooncake can see the aliasing (top-level arguments, and mutables
     nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
     a `PreparedCacheError`.
 
@@ -2663,7 +2663,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     fx = (f, x...)
     coduals = _reuse_coduals(
         cache.input_types_and_sizes,
-        cache.sharing,
+        cache.aliasing,
         getfield(cache, :reuse_visited),
         getfield(cache, :tangents),
         fx,
@@ -2693,7 +2693,7 @@ inside the function, or use rule-taking forms. Abstract or `Any`-typed storage i
 using its contents' runtime types at preparation only; preserve those types on cache reuse.
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and how arguments sharing
+including the `config.friendly_tangents` output-tangent contract and how arguments aliasing
 one storage are handled. The same cache also serves [`value_and_pullback!!`](@ref) with a
 scalar output tangent.
 
@@ -2701,7 +2701,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
 
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
-identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
 and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
@@ -2741,7 +2741,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _sharing(fx),
+        _aliasing(fx),
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2768,7 +2768,7 @@ will return both to their original state as part of the process of computing the
 
 Reuse must preserve the input alias relationships recorded during preparation. The guard
 checks mutable inputs and leaves nested in tuples and named tuples, including object
-identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
 and `MemoryRef` offsets. Above the first mutable or array storage, immutable slots may
@@ -2792,7 +2792,7 @@ cache. See [Known Limitations](@ref).
     `Array` alongside its backing `Memory` — share one cotangent buffer, so each of those
     positions reports the whole accumulated cotangent rather than its own share of it. Do
     not add them together. Which arguments share a storage is part of the shape the cache
-    was prepared for: where Mooncake can see the sharing (top-level arguments, and mutables
+    was prepared for: where Mooncake can see the aliasing (top-level arguments, and mutables
     nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
     a `PreparedCacheError`.
 
@@ -2835,7 +2835,7 @@ value_and_gradient!!(cache, f, x, y)
     fx = (f, x...)
     coduals = _reuse_coduals(
         cache.input_types_and_sizes,
-        cache.sharing,
+        cache.aliasing,
         getfield(cache, :reuse_visited),
         getfield(cache, :tangents),
         fx,
@@ -3020,7 +3020,7 @@ end
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
-    _check_sharing(cache.gradient_workspace.sharing, (f, x...), Val(:same), Val(:forward))
+    _check_aliasing(cache.gradient_workspace.aliasing, (f, x...), Val(:same), Val(:forward))
     input_primals = (f, x...)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     native_gradients = let workspace = cache.gradient_workspace.gradients
@@ -3205,9 +3205,9 @@ function value_and_gradient!!(
     N = Nm1 + 1
     _check_gradient_input_aliasing(cache)
     if _has_storage_leaves(F) === false
-        _check_sharing(cache.gradient_workspace.sharing, xs, Val(:same), Val(1))
+        _check_aliasing(cache.gradient_workspace.aliasing, xs, Val(:same), Val(1))
     else
-        _check_sharing(cache.gradient_workspace.sharing, (f, xs...), Val(:same))
+        _check_aliasing(cache.gradient_workspace.aliasing, (f, xs...), Val(:same))
     end
     seed = cache.gradient_seed
     # Only destructure flat tuple seeds; other shapes use the generic method's dispatch.
@@ -3555,8 +3555,8 @@ function _structured_gradient!!(
     # The leaf table fixes the alias partition, including arrays inside struct fields.
     _restore_seed_bindings!(seed.bindings)
     arrays = _seed_array_inputs(map(tangent, seed.arg_seeds), xs)
-    _check_sharing(
-        cache.gradient_workspace.seed_sharing, arrays, Val(:same), Val(:structured)
+    _check_aliasing(
+        cache.gradient_workspace.seed_aliasing, arrays, Val(:same), Val(:structured)
     )
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
@@ -3764,7 +3764,7 @@ true
     visited = grad_cache.reuse_visited
     types_and_sizes = grad_cache.input_types_and_sizes
     # `lift` boxes this closure on 1.10; keep the fixed partition out of its runtime payload.
-    sharing = Val(grad_cache.sharing)
+    aliasing = Val(grad_cache.aliasing)
     grad_f = if for_rule isa DerivedFoRRule{Nothing}
         y -> begin
             val_and_grad = value_and_gradient!!(grad_cache, f, y)
@@ -3774,14 +3774,14 @@ true
         y -> begin
             inner_rule = get_inner_rrule(for_rule)
             coduals = _reuse_coduals(
-                types_and_sizes, sharing, visited, tangents, (f, y), (true, true)
+                types_and_sizes, aliasing, visited, tangents, (f, y), (true, true)
             )
             val, grad = __value_and_gradient!!(inner_rule, coduals...)
             (val, grad[2])
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config=fwd_config)
-    # `grad_tangent` is built independently of each direction, so a `grad_f` sharing storage
+    # `grad_tangent` is built independently of each direction, so a `grad_f` aliasing storage
     # with `x` would give that storage two tangents and lose one.
     getfield(fwd_cache, :inputs_share_storage) && _throw_hessian_input_alias_error()
     return HVPCache(
@@ -3791,7 +3791,7 @@ true
         fwd_cache,
         getfield(grad_cache, :output_type_and_size),
         nothing,
-        (types_and_sizes, typeof(sharing).parameters[1], visited, tangents),
+        (types_and_sizes, typeof(aliasing).parameters[1], visited, tangents),
     )
 end
 
@@ -4103,7 +4103,7 @@ H
             )
             (T, n)
         end,
-        Val(:sharing_first),
+        Val(:aliasing_first),
     )
     if n == 0
         fval, _, _ = _value_and_hvp!!(cache, v, x1)
@@ -4213,7 +4213,7 @@ function __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) wh
 end
 
 # Retain snapshot-node => original-call-object correspondence during population, before the
-# rule can rebind any fields. Each argument validates its own prepared partition; sharing across
+# rule can rebind any fields. Each argument validates its own prepared partition; aliasing across
 # arguments may change for a directional derivative. Restore visits are independent of this map.
 struct _RestoreContext
     originals::IdDict{Any,Any}
@@ -4880,10 +4880,10 @@ end
 #   slot types, defined primal slots and MemoryRef offsets through structural tangents;
 #   custom tangents limit coverage. Forward refresh and snapshot walks check extents
 #   (`_refresh_all!`, `_snapshot_inputs!!`, `_check_copy_extent`);
-# - fixed-position storage sharing: `_check_sharing` compares `_sharing` partitions;
-#   every entry preserves storage and object sharing with `:same`. Derivative/Jacobian
+# - fixed-position storage aliasing: `_check_aliasing` compares `_aliasing` partitions;
+#   every entry preserves storage and object aliasing with `:same`. Derivative/Jacobian
 #   calls allow offsets to move; reverse and gradient calls also preserve relative offsets.
-# - reverse `_check_reverse_reuse` owns the envelope, fixed sharing and nested checks
+# - reverse `_check_reverse_reuse` owns the envelope, fixed aliasing and nested checks
 #   before `_reuse_coduals` pairs inputs, including the derived HVP closure. Variable
 #   positions remain the paired walk's responsibility.
 

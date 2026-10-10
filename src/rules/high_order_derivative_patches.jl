@@ -358,9 +358,9 @@ end
 end
 
 # Alias metadata depends on identities, not differentiable values.
-@zero_derivative MinimalCtx Tuple{typeof(_sharing),Tuple}
-@zero_derivative MinimalCtx Tuple{typeof(_check_sharing),Tuple,Tuple,Val}
-@zero_derivative MinimalCtx Tuple{typeof(_check_sharing),Tuple,Tuple,Val,Val}
+@zero_derivative MinimalCtx Tuple{typeof(_aliasing),Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(_check_aliasing),Tuple,Tuple,Val}
+@zero_derivative MinimalCtx Tuple{typeof(_check_aliasing),Tuple,Tuple,Val,Val}
 @zero_derivative MinimalCtx Tuple{
     typeof(_check_reverse_reuse),
     Tuple,

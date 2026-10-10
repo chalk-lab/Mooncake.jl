@@ -3456,7 +3456,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
         end
 
-        @testset "friendly nondifferentiable sharing on reuse" begin
+        @testset "friendly nondifferentiable aliasing on reuse" begin
             local f
             for w in (1, 8), n in (2, 12), shared in (false, true)
                 f = (xs...) -> sum(x -> sum(abs2, x), xs)
@@ -3476,8 +3476,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ) == (10.0n, 8.0n)
                 if VERSION < v"1.11-rc4" && n == 12
                     @test TestUtils.count_allocs(
-                        Mooncake._check_sharing,
-                        cache.gradient_workspace.sharing,
+                        Mooncake._check_aliasing,
+                        cache.gradient_workspace.aliasing,
                         (f, called...),
                         Val(:same),
                         Val(:derivative),
@@ -3557,7 +3557,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
         end
 
-        @testset "forward caches preserve prepared sharing" begin
+        @testset "forward caches preserve prepared aliasing" begin
             # Prepare-time aliased arguments share one tangent buffer, so a call with distinct
             # arguments leaves both positions holding the last tangent written: 6.0 for a truth
             # of 5.0. Reverse already rejects this.
@@ -4436,7 +4436,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         cache, FwdAliasHolder(w), w
                     )
                 end
-                # The same shape without sharing is unaffected.
+                # The same shape without aliasing is unaffected.
                 u = copy(w)
                 cache = prepare_hessian_cache(FwdAliasHolder(w), u)
                 _, g, H = value_gradient_and_hessian!!(cache, FwdAliasHolder(w), u)
@@ -4601,10 +4601,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             @testset "constant alias metadata" for n in (2, 24)
                 fx = (identity, ntuple(i -> [Float64(i)], n))
-                aliases = Mooncake._sharing(fx)
-                TestUtils.test_rule(Random.Xoshiro(123), Mooncake._sharing, fx)
+                aliases = Mooncake._aliasing(fx)
+                TestUtils.test_rule(Random.Xoshiro(123), Mooncake._aliasing, fx)
                 TestUtils.test_rule(
-                    Random.Xoshiro(123), Mooncake._check_sharing, aliases, fx, Val(:same)
+                    Random.Xoshiro(123), Mooncake._check_aliasing, aliases, fx, Val(:same)
                 )
             end
             @testset "unchanged repeated arrays" for a in (ones(2, 2), fill(1.0), ones(2))
@@ -4620,7 +4620,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     p, 1.0, f, a, copy(a)
                 )
             end
-            @testset "opaque storage sharing" begin
+            @testset "opaque storage aliasing" begin
                 a = [1.0, 2.0]
                 state = OpaqueArrayState(a)
                 f(_, x) = sum(abs2, x)
@@ -4655,7 +4655,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test Mooncake.value_and_gradient!!(g, f, called...) == expected
                 @test Mooncake.value_and_pullback!!(p, 1.0, f, called...) == expected
                 @test TestUtils.count_allocs(
-                    Mooncake._check_sharing, g.sharing, (f, called...), Val(:same)
+                    Mooncake._check_aliasing, g.aliasing, (f, called...), Val(:same)
                 ) == 0
             end
             @static if VERSION >= v"1.11-rc4"
@@ -4671,8 +4671,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         Mooncake.PreparedCacheError,
                         "shared one object when the cache was prepared",
                     ) do
-                        Mooncake._check_sharing(
-                            Mooncake._sharing(ref_inputs),
+                        Mooncake._check_aliasing(
+                            Mooncake._aliasing(ref_inputs),
                             (identity, r, memoryref(m_ref, 2), extras...),
                             Val(:same),
                         )
@@ -4701,12 +4701,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         a, b = wrap(moved, 2), wrap(moved, offset + 1)
                         translated =
                             wide ? ((a, Base.tail(Base.front(args[1]))..., b),) : (a, b)
-                        @test Mooncake._check_sharing(
-                            g.sharing, (fun, translated...), Val(:same)
+                        @test Mooncake._check_aliasing(
+                            g.aliasing, (fun, translated...), Val(:same)
                         ) === nothing
                         @test TestUtils.count_allocs(
-                            Mooncake._check_sharing,
-                            g.sharing,
+                            Mooncake._check_aliasing,
+                            g.aliasing,
                             (fun, translated...),
                             Val(:same),
                         ) == 0
@@ -4726,7 +4726,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "aliasing mismatch between preparation and call" begin
-                # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
+                # Types/sizes cannot detect changed aliasing. Reject either direction of alias-partition
                 # mismatch, which otherwise accumulates into the wrong prepared buffers.
                 f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
                 x0 = [1.0, 2.0, 3.0]
@@ -4799,7 +4799,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     @test gr[2] == [2.0, 2.0, 2.0]
 
                     # Forward must refuse this per call: a cache prepared with unrelated arguments has a
-                    # false prepare-time sharing flag, which cannot guard a newly aliased Array/Memory pair.
+                    # false prepare-time aliasing flag, which cannot guard a newly aliased Array/Memory pair.
                     fwd = Mooncake.prepare_derivative_cache(
                         h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
                     )
@@ -4864,7 +4864,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 # Reuse after a rejected call must clear the validation workspace too.
                 @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
                 @test TestUtils.count_allocs(
-                    Mooncake._check_sharing, many_cache.sharing, (many, ms), Val(:same)
+                    Mooncake._check_aliasing, many_cache.aliasing, (many, ms), Val(:same)
                 ) == 0
                 # Forward caches preserve the prepared partition too.
                 fwd_many = Mooncake.prepare_derivative_cache(
@@ -4971,7 +4971,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @static if VERSION >= v"1.11-"
-                @testset "forward gradient refuses inputs sharing backing storage" begin
+                @testset "forward gradient refuses inputs aliasing backing storage" begin
                     # Distinct containers over one buffer evade identity-based tangent_dim deduplication;
                     # the forward gradient must refuse rather than overwrite their shared gradient entries.
                     a_st = collect(1.0:6.0)
@@ -5180,7 +5180,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     end
                 end
 
-                @testset "nondifferentiable sharing on reuse" begin
+                @testset "nondifferentiable aliasing on reuse" begin
                     for wrap in (view, StructuredPair),
                         shared in (false, true),
                         prepare in (
@@ -5205,8 +5205,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                             [2, 0, 6, 0]
                         if prepare === Mooncake.prepare_gradient_cache
                             @test TestUtils.count_allocs(
-                                Mooncake._check_sharing,
-                                cache.sharing,
+                                Mooncake._check_aliasing,
+                                cache.aliasing,
                                 (f, wrap(a, i), wrap(b, shared ? j : i)),
                                 Val(:same),
                             ) == 0
@@ -5215,7 +5215,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
 
                 @static if VERSION >= v"1.11-rc4"
-                    @testset "nonidentity sharing within one argument" begin
+                    @testset "nonidentity aliasing within one argument" begin
                         m = collect(1.0:4.0).ref.mem
                         for w in (1, 8),
                             reverse_order in (false, true),
@@ -5319,8 +5319,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gk[4] == [6.0, 6.0]
             end
 
-            @testset "forward gradient refuses inputs sharing storage across positions" begin
-                # Prepared sharing checks must include captured arrays: the per-call top-level scan
+            @testset "forward gradient refuses inputs aliasing storage across positions" begin
+                # Prepared aliasing checks must include captured arrays: the per-call top-level scan
                 # sees only mutable arguments, excluding f and its fields.
                 w = [1.0, 2.0, 3.0]
                 aliased = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), w)
