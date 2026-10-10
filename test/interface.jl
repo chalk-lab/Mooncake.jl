@@ -3258,8 +3258,28 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 tuple_jvp_call()
                 tuple_jvp_call()
                 @test tuple_jvp_result[] == 48.0
+                @test TestUtils.count_allocs(
+                    Mooncake._snapshot_inputs!!,
+                    tuple_jvp_cache.input_snapshot,
+                    (jvp_a, jvp_b),
+                ) == 0
+                @test TestUtils.count_allocs(
+                    Mooncake._restore_inputs!!,
+                    tuple_jvp_cache.input_snapshot,
+                    (jvp_a, jvp_b),
+                ) == 0
                 @test minimum(@allocated(tuple_jvp_call()) for _ in 1:5) <=
                     (VERSION >= v"1.11-rc4" ? 5376 : 4816)
+                @static if VERSION >= v"1.11.0-rc4"
+                    for _ in 1:3
+                        Mooncake._snapshot_inputs!!(
+                            tuple_jvp_cache.input_snapshot, (copy(jvp_a), jvp_b)
+                        )
+                    end
+                    @test length(
+                        tuple_jvp_cache.input_snapshot.slots[1].context.vector_refs
+                    ) == 1
+                end
             end
         end
 

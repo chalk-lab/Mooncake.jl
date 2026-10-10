@@ -136,7 +136,7 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB,FA,FZ}
     gradient_chunk_size::GradientChunkSize
     chunk_rule::CF
     input_types_and_sizes::S
-    # Snapshot x... (not the potentially uncopyable f) once per call and restore in place:
+    # Cache-owned snapshots and restore contexts for x... (not the potentially uncopyable f):
     # forward slots alias user storage, which a mutating rule must leave unchanged.
     input_snapshot::IS
     # Cache-owned gradient seeds: a tuple for same-eltype float vectors,
@@ -1009,7 +1009,10 @@ is shown by the cache.
                 Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
                 typeof(seed_sharing),
             }(
-                Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}, sharing, seed_sharing, nothing
+                Tuple{map(tangent_type, fieldtypes(typeof(fx)))...},
+                sharing,
+                seed_sharing,
+                nothing,
             ),
         )
     end
@@ -1021,7 +1024,7 @@ is shown by the cache.
         GradientChunkSize(gradient_chunk_size, gradient_chunk_size_auto),
         chunk_rule,
         input_types_and_sizes,
-        map(_copy_output, Base.tail(fx)),
+        _prepare_input_snapshot(Base.tail(fx)),
         gradient_seed,
         inputs_share_storage,
         jacobian_buffer,
@@ -1169,9 +1172,7 @@ snapshotted — a callable that mutates its own fields is not restored.
     _empty_alias_map!(cache.friendly_alias_cache)
 
     # Restore in `finally` so a mutating rule that throws also leaves inputs unchanged.
-    input_snapshot, restore_contexts = _snapshot_inputs!!(
-        cache.input_snapshot, Base.tail(input_primals)
-    )
+    _snapshot_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     try
         # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}`
         # method.
@@ -1188,7 +1189,7 @@ snapshotted — a callable that mutates its own fields is not restored.
         # Copy before restoring: the result may alias a mutated input. Isbits copies are free.
         return _copy_output(output_primal), output_friendly_tangent
     finally
-        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
+        _restore_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     end
 end
 
@@ -1210,16 +1211,14 @@ end
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs,
     # on the throwing path as well; see the friendly method above.
-    input_snapshot, restore_contexts = _snapshot_inputs!!(
-        cache.input_snapshot, Base.tail(input_primals)
-    )
+    _snapshot_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     try
         output = __call_rule(cache.single_rule, input_lifted)
         # Copy the output primal out before the restore: it may alias an in-place-mutated
         # input, which the restore would otherwise overwrite with the original.
         return _copy_output(primal(output)), last(unlift(output))
     finally
-        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
+        _restore_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     end
 end
 
@@ -1403,13 +1402,13 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
     # the value and the output length. Even an empty vector can be grown by `f`.
     if total_dim == 0
-        snapshots, contexts = _snapshot_inputs!!(cache.input_snapshot, (x,))
+        _snapshot_inputs!!(cache.input_snapshot, (x,))
         try
             y = _copy_output(f(x))
             Ty = _check_jacobian_output(y, eltype(x))
             return y, zeros(Ty, length(y), 0)
         finally
-            _restore_inputs!!((x,), snapshots, contexts)
+            _restore_inputs!!(cache.input_snapshot, (x,))
         end
     end
     # Packable seeds and J are cache-owned and reused; refreshing seeds leaves x untouched.
@@ -1443,7 +1442,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # Snapshot `x` into the cache buffer (the args copy, so `x` is element 1) before any
     # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
     # compound) and once at the end, leaving `x` unchanged.
-    snapshots, contexts = _snapshot_inputs!!(cache.input_snapshot, (x,))
+    _snapshot_inputs!!(cache.input_snapshot, (x,))
     try
         output = _value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
         # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that
@@ -1459,7 +1458,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             J[:, lane] .= tangent(output, lane)
         end
         for start_col in (W + 1):W:total_dim
-            _restore_inputs!!((x,), snapshots, contexts)
+            _restore_inputs!!(cache.input_snapshot, (x,))
             seed_vs = tangent(zero_lifted(Val(W), (f, x)))
             f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
             x_seed = Lifted{typeof(x),W}(x, seed_vs[2])
@@ -1475,7 +1474,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         return y, J
     finally
         # Leave `x` unchanged whether or not a chunk threw (each chunk ran on the original).
-        _restore_inputs!!((x,), snapshots, contexts)
+        _restore_inputs!!(cache.input_snapshot, (x,))
     end
 end
 
@@ -3042,9 +3041,7 @@ end
         # Snapshot/restore like the chunked loop below: forward slots alias the user's
         # storage, so an in-place `f` over a zero-dimension input (e.g. `Vector{Int}`) would
         # otherwise mutate it.
-        input_snapshot, restore_contexts = _snapshot_inputs!!(
-            cache.input_snapshot, Base.tail(input_primals)
-        )
+        _snapshot_inputs!!(cache.input_snapshot, Base.tail(input_primals))
         # `_finalize_gradient` reads the input primals, so it runs after the restore.
         y = try
             primal(
@@ -3053,7 +3050,7 @@ end
                 ),
             )
         finally
-            _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
+            _restore_inputs!!(cache.input_snapshot, Base.tail(input_primals))
         end
         _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
         return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -3068,16 +3065,14 @@ end
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the
     # end.
-    input_snapshot, restore_contexts = _snapshot_inputs!!(
-        cache.input_snapshot, Base.tail(input_primals)
-    )
+    _snapshot_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     # Single sweep over all chunks. `total_dim >= 1` here (the zero-dimension case returned
     # above), so the first iteration always runs and assigns `y`; its leading input restore
     # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
     try
         for start_slot in 1:W:total_dim
-            _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
+            _restore_inputs!!(cache.input_snapshot, Base.tail(input_primals))
             slots = ntuple(lane -> start_slot + lane - 1, W)
             lanes = ntuple(
                 lane -> last(
@@ -3117,7 +3112,7 @@ end
     finally
         # Leave the inputs unchanged whether or not a chunk threw (each chunk ran on the
         # original).
-        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
+        _restore_inputs!!(cache.input_snapshot, Base.tail(input_primals))
     end
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -4226,6 +4221,31 @@ struct _RestoreContext
     vector_refs::IdDict{Any,Any}
 end
 
+# Reuse traversal maps while retaining the identities needed to restore rebound fields.
+mutable struct _InputSnapshotSlot{P}
+    snapshot::P
+    context::_RestoreContext
+end
+
+struct _InputSnapshotCache{S<:Tuple}
+    slots::S
+end
+
+function _prepare_input_snapshot(src::Tuple)
+    all(isbitstype, map(typeof, src)) && return nothing
+    return _InputSnapshotCache(
+        map(src) do x
+            _InputSnapshotSlot(
+                _copy_output(x),
+                _RestoreContext(IdDict{Any,Any}(), IdDict{Any,Any}(), IdDict{Any,Any}()),
+            )
+        end,
+    )
+end
+
+_snapshot_inputs!!(::Nothing, ::Tuple) = nothing
+_restore_inputs!!(::Nothing, ::Tuple) = nothing
+
 function _snapshot_inputs!!(dst::Tuple, src::Tuple)
     pairs = map(dst, src) do d, s
         c = IdDict{Any,Any}()
@@ -4239,6 +4259,112 @@ function _snapshot_inputs!!(dst::Tuple, src::Tuple)
         (snapshot, _RestoreContext(c, IdDict{Any,Any}(), refs))
     end
     return map(first, pairs), map(last, pairs)
+end
+
+@generated function _snapshot_inputs!!(cache::_InputSnapshotCache{S}, src::Tuple) where {S}
+    n = length(S.parameters)
+    return Expr(
+        :block,
+        [:(
+            let slot = cache.slots[$i], context = slot.context
+                _snapshot_input_slot!!(slot, src[$i])
+            end
+        ) for i in 1:n]...,
+        :(nothing),
+    )
+end
+
+@inline function _snapshot_input_slot!!(
+    slot::_InputSnapshotSlot{P}, src::P
+) where {P<:_BuiltinArrays}
+    if isbitstype(eltype(P))
+        _check_copy_extent(slot.snapshot, src)
+        copyto!(slot.snapshot, src)
+        context = slot.context
+        _empty_alias_map!(context.originals)
+        context.originals[slot.snapshot] = src
+        @static if VERSION >= v"1.11.0-rc4"
+            if src isa Vector && get(context.vector_refs, src, nothing) !== src.ref
+                _empty_alias_map!(context.vector_refs)
+                context.vector_refs[src] = src.ref
+            end
+        end
+        return nothing
+    end
+    context = slot.context
+    _empty_alias_map!(context.originals)
+    slot.snapshot = _copy_to_output!!(slot.snapshot, src, context.originals)
+    _refresh_vector_refs!(context)
+    return nothing
+end
+
+function _snapshot_input_slot!!(slot::_InputSnapshotSlot, src)
+    context = slot.context
+    _empty_alias_map!(context.originals)
+    slot.snapshot = _copy_to_output!!(slot.snapshot, src, context.originals)
+    _refresh_vector_refs!(context)
+    return nothing
+end
+
+@inline function _refresh_vector_refs!(context::_RestoreContext)
+    @static if VERSION >= v"1.11.0-rc4"
+        for obj in keys(context.vector_refs)
+            haskey(context.originals, obj) || delete!(context.vector_refs, obj)
+        end
+        for obj in keys(context.originals)
+            obj isa Vector && _refresh_vector_ref!(context.vector_refs, obj)
+        end
+    end
+    return nothing
+end
+
+function _refresh_vector_ref!(refs, obj::Vector)
+    get(refs, obj, nothing) === obj.ref || (refs[obj] = obj.ref)
+    return nothing
+end
+
+@generated function _restore_inputs!!(cache::_InputSnapshotCache{S}, dst::Tuple) where {S}
+    n = length(S.parameters)
+    return Expr(
+        :block,
+        [:(
+            let slot = cache.slots[$i], context = slot.context
+                _restore_input_slot!!(slot, dst[$i])
+            end
+        ) for i in 1:n]...,
+        :(nothing),
+    )
+end
+
+@inline function _restore_input_slot!!(
+    slot::_InputSnapshotSlot{P}, dst::P
+) where {P<:_BuiltinArrays}
+    if isbitstype(eltype(P))
+        @static if VERSION >= v"1.11.0-rc4"
+            if dst isa Vector
+                if haskey(slot.context.vector_refs, dst)
+                    setfield!(dst, :ref, slot.context.vector_refs[dst])
+                    setfield!(dst, :size, size(slot.snapshot))
+                else
+                    resize!(dst, length(slot.snapshot))
+                end
+            end
+        else
+            dst isa Vector && resize!(dst, length(slot.snapshot))
+        end
+        _check_copy_extent(dst, slot.snapshot)
+        copyto!(dst, slot.snapshot)
+        return nothing
+    end
+    _empty_alias_map!(slot.context.seen)
+    _copy_to_output!!(dst, slot.snapshot, slot.context.seen, slot.context)
+    return nothing
+end
+
+function _restore_input_slot!!(slot::_InputSnapshotSlot, dst)
+    _empty_alias_map!(slot.context.seen)
+    _copy_to_output!!(dst, slot.snapshot, slot.context.seen, slot.context)
+    return nothing
 end
 
 function _restore_inputs!!(dst::Tuple, src::Tuple, contexts::Tuple)
