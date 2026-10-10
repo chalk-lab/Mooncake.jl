@@ -420,13 +420,13 @@ both object identity relationships and shared backing storage for leaf types tha
 derivatives, including empty containers that the function can fill. Distinct empty arrays
 count as independent storage only when their owning backing `Memory` has length zero
 (Julia 1.11+). Arrays emptied with `empty!` can retain
-nonempty backing storage, whose sharing must still be preserved. Julia 1.10 uses
+nonempty backing storage, whose aliasing must still be preserved. Julia 1.10 uses
 `Base.dataids` to identify storage. On Julia 1.11 and later,
 relative offsets within each shared backing `Memory` group must also match. A mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
 those relationships change. Forward caches using structured gradient seeds also check
-the sharing of differentiable array leaves inside struct fields before refreshing their buffers.
+the aliasing of differentiable array leaves inside struct fields before refreshing their buffers.
 
 Reverse reuse checks derivative storage through tuples, named tuples, builtin arrays
 and structural tangents in `f` and `x`: sizes, compatible slot types, defined primal
@@ -439,15 +439,15 @@ size check when the primal is also an `AbstractArray`. Callers must preserve ali
 in the parts the alias guard does not inspect: it does not traverse mutable struct interiors,
 abstractly typed fields, array elements, or other variable-length containers such as
 dictionaries. It does not establish overlap introduced through raw pointers or
-`unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
+`unsafe_wrap`; on Julia 1.10, array storage aliasing is identified by `Base.dataids`.
 Every forward prepared-cache entry point preserves the prepared storage and object
-sharing at fixed positions, including sharing between the callable and its arguments.
+aliasing at fixed positions, including aliasing between the callable and its arguments.
 Preparing with distinct arrays and reusing with one array at both positions raises
 `Mooncake.PreparedCacheError`, even for caller-supplied native directions. Derivative
-and Jacobian calls permit offset changes that preserve these sharing relationships.
-Unchanged sharing remains supported for derivative and Jacobian calls; forward gradients
+and Jacobian calls permit offset changes that preserve these aliasing relationships.
+Unchanged aliasing remains supported for derivative and Jacobian calls; forward gradients
 refuse derivative storage shared across arguments, including the callable.
-The prepared sharing check has the same boundary, including abstractly typed
+The prepared aliasing check has the same boundary, including abstractly typed
 fields and mutable functor interiors.
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
