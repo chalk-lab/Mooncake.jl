@@ -3,14 +3,12 @@ name: Contributor triage
 on:
   pull_request:
     paths:
-      - '.github/APPROVED_CONTRIBUTORS'
-      - '.github/scripts/triage*'
+      - '.github/triage/**'
       - '.github/workflows/triage.yml'
   push:
     branches: [main]
     paths:
-      - '.github/APPROVED_CONTRIBUTORS'
-      - '.github/scripts/triage*'
+      - '.github/triage/**'
       - '.github/workflows/triage.yml'
   schedule:
     - cron: '17 5 * * *'
@@ -35,7 +33,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - run: node --test .github/scripts/triage.test.mjs
+      - run: node --test '.github/triage/test/*.test.mjs'
 
   triage:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -69,4 +67,4 @@ jobs:
           if [[ "$TRIAGE_APPLY" == 'true' ]]; then
             args+=(--apply)
           fi
-          node .github/scripts/triage.mjs "${args[@]}"
+          node .github/triage/cli.mjs "${args[@]}"

@@ -5,7 +5,7 @@ does not post reminders or close issues or PRs unless writes are enabled.
 
 ## Policy
 
-Contributors are the users in [APPROVED_CONTRIBUTORS](APPROVED_CONTRIBUTORS),
+Contributors are the users in [contributors.txt](contributors.txt),
 including maintainers. The current list alone determines contributor status;
 names are case-insensitive, and inclusion grants no repository permissions.
 Submissions by contributors and bots are exempt.
@@ -34,12 +34,20 @@ in the discussion. The existing issue-scope policy remains separate.
 Use Node 24+ and an authenticated GitHub CLI (`gh`) for the read-only preview:
 
 ```sh
-node --test .github/scripts/triage.test.mjs
-node .github/scripts/triage.mjs --repo chalk-lab/Mooncake.jl
+node --test '.github/triage/test/*.test.mjs'
+node .github/triage/cli.mjs --repo chalk-lab/Mooncake.jl
 ```
 
 Tests use synthetic histories and need no credentials. The preview prints proposed
 actions without writing; add `--since YYYY-MM-DD` to exclude older submissions.
+
+## Layout
+
+- `policy.mjs`: pure decision logic (`evaluate`) and its defaults (durations, override
+  label, bot login). Portable to a GitHub App unchanged.
+- `github.mjs`: scans open items via `gh api`, rechecks, then posts and closes.
+- `cli.mjs`: the Actions entry point; parses flags and reads `contributors.txt`.
+- `test/`: tests for each module above, with shared synthetic histories in `fixtures.mjs`.
 
 ## Enabling later
 
