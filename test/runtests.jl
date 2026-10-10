@@ -45,6 +45,7 @@ include("front_matter.jl")
         @testset "interpreter" begin
             include(joinpath("interpreter", "contexts.jl"))
             include(joinpath("interpreter", "abstract_interpretation.jl"))
+            include(joinpath("interpreter", "world_carry.jl"))
             include(joinpath("interpreter", "ir_utils.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
