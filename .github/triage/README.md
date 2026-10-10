@@ -60,6 +60,3 @@ tells the bot to leave the item alone for good.
   from then on, even if the label is later removed.
 - Issues and pull requests opened by bots are never closed by the bot.
 - Days are 24-hour periods. The bot runs once a day, so it may act up to a day late.
-
-Maintainers: see [MAINTAINING.md](MAINTAINING.md) for how the bot is configured,
-tested and enabled.

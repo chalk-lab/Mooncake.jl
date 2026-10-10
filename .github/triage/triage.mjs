@@ -1,3 +1,6 @@
+// Contributor triage: closes stalled issues and PRs per README.md in this directory.
+//   node --test .github/triage/triage.test.mjs                                 # tests, no credentials
+//   GITHUB_REPOSITORY=chalk-lab/Mooncake.jl node .github/triage/triage.mjs     # read-only preview via gh
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';

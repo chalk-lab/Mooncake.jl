@@ -1,3 +1,9 @@
+# Previews by default; decisions are printed to the log. To enable writes:
+#   1. Create the `keep-open` label and remove the "Not active yet" note from
+#      .github/triage/README.md.
+#   2. Set the variable TRIAGE_START_DATE (YYYY-MM-DD, UTC); older items are exempt,
+#      1970-01-01 includes everything. Then do a manual run with `apply` checked.
+#   3. Set TRIAGE_APPLY=true for scheduled writes; unset it to go back to previews.
 name: Contributor triage
 
 on:

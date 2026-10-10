@@ -1,3 +1,7 @@
+# Approved contributors for the triage bot (see triage/README.md). Their own issues
+# and PRs are never auto-closed, and their comments, labels and reviews count as a
+# response. Include all maintainers. One GitHub username per line, case-insensitive.
+
 yebai
 sunxd3
 AstitvaAggarwal
