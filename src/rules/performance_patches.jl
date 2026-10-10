@@ -198,18 +198,21 @@ function frule!!(
     C = pA * pB
     V = zero_dual(Val(N), C)
     blk = getfield(V, :partials_block)
-    # Wider lanes have non-unit row stride; reusable dense buffers keep products on BLAS.
-    dA = N == 1 ? dAs[1] : similar(pA)
-    dB = N == 1 ? dBs[1] : similar(pB)
-    dC = N == 1 ? view(blk,1,:,:) : similar(C)
-    for k in 1:N
-        if N != 1
-            copyto!(dA, dAs[k])
-            copyto!(dB, dBs[k])
+    if N > 1
+        Ab, _ = _partials_block(A)
+        Bb, _ = _partials_block(B)
+        m, n = size(C)
+        p = size(pA, 2)
+        BLAS.gemm!(
+            'N', 'N', one(P), reshape(Ab, N * m, p), pB, zero(P), reshape(blk, N * m, n)
+        )
+        for j in 1:n
+            BLAS.gemm!('N', 'T', one(P), view(Bb,:,:,j), pA, one(P), view(blk,:,:,j))
         end
-        mul!(dC, dA, pB)
-        mul!(dC, pA, dB, one(P), one(P))
-        N == 1 || copyto!(view(blk,k,:,:), dC)
+    else
+        dC = view(blk,1,:,:)
+        mul!(dC, dAs[1], pB)
+        mul!(dC, pA, dBs[1], one(P), one(P))
     end
     return Lifted{typeof(C),N}(C, V)
 end
@@ -747,9 +750,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
 
         # x * y
-        map([Float64, Float32]) do P
+        map_prod([(7, 11, 5), (1, 7, 1), (7, 1, 5)], [Float64, Float32]) do ((m, p, n), P)
             return (
-                false, :stability, nothing, *, randn(rng, P, 7, 11), randn(rng, P, 11, 5)
+                false, :stability, nothing, *, randn(rng, P, m, p), randn(rng, P, p, n)
             )
         end,
     )
