@@ -48,15 +48,5 @@ this" is plenty, and new feedback starts the clock again.
 ## Need more time?
 
 On a reviewed pull request, say so in a comment; that counts as a reply. Otherwise,
-ask in a comment and an approved contributor can add the `keep-open` label, which
-tells the bot to leave the item alone for good.
-
-## Details
-
-- A response from an approved contributor is a comment, a label, or a submitted
-  review (including an approval). Pending (unsubmitted) reviews are not visible to
-  you, so they do not count.
-- If an approved contributor reopens an item or adds `keep-open`, the bot ignores it
-  from then on, even if the label is later removed.
-- Issues and pull requests opened by bots are never closed by the bot.
-- Days are 24-hour periods. The bot runs once a day, so it may act up to a day late.
+ask in a comment and an approved contributor can add the `keep-open` label (or
+reopen it if it was closed), which tells the bot to leave it alone for good.
