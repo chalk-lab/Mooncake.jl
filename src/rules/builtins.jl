@@ -180,11 +180,11 @@ end
 
 # A pointer value may carry a null tangent; counted accesses still require storage.
 function _check_tangent_ptr(dp::Ptr{T}) where {T}
-    return T <: Union{Ptr,VoidPtrTangent} ? dp != C_NULL : _check_tangent_ptr(dp, 1)
+    return T <: Union{Ptr,PtrTangent} ? dp != C_NULL : _check_tangent_ptr(dp, 1)
 end
 
 _null_tangent(::Ptr{T}) where {T} = T == NoTangent ? NoTangent() : T(C_NULL)
-_null_tangent(::Ptr{VoidPtrTangent}) = VoidPtrTangent(Ptr{Nothing}(0), NoTangent, Nothing)
+_null_tangent(::Ptr{PtrTangent}) = PtrTangent(Ptr{Nothing}(0), NoTangent, Nothing)
 
 """
     module IntrinsicsWrappers
@@ -239,8 +239,8 @@ import ..Mooncake:
     _null_tangent,
     frule!!,
     CoDual,
-    VoidPtrTangent,
-    PointerDual,
+    PtrTangent,
+    PtrDual,
     BoxedPointerStorage,
     Lifted,
     NDual,
@@ -362,7 +362,7 @@ end
 # NULL is safe for empty operations and zero-size tangent elements.
 @inline function _check_tangent_ptr(x, dx, n=1)
     iszero(n) && return nothing
-    dx isa Ptr{<:Union{Ptr,VoidPtrTangent}} && iszero(UInt(dx)) && return nothing
+    dx isa Ptr{<:Union{Ptr,PtrTangent}} && iszero(UInt(dx)) && return nothing
     if dx isa Ptr && _elements_occupy_storage(eltype(dx))
         if iszero(UInt(dx))
             msg =
@@ -528,12 +528,10 @@ end
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
-    p::Lifted{
-        Ptr{T},Nw,<:Union{NoDual,PointerDual,Tuple{VoidPtrTangent,Vararg{VoidPtrTangent}}}
-    },
+    p::Lifted{Ptr{T},Nw,<:Union{NoDual,PtrDual,Tuple{PtrTangent,Vararg{PtrTangent}}}},
     dims::Lifted,
 ) where {Nw,T}
-    tangent(p) isa PointerDual &&
+    tangent(p) isa PtrDual &&
         tangent_type(T) !== NoTangent &&
         _check_fwd_tangent_ptr_addressable(primal(p), tangent(p), prod(primal(dims)))
     # A manually constructed NoDual slot can still have a differentiable pointee.
@@ -557,7 +555,7 @@ end
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),N},
     ::Lifted{<:Type{<:Array},N},
-    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PtrDual}}}},
     dims::Lifted,
 ) where {N,P}
     d = tangent(p)
@@ -612,7 +610,7 @@ end
 @intrinsic atomic_pointerref
 function frule!!(
     ::Lifted{typeof(atomic_pointerref),N},
-    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PtrDual}}}},
     order::Lifted,
 ) where {N,P}
     a = atomic_pointerref(primal(p), primal(order))
@@ -651,10 +649,10 @@ end
 # differentiable value from an interleaved object tangent (see pointerref).
 function frule!!(
     ::Lifted{typeof(atomic_pointerref),Nw},
-    x::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
+    x::Lifted{Ptr{T},Nw,<:Union{PtrDual{Nw},NTuple{Nw,Union{Ptr,PtrTangent}}}},
     order::Lifted,
 ) where {Nw,T}
-    tangent(x) isa PointerDual &&
+    tangent(x) isa PtrDual &&
         tangent_type(T) !== NoTangent &&
         _check_fwd_tangent_ptr_addressable(primal(x), tangent(x))
     tangent_type(T) === NoTangent || throw(
@@ -709,7 +707,7 @@ end
             "Boxed pointer store requires a known boxed shadow and storage owner."
         ),
     )
-    dp = d isa PointerDual ? d.lanes[1] : d.p
+    dp = d isa PtrDual ? d.lanes[1] : d.p
     offset = UInt(p) - UInt(pointer(storage.primal))
     shadow_offset = UInt(dp) - UInt(pointer(storage.shadow))
     (offset | shadow_offset) % sizeof(Ptr) == 0 ||
@@ -756,7 +754,7 @@ function frule!!(
     p::Lifted{Ptr{Ptr{P}},N,NTuple{N,Ptr{V}}},
     x::Lifted{Ptr{P},N,V},
     order::Lifted,
-) where {N,P,V<:Union{Tuple,PointerDual}}
+) where {N,P,V<:Union{Tuple,PtrDual}}
     P === Any && throw(
         ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
     )
@@ -770,7 +768,7 @@ function frule!!(
 end
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),N},
-    p::Lifted{Ptr{Any},N,PointerDual{N}},
+    p::Lifted{Ptr{Any},N,PtrDual{N}},
     x::Lifted,
     order::Lifted,
 ) where {N}
@@ -843,11 +841,11 @@ end
 # As in pointerset, an element-wise tangent layout cannot accept a bare lane store.
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),Nw},
-    p::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
+    p::Lifted{Ptr{T},Nw,<:Union{PtrDual{Nw},NTuple{Nw,Union{Ptr,PtrTangent}}}},
     x::Lifted,
     order::Lifted,
 ) where {Nw,T}
-    tangent(p) isa PointerDual &&
+    tangent(p) isa PtrDual &&
         tangent_type(T) !== NoTangent &&
         _check_fwd_tangent_ptr_addressable(primal(p), tangent(p))
     Base.allocatedinline(T) || throw(
@@ -943,14 +941,14 @@ const _INT2PTR_ERR_MSG =
     return nothing
 end
 
-@inline function _is_strided_memory_ptr(p::Ptr, d::PointerDual{N}) where {N}
+@inline function _is_strided_memory_ptr(p::Ptr, d::PtrDual{N}) where {N}
     return N > 1 &&
            d.elt <: NDualEltype &&
            d.primal_elt === d.elt &&
            all(q -> UInt(q) == UInt(p), d.lanes)
 end
 
-@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, d::PointerDual{N}, n=1) where {N}
+@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, d::PtrDual{N}, n=1) where {N}
     if !iszero(n) && tangent_type(eltype(p)) !== NoTangent && _is_strided_memory_ptr(p, d)
         throw(
             ArgumentError(
@@ -980,7 +978,7 @@ const _NODUAL_DIFF_PTR_MSG =
 end
 
 @inline _check_narrowed_pointer_write(::Ptr, ::Ptr, n=1) = nothing
-@inline function _check_narrowed_pointer_write(p::Ptr{T}, d::VoidPtrTangent, n=1) where {T}
+@inline function _check_narrowed_pointer_write(p::Ptr{T}, d::PtrTangent, n=1) where {T}
     (T === Any || !_elements_occupy_storage(T)) && return nothing
     if !iszero(n) && (
         d.primal_elt === Any ||
@@ -1015,28 +1013,28 @@ end
 # Erasure and non-differentiable narrowing retain provenance in a fixed lane type.
 @inline function frule!!(
     ::Lifted{typeof(bitcast),N}, ::Lifted{Type{Ptr{B}},N}, x::Lifted{Ptr{A},N,V}
-) where {N,A,B,V<:Union{NoDual,Tuple,PointerDual}}
+) where {N,A,B,V<:Union{NoDual,Tuple,PtrDual}}
     dx = tangent(x)
     if B === Nothing || !_elements_occupy_storage(tangent_type(B))
-        dx isa NTuple{N,VoidPtrTangent} &&
+        dx isa NTuple{N,PtrTangent} &&
             return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
-        dx isa PointerDual && return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
+        dx isa PtrDual && return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
         lanes = if dx isa NoDual
-            PointerDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, A)
+            PtrDual(ntuple(_ -> Ptr{Nothing}(0), Val(N)), NoTangent, A)
         elseif dx isa NTuple{N,Ptr} && isconcretetype(eltype(dx))
-            PointerDual(map(p -> bitcast(Ptr{Nothing}, p), dx), eltype(eltype(dx)), A)
+            PtrDual(map(p -> bitcast(Ptr{Nothing}, p), dx), eltype(eltype(dx)), A)
         else
             ntuple(Val(N)) do k
                 d = dx[k]
-                if d isa VoidPtrTangent
+                if d isa PtrTangent
                     d
                 else
-                    VoidPtrTangent(bitcast(Ptr{Nothing}, d), eltype(d), A)
+                    PtrTangent(bitcast(Ptr{Nothing}, d), eltype(d), A)
                 end
             end
         end
         return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
-    elseif dx isa PointerDual
+    elseif dx isa PtrDual
         if B === Any
             dx.primal_elt !== Any && throw(
                 ArgumentError(
@@ -1067,7 +1065,7 @@ end
             map(p -> bitcast(Ptr{EB}, p), dx.lanes)
         end
         return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), lanes)
-    elseif dx isa NTuple{N,VoidPtrTangent}
+    elseif dx isa NTuple{N,PtrTangent}
         lanes = ntuple(Val(N)) do k
             E = B <: NDualEltype ? B : Mooncake.dual_type(Val(N), B)
             d = dx[k]
@@ -1108,14 +1106,14 @@ end
     return Lifted{Ptr{B},N}(bitcast(Ptr{B}, primal(x)), dx)
 end
 
-# VoidPtrTangent records the original primal element type so a Cvoid hop gets the
+# PtrTangent records the original primal element type so a Cvoid hop gets the
 # same verdict as direct re-typing.
 # Hide NULL values from inference: Julia 1.10 otherwise constant-folds atomic
 # loads through them before the consumer can throw for missing storage.
 @inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx::Ptr) where {A,B}
     TB = tangent_type(B)
-    if tangent_type(Ptr{B}) === VoidPtrTangent
-        return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), eltype(dx), A)
+    if tangent_type(Ptr{B}) === PtrTangent
+        return PtrTangent(bitcast(Ptr{Nothing}, dx), eltype(dx), A)
     end
     return if _elements_occupy_storage(tangent_type(A))
         bitcast(Ptr{TB}, dx)
@@ -1124,9 +1122,9 @@ end
     end
 end
 @inline function _retype_tangent_ptr(
-    ::Type{Ptr{B}}, ::Type{Ptr{A}}, dx::VoidPtrTangent
+    ::Type{Ptr{B}}, ::Type{Ptr{A}}, dx::PtrTangent
 ) where {A,B}
-    tangent_type(Ptr{B}) === VoidPtrTangent && return dx
+    tangent_type(Ptr{B}) === PtrTangent && return dx
     TB = tangent_type(B)
     if !Base.allocatedinline(B) && dx.primal_elt isa Pair{Any,Any}
         return bitcast(Ptr{TB}, dx.p)
@@ -1144,7 +1142,7 @@ end
 
 # Only zero-size pointees use descriptors here; provenance is checked before writes.
 @inline _tangent_ptr(::Ptr, dx::Ptr) = dx
-@inline _tangent_ptr(::Ptr{T}, dx::VoidPtrTangent) where {T} = bitcast(
+@inline _tangent_ptr(::Ptr{T}, dx::PtrTangent) where {T} = bitcast(
     Ptr{tangent_type(T)}, dx.p
 )
 
@@ -1589,7 +1587,7 @@ end
 @intrinsic pointerref
 function frule!!(
     ::Lifted{typeof(pointerref),N},
-    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PointerDual}}}},
+    p::Lifted{Ptr{Ptr{P}},N,<:NTuple{N,Ptr{<:Union{Tuple,PtrDual}}}},
     i::Lifted,
     alignment::Lifted,
 ) where {N,P}
@@ -1638,11 +1636,11 @@ end
 # math. A shortcut through the interleaving would hardcode NDual's layout.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
-    x::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
+    x::Lifted{Ptr{T},Nw,<:Union{PtrDual{Nw},NTuple{Nw,Union{Ptr,PtrTangent}}}},
     y::Lifted,
     z::Lifted,
 ) where {Nw,T}
-    tangent(x) isa PointerDual &&
+    tangent(x) isa PtrDual &&
         tangent_type(T) !== NoTangent &&
         _check_fwd_tangent_ptr_addressable(primal(x), tangent(x))
     tangent_type(T) === NoTangent || throw(
@@ -1696,7 +1694,7 @@ function frule!!(
     x::Lifted{Ptr{P},N,V},
     i::Lifted,
     alignment::Lifted,
-) where {N,P,V<:Union{Tuple,PointerDual}}
+) where {N,P,V<:Union{Tuple,PtrDual}}
     P === Any && throw(
         ArgumentError("Forward-mode boxed pointer store requires a known boxed shadow.")
     )
@@ -1717,7 +1715,7 @@ end
 end
 function frule!!(
     ::Lifted{typeof(pointerset),N},
-    p::Lifted{Ptr{Any},N,PointerDual{N}},
+    p::Lifted{Ptr{Any},N,PtrDual{N}},
     x::Lifted,
     idx::Lifted,
     z::Lifted,
@@ -1795,12 +1793,12 @@ end
 # A bare store would corrupt the stride. The coherent-lane method is more specific.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
-    p::Lifted{Ptr{T},Nw,<:Union{PointerDual{Nw},NTuple{Nw,Union{Ptr,VoidPtrTangent}}}},
+    p::Lifted{Ptr{T},Nw,<:Union{PtrDual{Nw},NTuple{Nw,Union{Ptr,PtrTangent}}}},
     x::Lifted,
     idx::Lifted,
     z::Lifted,
 ) where {Nw,T}
-    tangent(p) isa PointerDual &&
+    tangent(p) isa PtrDual &&
         tangent_type(T) !== NoTangent &&
         _check_fwd_tangent_ptr_addressable(primal(p), tangent(p))
     Base.allocatedinline(T) || throw(
@@ -4096,9 +4094,7 @@ function _builtins_throwing_rows()
         x = if T === Any
             z(value)
         else
-            Lifted{Ptr{Any},N}(
-                Ptr{Any}(0), PointerDual(ntuple(_ -> Ptr{Nothing}(0), N), Any, Any)
-            )
+            Lifted{Ptr{Any},N}(Ptr{Any}(0), PtrDual(ntuple(_ -> Ptr{Nothing}(0), N), Any, Any))
         end
         f = atomic ? IntrinsicsWrappers.atomic_pointerset : IntrinsicsWrappers.pointerset
         args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
@@ -4112,7 +4108,7 @@ function _builtins_throwing_rows()
             ),
         )
         if T === Any
-            descriptor = PointerDual(map(q -> Ptr{Nothing}(pointer(q)), d), Any, Any)
+            descriptor = PtrDual(map(q -> Ptr{Nothing}(pointer(q)), d), Any, Any)
             p = Lifted{Ptr{Any},N}(pointer(a), descriptor)
             args = atomic ? (p, x, :monotonic) : (p, x, 1, 1)
             push!(

@@ -318,7 +318,7 @@ The basic story here is that all primitive types require an explicit specificati
 One interesting case are `Ptr` types.
 The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`, except
 for erased pointers, boxed `Ptr{Any}` slots, and zero-size pointee tangents, which
-use `VoidPtrTangent` to retain storage provenance and, for boxed stores, owners.
+use `PtrTangent` to retain storage provenance and, for boxed stores, owners.
 For example
 ```julia
 julia> tangent_type(Ptr{Float64})
@@ -344,11 +344,14 @@ tangent_type(::Type{<:TypeVar}) = NoTangent
 
 @unstable @foldable function tangent_type(::Type{Ptr{P}}) where {P}
     T = tangent_type(P)
-    return isbitstype(T) && sizeof(T) == 0 ? VoidPtrTangent : Ptr{T}
+    return isbitstype(T) && sizeof(T) == 0 ? PtrTangent : Ptr{T}
 end
 
 """
-    VoidPtrTangent
+Reverse pointer tangent that carries provenance, so re-typed, erased or shifted pointers are
+checked against their source storage instead of silently addressing the wrong derivative.
+
+    PtrTangent
 
 Tangent of an erased pointer or a pointer with a zero-size pointee tangent.
 These pointers retain provenance so non-differentiable reads cannot hide stores
@@ -373,13 +376,13 @@ record `NoTangent` and the pointer's declared element type.
 `NoTangent` marks absent differentiable storage and is also the actual
 tangent element type for non-differentiable buffers.
 """
-struct VoidPtrTangent
+struct PtrTangent
     p::Ptr{Nothing}
     elt::Any
     primal_elt::Any
 end
 
-_tangent_fields(::Type{VoidPtrTangent}) = ()
+_tangent_fields(::Type{PtrTangent}) = ()
 
 # A boxed slot needs its owner for GC-safe writes; raw seeds have no owner.
 @static if VERSION >= v"1.11-rc4"
@@ -401,13 +404,13 @@ end
 # Copying a Ptr preserves its address, so its owners must also remain the same objects.
 Base.deepcopy_internal(x::BoxedPointerStorage, ::IdDict) = x
 
-@inline function Base.getproperty(d::VoidPtrTangent, name::Symbol)
+@inline function Base.getproperty(d::PtrTangent, name::Symbol)
     value = getfield(d, name)
     return name === :primal_elt && value isa BoxedPointerStorage ? Any : value
 end
 
-tangent_type(::Type{Ptr{Any}}) = VoidPtrTangent
-tangent_type(::Type{Ptr{Nothing}}) = VoidPtrTangent
+tangent_type(::Type{Ptr{Any}}) = PtrTangent
+tangent_type(::Type{Ptr{Nothing}}) = PtrTangent
 
 tangent_type(::Type{<:Ptr}) = NoTangent
 
@@ -757,8 +760,8 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline function uninit_tangent(x::Ptr{P}) where {P}
-    return if tangent_type(typeof(x)) === VoidPtrTangent
-        VoidPtrTangent(Ptr{Nothing}(x), NoTangent, P)
+    return if tangent_type(typeof(x)) === PtrTangent
+        PtrTangent(Ptr{Nothing}(x), NoTangent, P)
     else
         bitcast(Ptr{tangent_type(P)}, x)
     end
@@ -1029,7 +1032,7 @@ function increment_internal!!(::IncCache, x::Ptr, y::Ptr)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 # Same rule for an erased tangent pointer: two tangents for one primal must be one address.
-function increment_internal!!(::IncCache, x::VoidPtrTangent, y::VoidPtrTangent)
+function increment_internal!!(::IncCache, x::PtrTangent, y::PtrTangent)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 @generated function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Tuple}
@@ -1220,17 +1223,17 @@ _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
 # Pointer placeholders carry no derivative of the address and are inert in arithmetic.
 # `increment!!` additionally requires identical tangents for one primal. Forward rules
 # must refuse derivative reads through placeholders, including through `unsafe_wrap`.
-# `uninit_tangent` gives the correct tangent type, including `VoidPtrTangent` for Cvoid;
+# `uninit_tangent` gives the correct tangent type, including `PtrTangent` for Cvoid;
 # returning the primal pointer is only type-correct when `tangent_type(P) === P`.
 randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = uninit_tangent(x)
 set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
 _scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
 _dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
 _add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
-set_to_zero_internal!!(::SetToZeroCache, t::VoidPtrTangent) = t
-_scale_internal(::MaybeCache, ::Float64, t::VoidPtrTangent) = t
-_dot_internal(::MaybeCache, ::VoidPtrTangent, ::VoidPtrTangent) = 0.0
-_add_to_primal_internal(::MaybeCache, x::Ptr, ::VoidPtrTangent, ::Bool) = x
+set_to_zero_internal!!(::SetToZeroCache, t::PtrTangent) = t
+_scale_internal(::MaybeCache, ::Float64, t::PtrTangent) = t
+_dot_internal(::MaybeCache, ::PtrTangent, ::PtrTangent) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::PtrTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool

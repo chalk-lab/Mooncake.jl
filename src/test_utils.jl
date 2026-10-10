@@ -1133,7 +1133,7 @@ _chunked_v_invariant(_p, ::Mooncake.Nfwd.NDualRef, ::IdDict) = true
 # carries no value to compare with the primal either.
 function _chunked_v_invariant(
     _p::Ptr,
-    ::Union{Mooncake.PointerDual,Tuple{Vararg{Union{Ptr,Mooncake.VoidPtrTangent}}}},
+    ::Union{Mooncake.PtrDual,Tuple{Vararg{Union{Ptr,Mooncake.PtrTangent}}}},
     ::IdDict,
 )
     return true
@@ -2294,11 +2294,8 @@ function _count_storages(x)
 end
 
 function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
-    (
-        isbits(x) ||
-        x isa Union{Mooncake.VoidPtrTangent,Mooncake.PointerDual} ||
-        x in visited
-    ) && return nothing
+    (isbits(x) || x isa Union{Mooncake.PtrTangent,Mooncake.PtrDual} || x in visited) &&
+        return nothing
     push!(visited, x)
     if x isa Array
         push!(seen, @static VERSION >= v"1.11-rc4" ? getfield(x, :ref).mem : x)

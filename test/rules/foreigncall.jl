@@ -4,7 +4,7 @@
     @testset "NULL tangent object recovery" begin
         r = Ref(1.0)
         GC.@preserve r for dx in (
-            Ptr{Nothing}(0), Mooncake.VoidPtrTangent(Ptr{Nothing}(0), NoTangent, typeof(r))
+            Ptr{Nothing}(0), Mooncake.PtrTangent(Ptr{Nothing}(0), NoTangent, typeof(r))
         )
             @test_throws ArgumentError rrule!!(
                 zero_fcodual(unsafe_pointer_to_objref), CoDual(pointer_from_objref(r), dx)

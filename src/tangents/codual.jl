@@ -5,8 +5,8 @@ end
 
 # Legacy rule inputs may supply an actual zero-size tangent buffer.
 @inline function CoDual(x::Ptr{P}, dx::Ptr{T}) where {P,T}
-    d = if tangent_type(typeof(x)) === VoidPtrTangent
-        VoidPtrTangent(Ptr{Nothing}(dx), T, P)
+    d = if tangent_type(typeof(x)) === PtrTangent
+        PtrTangent(Ptr{Nothing}(dx), T, P)
     else
         dx
     end
