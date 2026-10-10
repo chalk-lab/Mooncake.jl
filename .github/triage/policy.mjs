@@ -81,7 +81,7 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
   const byAuthor = (user) => isHuman(user) && user.id === item.user.id;
   // Same-second replies count: GitHub timestamps cannot reliably order them further.
   const responded = interactions.some((entry) => byAuthor(entry.user) && entry.at >= feedback.at)
-    || timeline.some((event) => event.event === 'review_requested' && byAuthor(event.actor)
+    || timeline.some((event) => ['review_requested', 'reopened'].includes(event.event) && byAuthor(event.actor)
       && timestamp(event.created_at) >= feedback.at);
   if (responded) return keep('Author responded; awaiting contributors');
   if (now < feedback.at + replyDays * DAY) return keep('Within feedback response period');
@@ -96,5 +96,8 @@ export function evaluate({ item, timeline = [], reviews = [], reviewComments = [
     reason: `Contributor feedback unanswered for ${replyDays} days`,
   };
   if (now < timestamp(reminder.created_at) + graceDays * DAY) return keep('Within reminder grace period');
-  return { action: 'close', key: feedback.key, reason: `No author response ${graceDays} days after reminder` };
+  return {
+    action: 'close', key: feedback.key, feedbackUrl: feedback.url,
+    reason: `No author response ${graceDays} days after reminder`,
+  };
 }

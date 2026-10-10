@@ -1,62 +1,65 @@
-# Contributor triage
+# How we follow up on issues and pull requests
 
-**Currently dry-run only.** Review proposed actions in the CI logs. The workflow
-does not post reminders or close issues or PRs unless writes are enabled.
+> **Not active yet.** The triage bot currently only previews what it would do; it
+> does not post comments or close anything.
 
-## Policy
+Mooncake is maintained part time by a small team. Our aim is a solid package that
+serves almost all users and use cases, with a careful trade-off between complexity
+and features. We want the list of open issues and pull requests to be a fair picture
+of what is actually being worked on, so a bot closes items that have stalled. This
+page explains when, and how to make sure your work stays open.
 
-Contributors are the users in [contributors.txt](contributors.txt),
-including maintainers. The current list alone determines contributor status;
-names are case-insensitive, and inclusion grants no repository permissions.
-Submissions by contributors and bots are exempt.
+A closure is not a judgment on the report or the fix. Nothing is lost: the
+discussion stays where it is, and a maintainer can reopen it at any time. Just
+leave a comment.
 
-For everyone else:
+## Approved contributors
 
-- **Issues:** close 14 days after opening without a contributor comment or label.
-  A label still counts after removal.
-- **PRs:** close 14 days after opening without a contributor comment (including
-  inline) or submitted review. All submitted review states count, including approvals.
-- **Unanswered PR feedback:** remind 14 days after the latest contributor feedback;
-  close if still unanswered seven full days after the reminder. New feedback
-  starts a new cycle. Pending reviews do not count.
-- **Author responses:** a comment, inline reply, submitted review, or review request
-  stops the response timer until new feedback. Commits, edits, reactions, bots,
-  and other participants do not count.
-- **Overrides:** a listed contributor adding `keep-open` or reopening an item
-  exempts it, even if the label is later removed. Other reopenings do not reset timers.
+People listed in [approved-contributors.txt](approved-contributors.txt) are trusted
+to see their work through. Their issues and pull requests are never closed by the
+bot, and their comments, labels and reviews count as a response on anyone else's.
+The list includes the maintainers.
 
-Deadlines use 24-hour days; daily runs may act later. Drafts, assignments, and locks
-do not change the rules. For more time or reconsideration, ask a listed contributor
-in the discussion. The existing issue-scope policy remains separate.
+If you would like to contribute regularly and can commit time to follow up on
+reviews, get in touch with Xianda Sun ([@sunxd3](https://github.com/sunxd3)) by email
+or on the [Julia Slack](https://julialang.org/slack/), and we will consider adding you.
 
-## Testing
+The rules below apply to everyone else.
 
-Use Node 24+ and an authenticated GitHub CLI (`gh`) for the read-only preview:
+## If no one on the list has responded
 
-```sh
-node --test '.github/triage/test/*.test.mjs'
-node .github/triage/cli.mjs --repo chalk-lab/Mooncake.jl
-```
+If an issue or pull request has had no response from an approved contributor within
+14 days of being opened, it is closed. This reflects our limited capacity, not the
+value of the submission.
 
-Tests use synthetic histories and need no credentials. The preview prints proposed
-actions without writing; add `--since YYYY-MM-DD` to exclude older submissions.
+## If your pull request has been reviewed
 
-## Layout
+Once an approved contributor leaves feedback, the next step is usually yours:
 
-- `policy.mjs`: pure decision logic (`evaluate`) and its defaults (durations, override
-  label, bot login). Portable to a GitHub App unchanged.
-- `github.mjs`: scans open items via `gh api`, rechecks, then posts and closes.
-- `cli.mjs`: the Actions entry point; parses flags and reads `contributors.txt`.
-- `test/`: tests for each module above, with shared synthetic histories in `fixtures.mjs`.
+- If 14 days pass without a reply, the bot posts a friendly reminder.
+- If there is still no reply 7 days after that, the pull request is closed to keep
+  the review queue clean.
 
-## Enabling later
+Any of these counts as a reply: a comment, a reply to a review comment, a review, or
+re-requesting review. Pushing commits on its own does not, because we cannot tell
+from commits whether the feedback has been addressed. A short "still working on
+this" is plenty, and new feedback starts the clock again.
 
-1. Review the contributor list and dry-run output; publish the policy before enforcement.
-2. Set the Actions variable `TRIAGE_START_DATE` (`YYYY-MM-DD`, UTC). Older submissions
-   are exempt. Preview with **Contributor triage** and `apply` unchecked.
-3. After approval, check `apply` for a manual run or set `TRIAGE_APPLY=true` for
-   scheduled writes. Unset the variable to restore scheduled previews; manual runs
-   always follow their checkbox.
+## Need more time?
 
-The workflow uses the default branch and `GITHUB_TOKEN`; no extra secret is needed.
-Test actual reminders and closures in a disposable repository, not Mooncake.
+On a reviewed pull request, say so in a comment; that counts as a reply. Otherwise,
+ask in a comment and an approved contributor can add the `keep-open` label, which
+tells the bot to leave the item alone for good.
+
+## Details
+
+- A response from an approved contributor is a comment, a label, or a submitted
+  review (including an approval). Pending (unsubmitted) reviews are not visible to
+  you, so they do not count.
+- If an approved contributor reopens an item or adds `keep-open`, the bot ignores it
+  from then on, even if the label is later removed.
+- Issues and pull requests opened by bots are never closed by the bot.
+- Days are 24-hour periods. The bot runs once a day, so it may act up to a day late.
+
+Maintainers: see [MAINTAINING.md](MAINTAINING.md) for how the bot is configured,
+tested and enabled.

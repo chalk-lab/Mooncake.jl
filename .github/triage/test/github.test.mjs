@@ -34,7 +34,7 @@ test('dry-run produces the same decision as apply without posting or patching an
   const [applied] = await f.run();
   assert.equal(applied.action, preview.action);
   assert.equal(applied.applied, true);
-  assert.match(f.writes()[0].body.body, /7 days of this reminder/);
+  assert.match(f.writes()[0].body.body, /no reply within 7 days/);
   assert.match(f.writes()[0].body.body, /<!-- mooncake-triage:v1:reminder:comment:11 -->/);
   assert.equal((await f.run())[0].action, 'keep');
   assert.equal(f.writes().length, 1); // No duplicate reminder on a rerun.
@@ -45,6 +45,7 @@ for (const pr of [false, true]) {
     const f = fixture(snapshot(pr));
     assert.equal((await f.run())[0].applied, true);
     assert.equal(f.writes()[0].method, 'POST');
+    assert.match(f.writes()[0].body.body, /not been able to respond within 14 days/);
     assert.deepEqual(f.writes()[1], {
       method: 'PATCH', path: `repos/example/repo/${pr ? 'pulls' : 'issues'}/7`,
       body: pr ? { state: 'closed' } : { state: 'closed', state_reason: 'not_planned' },
@@ -54,11 +55,10 @@ for (const pr of [false, true]) {
   });
 }
 
-test('re-closing after an author reopen posts a fresh notice, but a failed close retry does not', async () => {
+test('re-closing unengaged items after an author reopen posts a fresh notice, but a failed close retry does not', async () => {
   for (const pr of [false, true]) {
-    const notice = `<!-- mooncake-triage:v1:close:${pr ? 'comment:11' : 'unengaged'} -->`;
+    const notice = '<!-- mooncake-triage:v1:close:unengaged -->';
     const f = fixture({ ...snapshot(pr), timeline: [
-      ...(pr ? [feedback, reminder] : []),
       comment(30, bot, '2026-01-31T12:00:00Z', notice),
       { event: 'reopened', actor: author, created_at: '2026-02-01T11:00:00Z' },
     ] });

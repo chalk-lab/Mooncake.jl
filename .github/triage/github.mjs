@@ -25,16 +25,18 @@ export async function runTriage({ api, repo, apply = false, now = Date.now(), ..
       Object.assign(result, decision);
       if (apply && decision.action !== 'keep') {
         const commentsPath = `repos/${repo}/issues/${item.number}/comments`;
-        const policy = `https://github.com/${repo}/blob/HEAD/.github/triage/README.md`;
+        const post = (text, notice) => api('POST', commentsPath, { body: { body: `${text}\n\n<sub>Posted `
+          + `automatically under the [triage policy](https://github.com/${repo}/blob/HEAD/.github/triage/README.md).`
+          + `</sub>\n\n${notice}` } });
+        const feedback = `[review feedback](${decision.feedbackUrl})`;
         if (decision.action === 'remind') {
-          const feedbackUrl = decision.feedbackUrl || `https://github.com/${repo}/pull/${item.number}`;
-          await api('POST', commentsPath, { body: {
-            body: `@${item.user.login}, we have not seen your response to [this feedback](${feedbackUrl}) `
-              + `for ${options.replyDays} days. Please reply or re-request review within `
-              + `${options.graceDays} days of this reminder to keep this PR open. `
-              + 'Commits alone do not count as a response.\n\n'
-              + `[Triage policy](${policy}).\n\n${marker('reminder', decision.key)}`,
-          } });
+          await post(`Hi @${item.user.login}, a friendly reminder that there is ${feedback} on this PR `
+            + 'waiting for your reply. When you get a chance, please leave a comment (even a short '
+            + '"still working on it" is enough) or re-request review once it is ready; we cannot tell '
+            + 'from commits alone whether feedback has been addressed. If there is no reply within '
+            + `${options.graceDays} days, this PR will be closed to keep the review queue manageable. `
+            + 'Nothing is lost if that happens, and it can be reopened at any time.',
+          marker('reminder', decision.key));
         } else {
           const notice = marker('close', decision.key);
           const reopenedAt = Math.max(0, ...snapshot.timeline
@@ -42,11 +44,12 @@ export async function runTriage({ api, repo, apply = false, now = Date.now(), ..
           if (!snapshot.timeline.some((event) => event.event === 'commented'
             && isBot(event.user, options.botLogin) && event.body?.includes(notice)
             && timestamp(event.created_at) >= reopenedAt)) {
-            await api('POST', commentsPath, { body: {
-              body: `Closing automatically under the [triage policy](${policy}): ${decision.reason.toLowerCase()}. `
-                + 'This is not a judgment about the report or fix. For reconsideration, reply here and '
-                + `ask a listed contributor to reopen it or add \`${options.overrideLabel}\`.\n\n` + notice,
-            } });
+            const why = decision.key === 'unengaged'
+              ? `we have not been able to respond within ${options.engageDays} days. That reflects our `
+                + 'limited capacity, not a judgment on the report or fix'
+              : `the ${feedback} has not had a reply for a while. This is not a judgment on the work`;
+            await post(`Closing this for now, as ${why}. Nothing is lost: the discussion stays here. `
+              + 'If it is still relevant to you, leave a comment and a maintainer can reopen it.', notice);
           }
           // Recheck after posting: a reply or override can arrive during the write.
           const next = evaluate(await loadSnapshot(api, repo, item.number), options);

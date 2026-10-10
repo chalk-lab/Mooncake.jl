@@ -24,7 +24,7 @@ export function configuration(args, env) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const config = configuration(process.argv.slice(2), process.env);
-    const approved = parseApproved(readFileSync(new URL('contributors.txt', import.meta.url), 'utf8'));
+    const approved = parseApproved(readFileSync(new URL('approved-contributors.txt', import.meta.url), 'utf8'));
     const results = await runTriage({ ...config, approved, api: githubApi({ allowWrites: config.apply }) });
     console.log(JSON.stringify({
       mode: config.apply ? 'apply' : 'dry-run', since: new Date(config.since).toISOString(), results,

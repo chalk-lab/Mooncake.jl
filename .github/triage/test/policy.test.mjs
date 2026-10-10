@@ -12,7 +12,7 @@ test('allowlist accepts empty input, validates names, and alone determines contr
     assert.deepEqual(parseApproved(text), new Set());
   }
   assert.throws(() => parseApproved('two names'), /usernames/);
-  parseApproved(readFileSync(new URL('../contributors.txt', import.meta.url), 'utf8'));
+  parseApproved(readFileSync(new URL('../approved-contributors.txt', import.meta.url), 'utf8'));
   assert.equal(decide({ item: { ...item(), user: contributor } }).reason, 'Contributor author');
   assert.equal(evaluate({ item: { ...item(), user: contributor } }, {
     approved: parseApproved(''), now: at('2026-02-01T12:00:00Z'), since: 0,
@@ -83,7 +83,7 @@ test('pending reviews do not count, and drafted inline comments start their cloc
   assert.equal(decide(data, '2026-01-20T12:00:00Z').action, 'keep');
 });
 
-test('only the author can respond; inline replies, reviews and re-requested review count', () => {
+test('only the author can respond; inline replies, reviews, re-requested review and reopening count', () => {
   const data = snapshot();
   data.timeline = [feedback];
   for (const user of [other, bot, author]) {
@@ -95,6 +95,8 @@ test('only the author can respond; inline replies, reviews and re-requested revi
   assert.equal(decide(data).reason, 'Author responded; awaiting contributors');
   data.reviews = [];
   data.timeline.push({ event: 'review_requested', actor: author, created_at: '2026-01-11T12:00:00Z' });
+  assert.equal(decide(data).reason, 'Author responded; awaiting contributors');
+  data.timeline[1] = { ...data.timeline[1], event: 'reopened' };
   assert.equal(decide(data).reason, 'Author responded; awaiting contributors');
   data.timeline[1].actor = other;
   assert.equal(decide(data).action, 'remind');
