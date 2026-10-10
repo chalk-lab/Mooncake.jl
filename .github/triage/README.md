@@ -15,7 +15,7 @@ leave a comment.
 
 ## Approved contributors
 
-People listed in [approved-contributors.txt](approved-contributors.txt) are trusted
+People listed in [APPROVED_CONTRIBUTORS](../APPROVED_CONTRIBUTORS) are trusted
 to see their work through. Their issues and pull requests are never closed by the
 bot, and their comments, labels and reviews count as a response on anyone else's.
 The list includes the maintainers.

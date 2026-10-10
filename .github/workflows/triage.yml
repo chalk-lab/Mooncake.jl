@@ -3,11 +3,13 @@ name: Contributor triage
 on:
   pull_request:
     paths:
+      - '.github/APPROVED_CONTRIBUTORS'
       - '.github/triage/**'
       - '.github/workflows/triage.yml'
   push:
     branches: [main]
     paths:
+      - '.github/APPROVED_CONTRIBUTORS'
       - '.github/triage/**'
       - '.github/workflows/triage.yml'
   schedule:
@@ -33,7 +35,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - run: node --test '.github/triage/test/*.test.mjs'
+      - run: node --test .github/triage/triage.test.mjs
 
   triage:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -59,12 +61,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TRIAGE_START_DATE: ${{ vars.TRIAGE_START_DATE }}
           TRIAGE_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || github.event_name == 'schedule' && vars.TRIAGE_APPLY == 'true' }}
-        run: |
-          args=(--repo "$GITHUB_REPOSITORY")
-          if [[ -n "$TRIAGE_START_DATE" ]]; then
-            args+=(--since "$TRIAGE_START_DATE")
-          fi
-          if [[ "$TRIAGE_APPLY" == 'true' ]]; then
-            args+=(--apply)
-          fi
-          node .github/triage/cli.mjs "${args[@]}"
+        run: node .github/triage/triage.mjs
