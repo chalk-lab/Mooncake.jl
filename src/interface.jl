@@ -1624,7 +1624,7 @@ _friendly_input_to_tangent!!(t, x, dx) = primal_to_tangent!!(t, dx)
 function _friendly_input_to_tangent!!(t, x::P, dx::AbstractArray) where {P<:AbstractArray}
     dx isa P && return primal_to_tangent!!(t, dx)
     size(dx) == size(x) || throw(
-        DimensionMismatch("tangent has size $(size(dx)), but primal has size $(size(x))")
+        DimensionMismatch("tangent has size $(size(dx)), but primal has size $(size(x))"),
     )
     zeroed = tangent_to_primal_internal!!(
         _copy_output(x), zero_tangent(x), IdDict{Any,Any}()
