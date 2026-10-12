@@ -4726,6 +4726,38 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "aliasing mismatch between preparation and call" begin
+                @testset "aliasing checks opt out" begin
+                    aliasing_default_f(a, b, x) = (a[1] *= x; sum(b) * x + x * x)
+                    v = [1.0, 2.0]
+                    cache = prepare_gradient_cache(
+                        aliasing_default_f,
+                        v,
+                        v,
+                        1.5;
+                        config=Mooncake.Config(; check_aliasing=false),
+                    )
+                    a, b = [1.0, 2.0], [1.0, 2.0]
+                    TestUtils._test_throws(
+                        Mooncake.PreparedCacheError, "aliasing mismatch"
+                    ) do
+                        checked = prepare_gradient_cache(aliasing_default_f, v, v, 1.5)
+                        value_and_gradient!!(checked, aliasing_default_f, a, b, 1.5)
+                    end
+                    @test last(
+                        last(value_and_gradient!!(cache, aliasing_default_f, a, b, 1.5))
+                    ) == 7.5
+                    @test last(
+                        last(
+                            value_and_gradient!!(
+                                prepare_gradient_cache(aliasing_default_f, a, b, 1.5),
+                                aliasing_default_f,
+                                a,
+                                b,
+                                1.5,
+                            ),
+                        ),
+                    ) == 6.0
+                end
                 # Types/sizes cannot detect changed aliasing. Reject either direction of alias-partition
                 # mismatch, which otherwise accumulates into the wrong prepared buffers.
                 f(x, y) = (x[1] += y[1]; sum(x) + sum(y))

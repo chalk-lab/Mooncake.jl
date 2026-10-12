@@ -57,7 +57,17 @@ end
 
 # Cache parameters keep the rule, reusable buffers, and input/output signatures concrete.
 # HVPCache is shared by HVP and Hessian calls.
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TS<:Tuple,TV}
+struct Cache{
+    Trule,
+    Ty_cache,
+    Ttangents<:Tuple,
+    Tdests,
+    Tȳ_cache,
+    TIS<:Tuple,
+    TOS,
+    TS<:Union{Nothing,Tuple},
+    TV,
+}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
@@ -73,6 +83,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TS
     input_types_and_sizes::TIS
     # Top-level type/size signature for y = f(x...).
     output_type_and_size::TOS
+    # `nothing` disables per-call alias comparisons at preparation.
     aliasing::TS
     reuse_visited::TV
 end
@@ -414,6 +425,8 @@ Check the partition of fixed-position derivative storage. `:same` preserves stor
 object identity and relative offsets; derivative/Jacobian calls preserve the first two.
 Mutable interiors and array elements belong to the paired reuse walk.
 """
+@inline _check_aliasing(::Nothing, ::Tuple, ::Val, (::Val)=Val(0)) = nothing
+
 @generated function _check_aliasing(
     prepared, fx::Tuple, ::Val{policy}, (::Val{first_arg})=Val(0)
 ) where {policy,first_arg}
@@ -872,6 +885,11 @@ using its contents' runtime types at preparation only; preserve those types on c
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
+`config.check_aliasing=true` (the default) enables per-call comparisons with the aliasing
+recorded at preparation. Set it to `false` to skip those comparisons and walks at zero
+per-call cost; changed aliasing may then return a wrong gradient without an error. Shape and
+type checks and preparation refusals remain enabled.
+
 `config.chunk_size` sets the forward chunk width baked into this cache (a default heuristic
 when `nothing`), capped at the total differentiable degrees of freedom. It governs the
 chunked [`value_and_gradient!!`](@ref) / [`value_and_jacobian!!`](@ref) paths (every input
@@ -984,8 +1002,8 @@ is shown by the cache.
             nothing
         end
     end
-    aliasing = _aliasing(fx)
-    seed_aliasing = if gradient_seed isa StructuredGradSeed
+    aliasing = config.check_aliasing ? _aliasing(fx) : nothing
+    seed_aliasing = if config.check_aliasing && gradient_seed isa StructuredGradSeed
         _aliasing(_seed_array_inputs(map(tangent, gradient_seed.arg_seeds), Base.tail(fx)))
     else
         nothing
@@ -2373,8 +2391,9 @@ one storage are handled.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
-Reuse must preserve the input alias relationships recorded during preparation. The guard
-checks mutable inputs and leaves nested in tuples and named tuples, including object
+Reuse must preserve the input alias relationships from preparation.
+`config.check_aliasing=true` (the default) enables the per-call guard for mutable inputs
+and leaves nested in tuples and named tuples, including object
 identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
@@ -2383,9 +2402,11 @@ change type if their fdata type is unchanged; the same swap inside a vector, `Re
 mutable struct is refused. Custom tangent interiors (including `IdDict` values and
 `FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
 check when the primal is also an `AbstractArray`.
-A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
-fields and array elements is not checked: callers must preserve it, or prepare a separate
-cache. See [Known Limitations](@ref).
+Shape and type mismatches always raise `PreparedCacheError`. Set `config.check_aliasing=false`
+to skip aliasing comparisons at zero per-call cost; a call with changed aliasing may then
+return a wrong gradient without an error. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate cache.
+See [Known Limitations](@ref).
 
 !!! note
     Evaluates `f(x...)` twice during cache preparation: once on a deepcopy of the arguments
@@ -2427,7 +2448,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _aliasing(fx),
+        config.check_aliasing ? _aliasing(fx) : nothing,
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2593,8 +2614,9 @@ will return both to their original state as part of the process of computing the
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
 
-Reuse must preserve the input alias relationships recorded during preparation. The guard
-checks mutable inputs and leaves nested in tuples and named tuples, including object
+Reuse must preserve the input alias relationships from preparation.
+`config.check_aliasing=true` (the default) enables the per-call guard for mutable inputs
+and leaves nested in tuples and named tuples, including object
 identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
@@ -2603,9 +2625,11 @@ change type if their fdata type is unchanged; the same swap inside a vector, `Re
 mutable struct is refused. Custom tangent interiors (including `IdDict` values and
 `FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
 check when the primal is also an `AbstractArray`.
-A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
-fields and array elements is not checked: callers must preserve it, or prepare a separate
-cache. See [Known Limitations](@ref).
+Shape and type mismatches always raise `PreparedCacheError`. Set `config.check_aliasing=false`
+to skip aliasing comparisons at zero per-call cost; a call with changed aliasing may then
+return a wrong gradient without an error. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate cache.
+See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -2621,7 +2645,7 @@ cache. See [Known Limitations](@ref).
     not add them together. Which arguments share a storage is part of the shape the cache
     was prepared for: where Mooncake can see the aliasing (top-level arguments, and mutables
     nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
-    a `PreparedCacheError`.
+    a `PreparedCacheError` when aliasing checks are enabled (the default).
 
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
 should be reset to zero before differentiation. It contains one boolean for each element of
@@ -2699,8 +2723,9 @@ scalar output tangent.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
-Reuse must preserve the input alias relationships recorded during preparation. The guard
-checks mutable inputs and leaves nested in tuples and named tuples, including object
+Reuse must preserve the input alias relationships from preparation.
+`config.check_aliasing=true` (the default) enables the per-call guard for mutable inputs
+and leaves nested in tuples and named tuples, including object
 identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
@@ -2709,9 +2734,11 @@ change type if their fdata type is unchanged; the same swap inside a vector, `Re
 mutable struct is refused. Custom tangent interiors (including `IdDict` values and
 `FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
 check when the primal is also an `AbstractArray`.
-A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
-fields and array elements is not checked: callers must preserve it, or prepare a separate
-cache. See [Known Limitations](@ref).
+Shape and type mismatches always raise `PreparedCacheError`. Set `config.check_aliasing=false`
+to skip aliasing comparisons at zero per-call cost; a call with changed aliasing may then
+return a wrong gradient without an error. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate cache.
+See [Known Limitations](@ref).
 
 !!! note
     Calls `f(x...)` once during cache preparation.
@@ -2741,7 +2768,7 @@ cache. See [Known Limitations](@ref).
         ȳ_cache,
         input_types_and_sizes,
         output_type_and_size,
-        _aliasing(fx),
+        config.check_aliasing ? _aliasing(fx) : nothing,
         _prepare_reuse_visited(tangents, fx),
     )
 end
@@ -2766,8 +2793,9 @@ will return both to their original state as part of the process of computing the
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
 
-Reuse must preserve the input alias relationships recorded during preparation. The guard
-checks mutable inputs and leaves nested in tuples and named tuples, including object
+Reuse must preserve the input alias relationships from preparation.
+`config.check_aliasing=true` (the default) enables the per-call guard for mutable inputs
+and leaves nested in tuples and named tuples, including object
 identity, backing storage aliasing, and (on Julia 1.11+) array offsets in `Memory`.
 Reverse reuse checks derivative storage in tuples, named tuples, builtin arrays and
 structural tangents within `f` and `x`: sizes, compatible slot types, defined primal slots
@@ -2776,9 +2804,11 @@ change type if their fdata type is unchanged; the same swap inside a vector, `Re
 mutable struct is refused. Custom tangent interiors (including `IdDict` values and
 `FunctionWrapper` captures) are not checked. Custom `AbstractArray` tangents have a size
 check when the primal is also an `AbstractArray`.
-A mismatch raises `PreparedCacheError`. Aliasing inside mutable structs, abstractly typed
-fields and array elements is not checked: callers must preserve it, or prepare a separate
-cache. See [Known Limitations](@ref).
+Shape and type mismatches always raise `PreparedCacheError`. Set `config.check_aliasing=false`
+to skip aliasing comparisons at zero per-call cost; a call with changed aliasing may then
+return a wrong gradient without an error. Aliasing inside mutable structs, abstractly typed
+fields and array elements is not checked: callers must preserve it, or prepare a separate cache.
+See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -2794,7 +2824,7 @@ cache. See [Known Limitations](@ref).
     not add them together. Which arguments share a storage is part of the shape the cache
     was prepared for: where Mooncake can see the aliasing (top-level arguments, and mutables
     nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
-    a `PreparedCacheError`.
+    a `PreparedCacheError` when aliasing checks are enabled (the default).
 
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
 should be reset to zero before differentiation. It contains one boolean for each element of
@@ -3554,10 +3584,12 @@ function _structured_gradient!!(
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     # The leaf table fixes the alias partition, including arrays inside struct fields.
     _restore_seed_bindings!(seed.bindings)
-    arrays = _seed_array_inputs(map(tangent, seed.arg_seeds), xs)
-    _check_aliasing(
-        cache.gradient_workspace.seed_aliasing, arrays, Val(:same), Val(:structured)
-    )
+    if cache.gradient_workspace.seed_aliasing !== nothing
+        arrays = _seed_array_inputs(map(tangent, seed.arg_seeds), xs)
+        _check_aliasing(
+            cache.gradient_workspace.seed_aliasing, arrays, Val(:same), Val(:structured)
+        )
+    end
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
@@ -3576,7 +3608,7 @@ function _structured_gradient!!(
         foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
         # Refresh call-time nondifferentiable state every chunk too, so mutation cannot
         # compound. Unchanged state rebuilds nothing.
-        arg_seeds = _refresh_all!(arg_seeds, xs)
+        arg_seeds = @inline _refresh_all!(arg_seeds, xs)
         _zero_seeds!(leaves)
         _seed_chunk!(leaves, s, W)
         out = _value_and_derivative!!(cache, f_seed, arg_seeds...)
@@ -3749,6 +3781,7 @@ true
     fwd_config = Config(;
         config.debug_mode,
         config.silence_debug_messages,
+        config.check_aliasing,
         chunk_size=fwd_chunk_size,
         empty_cache=false,
     )
@@ -3962,6 +3995,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
             config.debug_mode,
             config.silence_debug_messages,
             config.friendly_tangents,
+            config.check_aliasing,
             config.chunk_size,
             empty_cache=false,
         )

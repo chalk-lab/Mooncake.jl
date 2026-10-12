@@ -411,7 +411,19 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 DocTestSetup = nothing
 ```
 
-## Reusing prepared reverse caches
+## Reusing prepared caches
+
+Reuse must preserve the alias relationships from preparation. Per-call aliasing comparisons
+run by default; set `Config(check_aliasing=false)` to skip their fixed-position comparisons
+and, for structured forward gradient seeds, array-leaf traversal at zero per-call cost.
+With the opt-out, a call with changed aliasing can return a wrong gradient without an error:
+for `f(a, b, x) = (a[1] *= x; sum(b) * x + x * x)`, preparing with
+`f(v, v, 1.5)` and calling with `f(a, b, 1.5)`, where `v`, `a` and `b` are distinct
+arrays each equal to `[1.0, 2.0]`,
+can return `7.5` for the derivative with respect to `x`, whose correct value is `6.0`.
+This fixed-position mismatch is refused by default. Aliasing in array elements is not
+checked per call yet. Shape and type checks and preparation-time refusals remain on, including
+`Dict` admission and aliased storage across arguments in forward gradients and HVP/Hessian.
 
 `prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
 mutable inputs and storage carried by immutable values, including `MemoryRef`, tuples,
@@ -422,7 +434,8 @@ count as independent storage only when their owning backing `Memory` has length 
 (Julia 1.11+). Arrays emptied with `empty!` can retain
 nonempty backing storage, whose aliasing must still be preserved. Julia 1.10 uses
 `Base.dataids` to identify storage. On Julia 1.11 and later,
-relative offsets within each shared backing `Memory` group must also match. A mismatch raises
+relative offsets within each shared backing `Memory` group must also match. With the default
+aliasing checks, a mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
 those relationships change. Forward caches using structured gradient seeds also check
@@ -440,9 +453,11 @@ in the parts the alias guard does not inspect: it does not traverse mutable stru
 abstractly typed fields, array elements, or other variable-length containers such as
 dictionaries. It does not establish overlap introduced through raw pointers or
 `unsafe_wrap`; on Julia 1.10, array storage aliasing is identified by `Base.dataids`.
-Every forward prepared-cache entry point preserves the prepared storage and object
-aliasing at fixed positions, including aliasing between the callable and its arguments.
-Preparing with distinct arrays and reusing with one array at both positions raises
+Every forward prepared-cache entry point preserves the prepared storage and object aliasing
+at fixed positions, including aliasing between the callable and its arguments, unless
+`check_aliasing=false` opts out of those per-call comparisons.
+With the default aliasing checks, preparing with distinct arrays and reusing with one
+array at both positions raises
 `Mooncake.PreparedCacheError`, even for caller-supplied native directions. Derivative
 and Jacobian calls permit offset changes that preserve these aliasing relationships.
 Unchanged aliasing remains supported for derivative and Jacobian calls; forward gradients
