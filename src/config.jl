@@ -3,6 +3,7 @@
         debug_mode::Bool=false,
         silence_debug_messages::Bool=false,
         friendly_tangents::Bool=false,
+        check_aliasing::Bool=true,
         chunk_size::Union{Nothing,Int}=nothing,
         empty_cache::Bool=false,
     )
@@ -23,6 +24,14 @@ Configuration struct accepted by Mooncake's `prepare_*_cache` functions.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
+- `check_aliasing::Bool=true`: check that each prepared call preserves the input aliasing
+    recorded at fixed positions at preparation. Set to `false` to skip the comparisons and
+    walks at zero per-call cost; a call whose aliasing differs from preparation can then return a wrong
+    gradient without an error. For `f(a, b, x) = (a[1] *= x; sum(b) * x + x * x)`,
+    preparing with `f(v, v, 1.5)` and calling with independent arrays `a` and `b`,
+    each `[1.0, 2.0]`, with `v = [1.0, 2.0]`, is refused by default. Opting out
+    returns `7.5` for the derivative with respect to `x` instead of `6.0`. Aliasing
+    in array elements is not checked per call yet.
 - `chunk_size::Union{Nothing,Int}=nothing`: optional chunk width for the public
     `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
     Mooncake's default chunking heuristic. This does not affect reverse-mode caches.
@@ -37,6 +46,7 @@ struct Config
     debug_mode::Bool
     silence_debug_messages::Bool
     friendly_tangents::Bool
+    check_aliasing::Bool
     chunk_size::Union{Nothing,Int}
     empty_cache::Bool
 end
@@ -45,10 +55,16 @@ function Config(;
     debug_mode::Bool=false,
     silence_debug_messages::Bool=false,
     friendly_tangents::Bool=false,
+    check_aliasing::Bool=true,
     chunk_size::Union{Nothing,Int}=nothing,
     empty_cache::Bool=false,
 )
     return Config(
-        debug_mode, silence_debug_messages, friendly_tangents, chunk_size, empty_cache
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        check_aliasing,
+        chunk_size,
+        empty_cache,
     )
 end

@@ -149,6 +149,19 @@ DocTestSetup = nothing
 
 Reusing just the rule allocates fresh gradient buffers on each call, which a prepared cache avoids.
 
+Reuse must also preserve the aliasing of derivative-carrying storage from preparation.
+Per-call aliasing checks run by default. Set `Config(check_aliasing=false)` to skip their
+comparisons and traversal at zero per-call cost; see [Known Limitations](@ref) for that
+boundary. With the opt-out, changed aliasing can return a wrong gradient without an error:
+for `f(a, b, x) = (a[1] *= x; sum(b) * x + x * x)`, preparing with
+`f(v, v, 1.5)` and calling with `f(a, b, 1.5)`, where `v`, `a` and `b` are distinct
+arrays each equal to `[1.0, 2.0]`,
+can give `7.5` for the derivative with respect to `x`, where the correct derivative is `6.0`.
+This fixed-position mismatch is refused by default. Aliasing in array elements is not
+checked per call yet.
+Shape and type checks remain on, as do preparation-time refusals of unsupported `Dict`
+inputs and storage aliased across arguments in forward gradients and HVP/Hessian caches.
+
 ## API Reference
 
 ```@docs; canonical=true
