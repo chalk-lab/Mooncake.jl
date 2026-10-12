@@ -1502,7 +1502,7 @@ end
     _check_dict_cache_inputs((f, x))
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     y_cache = cache.y_cache
-    total_dim, Ty = _check_reverse_reuse(
+    (total_dim, Ty), refresh = _check_reverse_reuse(
         cache.input_types_and_sizes,
         cache.aliasing,
         cache.reuse_visited,
@@ -1510,6 +1510,8 @@ end
         (f, x),
         () -> (length(x), _check_jacobian_output(y_cache, eltype(x))),
     )
+    tangents =
+        refresh ? _refresh_reuse_tangents(IdDict(), (f, x), cache.tangents) : cache.tangents
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dim)
     # Reverse mode restores any in-place mutation of `x` on the pullback, so — unlike the
@@ -1519,7 +1521,7 @@ end
     # zero-dimension input gives the `n x 0` Jacobian with no sweep to run.
     if isempty(ȳ) || total_dim == 0
         y, _ = _value_and_pullback!!(
-            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, cache.tangents))
+            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, tangents))
         )
         return y, J
     end
@@ -1528,7 +1530,7 @@ end
     @inbounds for row in 1:length(ȳ)
         ȳ[row] = one(Ty)
         val, pb = _value_and_pullback!!(
-            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, cache.tangents))
+            cache, ȳ, tuple_map(CoDual, (f, x), tuple_map(set_to_zero!!, tangents))
         )
         row == 1 && (y = val)
         J[row, :] .= pb[2]
@@ -2046,7 +2048,8 @@ end
 @inline function _reuse_coduals(
     types_and_sizes, aliasing, visited, tangents::Tuple, fx::Tuple, args_to_zero::Tuple
 )
-    _check_reverse_reuse(types_and_sizes, aliasing, visited, tangents, fx)
+    _, refresh = _check_reverse_reuse(types_and_sizes, aliasing, visited, tangents, fx)
+    tangents = refresh ? _refresh_reuse_tangents(IdDict(), fx, tangents) : tangents
     return tuple_map(CoDual, fx, tuple_map(set_to_zero_maybe!!, tangents, args_to_zero))
 end
 
@@ -2067,8 +2070,8 @@ end
     partition = aliasing isa Val ? typeof(aliasing).parameters[1] : aliasing
     _check_aliasing(partition, fx, Val(:same))
     after_aliasing()
-    _check_tangent_reuse(visited, tangents, fx)
-    return result
+    refresh = _check_tangent_reuse(visited, tangents, fx)
+    return result, refresh
 end
 
 @inline function _check_reverse_reuse(
@@ -2083,8 +2086,8 @@ end
     _check_aliasing(aliasing, fx, Val(:same))
     result = before_envelope()
     _check_prepared_cache(types_and_sizes, fx)
-    _check_tangent_reuse(visited, tangents, fx)
-    return result
+    refresh = _check_tangent_reuse(visited, tangents, fx)
+    return result, refresh
 end
 
 @generated function _check_tangent_reuse(visited, tangents::Tuple, fx::Tuple)
@@ -2095,14 +2098,14 @@ end
             :(_check_reuse(visited, $i, fx[$i], tangents[$i], Val(true)))
         end
     end
-    visited <: NoCache && return Expr(:block, checks..., :(return nothing))
+    check = foldl((a, b) -> :($a | $b), checks; init=:(false))
+    visited <: NoCache && return :($check::Bool)
     return quote
         try
-            $(checks...)
+            return ($check)::Bool
         finally
             _reset_reuse_visited!(visited)
         end
-        return nothing
     end
 end
 
@@ -2217,44 +2220,47 @@ end
     T <: tangent_type(P) ||
         (S && fdata_type(T) <: fdata_type(tangent_type(P))) ||
         _throw_tangent_reuse_error(c, i, "type", "a value with tangent type $T", P)
-    # Storage without derivatives cannot misplace one, whatever its shape.
-    _holds_derivatives(T) || return nothing
-    return _check_reuse_structure(c, i, p, t, top)
+    return _check_reuse_structure(c, i, p, t, top)::Bool
 end
 
 # Other tangents are opaque; custom array tangents still record their size.
 @inline function _check_reuse_structure(c, i::Int, p, t, _)
-    p isa AbstractArray &&
-        t isa AbstractArray &&
-        size(p) != size(t) &&
-        _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
-    return nothing
+    if p isa AbstractArray && t isa AbstractArray && size(p) != size(t)
+        _holds_derivatives(typeof(t)) &&
+            _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
+        return true
+    end
+    return false
 end
 @generated function _check_reuse_structure(
     c, i::Int, p::Union{Tuple,NamedTuple}, t::Union{Tuple,NamedTuple}, top
 )
-    fieldcount(p) == fieldcount(t) || return :(return nothing)
+    fieldcount(p) == fieldcount(t) || return :(return false)
     checks = map(
         k -> :(_check_reuse(c, i, getfield(p, $k), getfield(t, $k), top)), 1:fieldcount(t)
     )
-    return Expr(:block, checks..., :(return nothing))
+    return foldl((a, b) -> :($a | $b), checks; init=:(false))
 end
 @generated function _check_reuse_structure(
     c, i::Int, p::P, t::Union{Tangent,MutableTangent}, top
 ) where {P}
-    fieldnames(P) == fieldnames(fieldtype(t, :fields)) || return :(return nothing)
+    fieldnames(P) == fieldnames(fieldtype(t, :fields)) || return :(return false)
     mutable = t <: MutableTangent
     checks = map(enumerate(fieldnames(P))) do (k, n)
         quote
             let ft = getfield(fs, $(QuoteNode(n)))
                 if ft isa PossiblyUninitTangent
-                    isdefined(p, $k) &&
-                        !is_init(ft) &&
-                        _throw_reuse_definedness(c, i, "field", false)
-                    isdefined(p, $k) &&
-                        _check_reuse(c, i, getfield(p, $k), val(ft), child)
+                    if isdefined(p, $k)
+                        if !is_init(ft)
+                            _holds_derivatives(typeof(t)) &&
+                                _throw_reuse_definedness(c, i, "field", false)
+                            refresh = true
+                        else
+                            refresh |= _check_reuse(c, i, getfield(p, $k), val(ft), child)
+                        end
+                    end
                 else
-                    _check_reuse(c, i, getfield(p, $k), ft, child)
+                    refresh |= _check_reuse(c, i, getfield(p, $k), ft, child)
                 end
             end
         end
@@ -2262,38 +2268,126 @@ end
     return quote
         $(
             if mutable && _type_may_cycle(t)
-                :(_reuse_seen!(c, p, t) && return nothing)
+                :(_reuse_seen!(c, p, t) && return false)
             else
                 nothing
             end
         )
         child = $(mutable ? :(Val(false)) : :top)
         fs = t.fields
+        refresh = false
         $(checks...)
-        return nothing
+        return refresh
     end
 end
 function _check_reuse_structure(
     c, i::Int, p::_BuiltinArrays, t::_BuiltinArrays, top, check_size::Val{S}=Val(true)
 ) where {S}
-    _holds_derivatives(typeof(t)) || return nothing
-    !S || size(p) == size(t) || _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
-    isbitstype(eltype(t)) && return nothing
-    _reuse_seen!(c, p, t) && return nothing
-    for k in eachindex(t)
-        isassigned(p, k) &&
-            !isassigned(t, k) &&
-            _throw_reuse_definedness(c, i, "element", false)
-        isassigned(p, k) && _check_reuse(c, i, p[k], t[k], Val(false))
+    if S && size(p) != size(t)
+        _holds_derivatives(typeof(t)) &&
+            _throw_tangent_reuse_error(c, i, "size", size(t), size(p))
+        return true
     end
-    return nothing
+    isbitstype(eltype(t)) && return false
+    _reuse_seen!(c, p, t) && return false
+    refresh = false
+    for k in eachindex(t)
+        if isassigned(p, k)
+            if !isassigned(t, k)
+                _holds_derivatives(typeof(t)) &&
+                    _throw_reuse_definedness(c, i, "element", false)
+                refresh = true
+            else
+                refresh |= _check_reuse(c, i, p[k], t[k], Val(false))
+            end
+        end
+    end
+    return refresh
+end
+function _check_reuse_structure(c, i::Int, p::KeyedDict, t::KeyedDict, top)
+    # Reverse caches historically leave changed primal key sets to the keyed rules. Keep
+    # that refusal boundary, while walking values when the prepared and current keys match.
+    length(p) == length(t) && all(k -> haskey(t, k), keys(p)) || return false
+    _reuse_seen!(c, p, t) && return false
+    refresh = false
+    for (k, pv) in p
+        refresh |= _check_reuse(c, i, pv, t[k], Val(false))
+    end
+    return refresh
 end
 @static if VERSION >= v"1.11-rc4"
     function _check_reuse_structure(c, i::Int, p::MemoryRef, t::MemoryRef, _)
-        Core.memoryrefoffset(p) == Core.memoryrefoffset(t) || _throw_tangent_reuse_error(
-            c, i, "`MemoryRef` offset", Core.memoryrefoffset(t), Core.memoryrefoffset(p)
-        )
+        if Core.memoryrefoffset(p) != Core.memoryrefoffset(t)
+            _holds_derivatives(typeof(t)) && _throw_tangent_reuse_error(
+                c,
+                i,
+                "`MemoryRef` offset",
+                Core.memoryrefoffset(t),
+                Core.memoryrefoffset(p),
+            )
+            return true
+        end
         return _check_reuse_structure(c, i, p.mem, t.mem, Val(false))
+    end
+end
+
+# Only mismatched derivative-free storage takes this allocating path. Share one cache
+# across the whole call, retaining derivative buffers (including args_to_zero=false).
+_refresh_reuse_tangents(c, p, t) = t
+function _refresh_reuse_tangents(c, p::Union{Tuple,NamedTuple}, t::Union{Tuple,NamedTuple})
+    return tuple_map((p, t) -> _refresh_reuse_tangents(c, p, t), p, t)
+end
+function _refresh_reuse_tangents(c, p, t::T) where {T<:PossiblyUninitTangent}
+    return T(
+        is_init(t) ? _refresh_reuse_tangents(c, p, val(t)) : zero_tangent_internal(p, c)
+    )
+end
+@generated function _refresh_reuse_tangents(
+    c, p::P, t::T
+) where {P,T<:Union{Tangent,MutableTangent}}
+    fieldnames(P) == fieldnames(fieldtype(T, :fields)) || return :(t)
+    fields = map(enumerate(fieldnames(fieldtype(T, :fields)))) do (k, n)
+        :(
+            if isdefined(p, $k)
+                _refresh_reuse_tangents(
+                    c, getfield(p, $k), getfield(t.fields, $(QuoteNode(n)))
+                )
+            else
+                getfield(t.fields, $(QuoteNode(n)))
+            end
+        )
+    end
+    nt = :(NamedTuple{fieldnames(fieldtype(T, :fields))}(tuple($(fields...))))
+    return T <: MutableTangent ? quote
+        haskey(c, p) && return c[p]::T
+        c[p] = t
+        t.fields = $nt
+        return t
+    end : :(T($nt))
+end
+function _refresh_reuse_tangents(c, p::AbstractArray, t::T) where {T<:AbstractArray}
+    haskey(c, p) && return c[p]::T
+    _holds_derivatives(T) || return zero_tangent_internal(p, c)::T
+    p isa _BuiltinArrays && t isa _BuiltinArrays || return t
+    c[p] = t
+    if !isbitstype(eltype(T))
+        for k in eachindex(t)
+            isassigned(p, k) && (t[k] = _refresh_reuse_tangents(c, p[k], t[k]))
+        end
+    end
+    return t
+end
+function _refresh_reuse_tangents(c, p::P, t::T) where {P<:KeyedDict,T<:KeyedDict}
+    haskey(c, p) && return c[p]::T
+    c[p] = t
+    for (k, pv) in p
+        t[k] = _refresh_reuse_tangents(c, pv, t[k])
+    end
+    return t
+end
+@static if VERSION >= v"1.11-rc4"
+    function _refresh_reuse_tangents(c, p::MemoryRef, t::MemoryRef)
+        return construct_ref(p, _refresh_reuse_tangents(c, p.mem, t.mem))
     end
 end
 
@@ -4121,7 +4215,7 @@ H
     H = buf.H
     g = buf.grad
     v = buf.v
-    T, n = _check_reverse_reuse(
+    (T, n), _ = _check_reverse_reuse(
         cache.reuse...,
         (f, x1),
         () -> begin

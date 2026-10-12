@@ -1574,6 +1574,85 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 cache, gather, StructuredPair([1.0, 2, 3], [1, 2])
             )
             @test g.fields.u == [1.0, 1.0, 0.0]
+            @test length(g.fields.v) == 2
+
+            for D in (Dict, IdDict)
+                f = (x, d) -> sum(x[d[:indices]])
+                d = D(:indices => [1])
+                cache = prepare_gradient_cache(f, [1.0, 2, 3], d)
+                @test cache.tangents[3][:indices] isa Vector{NoTangent}
+                _, g = value_and_gradient!!(cache, f, [1.0, 2, 3], D(:indices => [1, 2]))
+                @test g[2] == [1.0, 1.0, 0.0]
+                @test length(g[3][:indices]) == 2
+                @test length(cache.tangents[3][:indices]) == 2
+
+                shared = [1, 2]
+                aliased = D(:left => shared, :right => shared)
+                alias_f = (x, d) -> sum(x[d[:left]]) + sum(x[d[:right]])
+                alias_cache = prepare_gradient_cache(alias_f, [1.0, 2, 3], aliased)
+                @test alias_cache.tangents[3][:left] !== nothing
+                new_shared = [1, 2, 3]
+                value_and_gradient!!(
+                    alias_cache,
+                    alias_f,
+                    [1.0, 2, 3],
+                    D(:left => new_shared, :right => new_shared),
+                )
+                @test alias_cache.tangents[3][:left] === alias_cache.tangents[3][:right]
+                @test length(alias_cache.tangents[3][:left]) == 3
+            end
+
+            # Exercise the paired reuse walk through immutable and boxed containers.
+            containers = (tuple, (u, v) -> (; u, v), (u, v) -> Any[u, v])
+            @static if VERSION >= v"1.11-rc4"
+                containers = (containers..., (u, v) -> Memory{Any}(Any[u, v]))
+            end
+            for wrap in containers
+                f = s -> sum(s[1][s[2]])
+                cache = prepare_gradient_cache(f, wrap([1.0, 2, 3], [1]))
+                for inds in ([1, 2], [3], [1, 2])
+                    y, (_, g) = value_and_gradient!!(cache, f, wrap([1.0, 2, 3], inds))
+                    @test y == sum(inds)
+                    @test g[1] == [count(==(i), inds) for i in 1:3]
+                    @test length(g[2]) == length(inds)
+                end
+            end
+
+            f = s -> (s.v[end]=2; sum(s.u[s.v]))
+            cache = prepare_gradient_cache(f, StructuredPair([1.0, 2, 3], [1]))
+            x = StructuredPair([1.0, 2, 3], [1, 3])
+            _, (_, g) = value_and_gradient!!(cache, f, x)
+            @test g.fields.u == [1.0, 1.0, 0.0]
+            @test x.v == [1, 3]
+            _, (_, g) = value_and_gradient!!(cache, f, x; args_to_zero=(false, false))
+            @test g.fields.u == [2.0, 2.0, 0.0]
+
+            f = s -> sum(s.u[s.v.w[1]]) + sum(s.u[s.v.w[2]])
+            inds = [1]
+            cache = prepare_gradient_cache(
+                f, StructuredPair([1.0, 2, 3], RebindBox((inds, inds)))
+            )
+            inds = [1, 2]
+            _, (_, g) = value_and_gradient!!(
+                cache, f, StructuredPair([1.0, 2, 3], RebindBox((inds, inds)))
+            )
+            @test g.fields.u == [2.0, 2.0, 0.0]
+            @test g.fields.v.fields.w[1] === g.fields.v.fields.w[2]
+            @test length(g.fields.v.fields.w[1]) == 2
+
+            @static if VERSION >= v"1.11-rc4"
+                for wrap in (identity, memoryref)
+                    f = s -> s.u[s.v isa Memory ? s.v[end] : s.v[]]
+                    cache = prepare_gradient_cache(
+                        f, StructuredPair([1.0, 2, 3], wrap(Memory{Int}([1])))
+                    )
+                    _, (_, g) = value_and_gradient!!(
+                        cache, f, StructuredPair([1.0, 2, 3], wrap(Memory{Int}([2, 3])))
+                    )
+                    @test g.fields.u == (wrap === identity ? [0, 0, 1] : [0, 1, 0])
+                    @test length(wrap === identity ? g.fields.v : g.fields.v.mem) == 2
+                end
+            end
         end
 
         @testset "friendly tangents" begin

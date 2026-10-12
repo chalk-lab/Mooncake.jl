@@ -149,6 +149,11 @@ DocTestSetup = nothing
 
 Reusing just the rule allocates fresh gradient buffers on each call, which a prepared cache avoids.
 
+In reverse caches, nested storage without derivatives (for example, an integer index array
+in a struct or a `Dict`/`IdDict` value) may change shape. Such calls refresh its tangent
+storage to match the current input; derivative-carrying buffers retain their prepared shapes
+and are reused.
+
 Reuse must also preserve the aliasing of derivative-carrying storage from preparation.
 Per-call aliasing checks run by default. Set `Config(check_aliasing=false)` to skip their
 comparisons and traversal at zero per-call cost; see [Known Limitations](@ref) for that
