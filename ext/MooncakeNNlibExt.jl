@@ -219,6 +219,7 @@ end
 # At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
 # from `rng` regardless. The `===` is checked, not assumed, because if that fast path ever
 # allocates, returning the input would alias where the primal does not.
+# `p::Real`, not `IEEEFloat`: an `Int`, `Bool` or `Rational` `p` would fail inside NNlib.
 @is_primitive MinimalCtx ReverseMode Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},Real
 } where {P<:IEEEFloat,N}
