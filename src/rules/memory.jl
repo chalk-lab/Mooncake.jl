@@ -412,6 +412,36 @@ end
 
 # Rules
 
+@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),MemoryRef,Int}
+function frule!!(
+    ::Lifted{typeof(Base._unsetindex!),N},
+    x::Lifted{<:MemoryRef,N,<:MemoryRef},
+    i::Lifted,
+) where {N}
+    _i = primal(i)
+    Base._unsetindex!(primal(x), _i)
+    Base._unsetindex!(tangent(x), _i)
+    return zero_lifted(Val(N), nothing)
+end
+
+function rrule!!(
+    ::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef}, i::CoDual{<:Integer}
+)
+    _x, _dx, _i = primal(x), tangent(x), primal(i)
+    px = isassigned(_x)
+    dx = isassigned(_dx)
+    old_x = px ? _x[] : nothing
+    old_dx = dx ? _dx[] : nothing
+    Base._unsetindex!(_x)
+    Base._unsetindex!(_dx)
+    function _unsetindex!_pullback!!(::NoRData)
+        px ? (_x[] = old_x) : Base._unsetindex!(_x)
+        dx ? (_dx[] = old_dx) : Base._unsetindex!(_dx)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(nothing), _unsetindex!_pullback!!
+end
+
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
@@ -1764,6 +1794,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (:allocs, memoryref_mem_sum),
     )
         push!(test_cases, (false, perf, (mode=ForwardMode,), f, collect(1.0:4.0)))
+    end
+    # Growth can reuse primal capacity without allocating. Structural V storage must
+    # have the same capacity and offset before the derived growth code runs.
+    for p in (Any[2.0, 3.0], [2, 3], [[2.0], [3.0]]), offset in (false, true)
+        v = sizehint!(copy(p), 20)
+        offset && popfirst!(v)
+        push!(test_cases, (false, :none, nothing, push!, v, first(v)))
+        p isa Vector{Int} && push!(test_cases, (false, :none, nothing, insert!, v, 2, first(v)))
     end
     memory = Any[slack_v]
     return test_cases, memory
