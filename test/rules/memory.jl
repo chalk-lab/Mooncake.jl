@@ -10,6 +10,30 @@ end
     end
     TestUtils.run_rule_test_cases(StableRNG, Val(:memory))
 
+    # Numerical rule tests cannot check unused capacity or the cache-free factories.
+    # Check the backing geometry directly, including a nonzero array offset.
+    @testset "structural forward capacity" for p in (Any[2.0, 3.0], [2, 3], [[2.0], [3.0]]),
+        offset in (false, true)
+
+        sizehint!(p, 20)
+        offset && popfirst!(p)
+        for N in (1, 8)
+            w = Val(N)
+            for v in (
+                Mooncake.zero_dual(w, p),
+                Mooncake.uninit_dual(w, p),
+                Mooncake.randn_dual(w, sr(123), p),
+                tangent(Mooncake.zero_lifted(w, p)),
+                tangent(Mooncake.uninit_lifted(w, p)),
+                tangent(Mooncake.randn_lifted(w, sr(123), p)),
+                tangent(Mooncake.lift(p, zero_tangent(p))),
+            )
+                @test length(v.ref.mem) == length(p.ref.mem)
+                @test Core.memoryrefoffset(v.ref) == Core.memoryrefoffset(p.ref)
+            end
+        end
+    end
+
     # Check that the rule for `Memory{P}` only produces two allocations.
     generate_mem()
     @test TestUtils.count_allocs(generate_mem) <= 2

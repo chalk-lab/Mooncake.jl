@@ -1245,7 +1245,7 @@ end
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
     # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{NoTangent}`
     # overload and `dual_type(Memory{T}) = Memory{NoDual}`.
-    # Exact NoTangent keeps map from reading undefined slots in non-empty bottom storage.
+    # Exact NoTangent avoids reading undefined slots in non-empty bottom storage.
     @inline _lift(::StructuralStorage, x::Memory, ẋ::Memory{NoTangent}) = Lifted{
         typeof(x),1
     }(
@@ -1340,9 +1340,9 @@ end
 # mirrors it element-wise as an `Array{NoDual}` (coherent with `dual_type(Array{T,D}) =
 # Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the
 # element-wise overload below when a cache is threaded.
-# Exact NoTangent keeps map from reading undefined slots in non-empty bottom storage.
+# Exact NoTangent avoids reading undefined slots in non-empty bottom storage.
 @inline _lift(::StructuralStorage, x::Array, ẋ::Array{NoTangent}) = Lifted{typeof(x),1}(
-    x, map(_ -> NoDual(), ẋ)
+    x, fill!(_structural_dual_shell(x, NoDual), NoDual())
 )
 @inline _lift(k::StructuralStorage, x::Array, ẋ::Array{NoTangent}, ::Union{Nothing,IdDict}) = _lift(
     k, x, ẋ
@@ -1399,6 +1399,17 @@ else
     (Array,)
 end
 
+# Derived array growth branches on primal capacity and moves refs by primal offsets.
+# Its element-wise V must therefore mirror the backing storage, not just size(x).
+@inline _structural_dual_shell(x, ::Type{T}) where {T} = similar(x, T)
+@static if VERSION >= v"1.11-rc4"
+    @inline function _structural_dual_shell(x::Array{P,D}, ::Type{T}) where {P,D,T}
+        ref = getfield(x, :ref)
+        mem = Memory{T}(undef, length(ref.mem))
+        return Base.wrap(Array, construct_ref(ref, mem), size(x))::Array{T,D}
+    end
+end
+
 # Element-wise lift for containers whose eltype `_storage_kind` maps to `StructuralStorage`.
 # Register before filling, as reverse mode's `zero_tangent_internal(::Array)` does, so
 # cycles terminate and repeated children share one V, including when a top-level call has
@@ -1409,7 +1420,7 @@ for C in _STRUCTURAL_CONTAINERS
     )
         d = c === nothing ? IdDict() : c
         haskey(d, x) && return d[x]::Lifted{typeof(x),1}
-        v = similar(x, dual_type(Val(1), eltype(x)))
+        v = _structural_dual_shell(x, dual_type(Val(1), eltype(x)))
         lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
         d[x] = lifted
         @inbounds for i in eachindex(x)
@@ -1532,7 +1543,7 @@ for factory in (:zero_dual, :uninit_dual, :randn_dual)
         @eval @inline function $storage_factory(
             ::StructuralStorage, w::Val{N}, $(rng_args...), x::$C{T}
         ) where {N,T}
-            v = similar(x, dual_type(w, T))
+            v = _structural_dual_shell(x, dual_type(w, T))
             @inbounds for i in eachindex(x)
                 isassigned(x, i) && (v[i] = $factory(w, $(rng_vals...), x[i]))
             end
@@ -1810,7 +1821,7 @@ for (factory, internal) in (
             ::StructuralStorage, w::Val{N}, $(rng_args...), x::$C, d::MaybeCache
         ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
+            shell = _structural_dual_shell(x, eltype(dual_type(Val(N), typeof(x))))
             d[x] = shell
             @inbounds for i in eachindex(x)
                 isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
