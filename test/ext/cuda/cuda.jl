@@ -45,26 +45,35 @@ end
             @test p_copy == p2
         end
 
-        @testset "Distributions.rand! is zero-derivative without restoring the RNG" begin
+        @testset "$f ($T, distribution=$distribution) restores arrays but not the RNG" for (
+            f, T, distribution
+        ) in vcat(
+            [(rand!, Float32, true)],
+            [
+                (f, T, false) for f in (rand!, randn!) for
+                T in (Float16, Float32, Float64, Complex{Float16}, ComplexF32, ComplexF64)
+            ],
+        )
             rng = CUDA.default_rng()
             sampler = MvNormal(CUDA.zeros(Float32, 2), Diagonal(CUDA.ones(Float32, 2)))
-            x = CUDA.fill(-1.0f0, 2, 4)
-            dx = CUDA.fill(2.0f0, 2, 4)
+            args = distribution ? (rng, sampler) : (rng,)
+            x = CUDA.fill(T(-1), 2, 4)
+            dx = CUDA.fill(T(2), 2, 4)
             x_before, dx_before = copy(x), copy(dx)
 
             Random.seed!(rng, 123)
             expected_x = similar(x)
-            Distributions.rand!(rng, sampler, expected_x)
+            f(args..., expected_x)
             expected_next = Random.rand(rng, Float32, 8)
 
             Random.seed!(rng, 123)
             out, pullback = Mooncake.rrule!!(
-                Mooncake.zero_fcodual(rand!),
-                Mooncake.zero_fcodual(rng),
-                Mooncake.zero_fcodual(sampler),
+                Mooncake.zero_fcodual(f),
+                map(Mooncake.zero_fcodual, args)...,
                 Mooncake.CoDual(x, dx),
             )
             @test Mooncake.primal(out) === x
+            @test Mooncake.tangent(out) === dx
             @test x == expected_x
             @test all(iszero, dx)
 
@@ -76,21 +85,20 @@ end
 
             Random.seed!(rng, 123)
             out = Mooncake.frule!!(
-                Mooncake.zero_dual(rand!),
-                Mooncake.zero_dual(rng),
-                Mooncake.zero_dual(sampler),
+                Mooncake.zero_dual(f),
+                map(Mooncake.zero_dual, args)...,
                 Mooncake.Dual(x, dx),
             )
             @test Mooncake.primal(out) === x
+            @test Mooncake.tangent(out) === dx
             @test x == expected_x
             @test all(iszero, dx)
             @test Random.rand(rng, Float32, 8) == expected_next
 
             test_rule(
                 StableRNG(123),
-                rand!,
-                rng,
-                sampler,
+                f,
+                args...,
                 similar(x);
                 interface_only=true,
                 is_primitive=true,

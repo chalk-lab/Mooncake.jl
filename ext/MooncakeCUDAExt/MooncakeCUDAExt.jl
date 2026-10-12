@@ -30,6 +30,7 @@ using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: derive, unsafe_free!
+using CUDA.CUDACore: GPUArrays
 using Base.Broadcast: Broadcasted
 # Statistics is a weakdep triggering this extension alongside CUDA; always loaded
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
@@ -95,6 +96,24 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+
+# Stop at the random fill: tracing GPUArrays' implementation enters a kernel launch,
+# whose memory adaptation cannot preserve the array's derivative storage.
+# Obtain CUDA.default_rng() outside differentiated code: its task-local lookup is unsupported.
+for f in (rand!, randn!)
+    @eval @is_primitive MinimalCtx Tuple{typeof($f),GPUArrays.RNG,CuMaybeComplexArray}
+    @eval function frule!!(
+        ::Dual{typeof($f)}, rng::Dual{<:GPUArrays.RNG}, x::Dual{<:CuMaybeComplexArray}
+    )
+        return Mooncake._rand_fill_frule($f, x, rng)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof($f)}, rng::CoDual{<:GPUArrays.RNG}, x::CoDual{<:CuMaybeComplexArray}
+    )
+        return Mooncake._rand_fill_rrule($f, x, rng)
+    end
+end
+
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose

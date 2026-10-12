@@ -31,28 +31,41 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
+
+# Shared with extension rules for random fills, including draws from a distribution.
+# The result aliases the destination. Restore its primal and derivative storage on the
+# pullback, but leave the RNG advanced: a draw is state, not a reparameterised sample.
+function _rand_fill_frule(f, x, args...)
+    f(map(primal, args)..., primal(x))
+    fill!(tangent(x), zero(eltype(primal(x))))
+    return x
+end
+
+function _rand_fill_rrule(f, x, args...)
+    px, dx = primal(x), tangent(x)
+    old_x, old_dx = copy(px), copy(dx)
+    f(map(primal, args)..., px)
+    fill!(dx, zero(eltype(px)))
+    args_rdata = map(a -> zero_rdata(primal(a)), args)
+    function rand_fill_pb!!(::NoRData)
+        copyto!(px, old_x)
+        copyto!(dx, old_dx)
+        return NoRData(), args_rdata..., NoRData()
+    end
+    return x, rand_fill_pb!!
+end
+
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
     @eval function frule!!(
         ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
     )
-        $f(primal(rng), primal(x))
-        tangent(x) .= 0
-        return x
+        return _rand_fill_frule($f, x, rng)
     end
     @eval function rrule!!(
         ::CoDual{typeof($f)}, rng::CoDual{<:SpecialisedRNGs}, x::CoDual{<:Array{Float64}}
     )
-        current_x = copy(x.x)
-        current_dx = copy(x.dx)
-        $f(rng.x, x.x)
-        x.dx .= 0.0
-        function rand_adjoint(::NoRData)
-            x.x .= current_x
-            x.dx .= current_dx
-            return NoRData(), NoRData(), NoRData()
-        end
-        return x, rand_adjoint
+        return _rand_fill_rrule($f, x, rng)
     end
 end
 
