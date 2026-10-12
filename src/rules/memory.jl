@@ -412,34 +412,51 @@ end
 
 # Rules
 
-@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),MemoryRef,Int}
-function frule!!(
+# Isbits slots need no restoration; retain Base's traced no-op in both modes.
+function _is_primitive(
+    ::Type{MinimalCtx},
+    ::Type{<:Mode},
+    ::Type{<:Tuple{typeof(Base._unsetindex!),MemoryRef{P}}},
+) where {P}
+    return !isbitstype(P)
+end
+function _is_primitive(
+    ::Type{MinimalCtx},
+    ::Type{<:Mode},
+    ::Type{<:Tuple{typeof(Base._unsetindex!),Union{Memory{P},Array{P}},Int}},
+) where {P}
+    return !isbitstype(P)
+end
+
+@inline function frule!!(
     ::Lifted{typeof(Base._unsetindex!),N},
-    x::Lifted{<:MemoryRef,N,<:MemoryRef},
-    i::Lifted,
-) where {N}
+    x::Lifted{<:Union{Memory{P},Array{P}},N},
+    i::Lifted{Int},
+) where {N,P}
     _i = primal(i)
     Base._unsetindex!(primal(x), _i)
     Base._unsetindex!(tangent(x), _i)
-    return zero_lifted(Val(N), nothing)
+    return x
 end
 
-function rrule!!(
-    ::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef}, i::CoDual{<:Integer}
-)
+@inline function rrule!!(
+    ::CoDual{typeof(Base._unsetindex!)},
+    x::CoDual{<:Union{Memory{P},Array{P}}},
+    i::CoDual{Int},
+) where {P}
     _x, _dx, _i = primal(x), tangent(x), primal(i)
-    px = isassigned(_x)
-    dx = isassigned(_dx)
-    old_x = px ? _x[] : nothing
-    old_dx = dx ? _dx[] : nothing
-    Base._unsetindex!(_x)
-    Base._unsetindex!(_dx)
+    px = isassigned(_x, _i)
+    dx = isassigned(_dx, _i)
+    old_x = px ? _x[_i] : nothing
+    old_dx = dx ? _dx[_i] : nothing
+    Base._unsetindex!(_x, _i)
+    Base._unsetindex!(_dx, _i)
     function _unsetindex!_pullback!!(::NoRData)
-        px ? (_x[] = old_x) : Base._unsetindex!(_x)
-        dx ? (_dx[] = old_dx) : Base._unsetindex!(_dx)
+        px ? (_x[_i] = old_x) : Base._unsetindex!(_x, _i)
+        dx ? (_dx[_i] = old_dx) : Base._unsetindex!(_dx, _i)
         return NoRData(), NoRData(), NoRData()
     end
-    return zero_fcodual(nothing), _unsetindex!_pullback!!
+    return x, _unsetindex!_pullback!!
 end
 
 @is_primitive(
@@ -1534,7 +1551,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             (false, :none, nothing, memoryrefset!, mem_ref, sample_value, :not_atomic, bc)
             for (mem_ref, sample_value) in assignable_refs for bc in [false, true]
         ],
-        [(false, :none, nothing, Base._unsetindex!, ref) for (ref, _) in assignable_refs],
+        [
+            (false, :none, nothing, Base._unsetindex!, ref) for
+            (ref, _) in assignable_refs if !isbitstype(eltype(ref))
+        ],
         (
             false,
             :none,
@@ -1801,9 +1821,29 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         v = sizehint!(copy(p), 20)
         offset && popfirst!(v)
         push!(test_cases, (false, :none, nothing, push!, v, first(v)))
-        p isa Vector{Int} && push!(test_cases, (false, :none, nothing, insert!, v, 2, first(v)))
+        p isa Vector{Int} &&
+            push!(test_cases, (false, :none, nothing, insert!, v, 2, first(v)))
+    end
+    for p in (Any[2.0, 3.0], [[2.0], [3.0]]), offset in (false, true)
+        v = sizehint!(copy(p), 20)
+        offset && popfirst!(v)
+        push!(test_cases, (false, :none, nothing, pushfirst!, v, first(v)))
+        push!(test_cases, (false, :none, nothing, insert!, v, 2, first(v)))
+        push!(test_cases, (false, :none, nothing, deleteat!, v, 1))
+        push!(test_cases, (false, :none, nothing, popfirst!, v))
+        push!(test_cases, (false, :none, nothing, pop!, v))
+        push!(test_cases, (false, :none, nothing, empty!, v))
+        push!(test_cases, (false, :none, nothing, resize!, v, max(0, length(v) - 1)))
+        push!(test_cases, (false, :none, nothing, splice!, v, 1))
     end
     memory = Any[slack_v]
+    append!(
+        test_cases,
+        [
+            (false, :none, nothing, Base._unsetindex!, ref) for ref in _mem_refs()[1] if
+            isbitstype(eltype(ref)) && length(ref.mem) >= Core.memoryrefoffset(ref)
+        ],
+    )
     return test_cases, memory
 end
 
