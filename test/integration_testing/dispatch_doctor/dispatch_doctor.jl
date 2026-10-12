@@ -22,6 +22,10 @@ function TestUtils.test_hook(f, ::Val{:allow_unstable_hessian_interface_test}, :
     return allow_unstable(f)
 end
 
+function TestUtils.test_hook(f, ::Val{:allow_unstable_global_rebinding_test}, ::Any...)
+    return allow_unstable(f)
+end
+
 # Automatically skip instability checks for types which are themselves unstable,
 # or which are unreasonably hard to infer.
 function allow_unstable_given_unstable_type(f::F, ::Type{T}) where {F,T}
