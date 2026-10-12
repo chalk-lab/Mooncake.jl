@@ -10,6 +10,20 @@ end
     end
     TestUtils.run_rule_test_cases(StableRNG, Val(:memory))
 
+    @testset "unsetindex! primitive selection" for P in
+                                                   (Float64, Any, Union{Float64,Nothing}),
+        A in (MemoryRef{P}, Memory{P}, Array{P}),
+        mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+
+        sig = if A <: MemoryRef
+            Tuple{typeof(Base._unsetindex!),A}
+        else
+            Tuple{typeof(Base._unsetindex!),A,Int}
+        end
+        @test is_primitive(Mooncake.MinimalCtx, mode, sig, Base.get_world_counter()) ==
+            !isbitstype(P)
+    end
+
     # Numerical rule tests cannot check unused capacity or the cache-free factories.
     # Check the backing geometry directly, including a nonzero array offset.
     @testset "structural forward capacity" for p in (Any[2.0, 3.0], [2, 3], [[2.0], [3.0]]),
