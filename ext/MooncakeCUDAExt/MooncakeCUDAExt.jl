@@ -122,6 +122,7 @@ const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
 # Copy GPU storage through CUDA; generic struct copying would descend into GPU contexts.
+Mooncake._has_custom_copy(::Type{<:CuArray}) = true
 Mooncake._copy_output(x::CuArray) = copy(x)
 function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuArray}
     copyto!(dst, src)
