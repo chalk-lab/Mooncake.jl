@@ -30,42 +30,46 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
-const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
-
-# Shared with extension rules for random fills, including draws from a distribution.
-# The result aliases the destination. Restore its primal and derivative storage on the
-# pullback, but leave the RNG advanced: a draw is state, not a reparameterised sample.
-function _rand_fill_frule(f, x, args...)
-    f(map(primal, args)..., primal(x))
-    fill!(tangent(x), zero(eltype(primal(x))))
-    return x
-end
-
-function _rand_fill_rrule(f, x, args...)
-    px, dx = primal(x), tangent(x)
-    old_x, old_dx = copy(px), copy(dx)
-    f(map(primal, args)..., px)
-    fill!(dx, zero(eltype(px)))
-    args_rdata = map(a -> zero_rdata(primal(a)), args)
-    function rand_fill_pb!!(::NoRData)
-        copyto!(px, old_x)
-        copyto!(dx, old_dx)
-        return NoRData(), args_rdata..., NoRData()
+# A draw is random state, not a reparameterised sample. The result aliases the destination:
+# restore its primal and derivative storage on the pullback, but leave the RNG advanced.
+# These rules also serve GPU arrays (`CuArray`), so destinations must stay `DenseArray`s.
+# `AbstractRNG` is the narrowest type covering GPUArrays' RNG, which has no `randexp!`;
+# no RNG has a complex `randexp`. The rules need the destination to be its own tangent,
+# which `@is_primitive` cannot express; other `DenseArray`s (`SharedArray`) are derived.
+const RandFillFloat = Union{IEEEFloat,Complex{<:IEEEFloat}}
+for (f, A) in (
+    (rand!, DenseArray{<:RandFillFloat}),
+    (randn!, DenseArray{<:RandFillFloat}),
+    (randexp!, Array{<:IEEEFloat}),
+)
+    @eval function _is_primitive(
+        ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{T}
+    ) where {T<:Tuple{typeof($f),AbstractRNG,$A}}
+        T isa DataType || return false
+        P = T.parameters[3]
+        return tangent_type(P) == P
     end
-    return x, rand_fill_pb!!
-end
-
-for f in [rand!, randn!, randexp!]
-    @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
     @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
-    )
-        return _rand_fill_frule($f, x, rng)
+        ::Dual{typeof($f)}, rng::Dual{<:AbstractRNG}, x::Dual{P,P}
+    ) where {P<:$A}
+        $f(primal(rng), primal(x))
+        fill!(tangent(x), zero(eltype(P)))
+        return x
     end
     @eval function rrule!!(
-        ::CoDual{typeof($f)}, rng::CoDual{<:SpecialisedRNGs}, x::CoDual{<:Array{Float64}}
-    )
-        return _rand_fill_rrule($f, x, rng)
+        ::CoDual{typeof($f)}, rng::CoDual{<:AbstractRNG}, x::CoDual{P,P}
+    ) where {P<:$A}
+        px, dx = primal(x), tangent(x)
+        old_x, old_dx = copy(px), copy(dx)
+        $f(primal(rng), px)
+        fill!(dx, zero(eltype(P)))
+        rng_rdata = zero_rdata(primal(rng))
+        function rand_fill_pb!!(::NoRData)
+            copyto!(px, old_x)
+            copyto!(dx, old_dx)
+            return NoRData(), rng_rdata, NoRData()
+        end
+        return x, rand_fill_pb!!
     end
 end
 
@@ -85,8 +89,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         map_prod([Float64, Float32], [rand, randn, randexp], all_rngs) do (P, f, rng)
             (true, :stability_and_allocs, nothing, f, rng, P)
         end...,
-        map_prod([rand!, randn!, randexp!], rngs) do (f, rng)
+        map_prod([rand!, randn!, randexp!], vcat(rngs, rng_ctor(123))) do (f, rng)
             (true, :stability, nothing, f, rng, randn(5))
+        end...,
+        map_prod([rand!, randn!], [Float32, ComplexF64]) do (f, P)
+            (true, :stability, nothing, f, Xoshiro(123), randn(P, 5))
         end...,
     )
     return test_cases, Any[]
