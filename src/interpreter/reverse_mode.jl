@@ -1415,7 +1415,8 @@ end
 
 # Helper used by `make_ad_stmts! ` for `GlobalRef`. Noinline to avoid IR bloat.
 @noinline function __verify_const(global_ref, stored_value)
-    @assert global_ref == primal(stored_value)
+    # Identity keeps unchanged bindings O(1) and accepts unchanged NaN/missing values.
+    global_ref === primal(stored_value) || @assert global_ref == primal(stored_value)
     return uninit_fcodual(global_ref)
 end
 
