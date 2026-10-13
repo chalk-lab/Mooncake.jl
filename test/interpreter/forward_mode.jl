@@ -24,6 +24,8 @@ module FwdAliasGlobals
 const alias_vector = [1.0, 2.0]
 alias_read_only(x) = sum(x .* alias_vector)
 alias_scalar(x) = x[1] * alias_vector[1]
+comparison_vector::Vector{Float64} = ones(1024)
+comparison_read(x) = x * comparison_vector[1]
 end
 
 # GC preservation: a forward rule must keep BOTH the primal and the partials storage alive for
@@ -175,6 +177,25 @@ end
             dyn2 = only(dyns2)
             @test dyn1 !== dyn2
             @test dyn1.cache !== dyn2.cache
+        end
+
+        f = FwdAliasGlobals.comparison_read
+        for W in (1, 8), _ in 1:2
+            rule = Mooncake.build_frule(
+                interp, Tuple{typeof(f),Float64}; chunk_size=W, skip_world_age_check=true
+            )
+            # Global comparison storage must not retain a second, derivative-sized array.
+            @test Base.summarysize((
+                rule.fwd_oc.oc.captures, FwdAliasGlobals.comparison_vector
+            )) < sizeof(FwdAliasGlobals.comparison_vector) + 1024
+            y = rule(
+                Mooncake.zero_lifted(Val(W), f),
+                Mooncake.Lifted{Float64,W}(
+                    2.0, Mooncake.Nfwd.NDual(2.0, ntuple(_ -> 1.0, W))
+                ),
+            )
+            @test primal(y) == 2.0
+            @test all(i -> tangent(y, i) == 1.0, 1:W)
         end
     end
 end;

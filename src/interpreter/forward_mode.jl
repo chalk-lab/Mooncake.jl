@@ -356,13 +356,7 @@ function modify_fwd_ad_stmts!(
         # Track the binding so the alias guard follows rebinding instead of a stale value.
         binding = Mooncake.GlobalBinding(stmt.mod, stmt.name)
         any(c -> c === binding, info.consts) || push!(info.consts, binding)
-        push!(captures, Ref(uninit_fcodual(getglobal(stmt.mod, stmt.name))))
-        stored = CC.insert_node!(
-            dual_ir,
-            ssa,
-            new_inst(Expr(:call, get_capture, Argument(1), length(captures))),
-            ATTACH_BEFORE,
-        )
+        stored = QuoteNode(getglobal(stmt.mod, stmt.name))
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
         zero_lifted_call = Expr(:call, __verify_fwd_const, Val(info.width), new_ssa, stored)
         Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
@@ -373,9 +367,9 @@ end
 
 # Match __verify_const without allocating an unused reverse-mode CoDual at each read.
 @inline function __verify_fwd_const(width, global_ref, stored)
-    stored_value = stored[]
     # Identity keeps unchanged bindings O(1) and accepts unchanged NaN/missing values.
-    global_ref === primal(stored_value) || @assert global_ref == primal(stored_value)
+    global_ref === stored ||
+        @assert global_ref == stored "global_ref == primal(stored_value)"
     return zero_lifted(width, global_ref)
 end
 
