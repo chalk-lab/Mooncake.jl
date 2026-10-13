@@ -374,7 +374,8 @@ end
 # Match __verify_const without allocating an unused reverse-mode CoDual at each read.
 @inline function __verify_fwd_const(width, global_ref, stored)
     stored_value = stored[]
-    @assert global_ref == primal(stored_value)
+    # Identity keeps unchanged bindings O(1) and accepts unchanged NaN/missing values.
+    global_ref === primal(stored_value) || @assert global_ref == primal(stored_value)
     return zero_lifted(width, global_ref)
 end
 

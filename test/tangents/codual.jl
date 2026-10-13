@@ -205,6 +205,21 @@ _rebind_value_f(x) = x * _REBIND_VALUE_G
                         end
                     end
                 end
+                global _REBIND_VALUE_G = NaN
+                # Fresh interpreters avoid reusing rules captured before the NaN binding.
+                sig = Tuple{typeof(_rebind_value_f),Float64}
+                r = Mooncake.build_rrule(Mooncake.MooncakeInterpreter(ReverseMode), sig)
+                fr = Mooncake.build_frule(Mooncake.MooncakeInterpreter(ForwardMode), sig)
+                @test isequal(
+                    Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0),
+                    (NaN, (NoTangent(), NaN)),
+                )
+                @test isequal(
+                    Mooncake.value_and_derivative!!(
+                        fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                    ),
+                    (NaN, NaN),
+                )
             finally
                 global _REBIND_VALUE_G = 3.0
             end
