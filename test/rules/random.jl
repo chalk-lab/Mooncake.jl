@@ -18,6 +18,9 @@ end
     end
 end
 
+# test_rule's reverse correctness check requires restoration of every input, including
+# the RNG. Random fills deliberately advance it, so check their state contract here,
+# using the registered interface/performance cases above.
 @testset "Random fill aliases, restoration, and subsequent draw" begin
     cases, _ = Mooncake.hand_written_rule_test_cases(StableRNG, Val(:random))
     for (_, _, _, f, args...) in cases
@@ -34,11 +37,14 @@ end
             end
             continue
         end
+        replayed_next = rand(Random.seed!(deepcopy(rng), 123))
         expected_rng = Random.seed!(deepcopy(rng), 123)
         expected_x = f(expected_rng, copy(x), sampler...)
         expected_next = rand(expected_rng)
         dx = similar(x)
-        for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+        @testset "$mode $(typeof((f, args...)))" for mode in (
+            Mooncake.ForwardMode, Mooncake.ReverseMode
+        )
             r = Random.seed!(deepcopy(rng), 123)
             fill!(x, 2)
             fill!(dx, 3)
@@ -69,7 +75,9 @@ end
                 @test all(==(2), x)
                 @test all(==(3), dx)
             end
-            @test rand(r) == expected_next
+            next = rand(r)
+            @test next == expected_next
+            @test next != replayed_next
         end
     end
 end

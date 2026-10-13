@@ -132,6 +132,32 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
             )
         end...,
     )
+    # A small spread of eltypes, RNGs, and shapes, shared with the state checks in
+    # test/rules/random.jl. Avoid the full Cartesian product of these dimensions.
+    fills = Any[
+        (MersenneTwister(123), zeros(Float16, 2, 3)),
+        (rng_ctor(123), zeros(Float32, 2, 2, 2)),
+        (TaskLocalRNG(), zeros(Float64, 2, 3)),
+        (Xoshiro(123), zeros(ComplexF32, 2, 2, 2)),
+        (rng_ctor(123), zeros(ComplexF64, 2, 3)),
+    ]
+    @static if VERSION >= v"1.11"
+        push!(fills, (Xoshiro(123), Memory{Float16}(undef, 5)))
+        push!(fills, (MersenneTwister(123), Memory{ComplexF32}(undef, 5)))
+    end
+    for (rng, x) in fills
+        fill!(x, 2)
+        P = eltype(x)
+        for f in (rand!, randn!)
+            push!(test_cases, (true, :stability, nothing, f, rng, x))
+        end
+        for sampler in (P, Random.Sampler(rng, P))
+            push!(test_cases, (true, :stability, nothing, rand!, rng, x, sampler))
+        end
+        if x isa Array{<:IEEEFloat}
+            push!(test_cases, (true, :stability, nothing, randexp!, rng, x))
+        end
+    end
     return test_cases, Any[]
 end
 
