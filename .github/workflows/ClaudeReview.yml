@@ -1,0 +1,175 @@
+name: Claude review
+
+# Manual only: a maintainer comments `/claude-review [request]` on a PR (fork PRs included).
+# Runs Anthropic's official code-review plugin, unchanged, through the Claude Agent SDK.
+# See .github/claude_review.py.
+#
+# Three jobs, so that nothing able to write to GitHub shares a runner with Claude:
+#   ack     👀 on the trigger comment                      (write)
+#   review  run the plugin, upload review.json as artifact  (read-only token + Anthropic OIDC)
+#   post    validate and post review.json, swap 👀 for 🚀/😕  (write)
+#
+# Authenticates to Anthropic with workload identity federation, so there is no API key
+# secret. The Anthropic federation rule only trusts this file, on main, for issue_comment
+# events, so keep the path `.github/workflows/ClaudeReview.yml`.
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+env:
+  PR_NUMBER: ${{ github.event.issue.number }}
+  COMMENT_ID: ${{ github.event.comment.id }}
+
+jobs:
+  ack:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.comment.body, '/claude-review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    outputs:
+      reaction_id: ${{ steps.ack.outputs.reaction_id }}
+    steps:
+      - id: ack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes --jq .id)
+          echo "reaction_id=$id" >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: ack
+    runs-on: ubuntu-latest
+    # Backstop only; the Review step has its own timeout (see there).
+    timeout-minutes: 60
+    # A newer request on the same PR replaces a running review; its `post` then posts nothing.
+    concurrency:
+      group: claude-review-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    outputs:
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+    steps:
+      # Trusted copy of the reviewer and the repo's AGENTS.md/CLAUDE.md, from main.
+      - uses: actions/checkout@v6
+        with:
+          path: base
+          persist-credentials: false
+
+      - name: Fetch PR diff
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha() { gh pr view "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid; }
+          sha=$(head_sha)
+          gh pr diff "$PR_NUMBER" -R "$GITHUB_REPOSITORY" > pr.diff
+          [ "$(head_sha)" = "$sha" ] || { echo "::error::PR head moved while fetching the diff"; exit 1; }
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # The untrusted PR head, pinned to the SHA the diff was taken from. Only read, never run.
+      - uses: actions/checkout@v6
+        with:
+          path: pr
+          ref: ${{ steps.pr.outputs.head_sha }}
+          persist-credentials: false
+
+      # Anthropic's official code-review plugin, pinned.
+      - uses: actions/checkout@v6
+        with:
+          repository: anthropics/claude-code
+          ref: 2301018b1f61073c501a8e7a4813ef48c239163b
+          path: claude-code
+          sparse-checkout: plugins/code-review
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - run: pip install --quiet 'claude-agent-sdk==0.2.165'
+
+      - name: Review
+        # A step timeout fails the job, so `post` still posts the partial findings; a job
+        # timeout or cancel reads as `cancelled`, which `post` treats as superseded.
+        timeout-minutes: 45
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.CLAUDE_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.CLAUDE_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.CLAUDE_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc-token
+          # Read-only (see the job's permissions); the plugin reads the PR with gh.
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTER: ${{ github.event.comment.user.login }}
+          REQUEST: ${{ github.event.comment.body }}
+          # Login this reviewer posts as, so it can recognise its own earlier rounds.
+          REVIEWER_LOGIN: github-actions
+        run: |
+          # GitHub OIDC tokens last about five minutes and each may be exchanged only
+          # once, so keep a fresh one on disk for the SDK to re-read when it refreshes.
+          fetch_token() {
+            curl -sSf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
+              | jq -r .value > "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" &&
+              mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          fetch_token
+          # Python takes over this shell's PID below, so the loop stops once it exits.
+          (while sleep 120 && kill -0 $$; do fetch_token || true; done) >/dev/null 2>&1 &
+          # Claude's process gets no means to mint more tokens. exec, so that the runner's
+          # SIGINT on cancel or timeout reaches Python rather than a waiting bash.
+          exec env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            python base/.github/claude_review.py run
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: review
+          path: |
+            review.json
+            pr.diff
+          retention-days: 1
+          if-no-files-found: ignore
+
+  post:
+    needs: [ack, review]
+    if: always() && needs.ack.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # always() on the steps too: still swap the 👀 if the whole run is cancelled by hand.
+      - if: always()
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/claude_review.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Missing if the review job failed early; `post` then reports 😕.
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: review
+
+      - if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.review.outputs.head_sha }}
+          EYES_REACTION_ID: ${{ needs.ack.outputs.reaction_id }}
+          REQUESTER: ${{ github.event.comment.user.login }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: python3 .github/claude_review.py post
