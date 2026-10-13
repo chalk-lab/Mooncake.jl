@@ -9,6 +9,16 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## Random Fills Through Raw Pointers
+
+Random fills have zero derivatives. Their reverse rules restore the destination's
+primal and tangent storage, but leave the RNG advanced.
+Xoshiro's internal integer/Bool bulk kernels erase the destination's tangent layout:
+an integer byte pointer may alias floating storage. Differentiating these raw calls,
+including integer `Random.UnsafeView` fills, therefore raises an `ArgumentError`.
+Use `rand!` on a typed Array, Memory, or contiguous view instead. The supported
+`randn!` and `randexp!` fill rules also handle their internal integer-bit writes.
+
 ## Numerical Workarounds and Singularities
 
 Numerical workarounds can preserve function values while producing incorrect derivatives under automatic differentiation.
