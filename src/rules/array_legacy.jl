@@ -181,6 +181,43 @@ for f in (Base._deletebeg!, Base._deleteend!, Base._growbeg!, Base._growend!)
     end
 end
 
+# Julia 1.10's Base._unsetindex! uses allocatedinline, unlike the Memory layout
+# predicate in Julia 1.11+. Keep its pointer arithmetic out of both AD modes.
+@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),Array,Int}
+@inline function frule!!(
+    ::Lifted{typeof(Base._unsetindex!),N}, x::Lifted{<:Array{P},N}, i::Lifted{Int}
+) where {N,P}
+    _i = primal(i)
+    Base._unsetindex!(primal(x), _i)
+    if Base.allocatedinline(P) && (!(P isa DataType) || Base.datatype_pointerfree(P))
+        return x
+    end
+    Base._unsetindex!(tangent(x), _i)
+    return x
+end
+
+@inline function rrule!!(
+    f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:Array{P}}, i::CoDual{Int}
+) where {P}
+    _x, _dx, _i = primal(x), tangent(x), primal(i)
+    if Base.allocatedinline(P) && (!(P isa DataType) || Base.datatype_pointerfree(P))
+        Base._unsetindex!(_x, _i)
+        return x, NoPullback(f, x, i)
+    end
+    px = isassigned(_x, _i)
+    dx = isassigned(_dx, _i)
+    old_x = px ? _x[_i] : nothing
+    old_dx = dx ? _dx[_i] : nothing
+    Base._unsetindex!(_x, _i)
+    Base._unsetindex!(_dx, _i)
+    function _unsetindex!_pullback!!(::NoRData)
+        px ? (_x[_i] = old_x) : Base._unsetindex!(_x, _i)
+        dx ? (_dx[_i] = old_dx) : Base._unsetindex!(_dx, _i)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return x, _unsetindex!_pullback!!
+end
+
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -935,6 +972,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (false, :stability, nothing, Core.arraysize, randn(5, 4, 3), 2),
         (false, :stability, nothing, Core.arraysize, randn(5, 4, 3, 2, 1), 100),
     ]
+    for a in (
+        [2.0],
+        Union{Float64,Int}[2.0],
+        Union{Float64,Nothing}[2.0],
+        Any[2.0],
+        [TestResources.Mixed(2.0, [3.0])],
+        Vector{Any}(undef, 1),
+    )
+        push!(test_cases, (false, :none, nothing, Base._unsetindex!, a, 1))
+    end
     memory = Any[_x, _dx, _a, _da, _b, _db]
     return test_cases, memory
 end
@@ -953,5 +1000,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         2,
         4,
     ),]
+    for P in (Union{Float64,Int}, Union{Float64,Nothing}), nested in (false, true)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                (P, nested, x) -> begin
+                    v = TestResources.OneField{P}(x)
+                    a = [nested ? TestResources.OneField(v) : v]
+                    Base._unsetindex!(a, 1)
+                    return (nested ? a[1].a.a : a[1].a)^2
+                end,
+                P,
+                nested,
+                2.0,
+            ),
+        )
+    end
     return test_cases, Any[]
 end

@@ -428,6 +428,9 @@ function _is_primitive(
     return !isbitstype(P)
 end
 
+# Match Base._unsetindex! in genericmemory.jl: layout 2 is an isbits union;
+# layout 0 is inline and is a no-op only when the element has no pointers.
+# Array and Memory delegate to MemoryRef, so all three use this same predicate.
 @inline function frule!!(
     ::Lifted{typeof(Base._unsetindex!),N},
     x::Lifted{<:Union{Memory{P},Array{P}},N},
@@ -435,7 +438,9 @@ end
 ) where {N,P}
     _i = primal(i)
     Base._unsetindex!(primal(x), _i)
-    (isbitstype(P) || Base.isbitsunion(P)) && return x
+    arrayelem = Base.datatype_arrayelem(Memory{P})
+    (arrayelem == 2 || (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))) &&
+        return x
     Base._unsetindex!(tangent(x), _i)
     return x
 end
@@ -446,7 +451,8 @@ end
     i::CoDual{Int},
 ) where {P}
     _x, _dx, _i = primal(x), tangent(x), primal(i)
-    if isbitstype(P) || Base.isbitsunion(P)
+    arrayelem = Base.datatype_arrayelem(Memory{P})
+    if arrayelem == 2 || (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
         Base._unsetindex!(_x, _i)
         return x, NoPullback(f, x, i)
     end
@@ -1857,6 +1863,29 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
                 2.0,
             ),
         )
+        for a in ([2.0], Any[2.0], [TestResources.Mixed(2.0, [3.0])], Vector{Any}(undef, 1))
+            push!(test_cases, (false, :none, nothing, f, a))
+        end
+        for P in (Union{Float64,Int}, Union{Float64,Nothing}), nested in (false, true)
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    nothing,
+                    (f, P, nested, x) -> begin
+                        v = TestResources.OneField{P}(x)
+                        a = [nested ? TestResources.OneField(v) : v]
+                        f(a)
+                        return (nested ? a[1].a.a : a[1].a)^2
+                    end,
+                    f,
+                    P,
+                    nested,
+                    2.0,
+                ),
+            )
+        end
     end
     memory = Any[slack_v]
     append!(
