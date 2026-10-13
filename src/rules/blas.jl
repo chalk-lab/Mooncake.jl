@@ -100,7 +100,7 @@ function arrayify(
 end
 
 @static if VERSION >= v"1.11-rc4"
-    arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
+    arrayify(x::A, dx::A) where {A<:Memory{<:Union{IEEEFloat,BlasFloat}}} = (x, dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}

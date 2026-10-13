@@ -91,60 +91,38 @@ end
     end
 end
 
-# Direct kernels also protect callers which do not enter through rand!.
-# SIMD must leave its unconsumed tail and both sentinels untouched.
-@testset "Xoshiro bulk storage and RNG state" begin
-    cases, memory = Mooncake.hand_written_rule_test_cases(StableRNG, Val(:random))
-    GC.@preserve memory for (_, _, _, f, args...) in cases
-        f in
-        (Random.XoshiroSimd.xoshiro_bulk_simd, Random.XoshiroSimd.xoshiro_bulk_nosimd) ||
-            continue
-        rng, dst, len, T, rest... = args
-        x = unsafe_wrap(
-            Vector{T}, Ptr{T}(Mooncake.primal(dst) - sizeof(T)), div(len, sizeof(T)) + 2
+# Construct the pointer from the real backing array so AD supplies its own tangent.
+function random_bulk_fill!(rng, x, f, T, width, convert)
+    GC.@preserve x f(rng, Ptr{UInt8}(pointer(x)), sizeof(x), T, width..., convert)
+    return 1.0
+end
+
+@testset "Xoshiro bulk calls refuse unknown tangent layouts" begin
+    for f in (Random.XoshiroSimd.xoshiro_bulk_simd, Random.XoshiroSimd.xoshiro_bulk_nosimd),
+        P in (Float16, Float32, Float64, UInt64),
+        rng in (Xoshiro(123), TaskLocalRNG())
+
+        width = f === Random.XoshiroSimd.xoshiro_bulk_simd ? (Val(8),) : ()
+        # UInt64 backing with Float64 format is valid primal storage, but its tangent
+        # has zero-sized NoTangent elements. Never reinterpret it as floating storage.
+        T = P === UInt64 ? Float64 : P
+        P === Float16 && VERSION < v"1.12" && continue
+        x = fill(P(2), 1000)
+        Random.seed!(rng, 123)
+        TestUtils.test_rule_throws(
+            StableRNG(123),
+            random_bulk_fill!,
+            rng,
+            x,
+            f,
+            T,
+            width,
+            Random.XoshiroSimd._bits2float;
+            err=ArgumentError,
+            msg="use rand! on a typed Array, Memory, or contiguous view",
         )
-        dx = unsafe_wrap(
-            Vector{T}, Ptr{T}(Mooncake.tangent(dst) - sizeof(T)), div(len, sizeof(T)) + 2
-        )
-        for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
-            fill!(x, 2)
-            fill!(dx, 3)
-            ref = copy(x)
-            expected_rng = Xoshiro(123)
-            result = GC.@preserve ref f(
-                expected_rng, Ptr{UInt8}(pointer(ref, 2)), len, T, rest...
-            )
-            written = div(result === nothing ? len : result, sizeof(T))
-            expected_next = rand(expected_rng)
-            r = Xoshiro(123)
-            if mode === Mooncake.ForwardMode
-                out = Mooncake.frule!!(
-                    Mooncake.zero_dual(f),
-                    Mooncake.zero_dual(r),
-                    Mooncake.Dual(Mooncake.primal(dst), Mooncake.tangent(dst)),
-                    map(Mooncake.zero_dual, (len, T, rest...))...,
-                )
-            else
-                out, pb = Mooncake.rrule!!(
-                    Mooncake.zero_fcodual(f),
-                    Mooncake.zero_fcodual(r),
-                    dst,
-                    map(Mooncake.zero_fcodual, (len, T, rest...))...,
-                )
-            end
-            @test Mooncake.primal(out) === result
-            @test x == ref
-            @test dx[1] == 3
-            @test all(==(3), dx[(written + 2):end])
-            @test all(iszero, dx[2:(written + 1)])
-            if mode === Mooncake.ReverseMode
-                fill!(view(dx, 2:(written + 1)), 7)
-                pb(Mooncake.NoRData())
-                @test all(==(2), x)
-                @test all(==(3), dx)
-            end
-            @test rand(r) == expected_next
-        end
+        @test all(==(2), x)
+        @test rand(rng) == rand(Random.seed!(deepcopy(rng), 123))
     end
 end
 

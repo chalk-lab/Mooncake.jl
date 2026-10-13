@@ -1,70 +1,71 @@
 # The following functions contain ccall or llvmcall which cannot be differentiated.
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
-# These kernels overwrite `len` bytes through a byte pointer. Its tangent still points
-# at the original tangent storage after the pointer bitcast. Float storage has the same
-# layout as its tangent; integer byte pointers do not specify the tangent layout.
-# Kernel rules catch `Xoshiro` fills that bypass the `DenseArray` rules (e.g. views).
+# A byte pointer and the kernel's output format cannot determine the tangent layout.
+# Even Float64-format bits can be written into integer storage with NoTangent elements.
 for (f, nargs) in
     ((Random.XoshiroSimd.xoshiro_bulk_simd, 2), (Random.XoshiroSimd.xoshiro_bulk_nosimd, 1))
     @eval @is_primitive MinimalCtx Tuple{
         typeof($f),Union{TaskLocalRNG,Xoshiro},Ptr{UInt8},Int,Any,Vararg{Any,$nargs}
     }
-    # SIMD returns the bytes actually written, leaving a tail for the non-SIMD kernel.
-    written = if nargs == 2
-        :(
-            let block = 8 * typeof(primal(args[1])).parameters[1]
-                div(primal(len), block) * block
-            end
+    for (rule, D) in ((:frule!!, :Dual), (:rrule!!, :CoDual))
+        @eval function $rule(
+            ::$D{typeof($f)},
+            ::$D{<:Union{TaskLocalRNG,Xoshiro}},
+            ::$D{Ptr{UInt8}},
+            ::$D{Int},
+            ::$D,
+            ::Vararg{$D,$nargs},
         )
-    else
-        :(primal(len))
-    end
-    @eval function frule!!(
-        ::Dual{typeof($f)},
-        rng::Dual{<:Union{TaskLocalRNG,Xoshiro}},
-        dst::Dual{Ptr{UInt8}},
-        len::Dual{Int},
-        type::Dual{Type{T}},
-        args::Vararg{Dual,$nargs},
-    ) where {T}
-        _, dx = _xoshiro_bulk_storage(dst, $written, T, primal(args[end]))
-        y = $f(primal(rng), primal(dst), primal(len), T, map(primal, args)...)
-        fill!(dx, zero(eltype(dx)))
-        return zero_dual(y)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof($f)},
-        rng::CoDual{<:Union{TaskLocalRNG,Xoshiro}},
-        dst::CoDual{Ptr{UInt8}},
-        len::CoDual{Int},
-        type::CoDual{Type{T}},
-        args::Vararg{CoDual,$nargs},
-    ) where {T}
-        x, dx = _xoshiro_bulk_storage(dst, $written, T, primal(args[end]))
-        old_x, old_dx = copy(x), copy(dx)
-        y = $f(primal(rng), primal(dst), primal(len), T, map(primal, args)...)
-        fill!(dx, zero(eltype(dx)))
-        function xoshiro_bulk_pb!!(::NoRData)
-            copyto!(x, old_x)
-            copyto!(dx, old_dx)
-            return ntuple(_ -> NoRData(), $(5 + nargs))
+            throw(
+                ArgumentError(
+                    "Xoshiro bulk AD cannot determine the destination's tangent layout; " *
+                    "use rand! on a typed Array, Memory, or contiguous view instead.",
+                ),
+            )
         end
-        return zero_fcodual(y), xoshiro_bulk_pb!!
     end
 end
 
-function _xoshiro_bulk_storage(dst, n, ::Type{T}, f) where {T}
-    T <: IEEEFloat && f === Random.XoshiroSimd._bits2float || throw(
-        ArgumentError(
-            "Xoshiro bulk AD requires a floating destination and the standard conversion. " *
-            "Integer byte pointers erase the tangent layout; use rand! on a typed array instead.",
-        ),
-    )
-    n >= 0 && n % sizeof(T) == 0 ||
-        throw(ArgumentError("Xoshiro bulk writes must span whole destination elements."))
-    x = unsafe_wrap(Vector{T}, Ptr{T}(primal(dst)), div(n, sizeof(T)))
-    dx = unsafe_wrap(Vector{T}, Ptr{T}(tangent(dst)), length(x))
-    return x, dx
+# The DenseArray rules below also serve other RNGs and GPU arrays. Julia 1.12's
+# typed Xoshiro sampler method additionally accepts contiguous views, so intercept
+# those here, before it erases the destination type by converting to a byte pointer.
+@static if VERSION >= v"1.12"
+    const XoshiroFloatView{T,N} = Base.FastContiguousSubArray{T,N,<:Union{Array,Memory}}
+    @is_primitive MinimalCtx Tuple{
+        typeof(rand!),
+        Union{TaskLocalRNG,Xoshiro},
+        XoshiroFloatView{T},
+        Random.SamplerTrivial{Random.CloseOpen01{T}},
+    } where {T<:IEEEFloat}
+    function frule!!(
+        ::Dual{typeof(rand!)},
+        rng::Dual{<:Union{TaskLocalRNG,Xoshiro}},
+        x::Dual{<:XoshiroFloatView{T}},
+        sampler::Dual{<:Random.SamplerTrivial{Random.CloseOpen01{T}}},
+    ) where {T<:IEEEFloat}
+        px, dx = arrayify(x)
+        rand!(primal(rng), px, primal(sampler))
+        fill!(dx, zero(T))
+        return x
+    end
+    function rrule!!(
+        ::CoDual{typeof(rand!)},
+        rng::CoDual{<:Union{TaskLocalRNG,Xoshiro}},
+        x::CoDual{<:XoshiroFloatView{T}},
+        sampler::CoDual{<:Random.SamplerTrivial{Random.CloseOpen01{T}}},
+    ) where {T<:IEEEFloat}
+        px, dx = arrayify(x)
+        old = map(tuple, px, dx)
+        rand!(primal(rng), px, primal(sampler))
+        fill!(dx, zero(T))
+        function rand_view_pb!!(::NoRData)
+            for i in eachindex(px, dx, old)
+                @inbounds px[i], dx[i] = old[i]
+            end
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return x, rand_view_pb!!
+    end
 end
 
 # Integer byte pointers erase whether their shadow refers to integer or floating storage.
@@ -252,26 +253,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         v = view(x, 2:(n + 1))
         for sampler in ((), (eltype(x),), (Random.Sampler(rng, eltype(x)),))
             push!(
-                test_cases, (true, :none, (is_primitive=false,), rand!, rng, v, sampler...)
+                test_cases,
+                (
+                    true,
+                    :none,
+                    (
+                        is_primitive=VERSION >= v"1.12" &&
+                                     !isempty(sampler) &&
+                                     sampler[1] isa Random.Sampler,
+                    ),
+                    rand!,
+                    rng,
+                    v,
+                    sampler...,
+                ),
             )
         end
-    end
-    # Retain the backing storage for pointer arguments used by the canonical rule tests.
-    memory = Any[]
-    for T in (VERSION >= v"1.12" ? (Float16, Float32, Float64) : (Float32, Float64)),
-        n in (7, 641),
-        f in (Random.XoshiroSimd.xoshiro_bulk_simd, Random.XoshiroSimd.xoshiro_bulk_nosimd)
-
-        len = n * sizeof(T)
-        x, dx = fill(T(2), n + 2), fill(T(3), n + 2)
-        append!(memory, (x, dx))
-        dst = CoDual(Ptr{UInt8}(pointer(x, 2)), Ptr{NoTangent}(pointer(dx, 2)))
-        width = f === Random.XoshiroSimd.xoshiro_bulk_simd ? (Val(8),) : ()
-        convert = Random.XoshiroSimd._bits2float
-        push!(
-            test_cases,
-            (true, :stability, nothing, f, Xoshiro(123), dst, len, T, width..., convert),
-        )
     end
     # Typed integer boundaries avoid interpreting NoTangent storage as floating bytes.
     integers = Any[ones(T, 73) for T in (UInt8, Int64, Bool)]
@@ -285,7 +282,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
             (true, :stability, nothing, rand!, rng, x, Random.Sampler(rng, eltype(x))),
         )
     end
-    return test_cases, memory
+    return test_cases, Any[]
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:random})
