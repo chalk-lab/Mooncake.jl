@@ -200,8 +200,19 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(+),TWP,IEEEFloat}
 function frule!!(
-    ::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
+    f::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
 ) where {N,P<:TWP,S<:IEEEFloat}
+    if P !== TWP{S}
+        # Match Base's promotion without rounding away either TWP component.
+        R = promote_type(P, TWP{S})
+        px = convert(R, primal(x))
+        py = convert(eltype(R), primal(y))
+        a = Lifted{R,N}(px, map(t -> oftype(px, t), tangent(x)))
+        b = Lifted{typeof(py),N}(
+            py, NDual(py, map(t -> oftype(py, t), tangent(y).partials))
+        )
+        return @inline frule!!(f, a, b)
+    end
     z = primal(x) + primal(y)
     x_parts = tangent(x)
     y_parts = tangent(y).partials
@@ -235,7 +246,10 @@ function frule!!(
     ::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
 ) where {N,P<:TWP}
     z = primal(x) + primal(y)
-    return Lifted{P,N}(z, tangent(x))
+    z isa TwicePrecision{<:IEEEFloat} || throw(
+        ArgumentError("forward TwicePrecision arithmetic requires IEEEFloat components")
+    )
+    return Lifted{typeof(z),N,dual_type(Val(N), typeof(z))}(z, tangent(x))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
@@ -252,7 +266,7 @@ function frule!!(
     x_parts = tangent(x)
     y_parts = tangent(y).partials
     dz = ntuple(k -> xp * y_parts[k] + x_parts[k] * yp, Val(N))
-    return Lifted{P,N}(z, dz)
+    return Lifted{typeof(z),N}(z, dz)
 end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
@@ -269,9 +283,14 @@ for f in (*, /)
     ) where {N,P<:TWP}
         yp = primal(y)
         z = $f(primal(x), yp)
+        z isa TwicePrecision{<:IEEEFloat} || throw(
+            ArgumentError(
+                "forward TwicePrecision arithmetic requires IEEEFloat components"
+            ),
+        )
         x_parts = tangent(x)
         dz = ntuple(k -> $f(x_parts[k], yp), Val(N))
-        return Lifted{P,N}(z, dz)
+        return Lifted{typeof(z),N}(z, dz)
     end
 end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
@@ -282,8 +301,19 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,IEEEFloat}
 function frule!!(
-    ::Lifted{typeof(/),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
+    f::Lifted{typeof(/),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
 ) where {N,P<:TWP,S<:IEEEFloat}
+    if P !== TWP{S}
+        # Match Base's promotion without rounding away either TWP component.
+        R = promote_type(P, TWP{S})
+        px = convert(R, primal(x))
+        py = convert(eltype(R), primal(y))
+        a = Lifted{R,N}(px, map(t -> oftype(px, t), tangent(x)))
+        b = Lifted{typeof(py),N}(
+            py, NDual(py, map(t -> oftype(py, t), tangent(y).partials))
+        )
+        return @inline frule!!(f, a, b)
+    end
     xp = primal(x)
     yp = primal(y)
     z = xp / yp
@@ -625,6 +655,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # offset == 3 exercises the ref correction; other constructor rows have offset == 1.
         (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
     ]
+    for f in (+, *, /), P in (Float16, Float32, Float64), N in (1, 8)
+        opts = (
+            mode=ForwardMode,
+            chunk_size=N,
+            throws=(
+                ArgumentError,
+                "forward TwicePrecision arithmetic requires IEEEFloat components",
+            ),
+        )
+        push!(test_cases, (false, :none, opts, f, TwicePrecision{P}(2, 0), big(4)))
+    end
     for P in (Float16, Float32)
         seed = Tangent((ref=1.0, step=0.0, len=NoTangent(), offset=NoTangent()))
         opts = (
@@ -787,6 +828,25 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
         (false, :allocs, nothing, (a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0),
     ]
+    for (P, S) in ((Float16, Float32), (Float16, Float64), (Float32, Float64)),
+        (f, deriv) in ((+, 1.5), (*, 5.0), (/, 0.1875))
+
+        g = (x, y) -> Float64(f(TwicePrecision(x, zero(x)), y))
+        opts = (mode=ForwardMode, oracle=(deriv=deriv,))
+        push!(
+            test_cases, (false, :allocs, opts, g, CoDual(P(2), P(1)), CoDual(S(4), S(0.5)))
+        )
+    end
+    # Scale the low component before comparing, so losing it is an order-one error.
+    for f in (*, /), P in (Float16, Float32, Float64)
+        lo = eps(P) / 4
+        g =
+            a ->
+                Float64(f(TwicePrecision(a, a * lo), one(a)) - TwicePrecision(a, zero(a))) /
+                lo
+        opts = (mode=ForwardMode, oracle=(value=1.0, deriv=1.0))
+        push!(test_cases, (false, :allocs, opts, g, CoDual(one(P), one(P))))
+    end
     @static if VERSION >= v"1.11"
         push!(test_cases, (false, :allocs, nothing, Base._logrange_extra, 1.1, 3.5, 5))
         push!(test_cases, (false, :allocs, nothing, logrange, 5.0, 10.0, 11))
