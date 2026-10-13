@@ -1138,12 +1138,34 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.prepare_derivative_cache(sum, v) isa Any
         end
 
-        # A wrapper OUTPUT has no flat array to read Jacobian columns from.
-        for wrapper_f in (x -> view(x, 1:2), x -> 1.0:2.0)
+        # Read wrapper OUTPUT lanes in logical index order, including across chunks.
+        @testset "wrapper outputs" for cs in (1, 8)
+            x = collect(1.0:10.0)
+            for wrap in (v -> view(v, 3:-1:1), v -> reshape(v', length(v)))
+                for f in (
+                    wrap,
+                    let a = ones(length(x)), wrap = wrap
+                        v -> wrap(a .* v)
+                    end,
+                )
+                    cache = Mooncake.prepare_derivative_cache(
+                        f, x; config=Mooncake.Config(; chunk_size=cs)
+                    )
+                    expected = reduce(
+                        hcat, (wrap(Float64.(eachindex(x) .== i)) for i in eachindex(x))
+                    )
+                    for z in (x, 2 .* x)
+                        @test Mooncake.value_and_jacobian!!(cache, f, z) == (f(z), expected)
+                    end
+                end
+            end
+        end
+        # Unsupported wrappers give a local, actionable exception.
+        for wrapper_f in (x -> 1.0:2.0, x -> WeightedVector(x, 2.0))
             wrapper_cache = Mooncake.prepare_derivative_cache(wrapper_f, [1.0, 2.0])
-            @test_throws "dense vector outputs" Mooncake.value_and_jacobian!!(
-                wrapper_cache, wrapper_f, [1.0, 2.0]
-            )
+            TestUtils._test_throws(ArgumentError, r"No per-lane array view.*collect") do
+                Mooncake.value_and_jacobian!!(wrapper_cache, wrapper_f, [1.0, 2.0])
+            end
         end
     end
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
@@ -4006,8 +4028,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 x_jac;
                 config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
             )
+            @test Mooncake.value_and_jacobian!!(wrapper_out_cache, f_wrapper_out, x_jac) ==
+                (f_wrapper_out(x_jac), [2x 0.0; 0.0 2y])
             @test_throws "only supports dense vector outputs" Mooncake.value_and_jacobian!!(
-                wrapper_out_cache, f_wrapper_out, x_jac
+                Mooncake.prepare_pullback_cache(f_wrapper_out, x_jac), f_wrapper_out, x_jac
             )
 
             f_empty_jac = x -> Float64[]

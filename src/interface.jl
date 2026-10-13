@@ -1281,8 +1281,8 @@ function _check_vector_output(
             "$(_caller_label(caller, cache)) only supports AbstractVector outputs; got $(typeof(y))",
         ),
     )
-    # Same reason as the input side, one step later: a wrapper output's derivative is a struct
-    # lift over its parent, so the Jacobian has no flat array to read its columns from.
+    # Reverse Jacobians seed flat output arrays. Forward mode can read wrapper derivatives
+    # through `_arrayify_lane`, so only the reverse call site requests dense outputs.
     !dense ||
         y isa DenseVector ||
         throw(
@@ -1306,21 +1306,23 @@ function _check_vector_output(
     return T
 end
 
-function _check_jacobian_output(y, Tx)
+function _check_jacobian_output(y, Tx; dense::Bool=false)
     # One call, not two: `Tx` is the eltype of an input already checked against `IEEEFloat`,
     # so `Ty <: Tx` carries the float property with it.
-    Ty = _check_vector_output(y; caller=(value_and_jacobian!!), eltypes=Tx, dense=true)
-    # Wrapper derivatives may be struct lifts, not flat arrays, in either mode.
-    # Width 1 suffices to check the representation. Using `dual_type` for reverse is bounded
-    # by the AbstractVector guard, but a recursive AbstractVector could still overflow;
+    Ty = _check_vector_output(y; caller=(value_and_jacobian!!), eltypes=Tx, dense)
+    # Reverse needs flat arrays; width 1 suffices to check the representation.
+    # Using `dual_type` for reverse is bounded by the AbstractVector guard, but a recursive
+    # AbstractVector could still overflow;
     # a reverse-specific check needs verification across the wrapper family.
-    dual_type(Val(1), typeof(y)) <: NDualArray || throw(
-        ArgumentError(
-            "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
-            "representation is a struct lift over the parent rather than a flat array. " *
-            "Materialise the output first (e.g. `collect`).",
-        ),
-    )
+    !dense ||
+        dual_type(Val(1), typeof(y)) <: NDualArray ||
+        throw(
+            ArgumentError(
+                "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
+                "representation is a struct lift over the parent rather than a flat array. " *
+                "Materialise the output first (e.g. `collect`).",
+            ),
+        )
     return Ty
 end
 
@@ -1358,16 +1360,13 @@ function _fcache_jacobian_packable!!(
                 fill!(cached, z)
             end
         end
-        # Read each lane's directional derivative straight out of the output's block, which
-        # `_check_jacobian_output` has established is an `NDualArray`. Going through
-        # `tangent(output, lane)` instead would materialize a fresh per-lane copy out of the
-        # element-major block — an allocation per lane.
-        ov = tangent(output)::NDualArray
+        # Read in the wrapper's logical order without materialising a per-lane copy.
         @inbounds for lane in 1:W
             col = s + lane - 1
             col <= total_dim || break
-            for r in 1:length(getfield(ov, :primal))
-                J[r, col] = Nfwd._get_partial(ov, r, lane)
+            dy = _arrayify_lane(primal(output), tangent(output), lane, Val(:read))
+            for r in eachindex(dy)
+                J[r, col] = dy[r]
             end
         end
         s += W
@@ -1383,10 +1382,11 @@ Using a pre-built cache, compute and return `(value, jacobian)` for a vector-val
 `f` of a single vector input.
 
 The current implementation supports a single non-empty dense vector input and an
-`AbstractVector` output, both with the same `IEEEFloat` element type. (Note the input must
-be dense even though [`value_and_gradient!!`](@ref) on the same cache also accepts strided
-views.) The returned Jacobian is a dense matrix whose columns correspond to input
-coordinates.
+output with the same `IEEEFloat` element type. Forward mode supports dense vectors and
+`SubArray`/`ReshapedArray` views of them; reverse mode supports `Vector` outputs only.
+Materialise unsupported output wrappers with `collect`. (Note the input must be dense even
+though [`value_and_gradient!!`](@ref) on the same cache also accepts strided views.) The
+returned Jacobian is a dense matrix whose columns correspond to input coordinates.
 
 As with all functionality in Mooncake, `x` is returned to its original state: if `f` mutates
 `x` in place, it is restored, so the input is not mutated.
@@ -1473,7 +1473,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         # lanes past `total_dim` would write out of bounds of `J`'s `total_dim` columns.
         @inbounds for lane in 1:W
             lane <= total_dim || break
-            J[:, lane] .= tangent(output, lane)
+            J[:, lane] .= _arrayify_lane(primal(output), tangent(output), lane, Val(:read))
         end
         for start_col in (W + 1):W:total_dim
             _restore_inputs!!(cache.input_snapshot, (x,))
@@ -1486,7 +1486,9 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             @inbounds for lane in 1:W
                 col = start_col + lane - 1
                 col <= total_dim || break
-                J[:, col] .= tangent(output, lane)
+                J[:, col] .= _arrayify_lane(
+                    primal(output), tangent(output), lane, Val(:read)
+                )
             end
         end
         return y, J
@@ -1508,7 +1510,7 @@ end
         cache.reuse_visited,
         cache.tangents,
         (f, x),
-        () -> (length(x), _check_jacobian_output(y_cache, eltype(x))),
+        () -> (length(x), _check_jacobian_output(y_cache, eltype(x); dense=true)),
     )
     tangents =
         refresh ? _refresh_reuse_tangents(IdDict(), (f, x), cache.tangents) : cache.tangents

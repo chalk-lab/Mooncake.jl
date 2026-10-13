@@ -141,10 +141,29 @@ end
 # Val(false) and Val(:read) keep stride-N lane views at dense leaves; only Val(true)
 # copies them to produce dense lanes in the primal's layout.
 # The static Val lets the dense leaf choice constant-fold.
+function _arrayify_lane(x, V, ::Integer, ::Val)
+    throw(
+        ArgumentError(
+            "No per-lane array view of a $(typeof(x)) derivative; " *
+            "materialise the output first (e.g. `collect`).",
+        ),
+    )
+end
 @inline _arrayify_lane(x, V, lane::Integer) = _arrayify_lane(x, V, lane, Val(false))
 @inline _arrayify_lane(
     ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
 ) where {dense} = dense === true ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
+# Preserve the statically known lane stride at dense vector leaves. Reconstructing the
+# same view through `view(block, lane, :)` loses that information in Jacobian sweeps.
+@inline function _arrayify_lane(
+    ::DenseVector, V::NDualArray{T,N,1,A,D,B}, lane::Int, ::Val{:read}
+) where {T,N,A,D,B<:Nfwd.NDualBlock}
+    @boundscheck 1 <= lane <= N || throw(BoundsError(V, lane))
+    indices = (lane, Base.Slice(Base.OneTo(length(getfield(V, :primal)))))
+    return SubArray{T,1,B,typeof(indices),true}(
+        getfield(V, :partials_block), indices, lane - N, N
+    )
+end
 @inline function _arrayify_lane(x::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N}
     # Reject the uninit_* placeholder (the primal address) before BLAS can mutate it.
     dx = V[lane]
