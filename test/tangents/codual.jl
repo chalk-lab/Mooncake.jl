@@ -15,6 +15,8 @@ global _GLOBAL_ALIAS_G::Vector{Float64} = [1.0, 2.0]
 global _REBIND_ALIAS_G = [1.0, 2.0]
 _rebind_alias_f(x) = sum(x .* _REBIND_ALIAS_G)
 _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
+global _REBIND_VALUE_G = 3.0
+_rebind_value_f(x) = x * _REBIND_VALUE_G
 
 @testset "codual" begin
     @test CoDual(5.0, 4.0) isa CoDual{Float64,Float64}
@@ -158,8 +160,8 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
         global _GLOBAL_ALIAS_G = [1.0, 2.0]
         # The untyped global deliberately makes these rule calls type-unstable.
         TestUtils.test_hook(Val(:allow_unstable_global_rebinding_test)) do
-            scalar_fr = Mooncake.build_frule(_rebind_alias_f, 2.0)
             global _REBIND_ALIAS_G = 2.0
+            scalar_fr = Mooncake.build_frule(_rebind_alias_f, 2.0)
             @test Mooncake.value_and_derivative!!(
                 scalar_fr, (_rebind_alias_f, NoTangent()), (2.0, 1.0)
             ) == (4.0, 2.0)
@@ -173,6 +175,39 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
                 fr, (_rebind_alias_f, NoTangent()), (y, [1.0, 0.0])
             )
             global _REBIND_ALIAS_G = [1.0, 2.0]
+        end
+    end
+
+    @testset "non-const global rebinding must preserve its build-time value" begin
+        # The registry cannot rebind a global between building and calling a rule.
+        TestUtils.test_hook(Val(:allow_unstable_global_rebinding_test)) do
+            r = Mooncake.build_rrule(_rebind_value_f, 2.0)
+            fr = Mooncake.build_frule(_rebind_value_f, 2.0)
+            try
+                for s in (3.0, 7.0, 3)
+                    global _REBIND_VALUE_G = s
+                    if s == 3.0
+                        @test Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0) ==
+                            (6.0, (NoTangent(), 3.0))
+                        @test Mooncake.value_and_derivative!!(
+                            fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                        ) == (6.0, 3.0)
+                    else
+                        for call in (
+                            () -> Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0),
+                            () -> Mooncake.value_and_derivative!!(
+                                fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                            ),
+                        )
+                            @test_throws AssertionError(
+                                "global_ref == primal(stored_value)"
+                            ) call()
+                        end
+                    end
+                end
+            finally
+                global _REBIND_VALUE_G = 3.0
+            end
         end
     end
 

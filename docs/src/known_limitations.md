@@ -111,7 +111,9 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takeaway: do not attempt to differentiate functions which modify global state. Reading a global is fine, with one exception: the same object must not also be an argument.
+The takeaway: do not attempt to differentiate functions which modify global state.
+When reading a non-`const` global, both modes require its value to remain `==` to its value when the rule was built; otherwise, the call raises an `AssertionError`.
+Rebinding to an equal value is accepted, but the same object must not also be an argument.
 
 ## Mutable aliases involving `NoTangent` parents or globals
 
