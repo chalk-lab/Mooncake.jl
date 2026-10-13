@@ -435,16 +435,21 @@ end
 ) where {N,P}
     _i = primal(i)
     Base._unsetindex!(primal(x), _i)
+    (isbitstype(P) || Base.isbitsunion(P)) && return x
     Base._unsetindex!(tangent(x), _i)
     return x
 end
 
 @inline function rrule!!(
-    ::CoDual{typeof(Base._unsetindex!)},
+    f::CoDual{typeof(Base._unsetindex!)},
     x::CoDual{<:Union{Memory{P},Array{P}}},
     i::CoDual{Int},
 ) where {P}
     _x, _dx, _i = primal(x), tangent(x), primal(i)
+    if isbitstype(P) || Base.isbitsunion(P)
+        Base._unsetindex!(_x, _i)
+        return x, NoPullback(f, x, i)
+    end
     px = isassigned(_x, _i)
     dx = isassigned(_dx, _i)
     old_x = px ? _x[_i] : nothing
@@ -1835,6 +1840,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         push!(test_cases, (false, :none, nothing, empty!, v))
         push!(test_cases, (false, :none, nothing, resize!, v, max(0, length(v) - 1)))
         push!(test_cases, (false, :none, nothing, splice!, v, 1))
+    end
+    for f in (
+        x -> Base._unsetindex!(x.ref),
+        x -> Base._unsetindex!(x.ref.mem, 1),
+        x -> Base._unsetindex!(x, 1),
+    )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                (f, x) -> (a=Union{Float64,Int}[x]; f(a); a[1]^2),
+                f,
+                2.0,
+            ),
+        )
     end
     memory = Any[slack_v]
     append!(
