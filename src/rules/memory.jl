@@ -760,9 +760,8 @@ end
 # then an index rather than an address. Use a null pointer for these, which the pointer
 # intrinsic rules treat as "no tangent storage". Otherwise a pointer into the tangent memory
 # is only usable if the tangent memory mirrors the primal memory byte for byte. If it
-# doesn't (e.g. the tangent of `Tuple{Int,Float64}` is `Tuple{NoTangent,Float64}`), loads
-# and stores through it would use the wrong offsets, so use `MISMATCHED_LAYOUT_PTR`, which
-# the pointer intrinsic rules refuse to load or store through.
+# doesn't (e.g. the tangent of `Tuple{Int,Float64}` is `Tuple{NoTangent,Float64}`), use
+# `MISMATCHED_LAYOUT_PTR`.
 function _tangent_data_ptr(ptr::Ptr, ::Memory{P}, ::Memory{V}) where {P,V}
     Base.elsize(Memory{V}) == 0 && return Ptr{NoTangent}(C_NULL)
     _tangent_layout_mirrors(P, V) || return bitcast(Ptr{NoTangent}, MISMATCHED_LAYOUT_PTR)

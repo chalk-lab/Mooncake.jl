@@ -12,8 +12,9 @@ end
 
 # A tangent pointer equal to `MISMATCHED_LAYOUT_PTR` points into tangent memory that isn't
 # laid out like the primal memory (see `_tangent_data_ptr`), so tangents can't be found at
-# the primal pointer's offsets. It can be offset and compared like any other pointer (Base
-# takes pointers to check for aliasing), but loading or storing through it is an error.
+# the primal pointer's offsets. Pointer arithmetic on it is allowed and leaves it unchanged,
+# so Base can still take pointers (e.g. to check for aliasing), but loading or storing a
+# tangent through it is an error.
 const MISMATCHED_LAYOUT_PTR = Ptr{Cvoid}(typemax(UInt))
 
 function _check_tangent_layout(dx::Ptr)
