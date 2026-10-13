@@ -36,10 +36,9 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 # `AbstractRNG` is the narrowest type covering GPUArrays' RNG, which has no `randexp!`;
 # no RNG has a complex `randexp`. The rules need the destination to be its own tangent,
 # which `@is_primitive` cannot express; other `DenseArray`s (`SharedArray`) are derived.
-const RandFillFloat = Union{IEEEFloat,Complex{<:IEEEFloat}}
 for (f, A) in (
-    (rand!, DenseArray{<:RandFillFloat}),
-    (randn!, DenseArray{<:RandFillFloat}),
+    (rand!, DenseArray{<:FloatOrComplex}),
+    (randn!, DenseArray{<:FloatOrComplex}),
     (randexp!, Array{<:IEEEFloat}),
 )
     @eval function _is_primitive(

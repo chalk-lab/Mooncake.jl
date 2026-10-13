@@ -15,6 +15,7 @@ end
 
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 # `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
 # its parent, and reshaping an `Array` yields an `Array`.
