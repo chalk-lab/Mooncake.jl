@@ -696,6 +696,7 @@ function rrule!!(
     ptr_or_offset::CoDual{Ptr{Nothing}},
     mem::CoDual{Memory{P}},
 ) where {P}
+    _check_tangent_layout(ptr_or_offset.dx)
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
     dy = _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
@@ -760,10 +761,11 @@ end
 # intrinsic rules treat as "no tangent storage". Otherwise a pointer into the tangent memory
 # is only usable if the tangent memory mirrors the primal memory byte for byte. If it
 # doesn't (e.g. the tangent of `Tuple{Int,Float64}` is `Tuple{NoTangent,Float64}`), loads
-# and stores through it would use the wrong offsets, so this is an error.
+# and stores through it would use the wrong offsets, so use `MISMATCHED_LAYOUT_PTR`, which
+# the pointer intrinsic rules refuse to load or store through.
 function _tangent_data_ptr(ptr::Ptr, ::Memory{P}, ::Memory{V}) where {P,V}
     Base.elsize(Memory{V}) == 0 && return Ptr{NoTangent}(C_NULL)
-    _tangent_layout_mirrors(P, V) || throw(ArgumentError(_layout_mismatch_msg(P, V)))
+    _tangent_layout_mirrors(P, V) || return bitcast(Ptr{NoTangent}, MISMATCHED_LAYOUT_PTR)
     return bitcast(Ptr{NoTangent}, ptr)
 end
 
@@ -786,12 +788,6 @@ function _layout_mirrors(P::Type, V::Type)
         _layout_mirrors(fieldtype(P, i), fieldtype(V, i)) || return false
     end
     return true
-end
-
-function _layout_mismatch_msg(P::Type, V::Type)
-    return "Mooncake does not support pointer access into memory with elements of " *
-           "type $P: its tangent type, $V, has a different memory layout, so tangents " *
-           "would be loaded and stored at the wrong offsets."
 end
 
 function frule!!(
@@ -1375,6 +1371,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             :none,
             nothing,
             x -> x * reinterpret(Float64, UInt8[0, 0, 0, 0, 0, 0, 0, 64])[1],
+            2.0,
+        ),
+        # Copying between memories of different element types takes pointers into both to
+        # check for aliasing, including into memory whose tangent has a different layout.
+        (false, :none, nothing, x -> (a=Any[]; append!(a, [(1, x)]); a[1][2]), 2.0),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (v=Union{Nothing,Float64}[x, nothing]; append!(v, [2x]); v[1] * v[3]),
             2.0,
         ),
     ]

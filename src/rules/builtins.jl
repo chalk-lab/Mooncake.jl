@@ -88,6 +88,8 @@ using Core: Intrinsics
 using Mooncake
 import ..Mooncake:
     rrule!!,
+    _check_tangent_layout,
+    _check_tangent_storage,
     frule!!,
     CoDual,
     Dual,
@@ -215,6 +217,8 @@ end
 function frule!!(
     ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
+    _check_tangent_layout(tangent(p))
+    _check_tangent_storage(tangent(p), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     return Dual(primal_arr, tangent_arr)
@@ -226,6 +230,8 @@ function rrule!!(
     p::CoDual{<:Ptr{T}},
     dims::CoDual,
 ) where {T}
+    _check_tangent_layout(tangent(p))
+    _check_tangent_storage(tangent(p), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
@@ -245,6 +251,10 @@ end
 # tangent. The zero tangent of a `Ptr` is a pointer to tangent storage, which doesn't exist
 # here, so a loaded `Ptr` gets a null tangent pointer. A store through it is an error unless
 # the stored value has no derivative to lose (see `_check_no_storage_store`).
+#
+# A tangent pointer equal to `MISMATCHED_LAYOUT_PTR` points into tangent memory laid out
+# differently from the primal memory, and the rules below throw rather than load or store
+# through it (see `_check_tangent_layout`).
 _no_storage_tangent(x::Ptr) = bitcast(tangent_type(typeof(x)), C_NULL)
 _no_storage_tangent(x) = zero_tangent(x)
 
@@ -263,6 +273,7 @@ end
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
     a = atomic_pointerref(primal(x), primal(order))
     dx = tangent(x)
+    _check_tangent_layout(dx)
     da = dx == C_NULL ? _no_storage_tangent(a) : atomic_pointerref(dx, primal(order))
     return Dual(a, da)
 end
@@ -270,6 +281,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
+    _check_tangent_layout(dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     y = atomic_pointerref(_x, _order)
@@ -292,8 +304,9 @@ end
 
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
-    atomic_pointerset(primal(p), primal(x), primal(order))
     dp = tangent(p)
+    _check_tangent_layout(dp)
+    atomic_pointerset(primal(p), primal(x), primal(order))
     if dp == C_NULL
         _check_no_storage_store(primal(x))
     else
@@ -305,6 +318,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
     _p = primal(p)
     _order = primal(order)
     dp = tangent(p)
+    _check_tangent_layout(dp)
     has_storage = dp != C_NULL
     has_storage || _check_no_storage_store(primal(x))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
@@ -694,6 +708,7 @@ end
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
     dx = tangent(x)
+    _check_tangent_layout(dx)
     da = dx == C_NULL ? _no_storage_tangent(a) : pointerref(dx, primal(y), primal(z))
     return Dual(a, da)
 end
@@ -702,6 +717,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
+    _check_tangent_layout(dx)
     v = pointerref(_x, _y, _z)
     dv = dx == C_NULL ? _no_storage_tangent(v) : pointerref(dx, _y, _z)
     a = CoDual(v, fdata(dv))
@@ -720,8 +736,9 @@ end
 
 @intrinsic pointerset
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
-    pointerset(primal(p), primal(x), primal(idx), primal(z))
     dp = tangent(p)
+    _check_tangent_layout(dp)
+    pointerset(primal(p), primal(x), primal(idx), primal(z))
     if dp == C_NULL
         _check_no_storage_store(primal(x))
     else
@@ -734,6 +751,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _idx = primal(idx)
     _z = primal(z)
     dp = tangent(p)
+    _check_tangent_layout(dp)
     has_storage = dp != C_NULL
     has_storage || _check_no_storage_store(primal(x))
     old_value = pointerref(_p, _idx, _z)
