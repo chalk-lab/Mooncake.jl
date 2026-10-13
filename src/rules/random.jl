@@ -167,6 +167,28 @@ for (f, A) in (
     end
 end
 
+# Contiguous views reach the pointer-writing Xoshiro kernels on Julia 1.12+. Only the
+# 1.12 sampler form is primitive; the other forms take derived rules.
+function _rand_view_cases(primitive::Bool)
+    parents = Any[fill(T(2), 73) for T in (Float16, Float32, Float64)]
+    @static if VERSION >= v"1.11"
+        append!(
+            parents, [fill!(Memory{T}(undef, 73), 2) for T in (Float16, Float32, Float64)]
+        )
+    end
+    cases = Any[]
+    for x in parents, rng in (Xoshiro(123), TaskLocalRNG()), n in (7, 71)
+        v = view(x, 2:(n + 1))
+        for sampler in ((), (eltype(x),), (Random.Sampler(rng, eltype(x)),))
+            is_primitive =
+                VERSION >= v"1.12" && !isempty(sampler) && sampler[1] isa Random.Sampler
+            is_primitive == primitive || continue
+            push!(cases, (true, :none, nothing, rand!, rng, v, sampler...))
+        end
+    end
+    return cases
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     rngs = [MersenneTwister(123), TaskLocalRNG(), Xoshiro(123)]
     all_rngs = vcat(rngs, RandomDevice())
@@ -194,30 +216,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
             rng in vcat(rngs, rng_ctor(123)) for P in (Float32, Float64, ComplexF64) for
             sampler in (P, Random.Sampler(rng, P))
         ]...,
-        # Empty Union-element fills are valid primals, but must use derived rules.
-        map_prod([rand!, randn!, randexp!], [Union{Float32,Float64}]) do (f, P)
-            (
-                false,
-                :none,
-                (is_primitive=false,),
-                f,
-                f === rand! ? rng_ctor(123) : Xoshiro(123),
-                P[],
-            )
-        end...,
-        map_prod([rand!, randn!], [Union{Float64,ComplexF64}]) do (f, P)
-            (
-                false,
-                :none,
-                (is_primitive=false,),
-                f,
-                f === rand! ? rng_ctor(123) : Xoshiro(123),
-                P[],
-            )
-        end...,
     )
-    # A small spread of eltypes, RNGs, and shapes, shared with the state checks in
-    # test/rules/random.jl. Avoid the full Cartesian product of these dimensions.
+    # A small spread of eltypes, RNGs, and shapes; avoid their full Cartesian product.
     fills = Any[
         (MersenneTwister(123), zeros(Float16, 2, 3)),
         (rng_ctor(123), zeros(Float32, 2, 2, 2)),
@@ -242,34 +242,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
             push!(test_cases, (true, :stability, nothing, randexp!, rng, x))
         end
     end
-    # Contiguous views reach the pointer-writing Xoshiro kernels on Julia 1.12+.
-    parents = Any[fill(T(2), 73) for T in (Float16, Float32, Float64)]
-    @static if VERSION >= v"1.11"
-        append!(
-            parents, [fill!(Memory{T}(undef, 73), 2) for T in (Float16, Float32, Float64)]
-        )
-    end
-    for x in parents, rng in (Xoshiro(123), TaskLocalRNG()), n in (7, 71)
-        v = view(x, 2:(n + 1))
-        for sampler in ((), (eltype(x),), (Random.Sampler(rng, eltype(x)),))
-            push!(
-                test_cases,
-                (
-                    true,
-                    :none,
-                    (
-                        is_primitive=VERSION >= v"1.12" &&
-                                     !isempty(sampler) &&
-                                     sampler[1] isa Random.Sampler,
-                    ),
-                    rand!,
-                    rng,
-                    v,
-                    sampler...,
-                ),
-            )
-        end
-    end
+    append!(test_cases, _rand_view_cases(true))
     # Typed integer boundaries avoid interpreting NoTangent storage as floating bytes.
     integers = Any[ones(T, 73) for T in (UInt8, Int64, Bool)]
     @static if VERSION >= v"1.12"
@@ -283,6 +256,46 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         )
     end
     return test_cases, Any[]
+end
+
+# Fills advance their RNG, which `test_rule` would report as an unrestored input, so these
+# cases build the RNG inside the function. Views leave the other entries of `x` live.
+function _rand_fill_cases()
+    rngs = Any[
+        () -> Xoshiro(123),
+        () -> Random.seed!(TaskLocalRNG(), 123),
+        () -> MersenneTwister(123),
+    ]
+    containers = Any[n -> fill(2.0, n)]
+    @static if VERSION >= v"1.11"
+        push!(containers, n -> fill!(Memory{Float64}(undef, n), 2))
+    end
+    cases = Any[]
+    for (k, P) in enumerate((Float32, Float64, ComplexF32, ComplexF64)),
+        sub in (false, true)
+
+        rng = rngs[mod1(k, length(rngs))]
+        dest = sub ? (x -> view(x, 2:8)) : identity
+        fs = P <: Real ? (rand!, randn!, randexp!) : (rand!, randn!)
+        for f in fs
+            push!(cases, (x -> (f(rng(), dest(x)); sum(x)), fill(P(2), 9)))
+        end
+        for sampler in (r -> P, r -> Random.Sampler(r, P))
+            push!(
+                cases,
+                (x -> (r=rng(); rand!(r, dest(x), sampler(r)); sum(x)), fill(P(2), 9)),
+            )
+        end
+    end
+    for c in containers, sub in (false, true), n in (7, 71)
+        dest = sub ? (x -> view(x, 2:(n + 1))) : identity
+        push!(cases, (x -> (rand!(Xoshiro(123), dest(x)); sum(x)), c(n + 2)))
+    end
+    for T in (Int64, Bool), sub in (false, true)
+        dest = sub ? (y -> view(y, 2:8)) : identity
+        push!(cases, (y -> (rand!(Xoshiro(123), dest(y)); 1.0), ones(T, 9)))
+    end
+    return Any[(false, :none, nothing, f, x) for (f, x) in cases]
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:random})
@@ -311,6 +324,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         # deterministic, because it gets its randomness "from the device". As such, we cannot
         # test that the numbers coming out of this are consistent, just that it runs.
         (true, :none, nothing, () -> randn(RandomDevice())),
+
+        # Empty Union-element fills are valid primals, but must use derived rules.
+        map_prod([rand!, randn!, randexp!], [Union{Float32,Float64}]) do (f, P)
+            (false, :none, nothing, f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
+        end...,
+        map_prod([rand!, randn!], [Union{Float64,ComplexF64}]) do (f, P)
+            (false, :none, nothing, f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
+        end...,
+        _rand_view_cases(false)...,
+        _rand_fill_cases()...,
     ]
     return test_cases, Any[]
 end
