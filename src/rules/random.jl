@@ -36,37 +36,48 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 # `AbstractRNG` is the narrowest type covering GPUArrays' RNG, which has no `randexp!`;
 # no RNG has a complex `randexp`. The rules need the destination to be its own tangent,
 # which `@is_primitive` cannot express; other `DenseArray`s (`SharedArray`) are derived.
+# Union eltypes must also be derived: they need not have a scalar `zero`.
+# Only `rand!` has a trailing type/sampler argument; keep both arities in lockstep.
 for (f, A) in (
-    (rand!, DenseArray{<:FloatOrComplex}),
-    (randn!, DenseArray{<:FloatOrComplex}),
-    (randexp!, Array{<:IEEEFloat}),
-)
+        (rand!, DenseArray{<:FloatOrComplex}),
+        (randn!, DenseArray{<:FloatOrComplex}),
+        (randexp!, Array{<:IEEEFloat}),
+    ),
+    n in (f === rand! ? (0, 1) : (0,))
+
     @eval function _is_primitive(
         ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{T}
-    ) where {T<:Tuple{typeof($f),AbstractRNG,$A}}
+    ) where {T<:Tuple{typeof($f),AbstractRNG,$A,Vararg{Union{Type,Random.Sampler},$n}}}
         T isa DataType || return false
         P = T.parameters[3]
-        return tangent_type(P) == P
+        return isconcretetype(eltype(P)) && tangent_type(P) == P
     end
     @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:AbstractRNG}, x::Dual{P,P}
+        ::Dual{typeof($f)},
+        rng::Dual{<:AbstractRNG},
+        x::Dual{P,P},
+        sampler::Vararg{Dual{<:Union{Type,Random.Sampler}},$n},
     ) where {P<:$A}
-        $f(primal(rng), primal(x))
+        $f(primal(rng), primal(x), map(primal, sampler)...)
         fill!(tangent(x), zero(eltype(P)))
         return x
     end
     @eval function rrule!!(
-        ::CoDual{typeof($f)}, rng::CoDual{<:AbstractRNG}, x::CoDual{P,P}
+        ::CoDual{typeof($f)},
+        rng::CoDual{<:AbstractRNG},
+        x::CoDual{P,P},
+        sampler::Vararg{CoDual{<:Union{Type,Random.Sampler}},$n},
     ) where {P<:$A}
         px, dx = primal(x), tangent(x)
         old_x, old_dx = copy(px), copy(dx)
-        $f(primal(rng), px)
+        $f(primal(rng), px, map(primal, sampler)...)
         fill!(dx, zero(eltype(P)))
         rng_rdata = zero_rdata(primal(rng))
+        sampler_rdata = map(s -> zero_rdata(primal(s)), sampler)
         function rand_fill_pb!!(::NoRData)
             copyto!(px, old_x)
             copyto!(dx, old_dx)
-            return NoRData(), rng_rdata, NoRData()
+            return NoRData(), rng_rdata, NoRData(), sampler_rdata...
         end
         return x, rand_fill_pb!!
     end
@@ -93,6 +104,32 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         end...,
         map_prod([rand!, randn!], [Float32, ComplexF64]) do (f, P)
             (true, :stability, nothing, f, Xoshiro(123), randn(P, 5))
+        end...,
+        [
+            (true, :stability, nothing, rand!, rng, randn(P, 5), sampler) for
+            rng in vcat(rngs, rng_ctor(123)) for P in (Float32, Float64, ComplexF64) for
+            sampler in (P, Random.Sampler(rng, P))
+        ]...,
+        # Empty Union-element fills are valid primals, but must use derived rules.
+        map_prod([rand!, randn!, randexp!], [Union{Float32,Float64}]) do (f, P)
+            (
+                false,
+                :none,
+                (is_primitive=false,),
+                f,
+                f === rand! ? rng_ctor(123) : Xoshiro(123),
+                P[],
+            )
+        end...,
+        map_prod([rand!, randn!], [Union{Float64,ComplexF64}]) do (f, P)
+            (
+                false,
+                :none,
+                (is_primitive=false,),
+                f,
+                f === rand! ? rng_ctor(123) : Xoshiro(123),
+                P[],
+            )
         end...,
     )
     return test_cases, Any[]

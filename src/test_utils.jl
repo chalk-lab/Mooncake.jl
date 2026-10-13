@@ -1349,10 +1349,12 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+        interface_only, perf_flag, options, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
+        # A primitive's registry can also exercise explicitly excluded signatures.
+        is_primitive = isnothing(options) ? true : get(options, :is_primitive, true)
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive, mode)
     end
 end
 
