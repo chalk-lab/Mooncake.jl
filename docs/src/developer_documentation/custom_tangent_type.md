@@ -810,3 +810,13 @@ Friendly conversion defaults to the raw tangent for custom tangent types; overri
 `friendly_tangent_cache` when a different representation is needed; see
 [Customising Friendly Gradients](@ref). This user hook must not recurse through
 executable code or primal type metadata.
+
+## Opaque primal storage and snapshots
+
+Prepared caches copy outputs and snapshot mutable inputs. For opaque storage whose Julia
+fields must not be traversed (such as GPU arrays), define
+`Mooncake._copy_output(x::T)` and `Mooncake._copy_to_output!!(dst::T, src::T)`, and opt in with
+`Mooncake._has_custom_copy(::Type{T}) = true`. The cache-threaded fallbacks use these methods
+while preserving repeated references and restoring original bindings. Both methods must
+return a value of type `T`; the latter must return the destination after updating it.
+These are internal extension points. Types using the ordinary field traversal need no opt-in.

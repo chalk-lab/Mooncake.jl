@@ -4556,6 +4556,17 @@ end
 end
 
 """
+    _has_custom_copy(::Type{T})
+
+Return `true` for opaque leaves with custom `_copy_output(x::T)` and
+`_copy_to_output!!(dst::T, src::T)` methods. The cache-threaded fallbacks then call those
+methods, preserving repeated references and restoration bindings without walking fields.
+Both copy methods must be defined. Dispatch is evaluated at runtime, including for types
+defined after the generated struct-copy methods.
+"""
+_has_custom_copy(::Type) = false
+
+"""
     _copy_to_output!!(dst::T, src::T)
 
 Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of
@@ -4563,7 +4574,8 @@ Copy the contents of `src` to `dst`, with zero or minimal new memory allocation.
 primal types. For example, `Base.copy!` does not work for `Core.svec`. A defined source field
 initialises an undefined destination field. Retain the returned value: an immutable `dst` is
 rebuilt rather than updated. For types with custom copy semantics, overload this function
-(see `Core.SimpleVector` for an example).
+(see `Core.SimpleVector` for an example). Opaque leaves with only a two-argument overload
+must also opt in with `_has_custom_copy(::Type{T}) = true`.
 """
 _copy_to_output!!(dst::Number, src::Number, c=nothing, r=nothing) = src
 _copy_to_output!!(::Type, src::Type, c=nothing, r=nothing) = src
@@ -4680,12 +4692,7 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:Named
     return P(map((d, s) -> _copy_to_output!!(d, s, c, r), values(dst), values(src)))
 end
 function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P}
-    # Only the generic struct fallback needs to detect an opaque two-argument extension:
-    # all specialised bodies dispatch above, so no list of built-in types is required.
-    custom =
-        which(_copy_to_output!!, Tuple{P,P}) !==
-        which(_copy_to_output!!, Tuple{Base.RefValue{Nothing},Base.RefValue{Nothing}})
-    if custom
+    if _has_custom_copy(P)
         c === nothing && return _copy_to_output!!(dst, src)
         dst, seen = _copy_context_destination!!(dst, src, c, r)
         return seen ? dst : _copy_to_output!!(dst, src)
@@ -4788,7 +4795,8 @@ end
 Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy. Required as
 Base.copy() does not work for all supported primal types. For example, `Base.copy` does not
 work for `Core.svec`. For types with custom copy semantics, overload this function (see
-`Core.SimpleVector` for an example).
+`Core.SimpleVector` for an example). Opaque leaves with only a one-argument overload must
+also opt in with `_has_custom_copy(::Type{T}) = true`.
 """
 # Every aggregate shares one cache across its children. Mutable nodes are registered before
 # descent for cycles and repeated references, including arrays with isbits elements. A lone
@@ -4897,7 +4905,7 @@ end
 # Generic fallback: bitstypes, zero-field opaque types (e.g. Symbol/String), and mutable or
 # immutable non-bits structs.
 function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
-    if c !== nothing && which(_copy_output, Tuple{P}) !== which(_copy_output, Tuple{Any})
+    if c !== nothing && _has_custom_copy(P)
         haskey(c, x) && return c[x]::P
         temp = _copy_output(x)
         c[x] = temp

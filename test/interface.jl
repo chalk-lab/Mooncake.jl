@@ -205,12 +205,13 @@ mutable struct RebindBox{V}
     w::V
 end
 
-# An opaque leaf with only the documented copy overloads. Its field must never be walked.
+# An opaque leaf opting in to custom copies. Its field must never be walked.
 mutable struct CustomSnapshotLeaf
     data::Vector{Float64}
 end
 const CUSTOM_SNAPSHOT_HITS = Ref(0)
 const CUSTOM_RESTORE_HITS = Ref(0)
+Mooncake._has_custom_copy(::Type{CustomSnapshotLeaf}) = true
 function Mooncake._copy_output(x::CustomSnapshotLeaf)
     (CUSTOM_SNAPSHOT_HITS[] += 1; CustomSnapshotLeaf(copy(x.data)))
 end
@@ -1849,6 +1850,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     @test TestUtils.has_equal_data(original, test_inplace_copy)
                     @test typeof(test_copy) == typeof(original)
                     @test typeof(test_inplace_copy) == typeof(original)
+                    if isbitstype(typeof(original))
+                        # Exercise both cache-threaded fallbacks with an escaping result.
+                        sink, context = Ref(original), IdDict{Any,Any}()
+                        fold! =
+                            (sink, x, c) ->
+                                sink[] = Mooncake._copy_to_output!!(
+                                    x, Mooncake._copy_output(x, c), c
+                                )
+                        @test (@inferred fold!(sink, original, context)) === original
+                        @test TestUtils.count_allocs(fold!, sink, original, context) == 0
+                    end
                 end
             catch err
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)

@@ -119,6 +119,7 @@ const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle
 
 # Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
 # Julia-visible fields — wrong for GPU arrays.
+Mooncake._has_custom_copy(::Type{<:CuMaybeComplexArray}) = true
 Mooncake._copy_output(x::CuMaybeComplexArray) = copy(x)
 function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuMaybeComplexArray}
     copyto!(dst, src)

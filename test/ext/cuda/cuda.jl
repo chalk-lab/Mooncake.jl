@@ -56,6 +56,14 @@ end
             p2 = CuArray(randn(ET, 4, 4))
             Mooncake._copy_to_output!!(p_copy, p2)
             @test p_copy == p2
+            # Nested custom leaves keep their identity through snapshot and restore.
+            snapshot = Mooncake._copy_output((p, p))
+            @test snapshot[1] === snapshot[2]
+            @test snapshot[1] !== p
+            snapshots, contexts = Mooncake._snapshot_inputs!!((snapshot,), ((p, p),))
+            copyto!(p, p2)
+            Mooncake._restore_inputs!!(((p, p),), snapshots, contexts)
+            @test p == snapshot[1]
         end
 
         @testset "$f ($T, distribution=$distribution) restores arrays but not the RNG" for (
