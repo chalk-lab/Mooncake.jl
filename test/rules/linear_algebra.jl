@@ -11,14 +11,25 @@
         TestUtils.test_rule_throws(rng, logabsdet, [1.0 2.0; 2.0 4.0]; err=ArgumentError)
     end
 
-    # Finite differences are too inaccurate to test det in Float32, so compare with Float64.
+    # Finite differences are too inaccurate to test det and non-square \ in Float32, so
+    # compare with Float64.
+    grad(f, x...) = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(f, x...), f, x...
+    )
     @testset "det, Float32" for A in [
         [2.0 1.0 0.5; 0.3 3.0 1.0; 0.2 0.1 4.0], [2.0 1.0; 0.0 3.0], [1.0 2.0; 2.0 4.0]
     ]
-        g(A) = Mooncake.value_and_gradient!!(
-            Mooncake.prepare_gradient_cache(det, A), det, A
-        )
-        @test g(Float32.(A))[2][2] ≈ g(A)[2][2] rtol = 1e-5
+        @test grad(det, Float32.(A))[2][2] ≈ grad(det, A)[2][2] rtol = 1e-5
+    end
+    @testset "\\, Float32, $(size(A))" for A in [
+        [2.0 1.0 0.5; 0.3 3.0 1.0; 0.2 0.1 4.0; 1.0 0.0 2.0; 0.5 1.5 0.0],
+        [2.0 1.0 0.5 1.0 0.5; 0.3 3.0 1.0 0.0 1.5; 0.2 0.1 4.0 2.0 0.0],
+    ]
+        f(A, b) = sum(abs2, A \ b)
+        b = collect(1.0:size(A, 1))
+        g32, g64 = grad(f, Float32.(A), Float32.(b))[2], grad(f, A, b)[2]
+        @test g32[2] ≈ g64[2] rtol = 1e-4
+        @test g32[3] ≈ g64[3] rtol = 1e-4
     end
 end
 
