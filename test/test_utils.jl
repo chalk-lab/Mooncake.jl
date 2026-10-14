@@ -397,6 +397,46 @@ end
             @test oracle_result_count(captured, Test.Error) == 0
         end
         if TestUtils._test_mode_filter() in (nothing, ReverseMode)
+            bad_rrule =
+                (_, x) -> (zero_fcodual(sum(primal(x))), _ -> (NoRData(), NoRData()))
+            captured_function = let a = [1.0]
+                x -> sum(x) + sum(a)
+            end
+            function_err = try
+                TestUtils.test_rrule_oracle(
+                    zero_codual(captured_function),
+                    zero_codual([1.0, 2.0]);
+                    rrule=bad_rrule,
+                    output_tangent=1.0,
+                    oracle=(deriv=(NoRData(), NoRData()),),
+                )
+                nothing
+            catch e
+                e
+            end
+            @test function_err isa ArgumentError
+            @test occursin("the function `f`", sprint(showerror, function_err))
+            @test TestUtils.test_rrule_oracle(
+                zero_codual(sum),
+                zero_codual([1.0, 2.0]);
+                rrule=bad_rrule,
+                output_tangent=1.0,
+                oracle=(value=3.0,),
+            ) === nothing
+            err = try
+                TestUtils.test_rrule_oracle(
+                    zero_codual(sum),
+                    zero_codual([1.0, 2.0]);
+                    rrule=bad_rrule,
+                    output_tangent=1.0,
+                    oracle=(deriv=(NoRData(), NoRData()),),
+                )
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test occursin("positional argument 1 of `f`", sprint(showerror, err))
             # Registry `throws` cases cannot assert that the harness rejects a wrong oracle.
             for (deriv, failures) in ((3.0, 0), (0.0, 1))
                 seed = [1.0, 1.0]
