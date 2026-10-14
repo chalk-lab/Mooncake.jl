@@ -185,7 +185,7 @@ end
 # factor of its pivoted QR. At a rank-deficient `A` the solution, which LinearAlgebra
 # truncates by rank, is not differentiable, so they throw.
 function _tall_qr(M::AbstractMatrix{P}) where {P}
-    F = qr(M, ColumnNorm())
+    F = qr!(Matrix{P}(M), ColumnNorm())
     # The rank as LinearAlgebra's least-squares solve estimates it, with the same tolerance.
     rank = LinearAlgebra.ldiv!(F, zeros(P, size(M, 1), 1), min(size(M)...) * eps(P))[2]
     if rank < size(M, 2)
@@ -200,13 +200,11 @@ end
 # `(M'M) \ x` for the pivoted QR `F` of a tall `M` with full rank.
 function _gram_ldiv(F, x)
     R = UpperTriangular(F.R)
-    y = R \ (R' \ _rows(x, F.p))
+    y = R \ (R' \ view(x, F.p, :))
     out = similar(y)
-    _rows(out, F.p) .= y
+    out[F.p, :] .= y
     return out
 end
-_rows(x::AbstractVector, p) = view(x, p)
-_rows(x::AbstractMatrix, p) = view(x, p, :)
 
 @is_primitive(
     MinimalCtx,
@@ -215,66 +213,91 @@ _rows(x::AbstractMatrix, p) = view(x, p, :)
 function frule!!(
     ::Dual{typeof(\)}, A_dA::Dual{<:DenseMatOrAdj{P}}, B_dB::Dual{<:DenseVecOrMatArg{P}}
 ) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A, dA = map(_dense, arrayify(A_dA))
+    B, dB = map(_as_matrix, arrayify(B_dB))
     m, n = size(A)
     if m == n
-        F = _square_factor(A; check=true)
+        F = lu!(Matrix{P}(A))
         X = F \ B
-        return Dual(X, ldiv!(F, mul!(copy(dB), dA, X, -one(P), one(P))))
+        dX = F \ (dB - dA * X)
     elseif m > n
         F = _tall_qr(A)
         X = F \ B
-        T = A' * mul!(copy(dB), dA, X, -one(P), one(P))
-        mul!(T, dA', mul!(copy(B), A, X, -one(P), one(P)), one(P), one(P))
-        return Dual(X, _gram_ldiv(F, T))
+        dX = _gram_ldiv(F, A' * (dB - dA * X) + dA' * (B - A * X))
     else
         F = _tall_qr(A')
         Y = _gram_ldiv(F, B)
         X = A' * Y
-        dX = dA' * Y
-        T = mul!(mul!(copy(dB), dA, X, -one(P), one(P)), A, dX, -one(P), one(P))
-        return Dual(X, mul!(dX, A', _gram_ldiv(F, T), one(P), one(P)))
+        W = dA' * Y
+        dX = W + A' * _gram_ldiv(F, dB - dA * X - A * W)
     end
+    return Dual(_like(primal(B_dB), X), _like(primal(B_dB), dX))
 end
+
+# A vector right-hand side is solved as a one-column matrix, sharing memory, as
+# matrix-vector products are not type-stable on Julia 1.10.
+_as_matrix(x::AbstractVector) = reshape(x, :, 1)
+_as_matrix(x::AbstractMatrix) = x
+_like(::AbstractVector, X::Matrix) = vec(X)
+_like(::AbstractMatrix, X::Matrix) = X
 function rrule!!(
     ::CoDual{typeof(\)},
     A_dA::CoDual{<:DenseMatOrAdj{P}},
     B_dB::CoDual{<:DenseVecOrMatArg{P}},
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A = _dense(A)
+    B, dB = map(_as_matrix, arrayify(B_dB))
     m, n = size(A)
-    # Which factorizations exist depends on the shape of `A`. Holding them in `Ref`s of fixed
-    # type keeps the type of the pullback the same for every shape.
-    BI = LinearAlgebra.BlasInt
-    TA = typeof(A)
-    Sq = Union{UpperTriangular{P,TA},LowerTriangular{P,TA},LU{P,Matrix{P},Vector{BI}}}
-    S = Ref{Union{Nothing,Sq}}(m == n ? _square_factor(A; check=true) : nothing)
-    Q = Ref{Union{Nothing,QRPivoted{P,Matrix{P},Vector{P},Vector{BI}}}}(
-        m == n ? nothing : _tall_qr(m > n ? A : A')
-    )
-    Y = Ref{Union{Nothing,Array{P,ndims(B)}}}(m < n ? _gram_ldiv(Q[], B) : nothing)
-    X = m == n ? S[] \ B : (m > n ? Q[] \ B : A' * Y[])
+    X, dX, pb = m == n ? _ldiv_square(A, dA, B, dB) : _ldiv_nonsquare(A, dA, B, dB)
+    return CoDual(_like(primal(B_dB), X), _like(primal(B_dB), dX)), pb
+end
+
+# `C .+= α .* (U * V)`. For an `Adjoint` or `Transpose` `C` (real here), this writes
+# `α .* (V' * U')` into its parent: 5-argument `mul!` into one isn't type-stable on Julia 1.10.
+_addmul!(C, U, V, α) = mul!(C, U, V, α, true)
+_addmul!(C::Union{Adjoint,Transpose}, U, V, α) = (mul!(parent(C), V', U', α, true); C)
+_addmul!(C::Base.ReshapedArray, U, V, α) = (C .+= α .* (U * V); C)
+
+# Products with a reshaped non-strided array aren't type-stable on Julia 1.10, so such an
+# array is copied before it is multiplied.
+_dense(x::Base.ReshapedArray) = collect(x)
+_dense(x) = x
+
+# Separate functions, so that each pullback captures concretely typed values: an LU for
+# square `A`, a pivoted QR of the tall one of `A` and `A'` otherwise.
+function _ldiv_square(A, dA, B, dB::AbstractVecOrMat{P}) where {P}
+    F = lu!(Matrix{P}(A))
+    X = F \ B
     dX = zero(X)
-    function ldiv_pb!!(::NoRData)
-        if m == n
-            B̄ = S[]' \ dX
-            mul!(dA, B̄, X', -one(P), one(P))
-        elseif m > n
-            Z = _gram_ldiv(Q[], dX)
+    function ldiv_square_pb!!(::NoRData)
+        B̄ = F' \ dX
+        _addmul!(dA, B̄, X', -one(P))
+        dB .+= B̄
+        return NoRData(), NoRData(), NoRData()
+    end
+    return X, dX, ldiv_square_pb!!
+end
+function _ldiv_nonsquare(A, dA, B, dB::AbstractVecOrMat{P}) where {P}
+    m, n = size(A)
+    F = _tall_qr(m > n ? A : A')
+    X = m > n ? F \ B : A' * _gram_ldiv(F, B)
+    dX = zero(X)
+    function ldiv_nonsquare_pb!!(::NoRData)
+        if m > n
+            Z = _gram_ldiv(F, dX)
             B̄ = A * Z
-            mul!(dA, B̄, X', -one(P), one(P))
-            mul!(dA, mul!(copy(B), A, X, -one(P), one(P)), Z', one(P), one(P))
+            _addmul!(dA, B̄, X', -one(P))
+            _addmul!(dA, B - A * X, Z', one(P))
         else
-            B̄ = _gram_ldiv(Q[], A * dX)
-            mul!(dA, B̄, X', -one(P), one(P))
-            mul!(dA, Y[], dX' - B̄' * A, one(P), one(P))
+            B̄ = _gram_ldiv(F, A * dX)
+            _addmul!(dA, B̄, X', -one(P))
+            _addmul!(dA, _gram_ldiv(F, B), dX' - B̄' * A, one(P))
         end
         dB .+= B̄
         return NoRData(), NoRData(), NoRData()
     end
-    return CoDual(X, dX), ldiv_pb!!
+    return X, dX, ldiv_nonsquare_pb!!
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
