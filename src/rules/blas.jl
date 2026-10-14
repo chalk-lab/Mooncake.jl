@@ -596,6 +596,18 @@ end
     end
     return Y
 end
+# Keep complex cotangent scaling out of the pullback to retain vectorisation.
+@noinline function _rvs_scal!(dy, c)
+    dy .= _rvs_mul.(dy, c)
+    return dy
+end
+# Nonfinite coefficients only: `0 * Inf` is NaN, so mask a whole-zero seed.
+@noinline function _rvs_axpby!(dx, dy, a, b)
+    zero_seed = all(iszero, dy)
+    dx .+= _rvs_zero.(_rvs_mul.(dy, a), zero_seed)
+    dy .= _rvs_zero.(_rvs_mul.(dy, b), zero_seed)
+    return dy
+end
 _rvs_conj_mul(x, a) = conj(x) * a
 
 # Evaluate the broadcast with the transform's scalar rules, including Base's complex expansion.
@@ -1291,20 +1303,48 @@ function rrule!!(
     BLAS.axpby!(a, x, b, y)
     function axpby!_pb!!(::NoRData)
         copyto!(y, y_copy)
-        ∇a = _rvs_blas_alpha(a_da, _rvs_guarded_dot(xv, dyv))
-        ∇b = _rvs_blas_alpha(b_db, _rvs_guarded_dot(y_copy, dy))
+        db = _rvs_guarded_dot(y_copy, dy)
+        # Avoid strided dot walks for dense arrays, and reuse the shared alias dot.
+        da = if x === y
+            db
+        elseif x isa Array && dy isa Array
+            _rvs_guarded_dot(x, dy)
+        else
+            _rvs_guarded_dot(xv, dyv)
+        end
+        ∇a = _rvs_blas_alpha(a_da, da)
+        ∇b = _rvs_blas_alpha(b_db, db)
         if x === y
             # Read the shared cotangent before writing it. Sum first for cancellation,
             # but scale first if the coefficient sum overflows.
             c = (a + b)'
             if isfinite(c)
-                dy .*= c
-            else
+                if P <: BlasRealFloat
+                    dy .= _rvs_mul.(dy, c)
+                else
+                    _rvs_scal!(dy, c)
+                end
+            elseif isfinite(a) && isfinite(b)
                 dy .= a' .* dy .+ b' .* dy
+            else
+                zero_seed = all(iszero, dy)
+                dy .= _rvs_zero.(_rvs_mul.(dy, a') .+ _rvs_mul.(dy, b'), zero_seed)
+            end
+        elseif isfinite(a) && isfinite(b)
+            if P <: BlasRealFloat
+                # Explicit loops retain SIMD for strided views in the pullback.
+                @inbounds @simd for i in eachindex(dxv, dyv)
+                    dxv[i] += _rvs_mul(dyv[i], a')
+                end
+                @inbounds @simd for i in eachindex(dy)
+                    dy[i] = _rvs_mul(dy[i], b')
+                end
+            else
+                dxv .+= _rvs_mul.(dyv, a')
+                dy .= _rvs_mul.(dy, b')
             end
         else
-            dxv .+= _rvs_mul.(dyv, a')
-            dy .*= b'
+            _rvs_axpby!(dxv, dyv, a', b')
         end
         return NoRData(), ∇a, NoRData(), ∇b, NoRData()
     end
@@ -4947,6 +4987,36 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     end
     for b in (0, 3)
         push!(test_cases, (false, :none, nothing, self_axpby!, P(2), P[1, 2, 3, 4], P(b)))
+    end
+
+    # The mutated arrays are dead: their zero cotangent must survive infinite coefficients.
+    # Return a scalar so the oracle observes the array cotangents after accumulation.
+    for alias in (false, true), (a, b) in ((1, Inf), (Inf, 1), (Inf, -Inf))
+        unused_axpby = (a, b, v) -> begin
+            x = [v]
+            y = alias ? x : [v]
+            BLAS.axpby!(a, x, b, y)
+            return real(v)
+        end
+        opts = (
+            output_tangent=one(real(P)),
+            oracle=(
+                value=real(P)(2),
+                deriv=(fwd=one(real(P)), rvs=(NoRData(), zero(P), zero(P), one(P))),
+            ),
+        )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                opts,
+                unused_axpby,
+                CoDual(P(a), zero(P)),
+                CoDual(P(b), zero(P)),
+                CoDual(P(2), one(P)),
+            ),
+        )
     end
 
     # Summing the coefficients first overflows, although each scaled cotangent is finite.
