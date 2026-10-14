@@ -379,9 +379,7 @@ end
     @inline function tangent(
         x::Lifted{P,N,V}, lane::Integer
     ) where {P<:MemoryRef,N,V<:MemoryRef}
-        p = primal(x)
-        lane_mem = tangent(Lifted{Memory{eltype(P)},N}(p.mem, tangent(x).mem), lane)
-        return _memoryref_at(lane_mem, Core.memoryrefoffset(p))
+        return _materialise_lane(x, lane, IdDict{Any,Any}())
     end
 end
 @inline function tangent(
@@ -580,6 +578,16 @@ end
         return _memoryref_at(_register_leaf(p.mem, t.mem, cache), off)
     end
 end
+@static if VERSION >= v"1.11-rc4"
+    # Thread the cache, so the ref's `Memory` shares a lane with other headers over it.
+    function _materialise_lane(
+        x::Lifted{P,N,V}, lane::Integer, cache::IdDict
+    ) where {P<:MemoryRef,N,V<:MemoryRef}
+        p = primal(x)
+        mem = _materialise_lane(Lifted{typeof(p.mem),N}(p.mem, tangent(x).mem), lane, cache)
+        return _memoryref_at(mem, Core.memoryrefoffset(p))
+    end
+end
 # An all-NoDual representation is a leaf only if its elements have NoTangent too.
 @inline function _materialise_lane(
     x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, cache::IdDict
@@ -597,9 +605,25 @@ function _materialise_lane_elementwise(
     x::Lifted{P,N}, lane::Integer, cache::IdDict
 ) where {P,N}
     p = primal(x)
-    haskey(cache, p) && return cache[p]
-    t = similar(p, tangent_type(eltype(P)))
-    cache[p] = t
+    if p isa Union{_STRUCTURAL_CONTAINERS...}
+        # Share storage between headers, as the lift and seed caches do.
+        key = _structural_key(p)
+        key, first = _extent_key(p, key, cache)
+        if first !== nothing
+            first isa tangent_type(P) && _same_window(first, p) && return first
+            hkey = _header_key(p, key, first, tangent_type(eltype(P)))
+            haskey(cache, hkey) && return cache[hkey]
+            t = _shared_lane(p, first, tangent_type(eltype(P)))::tangent_type(P)
+            cache[hkey] = t
+        else
+            t = _new_lane(p, tangent_type(eltype(P)))::tangent_type(P)
+            cache[key] = t
+        end
+    else
+        haskey(cache, p) && return cache[p]
+        t = similar(p, tangent_type(eltype(P)))
+        cache[p] = t
+    end
     # Build each element's slot from the CONCRETE `typeof(pe)`, not the static `eltype(P)`: for an
     # abstract-eltype array (e.g. `Vector{Distribution}` holding `Normal`s) the abstract type has
     # no fields, so `eltype(P)` would make the struct-lift do `fieldtype(Distribution, :μ)` and
@@ -1545,6 +1569,122 @@ end
     end
 end
 
+# Headers over one storage (`reshape`, an `Array` beside its `Memory`) must share one
+# representation, or a write through one leaves the other's partials stale. Caches therefore
+# key a structural container on its storage, holding the first header's representation there;
+# any other header is built over that representation's storage and registered under itself.
+@inline _same_window(v, x) = size(v) == size(x) && _storage_offset(v) == _storage_offset(x)
+@static if VERSION >= v"1.11-rc4"
+    @inline function _structural_key(x::Array{T}) where {T}
+        mem = getfield(x, :ref).mem
+        owner = _storage_id(mem)
+        return isempty(owner) ? x : _structural_key(mem)
+    end
+    @inline function _structural_key(x::Memory)
+        isempty(x) && return x
+        @static if VERSION < v"1.12-"
+            # Small owned Memory stores its data inline; it cannot have another owner.
+            inline_data = GC.@preserve x pointer(x) == pointer_from_objref(x) + 16
+            inline_data && return x
+        end
+        return _storage_id(x)::typeof(x)
+    end
+    # Return the storage key and its cache entry (or `nothing`).
+    @inline function _extent_key(x, key, cache)
+        cache isa NoCache && return key, nothing
+        return haskey(cache, key) ? (key, cache[key]) : (key, nothing)
+    end
+    # Caches hold `Any`; asserting the representation keeps the dispatch on it static.
+    @inline function _owner_memory(first, ::Type{T}) where {T}
+        m = (first isa Memory ? first : getfield(getfield(first, :ref), :mem))::Memory{T}
+        return _storage_id(m)::Memory{T}
+    end
+    # The primal owner is already the storage key; register its header under the tangent owner.
+    @inline _header_key(x, key, first, ::Type{T}) where {T} =
+        x === key ? (key isa Array ? key : _owner_memory(first, T)) : x
+    # `x`'s representation over `m`, the representation of its owning storage. A backing as
+    # long as the owner covers all of it, so `m` itself serves.
+    @inline function _structural_dual_shell(x::Array{P,D}, m::Memory{T}) where {P,D,T}
+        ref = getfield(x, :ref)
+        w = length(ref.mem) == length(m) ? m : _tangent_memory_window(ref.mem, m)
+        return Base.wrap(Array, construct_ref(ref, w), size(x))::Array{T,D}
+    end
+    @inline _structural_dual_shell(x::Memory, m::Memory) =
+        length(x) == length(m) ? m : _tangent_memory_window(x, m)
+    @inline _new_shared_shell(x, ::Type{T}, key) where {T} = _structural_dual_shell(
+        x, Memory{T}(undef, length(key))
+    )
+    @inline _shared_shell(x, first, ::Type{T}) where {T} = _structural_dual_shell(
+        x, _owner_memory(first, T)
+    )
+    # A lane allocates only up to the end of its header's window, not the owner's capacity,
+    # but at the header's offset, which locates later headers. One reaching past that end
+    # gets storage of its own. An empty `Array`'s ref still needs a slot at an offset past 1.
+    @inline _lane_end(p::Array) =
+        _storage_offset(p) + max(length(p), _storage_offset(p) > 1) - 1
+    @inline _lane_end(p::Memory) = _storage_offset(p) + length(p) - 1
+    @inline _lane_over(p::Array, m) = Base.wrap(
+        Array, _memoryref_at(m, _storage_offset(p)), size(p)
+    )
+    @inline _lane_over(p::Memory, m) = _structural_dual_shell(p, m)
+    @inline _new_lane(p, ::Type{T}) where {T} = _lane_over(
+        p, Memory{T}(undef, _lane_end(p))
+    )
+    @inline function _shared_lane(p, first, ::Type{T}) where {T}
+        m = _owner_memory(first, T)
+        _lane_end(p) <= length(m) || return _new_lane(p, T)
+        return _lane_over(p, m)
+    end
+else
+    # Unflagged arrays remain self-keys; reshaping an `unsafe_wrap` header sets `flags.isshared`,
+    # so its data address keys the shared storage. An owner object leaves the key's rank unbound.
+    const _JL_ARRAY_T_FLAGS_OFFSET = 2 * sizeof(Int)
+    const _JL_ARRAY_T_FLAGS_ISSHARED = UInt16(0x4000)
+    @inline function _structural_key(x::Array)
+        flags = GC.@preserve x unsafe_load(
+            Ptr{UInt16}(pointer_from_objref(x) + _JL_ARRAY_T_FLAGS_OFFSET)
+        )
+        return iszero(flags & _JL_ARRAY_T_FLAGS_ISSHARED) ? x : only(Base.dataids(x))
+    end
+    # Return the storage key and its cache entry (or `nothing`); on Julia 1.10,
+    # a header whose length differs from the cached entry keys on `(address, length)`.
+    @inline function _extent_key(x::Array, key, cache)
+        cache isa NoCache && return key, nothing
+        first = get(cache, key, nothing)
+        key === x && return key, first
+        if first !== nothing
+            v = (first isa Lifted ? tangent(first) : first)::Array
+            if length(v) != length(x)
+                key = (key, length(x))
+                first = get(cache, key, nothing)
+            end
+        end
+        return key, first
+    end
+    @inline _header_key(x, key, first, ::Type) = x === key ? key : x
+    @inline function _new_shared_shell(x::Array{P,D}, ::Type{T}, key) where {P,D,T}
+        key === x && return _structural_dual_shell(x, T)
+        # A shared V must not own its buffer: Julia 1.10 cannot resize a shared owner.
+        owner = Vector{T}(undef, length(x))
+        return ccall(
+            :jl_reshape_array, Array{T,D}, (Any, Any, Any), Array{T,D}, owner, size(x)
+        )
+    end
+    # `reshape`'s `Array` case: the first header's unknown rank would make `reshape` dispatch
+    # at runtime. Check the extent before reusing its storage; a mismatch gets a new owner.
+    @inline function _shared_shell(x::Array{P,D}, first, ::Type{T}) where {P,D,T}
+        length(first::Array) == length(x) ||
+            return _new_shared_shell(x, T, _structural_key(x))
+        return ccall(
+            :jl_reshape_array, Array{T,D}, (Any, Any, Any), Array{T,D}, first, size(x)
+        )
+    end
+    @inline _new_lane(p::Array, ::Type{T}) where {T} = _new_shared_shell(
+        p, T, _structural_key(p)
+    )
+    @inline _shared_lane(p, first, ::Type{T}) where {T} = _shared_shell(p, first, T)
+end
+
 # Element-wise lift for containers whose eltype `_storage_kind` maps to `StructuralStorage`.
 # Register before filling, as reverse mode's `zero_tangent_internal(::Array)` does, so
 # cycles terminate and repeated children share one V, including when a top-level call has
@@ -1554,10 +1694,22 @@ for C in _STRUCTURAL_CONTAINERS
         ::StructuralStorage, x::$C, ẋ::$C, c::Union{Nothing,IdDict}
     )
         d = c === nothing ? IdDict() : c
-        haskey(d, x) && return d[x]::Lifted{typeof(x),1}
-        v = _structural_dual_shell(x, dual_type(Val(1), eltype(x)))
-        lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
-        d[x] = lifted
+        V = dual_type(Val(1), typeof(x))
+        key = _structural_key(x)
+        key, first = _extent_key(x, key, c === nothing ? NoCache() : d)
+        # A fresh cache holds nothing; skipping its lookup also keeps it off the heap.
+        if first === nothing
+            hkey = key
+            v = _new_shared_shell(x, eltype(V), key)::V
+        else
+            first = first::Lifted
+            primal(first) === x && return first::Lifted{typeof(x),1,V}
+            hkey = _header_key(x, key, tangent(first), eltype(V))
+            haskey(d, hkey) && return d[hkey]::Lifted{typeof(x),1,V}
+            v = _shared_shell(x, tangent(first), eltype(V))::V
+        end
+        lifted = Lifted{typeof(x),1,V}(x, v)
+        d[hkey] = lifted
         @inbounds for i in eachindex(x)
             isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], d)))
         end
@@ -1952,12 +2104,25 @@ for (factory, internal) in (
     # cache through children, unlike the deliberately cache-free factories, `Memory`
     # included: a `Dict`'s `vals` can hold one array in two elements.
     for C in _STRUCTURAL_CONTAINERS
-        @eval function $internal(
+        @eval @inline function $internal(
             ::StructuralStorage, w::Val{N}, $(rng_args...), x::$C, d::MaybeCache
         ) where {N}
-            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            shell = _structural_dual_shell(x, eltype(dual_type(Val(N), typeof(x))))
-            d[x] = shell
+            V = dual_type(Val(N), typeof(x))
+            key = _structural_key(x)
+            key, first = _extent_key(x, key, d)
+            if first !== nothing
+                # A seed has no primal field, so register each header explicitly. Distinct
+                # headers over one window get distinct V wrappers over the shared partials.
+                hkey = _header_key(x, key, first, eltype(V))
+                haskey(d, hkey) && return d[hkey]::V
+                shell = _shared_shell(x, first, eltype(V))::V
+                d[hkey] = shell
+            else
+                shell = _new_shared_shell(x, eltype(V), key)::V
+                d[key] = shell
+                hkey = _header_key(x, key, shell, eltype(V))
+                hkey === key || (d[hkey] = shell)
+            end
             @inbounds for i in eachindex(x)
                 isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
             end

@@ -51,6 +51,15 @@ At width one, `lift(p, dp)` and `unlift(x)` convert to and from a primal and an
 ordinary Mooncake tangent. For arrays, `arrayify(x)` returns the primal and a tuple
 of writable lane views.
 
+Structural `lift` and the cache-threaded seed factories key each `Array` or `Memory` on
+its owning storage, so distinct headers over one buffer (`reshape`, an `Array` beside
+its `Memory`) use shared partial storage while keeping their own shapes. Seed wrappers
+are registered by header as well, so a header's V object remains stable when another
+header uses the same window. Lane materialisation shares a representation when the
+first header's allocated window reaches the later header; callers should put the widest
+header first when that sharing is required. A lane is allocated up to the end of its
+header's window, not to the owner's capacity.
+
 `FunctionWrapper` and `MistyClosure` forward representations retain internal
 `Lifted` slots for their callable or captures. This exception to unnested `V`
 storage preserves compiler inference on supported Julia versions. It is contained

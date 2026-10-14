@@ -940,6 +940,131 @@ const NDAC_VecC64 = NDualArray{
         end
     end
 
+    @testset "structural headers share updated partials" begin
+        # The registry checks storage identity; these calls check mutation with caller-owned
+        # consistent seeds through both public execution paths, including cache reuse.
+        f(a, b) = (a[1]=(2a[1][1],); b[1][1])
+        for T in (Tuple{Float64}, Any), prepared in (false, true)
+            a, da = T[(3.0,)], T[(1.0,)]
+            b, db = reshape(a, 1, 1), reshape(da, 1, 1)
+            c = prepared ? Mooncake.prepare_derivative_cache(f, a, b) : build_frule(f, a, b)
+            for _ in 1:2
+                a[1], da[1] = (3.0,), (1.0,)
+                @test Mooncake.value_and_derivative!!(
+                    c, (f, NoTangent()), (a, da), (b, db)
+                ) == (6.0, 2.0)
+            end
+        end
+    end
+
+    @static if VERSION >= v"1.11-rc4"
+        @testset "empty structural arrays keep distinct lane storage" begin
+            # Empty arrays can share Julia's global Memory despite having unrelated identities.
+            f(x) = (x, Vector{Float64}[], Vector{Float64}[])
+            x = [1.0]
+            _, dx = Mooncake.value_and_derivative!!(
+                build_frule(f, x), (f, NoTangent()), (x, [1.0])
+            )
+            @test dx[2] !== dx[3]
+        end
+    end
+
+    @static if VERSION < v"1.11-rc4"
+        @testset "structural headers with unequal extents" begin
+            # Raw-pointer aliases need independent tangents; `test_lifted` only bounds storage counts.
+            for T in (Tuple{Float64}, Any)
+                a = T[(1.0,), (2.0,), (3.0,), (4.0,)]
+                GC.@preserve a begin
+                    w = unsafe_wrap(Array, pointer(a), 2)
+                    # These reshapes only mark the aliases as shared in Julia 1.10.
+                    reshape(a, 2, 2)
+                    reshape(w, 1, 2)
+                    for x in ((w, a), (a, w))
+                        for s in (
+                            zero_lifted(Val(1), x),
+                            uninit_lifted(Val(1), x),
+                            randn_lifted(Val(1), Xoshiro(123), x),
+                            lift(x, map(b -> fill((1.0,), size(b)), x)),
+                        )
+                            v = tangent(s)
+                            @test pointer(v[1]) != pointer(v[2])
+                            lane = tangent(s, 1)
+                            @test pointer(lane[1]) != pointer(lane[2])
+                        end
+                    end
+                end
+            end
+
+            @testset "same extent aliases after a prefix" begin
+                a = [(1.0,), (2.0,), (3.0,), (4.0,)]
+                GC.@preserve a begin
+                    w = unsafe_wrap(Array, pointer(a), 2)
+                    reshape(w, 1, 2)
+                    b = reshape(a, 2, 2)
+                    f(t) = (t[2][3]=(2t[2][3][1],); t[3][1, 2][1])
+                    da = [(1.0,), (1.0,), (1.0,), (1.0,)]
+                    dw = unsafe_wrap(Array, pointer(da), 2)
+                    reshape(dw, 1, 2)
+                    dx = (dw, da, reshape(da, 2, 2))
+                    x = (w, a, b)
+                    @test value_and_derivative!!(
+                        build_frule(f, x), (f, NoTangent()), (x, dx)
+                    ) == (6.0, 2.0)
+                end
+            end
+        end
+
+        @testset "non-owning structural header resize boundary" begin
+            # Rule tests deepcopy inputs, splitting 1.10 reshape aliases; `test_lifted` never resizes.
+            f(t) = (push!(t[1], (1.0,)); t[1][1]=(2t[1][1][1],); t[2][1][1] + t[1][1][1])
+            for seeded in (false, true)
+                a = [(3.0,), (4.0,)]
+                x = (vec(reshape(a, 1, 2)), a)
+                c = build_frule(f, x)
+                args = if seeded
+                    xl = zero_lifted(Val(1), x)
+                    tangent(xl)[1][1] = tangent(lift((3.0,), (1.0,)))
+                    (zero_lifted(Val(1), f), xl)
+                else
+                    da = [(1.0,), (0.0,)]
+                    dx = (vec(reshape(da, 1, 2)), da)
+                    ((f, NoTangent()), (x, dx))
+                end
+                @static if VERSION < v"1.11-rc4"
+                    err = try
+                        value_and_derivative!!(c, args...)
+                    catch err
+                        err
+                    end
+                    @test typeof(err) === ArgumentError
+                    @test occursin(
+                        "storage is shared with another array header",
+                        sprint(showerror, err),
+                    )
+                    @test x[1] == x[2] == [(3.0,), (4.0,)]
+                else
+                    y = value_and_derivative!!(c, args...)
+                    @test (seeded ? (primal(y), tangent(y, 1)) : y) == (9.0, 3.0)
+                end
+            end
+        end
+    end
+
+    @testset "cached seeds keep header identity" begin
+        @static if VERSION >= v"1.11-rc4"
+            f(t) = (push!(t[1], (1.0,)); t[1][1]=(2t[1][1][1],); t[2][1][1])
+            for T in (Tuple{Float64}, Any), width in (1, 8)
+                a = T[(3.0,), (4.0,)]
+                x = (a, vec(reshape(a, 1, 2)))
+                xl = randn_lifted(Val(width), Xoshiro(123), x)
+                seeds = [tangent(xl, lane)[1][1][1] for lane in 1:width]
+                rule = build_frule(f, x; chunk_size=width)
+                y = value_and_derivative!!(rule, zero_lifted(Val(width), f), xl)
+                @test [tangent(y, lane) for lane in 1:width] == seeds
+            end
+        end
+    end
+
     @testset "lift preserves cross-field array aliasing (D3)" begin
         # Aggregate lift must share one cache across repeated mutable fields.
         # Non-float elements expose independent container partials hidden by float tangent aliases.
@@ -1048,6 +1173,26 @@ const NDAC_VecC64 = NDualArray{
             # Detect the cycle rather than listing the cases, so a new cyclic table entry needs
             # no bookkeeping here.
             test_lifted(Xoshiro(123456), p; cache_free=(!_self_referential(p)))
+        end
+
+        # Headers over one storage. Not in `tangent_test_cases`: reverse checks there fail for
+        # them (1.10's `deepcopy` splits reshapes; `increment!!` dispatches on `Any` elements).
+        @testset "test_lifted shared storage $(eltype(a))" for a in (
+            [(3.0,), (4.0,)], Any[(3.0,), (4.0,)]
+        )
+            p = (a, reshape(a, 1, 2), view(a, 1:1))
+            test_lifted(Xoshiro(123456), p)
+            test_lifted(Xoshiro(123456), (a, vec(reshape(a, 1, 2)), a))
+            test_lifted(Xoshiro(123456), (vec(reshape(a, 1, 2)), a))
+            for width in (1, 8),
+                seed in (
+                    zero_lifted(Val(width), p),
+                    uninit_lifted(Val(width), p),
+                    randn_lifted(Val(width), Xoshiro(123), p),
+                )
+
+                @test TestUtils._count_storages(tangent(seed)) == 1
+            end
         end
 
         @testset "test_lifted Ref fields $(typeof(p))" for p in (
