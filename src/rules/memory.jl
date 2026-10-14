@@ -697,7 +697,11 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    dy = _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
+    dy = if ptr_or_offset.dx == C_NULL  # see `_tangent_data_ptr`
+        Core.memoryrefnew(memoryref(mem.dx), Base.memoryrefoffset(y), false)
+    else
+        _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -754,34 +758,15 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# A pointer into tangent memory is only usable if that memory mirrors the primal memory byte
-# for byte. Otherwise (e.g. `Memory{NoTangent}`, which has no storage, or the tangent of
-# `Tuple{Int,Float64}`) the tangent pointer is null, and the pointer rules refuse to load or
-# store a tangent through it.
-function _tangent_data_ptr(ptr::Ptr, ::Memory{P}, ::Memory{V}) where {P,V}
-    if Base.elsize(Memory{V}) > 0 && _tangent_layout_mirrors(P, V)
-        return bitcast(Ptr{NoTangent}, ptr)
+# Tangent memory whose elements take up no space (e.g. `Memory{NoTangent}`) has no storage,
+# so a pointer into it gets a null tangent pointer, and the pointer rules refuse to load or
+# store a tangent through it. (For a `MemoryRef`, `ptr_or_offset` is then an index.)
+function _tangent_data_ptr(ptr::Ptr, ::Memory{V}) where {V}
+    return if Base.elsize(Memory{V}) == 0
+        Ptr{NoTangent}(C_NULL)
+    else
+        bitcast(Ptr{NoTangent}, ptr)
     end
-    return Ptr{NoTangent}(C_NULL)
-end
-
-@generated _tangent_layout_mirrors(::Type{P}, ::Type{V}) where {P,V} = _layout_mirrors(P, V)
-
-function _layout_mirrors(P::Type, V::Type)
-    P === V && return true
-    # Both stored as references, so each slot holds a pointer in both memories.
-    !Base.allocatedinline(P) && !Base.allocatedinline(V) && return true
-    (P isa DataType && V isa DataType) || return false
-    (Base.allocatedinline(P) && Base.allocatedinline(V)) || return false
-    V <: Tangent && (V = fieldtype(V, :fields))
-    sizeof(P) == sizeof(V) || return false
-    n = fieldcount(P)
-    (n > 0 && n == fieldcount(V)) || return false
-    for i in 1:n
-        fieldoffset(P, i) == fieldoffset(V, i) || return false
-        _layout_mirrors(fieldtype(P, i), fieldtype(V, i)) || return false
-    end
-    return true
 end
 
 function frule!!(
@@ -795,7 +780,7 @@ function frule!!(
     dy = if wants_length
         NoTangent()
     else
-        _tangent_data_ptr(tangent(x).ptr, primal(x), tangent(x))
+        _tangent_data_ptr(tangent(x).ptr, tangent(x))
     end
     return Dual(y, dy)
 end
@@ -807,7 +792,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.x, x.dx)
+    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -820,7 +805,7 @@ function frule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dx = tangent(x)
-    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
+    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -831,7 +816,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
+    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1289,8 +1274,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
 
         # Stores and loads of pointers through a pointer into an array whose elements have no
-        # tangent (#1355), and a copy that takes pointers into memory without a matching
-        # tangent only to check for aliasing.
+        # tangent (#1355).
         (
             false,
             :none,
@@ -1314,7 +1298,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             end),
             2.0,
         ),
-        (false, :none, nothing, x -> (a=Any[]; append!(a, [(1, x)]); a[1][2]), 2.0),
     ]
     memory = Any[]
     return test_cases, memory

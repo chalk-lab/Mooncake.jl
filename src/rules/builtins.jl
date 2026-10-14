@@ -244,24 +244,16 @@ end
 # atomic_pointerreplace
 
 # Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
-# Tangent loads and stores, skipped through a null tangent pointer (see `_tangent_data_ptr`).
-function _tload(dx::Ptr{V}, i, a) where {V}
-    dx == C_NULL ? _null_ptr_tangent(V) : pointerref(dx, i, a)
-end
-function _tstore(dx::Ptr{V}, t, i, a) where {V}
-    return dx == C_NULL ? _null_ptr_tangent(V) : pointerset(dx, t, i, a)
-end
-function _atload(dx::Ptr{V}, order) where {V}
-    return dx == C_NULL ? _null_ptr_tangent(V) : atomic_pointerref(dx, order)
-end
-function _atstore(dx::Ptr{V}, t, order) where {V}
-    return dx == C_NULL ? _null_ptr_tangent(V) : atomic_pointerset(dx, t, order)
+# Applies the tangent load or store `f` through `dx`, unless `dx` is a null tangent pointer,
+# through which only values without a derivative can go (see `_tangent_data_ptr`).
+function _unless_null(f, dx::Ptr{V}, args...) where {V}
+    dx == C_NULL ? _null_ptr_tangent(V) : f(dx, args...)
 end
 
 @intrinsic atomic_pointerref
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
     a = atomic_pointerref(primal(x), primal(order))
-    da = _atload(tangent(x), primal(order))
+    da = _unless_null(atomic_pointerref, tangent(x), primal(order))
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
@@ -270,7 +262,10 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     dx = tangent(x)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
-    a = CoDual(atomic_pointerref(_x, _order), fdata(_atload(dx, :monotonic)))
+    a = CoDual(
+        atomic_pointerref(_x, _order),
+        fdata(_unless_null(atomic_pointerref, dx, :monotonic)),
+    )
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
     else
@@ -286,8 +281,8 @@ end
 
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
+    _unless_null(atomic_pointerset, tangent(p), tangent(x), primal(order))
     atomic_pointerset(primal(p), primal(x), primal(order))
-    _atstore(tangent(p), tangent(x), primal(order))
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -296,19 +291,19 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
-    old_tangent = _atload(tangent(p), :monotonic)
+    old_tangent = _unless_null(atomic_pointerref, tangent(p), :monotonic)
     dp = tangent(p)
     function atomic_pointerset_pullback!!(::NoRData)
-        dx_r = _atload(dp, :monotonic)
+        dx_r = _unless_null(atomic_pointerref, dp, :monotonic)
         atomic_pointerset(_p, old_value, :monotonic)
-        _atstore(dp, old_tangent, :monotonic)
+        _unless_null(atomic_pointerset, dp, old_tangent, :monotonic)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
 
     atomic_pointerset(_p, primal(x), _order)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _atstore(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
+    _unless_null(atomic_pointerset, dp, zero_tangent(primal(x), tangent(x)), :monotonic)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -678,7 +673,7 @@ end
 @intrinsic pointerref
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    da = _tload(tangent(x), primal(y), primal(z))
+    da = _unless_null(pointerref, tangent(x), primal(y), primal(z))
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -686,7 +681,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
-    a = CoDual(pointerref(_x, _y, _z), fdata(_tload(dx, _y, _z)))
+    a = CoDual(pointerref(_x, _y, _z), fdata(_unless_null(pointerref, dx, _y, _z)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
     else
@@ -700,8 +695,8 @@ end
 
 @intrinsic pointerset
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
+    _unless_null(pointerset, tangent(p), tangent(x), primal(idx), primal(z))
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    _tstore(tangent(p), tangent(x), primal(idx), primal(z))
     return p
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
@@ -709,19 +704,19 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _idx = primal(idx)
     _z = primal(z)
     old_value = pointerref(_p, _idx, _z)
-    old_tangent = _tload(tangent(p), _idx, _z)
+    old_tangent = _unless_null(pointerref, tangent(p), _idx, _z)
     dp = tangent(p)
     function pointerset_pullback!!(::NoRData)
-        dx_r = _tload(dp, _idx, _z)
+        dx_r = _unless_null(pointerref, dp, _idx, _z)
         pointerset(_p, old_value, _idx, _z)
-        _tstore(dp, old_tangent, _idx, _z)
+        _unless_null(pointerset, dp, old_tangent, _idx, _z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
 
     pointerset(_p, primal(x), _idx, _z)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _tstore(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
+    _unless_null(pointerset, dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
     return p, pointerset_pullback!!
 end
 
