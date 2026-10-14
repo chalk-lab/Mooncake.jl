@@ -43,7 +43,9 @@ function frule!!(
     sampler::Dual{<:ArrayLikeSampleable},
     x::Dual{P,P},
 ) where {P<:DenseFloatArray}
-    return Mooncake._rand_fill_frule(rand!, x, rng, sampler)
+    rand!(primal(rng), primal(sampler), primal(x))
+    fill!(tangent(x), zero(eltype(P)))
+    return x
 end
 function rrule!!(
     ::CoDual{typeof(rand!)},
@@ -51,7 +53,17 @@ function rrule!!(
     sampler::CoDual{<:ArrayLikeSampleable},
     x::CoDual{P,P},
 ) where {P<:DenseFloatArray}
-    return Mooncake._rand_fill_rrule(rand!, x, rng, sampler)
+    px, dx = primal(x), tangent(x)
+    old_x, old_dx = copy(px), copy(dx)
+    rand!(primal(rng), primal(sampler), px)
+    fill!(dx, zero(eltype(P)))
+    rng_rdata, sampler_rdata = zero_rdata(primal(rng)), zero_rdata(primal(sampler))
+    function rand_pb!!(::NoRData)
+        copyto!(px, old_x)
+        copyto!(dx, old_dx)
+        return NoRData(), rng_rdata, sampler_rdata, NoRData()
+    end
+    return x, rand_pb!!
 end
 
 # The rules below exist purely to work around performance limitations of Mooncake.jl: the
