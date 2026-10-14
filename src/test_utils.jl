@@ -2360,7 +2360,7 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
         return nothing
     push!(visited, x)
     if x isa Array
-        push!(seen, @static VERSION >= v"1.11-rc4" ? getfield(x, :ref).mem : x)
+        push!(seen, Mooncake._storage_key(x))
         isbitstype(eltype(x)) && return nothing
         for i in eachindex(x)
             isassigned(x, i) && _walk_storages!(seen, x[i], visited)
@@ -2381,7 +2381,7 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
     end
     @static if VERSION >= v"1.11-rc4"
         if x isa Memory
-            push!(seen, x)
+            push!(seen, Mooncake._storage_key(x))
             isbitstype(eltype(x)) && return nothing
             for i in eachindex(x)
                 isassigned(x, i) && _walk_storages!(seen, x[i], visited)
@@ -2389,7 +2389,7 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
             return nothing
         end
     end
-    for i in 1:fieldcount(typeof(x))
+    for i in Mooncake._tangent_fields(typeof(x))
         isdefined(x, i) && _walk_storages!(seen, getfield(x, i), visited)
     end
     return nothing
