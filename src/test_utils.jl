@@ -1200,6 +1200,24 @@ end
 # included, so a closure's captured state is not silently dropped from the comparison.
 function test_rrule_oracle(x_x̄::Vararg{Any,P}; rrule, oracle, output_tangent) where {P}
     @nospecialize x_x̄
+    if haskey(oracle, :deriv)
+        for (position, x) in enumerate(x_x̄)
+            F = fdata_type(tangent_type(_typeof(primal(x))))
+            # This narrow guard refuses fdata inputs; a full check would compare each
+            # argument's fdata after the pullback.
+            positional_argument = "positional argument $(position - 1) of `f`"
+            what = position == 1 ? "the function `f`" : positional_argument
+            F === NoFData || throw(
+                ArgumentError(
+                    "reverse-mode `oracle.deriv` cannot check " *
+                    what *
+                    " with fdata type $F; its cotangent is not in the pullback return. " *
+                    "Drop `deriv` so finite differences run, or check it with a " *
+                    "forward-mode oracle.",
+                ),
+            )
+        end
+    end
     # `to_fwds` as everywhere else: the rule takes fdata, and the seeds carry full tangents.
     out, pb!! = rrule(map(to_fwds, _deepcopy_all(x_x̄))...)
     cmp = _oracle_cmp(oracle)
@@ -1849,7 +1867,9 @@ definition. See the keyword below.
     finite-difference comparison; a value-only oracle still checks the derivative with finite
     differences. The input, output-primal and aliasing checks always run, including with a
     derivative-only oracle. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent
-    seed is random and the reference is unpinned.
+    seed is random and the reference is unpinned. A reverse-mode `deriv` is refused when the
+    function or an input carries fdata; drop `deriv` for finite differences or use a
+    forward-mode oracle.
 - `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
     a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
