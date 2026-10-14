@@ -1,7 +1,6 @@
 # The following functions contain ccall or llvmcall which cannot be differentiated.
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
-# A byte pointer and the kernel's output format cannot determine the tangent layout.
-# Even Float64-format bits can be written into integer storage with NoTangent elements.
+# Raw bulk calls must throw: even float-format output can target integer tangent storage.
 for (f, nargs) in
     ((Random.XoshiroSimd.xoshiro_bulk_simd, 2), (Random.XoshiroSimd.xoshiro_bulk_nosimd, 1))
     @eval @is_primitive MinimalCtx Tuple{
@@ -26,9 +25,8 @@ for (f, nargs) in
     end
 end
 
-# The DenseArray rules below also serve other RNGs and GPU arrays. Julia 1.12's
-# typed Xoshiro sampler method additionally accepts contiguous views, so intercept
-# those here, before it erases the destination type by converting to a byte pointer.
+# Julia 1.12+'s typed Xoshiro float fill also accepts contiguous views (not DenseArray),
+# so they are intercepted here before it erases their type to a byte pointer.
 @static if VERSION >= v"1.12"
     const XoshiroFloatView{T,N} = Base.FastContiguousSubArray{T,N,<:Union{Array,Memory}}
     @is_primitive MinimalCtx Tuple{
@@ -68,9 +66,8 @@ end
     end
 end
 
-# Integer byte pointers erase whether their shadow refers to integer or floating storage.
-# Own standard integer fills while the destination type is still available; raw integer
-# bulk calls must fail rather than leave a potentially floating destination tangent stale.
+# Byte pointers hide integer versus floating tangent storage, so typed rules own the fill.
+# Julia 1.12+ accepts Array, Memory, and contiguous views; earlier versions accept Array.
 @static if VERSION >= v"1.12"
     const XoshiroIntegerArray{T} = Base.MutableDenseArrayType{T}
 else
@@ -114,14 +111,8 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
-# A draw is random state, not a reparameterised sample. The result aliases the destination:
-# restore its primal and derivative storage on the pullback, but leave the RNG advanced.
-# These rules also serve GPU arrays (`CuArray`), so destinations must stay `DenseArray`s.
-# `AbstractRNG` is the narrowest type covering GPUArrays' RNG, which has no `randexp!`;
-# no RNG has a complex `randexp`. The rules need the destination to be its own tangent,
-# which `@is_primitive` cannot express; other `DenseArray`s (`SharedArray`) are derived.
-# Union eltypes must also be derived: they need not have a scalar `zero`.
-# Only `rand!` has a trailing type/sampler argument; keep both arities in lockstep.
+# A draw is RNG state, not a reparameterised sample, so its derivative is zero.
+# DenseArray/AbstractRNG also serve GPU arrays and GPUArrays' RNG, which has no randexp!.
 for (f, A) in (
         (rand!, DenseArray{<:FloatOrComplex}),
         (randn!, DenseArray{<:FloatOrComplex}),
@@ -129,6 +120,8 @@ for (f, A) in (
     ),
     n in (f === rand! ? (0, 1) : (0,))
 
+    # A plain @is_primitive cannot require the destination to be its own tangent
+    # (SharedArray is not), and Union eltypes need not have a scalar zero.
     @eval function _is_primitive(
         ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{T}
     ) where {T<:Tuple{typeof($f),AbstractRNG,$A,Vararg{Union{Type,Random.Sampler},$n}}}
@@ -158,6 +151,7 @@ for (f, A) in (
         fill!(dx, zero(eltype(P)))
         rng_rdata = zero_rdata(primal(rng))
         sampler_rdata = map(s -> zero_rdata(primal(s)), sampler)
+        # Draws change RNG state: restore the aliased destination, never rewind the RNG.
         function rand_fill_pb!!(::NoRData)
             copyto!(px, old_x)
             copyto!(dx, old_dx)
@@ -167,8 +161,7 @@ for (f, A) in (
     end
 end
 
-# Contiguous views reach the pointer-writing Xoshiro kernels on Julia 1.12+. Only the
-# 1.12 sampler form is primitive; the other forms take derived rules.
+# Only the Julia 1.12+ sampler form is primitive; other view fills use derived rules.
 function _rand_view_cases(primitive::Bool)
     parents = Any[fill(T(2), 73) for T in (Float16, Float32, Float64)]
     @static if VERSION >= v"1.11"
@@ -217,7 +210,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
             sampler in (P, Random.Sampler(rng, P))
         ]...,
     )
-    # A small spread of eltypes, RNGs, and shapes; avoid their full Cartesian product.
     fills = Any[
         (MersenneTwister(123), zeros(Float16, 2, 3)),
         (rng_ctor(123), zeros(Float32, 2, 2, 2)),
@@ -243,7 +235,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         end
     end
     append!(test_cases, _rand_view_cases(true))
-    # Typed integer boundaries avoid interpreting NoTangent storage as floating bytes.
     integers = Any[ones(T, 73) for T in (UInt8, Int64, Bool)]
     @static if VERSION >= v"1.12"
         append!(integers, [fill!(Memory{T}(undef, 73), 1) for T in (UInt8, Int64, Bool)])
@@ -258,8 +249,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     return test_cases, Any[]
 end
 
-# Fills advance their RNG, which `test_rule` would report as an unrestored input, so these
-# cases build the RNG inside the function. Views leave the other entries of `x` live.
+# RNGs created inside cases may stay advanced; test_rule requires input RNGs restored.
 function _rand_fill_cases()
     rngs = Any[
         () -> Xoshiro(123),
@@ -325,7 +315,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         # test that the numbers coming out of this are consistent, just that it runs.
         (true, :none, nothing, () -> randn(RandomDevice())),
 
-        # Empty Union-element fills are valid primals, but must use derived rules.
+        # Empty Union-element fills must take the derived rules, not the primitives.
         map_prod([rand!, randn!, randexp!], [Union{Float32,Float64}]) do (f, P)
             (false, :none, nothing, f, f === rand! ? rng_ctor(123) : Xoshiro(123), P[])
         end...,
