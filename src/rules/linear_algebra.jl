@@ -73,27 +73,33 @@ end
     return tangent_as_friendly
 end
 
-# `inv`, `det`, `logabsdet` and `\` on a dense matrix check its values and, if it is
-# triangular or diagonal, take a path that never reads the entries outside the triangle.
-# Differentiating that path gives those entries a zero gradient, so these rules use the matrix
-# formulas instead, which hold whichever path computes the primal (#1372).
-#
-# The rules only cover arrays whose entries each map to one entry of their storage, so that a
-# dense gradient can be written into their tangent. Structured matrices (`Symmetric`,
-# `UpperTriangular`, `Diagonal`, ...) have their own methods, which don't branch on values.
+# `inv`, `det`, `logabsdet` and `\` on a dense matrix check whether its values are triangular
+# and, if so, take a path that never reads the zeros, which would get a zero gradient. These
+# rules use the matrix formulas instead (#1372). They only take arrays whose entries each map
+# to one stored entry, so a dense gradient can be written into the tangent.
 const DenseMat{P} = Union{
-    Matrix{P},SubArray{P,2,<:Array{P}},Base.ReshapedArray{P,2,<:SubArray{P,1,<:Array{P}}}
+    Matrix{P},
+    SubArray{P,2,<:Array{P}},
+    Base.ReshapedArray{P,2,<:SubArray{P,<:Any,<:Array{P}}},
 }
 const DenseMatOrAdj{P} = Union{
     DenseMat{P},Adjoint{P,<:DenseMat{P}},Transpose{P,<:DenseMat{P}}
 }
 const DenseVecOrMatArg{P} = Union{Vector{P},SubArray{P,1,<:Array{P}},DenseMatOrAdj{P}}
 
+# The factorization LinearAlgebra uses for a square `A`, so that the value and the gradient
+# need only one.
+function _square_factor(A; check)
+    istriu(A) && return UpperTriangular(A)
+    istril(A) && return LowerTriangular(A)
+    return lu(A; check)
+end
+
 @is_primitive MinimalCtx Tuple{typeof(inv),DenseMat{P}} where {P<:BlasRealFloat}
 function frule!!(::Dual{typeof(inv)}, A_dA::Dual{<:DenseMat{P}}) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     Y = inv(A)
-    return Dual(Y, -Y * dA * Y)
+    return Dual(Y, mul!(similar(Y), Y, dA * Y, -one(P), zero(P)))
 end
 function rrule!!(
     ::CoDual{typeof(inv)}, A_dA::CoDual{<:DenseMat{P}}
@@ -102,34 +108,56 @@ function rrule!!(
     Y = inv(A)
     dY = zero(Y)
     function inv_pb!!(::NoRData)
-        dA .-= Y' * dY * Y'
+        mul!(dA, Y', dY * Y', -one(P), one(P))
         return NoRData(), NoRData()
     end
     return CoDual(Y, dY), inv_pb!!
 end
 
-# For a singular matrix the gradient is set to zero, as in the `Symmetric` rules in lapack.jl.
-# The true gradient there is the adjugate, which is nonzero at rank n - 1.
+# `det(A)` and its gradient, the transposed adjugate `det(A) * inv(A)'`. When `det(A)` is
+# zero, subnormal or infinite that product is undefined, overflows or loses precision, though
+# the adjugate is finite (and nonzero at rank n - 1), so it then comes from the SVD.
+function _det_and_grad(A::AbstractMatrix{P}) where {P}
+    F = _square_factor(A; check=false)
+    d = det(F)
+    if isfinite(d) && !iszero(d) && !issubnormal(d)
+        return d, rmul!(ldiv!(F', Matrix{P}(I, size(A))), d)
+    end
+    U, σ, V = svd(A)
+    p = [prod(σ[j] for j in eachindex(σ) if j != i; init=one(P)) for i in eachindex(σ)]
+    return d, (det(U) * det(V)) .* (U * Diagonal(p) * V')
+end
+
 @is_primitive MinimalCtx Tuple{typeof(det),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
 function frule!!(
     ::Dual{typeof(det)}, A_dA::Dual{<:DenseMatOrAdj{P}}
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
-    d = det(A)
-    iszero(d) && return Dual(d, zero(P))
-    return Dual(d, d * tr(A \ dA))
+    d, G = _det_and_grad(A)
+    return Dual(d, dot(G, dA))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, A_dA::CoDual{<:DenseMatOrAdj{P}}
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
-    d = det(A)
-    Ainv = iszero(d) ? nothing : inv(A)
+    d, G = _det_and_grad(A)
     function det_pb!!(ȳ::P)
-        isnothing(Ainv) || (dA .+= (ȳ * d) .* Ainv')
+        dA .+= ȳ .* G
         return NoRData(), NoRData()
     end
     return CoDual(d, NoFData()), det_pb!!
+end
+
+# `logabsdet(A)` and the gradient of its first output, `inv(A)'`, which is unbounded at a
+# singular `A`.
+function _logabsdet_and_grad(A::AbstractMatrix{P}) where {P}
+    F = _square_factor(A; check=false)
+    ld, s = logabsdet(F)
+    if iszero(s)
+        msg = "Mooncake cannot differentiate `logabsdet` of a singular matrix."
+        throw(ArgumentError(msg))
+    end
+    return ld, s, ldiv!(F', Matrix{P}(I, size(A)))
 end
 
 @is_primitive MinimalCtx Tuple{typeof(logabsdet),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
@@ -137,26 +165,49 @@ function frule!!(
     ::Dual{typeof(logabsdet)}, A_dA::Dual{<:DenseMatOrAdj{P}}
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
-    ld, s = logabsdet(A)
-    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
-    return Dual((ld, s), (tr(A \ dA), zero(P)))
+    ld, s, G = _logabsdet_and_grad(A)
+    return Dual((ld, s), (dot(G, dA), zero(P)))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, A_dA::CoDual{<:DenseMatOrAdj{P}}
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
-    ld, s = logabsdet(A)
-    Ainv = iszero(s) ? nothing : inv(A)
+    ld, s, G = _logabsdet_and_grad(A)
     function logabsdet_pb!!(ȳ::Tuple{P,P})
-        isnothing(Ainv) || (dA .+= ȳ[1] .* Ainv')
+        dA .+= ȳ[1] .* G
         return NoRData(), NoRData()
     end
     return CoDual((ld, s), NoFData()), logabsdet_pb!!
 end
 
-# `X = A \ B` is `pinv(A) * B` when `A` is not square (least squares or minimum norm), so the
-# rules use the derivative of the pseudo-inverse, which assumes `A` has full rank. For square
-# `A` the extra terms vanish.
+# For a non-square `A`, `A \ B` is `pinv(A) * B` (least squares or minimum norm). The rules
+# work with whichever of `A` and `A'` is tall, `M`, through `(M'M) \ x`, computed from the R
+# factor of its pivoted QR. At a rank-deficient `A` the solution, which LinearAlgebra
+# truncates by rank, is not differentiable, so they throw.
+function _tall_qr(M::AbstractMatrix{P}) where {P}
+    F = qr(M, ColumnNorm())
+    # The rank as LinearAlgebra's least-squares solve estimates it, with the same tolerance.
+    rank = LinearAlgebra.ldiv!(F, zeros(P, size(M, 1), 1), min(size(M)...) * eps(P))[2]
+    if rank < size(M, 2)
+        msg =
+            "Mooncake cannot differentiate `A \\ B` for a non-square `A` without full rank, " *
+            "where the solution is not differentiable."
+        throw(ArgumentError(msg))
+    end
+    return F
+end
+
+# `(M'M) \ x` for the pivoted QR `F` of a tall `M` with full rank.
+function _gram_ldiv(F, x)
+    R = UpperTriangular(F.R)
+    y = R \ (R' \ _rows(x, F.p))
+    out = similar(y)
+    _rows(out, F.p) .= y
+    return out
+end
+_rows(x::AbstractVector, p) = view(x, p)
+_rows(x::AbstractMatrix, p) = view(x, p, :)
+
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(\),DenseMatOrAdj{P},DenseVecOrMatArg{P}} where {P<:BlasRealFloat},
@@ -166,13 +217,25 @@ function frule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
-    X = A \ B
-    dX = A \ (dB - dA * X)
-    if size(A, 1) != size(A, 2)
-        Z = dA' * (A' \ X)
-        dX .+= A \ (A' \ (dA' * (B - A * X))) .+ Z .- A \ (A * Z)
+    m, n = size(A)
+    if m == n
+        F = _square_factor(A; check=true)
+        X = F \ B
+        return Dual(X, ldiv!(F, mul!(copy(dB), dA, X, -one(P), one(P))))
+    elseif m > n
+        F = _tall_qr(A)
+        X = F \ B
+        T = A' * mul!(copy(dB), dA, X, -one(P), one(P))
+        mul!(T, dA', mul!(copy(B), A, X, -one(P), one(P)), one(P), one(P))
+        return Dual(X, _gram_ldiv(F, T))
+    else
+        F = _tall_qr(A')
+        Y = _gram_ldiv(F, B)
+        X = A' * Y
+        dX = dA' * Y
+        T = mul!(mul!(copy(dB), dA, X, -one(P), one(P)), A, dX, -one(P), one(P))
+        return Dual(X, mul!(dX, A', _gram_ldiv(F, T), one(P), one(P)))
     end
-    return Dual(X, dX)
 end
 function rrule!!(
     ::CoDual{typeof(\)},
@@ -181,15 +244,34 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
-    X = A \ B
+    m, n = size(A)
+    # Which factorizations exist depends on the shape of `A`. Holding them in `Ref`s of fixed
+    # type keeps the type of the pullback the same for every shape.
+    BI = LinearAlgebra.BlasInt
+    TA = typeof(A)
+    Sq = Union{UpperTriangular{P,TA},LowerTriangular{P,TA},LU{P,Matrix{P},Vector{BI}}}
+    S = Ref{Union{Nothing,Sq}}(m == n ? _square_factor(A; check=true) : nothing)
+    Q = Ref{Union{Nothing,QRPivoted{P,Matrix{P},Vector{P},Vector{BI}}}}(
+        m == n ? nothing : _tall_qr(m > n ? A : A')
+    )
+    Y = Ref{Union{Nothing,Array{P,ndims(B)}}}(m < n ? _gram_ldiv(Q[], B) : nothing)
+    X = m == n ? S[] \ B : (m > n ? Q[] \ B : A' * Y[])
     dX = zero(X)
     function ldiv_pb!!(::NoRData)
-        B̄ = A' \ dX
-        dB .+= B̄
-        dA .-= B̄ * X'
-        if size(A, 1) != size(A, 2)
-            dA .+= (B - A * X) * B̄' / A' .+ (A' \ X) * (dX' - B̄' * A)
+        if m == n
+            B̄ = S[]' \ dX
+            mul!(dA, B̄, X', -one(P), one(P))
+        elseif m > n
+            Z = _gram_ldiv(Q[], dX)
+            B̄ = A * Z
+            mul!(dA, B̄, X', -one(P), one(P))
+            mul!(dA, mul!(copy(B), A, X, -one(P), one(P)), Z', one(P), one(P))
+        else
+            B̄ = _gram_ldiv(Q[], A * dX)
+            mul!(dA, B̄, X', -one(P), one(P))
+            mul!(dA, Y[], dX' - B̄' * A, one(P), one(P))
         end
+        dB .+= B̄
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(X, dX), ldiv_pb!!
@@ -218,31 +300,41 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         # For Float32 det, finite differences are too inaccurate (see the Symmetric cases).
         cases = Any[]
         for A in As
-            push!(cases, (false, :none, nothing, inv, A))
-            push!(cases, (P == Float32, :none, nothing, det, A))
-            push!(cases, (false, :none, nothing, logabsdet, A))
-            push!(cases, (false, :none, nothing, \, A, randn(rng, P, N)))
-            push!(cases, (false, :none, nothing, \, A, randn(rng, P, N, 2)))
+            push!(cases, (false, :stability, nothing, inv, A))
+            push!(cases, (P == Float32, :stability, nothing, det, A))
+            push!(cases, (false, :stability, nothing, logabsdet, A))
+            push!(cases, (false, :stability, nothing, \, A, randn(rng, P, N)))
+            push!(cases, (false, :stability, nothing, \, A, randn(rng, P, N, 2)))
         end
         A = U + randn(rng, P, N, N)
-        push!(cases, (P == Float32, :none, nothing, det, A'))
-        push!(cases, (false, :none, nothing, logabsdet, transpose(A)))
-        push!(cases, (false, :none, nothing, \, A', randn(rng, P, 2, N)'))
+        push!(cases, (P == Float32, :stability, nothing, det, A'))
+        # A reshaped non-contiguous 2-D view.
+        R = reshape(view(randn(rng, P, 6, 8), 1:2, 1:8), 4, 4)
+        foreach(i -> R[i, i] += 4, 1:4)
+        # `inv` of a non-strided array goes through `factorize`, which isn't type-stable.
+        push!(cases, (false, :none, nothing, inv, R))
+        push!(cases, (false, :stability, nothing, \, R, randn(rng, P, 4)))
+        push!(cases, (false, :stability, nothing, logabsdet, transpose(A)))
+        push!(cases, (false, :stability, nothing, \, A', randn(rng, P, 2, N)'))
         return cases
     end
     # Non-square \ (least squares and minimum norm).
     ldiv_cases = map_prod([(5, 3), (3, 5)], Ps) do ((m, n), P)
         return Any[
-            (false, :none, nothing, \, randn(rng, P, m, n), randn(rng, P, m)),
-            (false, :none, nothing, \, randn(rng, P, m, n), randn(rng, P, m, 2)),
+            (false, :stability, nothing, \, randn(rng, P, m, n), randn(rng, P, m)),
+            (false, :stability, nothing, \, randn(rng, P, m, n), randn(rng, P, m, 2)),
         ]
     end
     test_cases = vcat(
         test_cases,
         dense_cases...,
         ldiv_cases...,
-        # det of a matrix of rank n - 2, whose gradient is zero.
-        Any[(false, :none, nothing, det, zeros(Float64, 3, 3))],
+        # det of singular matrices: rank n - 1, where the gradient is the adjugate, and rank 0.
+        Any[
+            (false, :stability, nothing, det, [0.0 2.0 1.0; 0.0 1.0 3.0; 0.0 0.0 4.0]),
+            (false, :stability, nothing, det, [1.0 2.0; 2.0 4.0]),
+            (false, :stability, nothing, det, zeros(3, 3)),
+        ],
     )
     memory = Any[]
     return test_cases, memory
