@@ -396,6 +396,95 @@ end
             @test oracle_result_count(captured, Test.Fail) == 1
             @test oracle_result_count(captured, Test.Error) == 0
         end
+        if TestUtils._test_mode_filter() in (nothing, ReverseMode)
+            # Registry `throws` cases cannot assert that the harness rejects a wrong oracle.
+            for (deriv, failures) in ((3.0, 0), (0.0, 1))
+                seed = [1.0, 1.0]
+                captured = @testset OracleTestSet "array output oracle" begin
+                    test_rule(
+                        Xoshiro(1),
+                        x -> [x, 2x],
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=false,
+                        output_tangent=seed,
+                        oracle=(value=[2.0, 4.0], deriv=(NoRData(), deriv)),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+                @test seed == [1.0, 1.0]
+            end
+            for (f, output_tangent) in (
+                (
+                    x -> Any[[x], [2x]],
+                    let t = [1.0];
+                        Any[t, t]
+                    end,
+                ),
+                (
+                    x -> TestResources.PointerChildren([x], [2x]),
+                    let t = [1.0];
+                        MutableTangent((a=t, b=t))
+                    end,
+                ),
+            )
+                captured = @testset OracleTestSet "shared output seed" begin
+                    test_rule(
+                        Xoshiro(1),
+                        f,
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=false,
+                        output_tangent,
+                        oracle=(deriv=(NoRData(), 3.0),),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == 0
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+            for (deriv, failures) in ((0.0, 0), (-0.0, 1))
+                captured = @testset OracleTestSet "signed-zero output oracle" begin
+                    test_rule(
+                        Xoshiro(1),
+                        Mooncake.IntrinsicsWrappers.neg_float,
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=true,
+                        output_tangent=-0.0,
+                        oracle=(value=-2.0, deriv=(NoRData(), deriv)),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+            # A consuming pullback exposes the array seed's sign and must not mutate it.
+            for (deriv, failures) in ((0.0, 0), (-0.0, 1))
+                seed = [-0.0]
+                captured = @testset OracleTestSet "signed-zero array output oracle" begin
+                    TestUtils.test_rrule_oracle(
+                        zero_codual(x -> [-x]),
+                        zero_codual(2.0);
+                        rrule=(_, x) -> begin
+                            out = CoDual([-primal(x)], [0.0])
+                            out, _ -> begin
+                                dx = -only(tangent(out))
+                                fill!(tangent(out), 0.0)
+                                (NoRData(), dx)
+                            end
+                        end,
+                        output_tangent=seed,
+                        oracle=(deriv=(NoRData(), deriv),),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+                @test isequal(seed, [-0.0])
+            end
+        end
     end
 
     @testset "forward chunk widths" begin
