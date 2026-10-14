@@ -82,6 +82,17 @@ end
         @test !has_equal_data(ones(1), ones(2))
         @test !has_equal_data(randn(5), randn(5))
         @test has_equal_data(ones(5), ones(5))
+        a, b = Mooncake.Stack{Float64}(), Mooncake.Stack{Float64}()
+        push!(a, 1.0)
+        push!(b, 1.0)
+        push!(b, 2.0)
+        pop!(b)
+        @test has_equal_data(a, b; exact_floats=true)
+        b.memory[1] = 2.0
+        @test !has_equal_data(a, b; exact_floats=true)
+        b.memory[1] = 1.0
+        pop!(b)
+        @test !has_equal_data(a, b; exact_floats=true)
         @test has_equal_data(Base, Base)
         @test !has_equal_data(Base, Core)
         @test has_equal_data(:a, :a)
@@ -524,6 +535,48 @@ end
                 @test oracle_result_count(captured, Test.Error) == 0
                 @test isequal(seed, [-0.0])
             end
+        end
+        if TestUtils._test_mode_filter() in (nothing, ForwardMode)
+            f = x -> (x .*= 2; nothing)
+            broken_frule = function (f, x)
+                primal(x) .*= 2
+                Mooncake.zero_lifted(Val(1), nothing)
+            end
+            correct_frule = function (f, x)
+                primal(x) .*= 2
+                Mooncake.tangent_view(x, 1) .= 2
+                Mooncake.zero_lifted(Val(1), nothing)
+            end
+            x_ẋ = (Mooncake.zero_lifted(Val(1), f), Mooncake.lift([1.0, 1.0], [1.0, 1.0]))
+            oracle = (deriv=Mooncake.tangent(Mooncake.zero_lifted(Val(1), nothing), 1),)
+            for frule in (broken_frule, correct_frule)
+                err = try
+                    TestUtils.test_frule_oracle(x_ẋ...; frule, oracle)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ArgumentError
+                @test occursin("call mutated", sprint(showerror, err))
+            end
+            nonmutating_frule =
+                (f, x) -> Mooncake.lift(2 * primal(x), 2 * Mooncake.tangent(x, 1))
+            @test TestUtils.test_frule_oracle(
+                Mooncake.zero_lifted(Val(1), x -> 2x),
+                Mooncake.lift(1.0, 1.0);
+                frule=nonmutating_frule,
+                oracle=(value=2.0, deriv=2.0),
+            ) === nothing
+            captured = let a = [1.0, 2.0]
+                x -> x * sum(a)
+            end
+            @test TestUtils.test_frule_oracle(
+                Mooncake.zero_lifted(Val(1), captured),
+                Mooncake.lift(1.0, 1.0);
+                frule=(f, x) ->
+                    Mooncake.lift(primal(f)(primal(x)), 3 * Mooncake.tangent(x, 1)),
+                oracle=(value=3.0, deriv=3.0),
+            ) === nothing
         end
     end
 

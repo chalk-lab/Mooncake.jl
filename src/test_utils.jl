@@ -332,6 +332,17 @@ function has_equal_data_internal(
     return all(equality)
 end
 function has_equal_data_internal(
+    x::Mooncake.Stack{T}, y::Mooncake.Stack{T}, equal_undefs::Bool, d::IdDict{Any,Bool}
+) where {T}
+    x.position == y.position || return false
+    id_pair = (x, y)
+    haskey(d, id_pair) && return d[id_pair]
+    d[id_pair] = true
+    return all(1:x.position) do i
+        has_equal_data_internal(x.memory[i], y.memory[i], equal_undefs, d)
+    end
+end
+function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
@@ -1189,7 +1200,29 @@ _oracle_deriv(d, key::Symbol) = d isa NamedTuple && haskey(d, key) ? d[key] : d
 
 function test_frule_oracle(x_ẋ::Vararg{Any,P}; frule, oracle) where {P}
     @nospecialize x_ẋ
-    out = frule(_deepcopy_all(x_ẋ)...)
+    x_ẋ = _deepcopy_all(x_ẋ)
+    if haskey(oracle, :deriv)
+        # Snapshots detect changed values, not writes: a write that preserves the value
+        # (zeros, NaNs, or any fixed point of the update) passes. `Ptr` pointee writes are
+        # unseen.
+        input_primals = map(x -> _deepcopy(primal(x)), x_ẋ)
+        out = frule(x_ẋ...)
+        for (position, (x, input_primal)) in enumerate(zip(x_ẋ, input_primals))
+            has_equal_data(primal(x), input_primal; exact_floats=true) && continue
+            positional_argument = "positional argument $(position - 1) of `f`"
+            what = position == 1 ? "the function `f`" : positional_argument
+            throw(
+                ArgumentError(
+                    "forward-mode `oracle.deriv` cannot check " *
+                    what *
+                    " because the call mutated it; a `deriv` oracle checks only the " *
+                    "returned tangent. Drop `deriv` so finite differences run.",
+                ),
+            )
+        end
+    else
+        out = frule(x_ẋ...)
+    end
     cmp = _oracle_cmp(oracle)
     haskey(oracle, :value) && @test cmp(primal(out), oracle.value)
     haskey(oracle, :deriv) && @test cmp(tangent(out, 1), _oracle_deriv(oracle.deriv, :fwd))
@@ -1869,7 +1902,10 @@ definition. See the keyword below.
     derivative-only oracle. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent
     seed is random and the reference is unpinned. A reverse-mode `deriv` is refused when the
     function or an input carries fdata; drop `deriv` for finite differences or use a
-    forward-mode oracle.
+    forward-mode oracle. A forward-mode `deriv` is refused when the function or an
+    argument holds a different value after the frule call. Writes that preserve the value
+    (zeros, NaNs, any fixed point of the update) and writes through `Ptr` pointees go
+    undetected. Drop `deriv` so finite differences run.
 - `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
     a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
