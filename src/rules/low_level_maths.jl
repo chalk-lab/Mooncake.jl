@@ -29,8 +29,10 @@
 # Forward rules use `Nfwd`'s NDual overloads; reverse uses native analytic pullbacks.
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
-# Like `_fwd_guarded_scale`, keep inactive cotangents zero even at infinite derivatives.
-@inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
+# Like `_fwd_guarded_scale`, either zero factor makes a derivative product zero.
+@inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = ifelse(
+    iszero(ȳ) | iszero(grad), zero(T), ȳ * grad
+)
 
 # Differentiate the operation, not the zero branch: a zero cotangent can have a
 # live outer perturbation. Guard each product-rule term independently.
@@ -79,6 +81,31 @@ function frule!!(
         k ->
             Nfwd._nfwd_guarded_div(tangent(x, k), b) -
             _rvs_guarded_scale(v, Nfwd._nfwd_guarded_div(tangent(y, k), b)),
+        Val(N),
+    )
+    return Lifted{P,N}(v, NDual{P,N}(v, parts))
+end
+
+# As with guarded scale, differentiate the fused operation, not its zero branch.
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(Nfwd._nfwd_guarded_muladd),F,P,P,P
+} where {F<:Union{typeof(muladd),typeof(fma)},P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(Nfwd._nfwd_guarded_muladd),N},
+    f::Lifted{F,N},
+    a::Lifted{P,N},
+    b::Lifted{P,N},
+    c::Lifted{P,N},
+) where {F<:Union{typeof(muladd),typeof(fma)},P<:IEEEFloat,N}
+    op, x, y, z = primal(f), primal(a), primal(b), primal(c)
+    v = Nfwd._nfwd_guarded_muladd(op, x, y, z)
+    parts = ntuple(
+        k -> Nfwd._nfwd_guarded_muladd(
+            op,
+            x,
+            tangent(b, k),
+            Nfwd._nfwd_guarded_muladd(op, y, tangent(a, k), tangent(c, k)),
+        ),
         Val(N),
     )
     return Lifted{P,N}(v, NDual{P,N}(v, parts))
@@ -890,6 +917,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             cases = [
                 (_rvs_guarded_scale, P(0), P(3)),
                 (Nfwd._nfwd_guarded_div, P(0), P(3)),
+                (Nfwd._nfwd_guarded_muladd, muladd, P(0), P(3), P(2)),
+                (Nfwd._nfwd_guarded_muladd, fma, P(0), P(3), P(2)),
                 (_fwd_guarded_scale, (P(0), P(1)), P(3)),
                 (_fwd_guarded_scale, (complex(P(0)), complex(P(1))), complex(P(3))),
             ]
@@ -1054,6 +1083,41 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 return (false, :none, opts, hypot, seeds...)
             end,
         ),
+        # Strong zeros: zero seeds at nonfinite coefficients, nonfinite seeds at zero ones.
+        map([Float16, Float32, Float64]) do P
+            nonfinite_coefficient = [
+                (exp, floatmax(P)),
+                (exp2, floatmax(P)),
+                (expm1, floatmax(P)),
+                (sinh, floatmax(P)),
+                (cosh, floatmax(P)),
+                (tanh, P(NaN)),
+                (asinh, P(NaN)),
+                (atan, P(NaN)),
+                (sech, P(NaN)),
+                (acot, P(NaN)),
+                (sinc, P(NaN)),
+            ]
+            zero_coefficient = [
+                (cosh, P(0)),
+                (exp, P(-Inf)),
+                (exp2, P(-Inf)),
+                (expm1, P(-Inf)),
+                (tanh, P(Inf)),
+                (sech, P(Inf)),
+                (atan, P(Inf)),
+                (asinh, P(Inf)),
+                (sinc, P(0)),
+            ]
+            cases = vcat(
+                [(f, x, P(0)) for (f, x) in nonfinite_coefficient],
+                [(f, x, s) for (f, x) in zero_coefficient for s in (P(NaN), P(Inf))],
+            )
+            return map(cases) do (f, x, s)
+                opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s)
+                return (false, :none, opts, f, CoDual(x, s))
+            end
+        end...,
     )
     memory = Any[]
     return test_cases, memory

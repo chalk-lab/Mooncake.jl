@@ -181,7 +181,7 @@ function frule!!(
     return Lifted{T,N}(abs_float(primal(x)), sign(primal(x)) * tangent(x))
 end
 function rrule!!(::CoDual{typeof(abs_float)}, x)
-    abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
+    abs_float_pullback!!(dy) = NoRData(), Mooncake._rvs_guarded_scale(dy, sign(primal(x)))
     y = abs_float(primal(x))
     return CoDual(y, NoFData()), abs_float_pullback!!
 end
@@ -1010,13 +1010,17 @@ function frule!!(
     z = copysign_float(primal(x), primal(y))
     # flipsign(sign(x), y) handles y=0; scale partials only to preserve V.value == z.
     s = flipsign(sign(primal(x)), primal(y))
-    return Lifted{T,N}(z, NDual{T,N}(z, s .* tangent(x).partials))
+    return Lifted{T,N}(
+        z, NDual{T,N}(z, Mooncake._fwd_guarded_scale(tangent(x).partials, s))
+    )
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
     # d copysign(x,y)/dx = flipsign(sign(x), y) (correct at y=0); derivative w.r.t. y is zero.
-    copysign_float_pullback!!(dz) = NoRData(), dz * flipsign(sign(_x), _y), zero_rdata(_y)
+    copysign_float_pullback!!(dz) = (
+        NoRData(), Mooncake._rvs_guarded_scale(dz, flipsign(sign(_x), _y)), zero_rdata(_y)
+    )
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
 end
@@ -1030,7 +1034,16 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
     _y = div_float(_a, _b)
-    div_float_pullback!!(dy) = NoRData(), div_float(dy, _b), (-dy * _a / _b) / _b
+    function div_float_pullback!!(dy)
+        return (
+            NoRData(),
+            Mooncake.Nfwd._nfwd_guarded_div(dy, _b),
+            Mooncake.Nfwd._nfwd_guarded_div(
+                Mooncake.Nfwd._nfwd_guarded_div(Mooncake._rvs_guarded_scale(-dy, _a), _b),
+                _b,
+            ),
+        )
+    end
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
 
@@ -1040,7 +1053,14 @@ function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _b = primal(b)
     _y = div_float_fast(_a, _b)
     function div_float_pullback!!(dy)
-        return NoRData(), div_float_fast(dy, _b), (-dy * _a / _b) / _b
+        return (
+            NoRData(),
+            Mooncake.Nfwd._nfwd_guarded_div(dy, _b),
+            Mooncake.Nfwd._nfwd_guarded_div(
+                Mooncake.Nfwd._nfwd_guarded_div(Mooncake._rvs_guarded_scale(-dy, _a), _b),
+                _b,
+            ),
+        )
     end
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
@@ -1052,7 +1072,7 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-function frule!!(
+@inline function frule!!(
     ::Lifted{typeof(fma_float),N},
     x::Lifted{T,N,NDual{T,N}},
     y::Lifted{T,N,NDual{T,N}},
@@ -1065,7 +1085,12 @@ end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
-    fma_float_pullback!!(da) = NoRData(), da * _y, da * _x, da
+    fma_float_pullback!!(da) = (
+        NoRData(),
+        Mooncake._rvs_guarded_scale(da, _y),
+        Mooncake._rvs_guarded_scale(da, _x),
+        da,
+    )
     return CoDual(fma_float(_x, _y, primal(z)), NoFData()), fma_float_pullback!!
 end
 
@@ -1246,7 +1271,9 @@ end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
-    mul_float_pb!!(dc) = NoRData(), dc * _b, _a * dc
+    mul_float_pb!!(dc) = (
+        NoRData(), Mooncake._rvs_guarded_scale(dc, _b), Mooncake._rvs_guarded_scale(dc, _a)
+    )
     return CoDual(mul_float(_a, _b), NoFData()), mul_float_pb!!
 end
 
@@ -1254,14 +1281,16 @@ end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
-    mul_float_fast_pb!!(dc) = NoRData(), dc * _b, _a * dc
+    mul_float_fast_pb!!(dc) = (
+        NoRData(), Mooncake._rvs_guarded_scale(dc, _b), Mooncake._rvs_guarded_scale(dc, _a)
+    )
     return CoDual(mul_float_fast(_a, _b), NoFData()), mul_float_fast_pb!!
 end
 
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
-function frule!!(
+@inline function frule!!(
     ::Lifted{typeof(muladd_float),N},
     x::Lifted{T,N,NDual{T,N}},
     y::Lifted{T,N,NDual{T,N}},
@@ -1275,7 +1304,12 @@ function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
     _z = primal(z)
-    muladd_float_pullback!!(da) = NoRData(), da * _y, da * _x, da
+    muladd_float_pullback!!(da) = (
+        NoRData(),
+        Mooncake._rvs_guarded_scale(da, _y),
+        Mooncake._rvs_guarded_scale(da, _x),
+        da,
+    )
     return CoDual(muladd_float(_x, _y, _z), NoFData()), muladd_float_pullback!!
 end
 
@@ -1613,7 +1647,7 @@ for (f, op) in (
     (:mul_float, :*),
     (:mul_float_fast, :*),
 )
-    @eval function frule!!(
+    @eval @inline function frule!!(
         ::Lifted{typeof($f),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         return Lifted{T,N}($f(primal(a), primal(b)), $op(tangent(a), tangent(b)))
@@ -1621,14 +1655,17 @@ for (f, op) in (
 end
 
 for f in (:div_float, :div_float_fast)
-    @eval function frule!!(
+    @eval @inline function frule!!(
         ::Lifted{typeof($f),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         x, y = primal(a), primal(b)
         c = $f(x, y)
         dc = ntuple(Val(N)) do k
             da, db = tangent(a, k), tangent(b, k)
-            div_float(da, y) - (x * db / y) / y
+            Mooncake.Nfwd._nfwd_guarded_div(da, y) - Mooncake.Nfwd._nfwd_guarded_div(
+                Mooncake.Nfwd._nfwd_guarded_div(Mooncake._rvs_guarded_scale(db, x), y),
+                y,
+            )
         end
         return Lifted{T,N}(c, NDual{T,N}(c, dc))
     end
@@ -2634,6 +2671,71 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             (flags..., unsafe_wrap, Array, p, (5,)),
         ],
     )
+
+    # Nonfinite primals and seeds need an oracle: finite differences cannot pin them.
+    # Fast-math intrinsics are excluded: LLVM treats their nonfinite operands as poison.
+    for P in (Float16, Float32, Float64),
+        f in (
+            IntrinsicsWrappers.mul_float,
+            IntrinsicsWrappers.div_float,
+            IntrinsicsWrappers.muladd_float,
+            IntrinsicsWrappers.fma_float,
+        ),
+        v in (P(NaN), P(Inf), P(-Inf)),
+        pos in 1:2
+
+        n = f in (IntrinsicsWrappers.muladd_float, IntrinsicsWrappers.fma_float) ? 3 : 2
+        args = ntuple(i -> i == pos ? v : P(2), n)
+        rvs = (NoRData(), ntuple(_ -> P(0), n)...)
+        opts = (oracle=(deriv=(fwd=P(0), rvs=rvs),), output_tangent=P(0))
+        push!(test_cases, (false, :stability, opts, f, map(x -> CoDual(x, P(0)), args)...))
+    end
+
+    # A zero primal coefficient is strong even when the incoming derivative is nonfinite.
+    for P in (Float16, Float32, Float64),
+        f in (
+            IntrinsicsWrappers.mul_float,
+            IntrinsicsWrappers.mul_float_fast,
+            IntrinsicsWrappers.muladd_float,
+            IntrinsicsWrappers.fma_float,
+        ),
+        v in (P(NaN), P(Inf), P(-Inf))
+
+        fused = f in (IntrinsicsWrappers.muladd_float, IntrinsicsWrappers.fma_float)
+        args = if fused
+            (CoDual(P(0), v), CoDual(P(0), v), CoDual(P(2), P(1)))
+        else
+            (CoDual(P(0), v), CoDual(P(0), v))
+        end
+        rvs = fused ? (NoRData(), P(0), P(0), v) : (NoRData(), P(0), P(0))
+        opts = (oracle=(deriv=(fwd=fused ? P(1) : P(0), rvs=rvs),), output_tangent=v)
+        push!(test_cases, (false, :stability, opts, f, args...))
+    end
+
+    for P in (Float16, Float32, Float64),
+        f in (IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast),
+        v in (P(NaN), P(Inf), P(-Inf))
+
+        opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), v, P(0))),), output_tangent=v)
+        push!(test_cases, (false, :stability, opts, f, CoDual(P(0), P(0)), CoDual(P(2), v)))
+    end
+
+    # The sign coefficients of `abs_float` and `copysign_float` are zero at zero, NaN at NaN.
+    for P in (Float16, Float32, Float64),
+        (x, s) in ((P(NaN), P(0)), (P(0), P(NaN)), (P(0), P(Inf)))
+
+        opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s)
+        push!(
+            test_cases,
+            (false, :stability, opts, IntrinsicsWrappers.abs_float, CoDual(x, s)),
+        )
+        opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0), P(0))),), output_tangent=s)
+        y = CoDual(P(-1), P(0))
+        push!(
+            test_cases,
+            (false, :stability, opts, IntrinsicsWrappers.copysign_float, CoDual(x, s), y),
+        )
+    end
 
     # Cancellation distinguishes fused rounding only with an exact value oracle.
     # Pin d/da with CoDual seeds. Forward-only: this checks the inner-value invariant;

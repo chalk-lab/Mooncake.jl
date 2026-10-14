@@ -170,7 +170,6 @@ using .Nfwd:
     tangent_view,
     _scalar_ndual,
     _nfwd_dual_partial,
-    _fwd_scale,
     _fwd_guarded_scale
 @static if VERSION >= v"1.11-rc4"
     using .Nfwd: NDualMemoryRef

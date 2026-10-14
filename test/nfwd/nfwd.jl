@@ -924,6 +924,36 @@ using Mooncake.Nfwd
         @test Base.exponent(d) === exponent(3.0)
     end
 
+    @testset "scalar strong zeros" begin
+        for T in (Float16, Float32, Float64), N in (1, 8), v in (T(NaN), T(Inf), T(-Inf))
+            d(x, p) = Nfwd.NDual{T,N}(x, ntuple(_ -> p, N))
+            # Every concrete mixed Real/NDual dispatch, including the scalar addend.
+            for (a, b) in (
+                (d(v, T(0)), d(T(2), T(0))),
+                (v, d(T(2), T(0))),
+                (d(T(2), T(0)), v),
+                (T(0), d(T(2), v)),
+                (d(T(2), v), T(0)),
+            )
+                @test all(iszero, (a * b).partials)
+                for f in (muladd, fma)
+                    @test all(isone, f(a, b, d(T(2), T(1))).partials)
+                end
+            end
+            @test all(iszero, muladd(d(v, T(0)), d(T(2), T(0)), T(2)).partials)
+            # An inactive lane must remain zero beside an active nonfinite lane.
+            a = d(v, T(0))
+            b = Nfwd.NDual{T,N}(T(2), ntuple(i -> i == N ? T(1) : T(0), N))
+            for f in (
+                *, (a, b) -> muladd(a, b, d(T(2), T(0))), (a, b) -> fma(a, b, d(T(2), T(0)))
+            )
+                p = f(a, b).partials
+                @test all(iszero, p[1:(N - 1)])
+                @test isequal(p[N], v)
+            end
+        end
+    end
+
     @testset "muladd and fma" begin
         a = _d2(2.0, 1.0, 0.0)   # 2 + e1
         b = _d2(3.0, 0.0, 1.0)   # 3 + e2
