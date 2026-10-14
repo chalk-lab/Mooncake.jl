@@ -1,6 +1,6 @@
 # The following functions contain ccall or llvmcall which cannot be differentiated.
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
-# Raw bulk calls must throw: even float-format output can target integer tangent storage.
+# Raw bulk calls must throw: a byte pointer may target integer storage without tangents.
 for (f, nargs) in
     ((Random.XoshiroSimd.xoshiro_bulk_simd, 2), (Random.XoshiroSimd.xoshiro_bulk_nosimd, 1))
     @eval @is_primitive MinimalCtx Tuple{
@@ -25,8 +25,7 @@ for (f, nargs) in
     end
 end
 
-# Julia 1.12+'s typed Xoshiro float fill also accepts contiguous views (not DenseArray),
-# so they are intercepted here before it erases their type to a byte pointer.
+# 1.12's Xoshiro fill accepts contiguous views and passes them as Ptr{UInt8}; intercept.
 @static if VERSION >= v"1.12"
     const XoshiroFloatView{T,N} = Base.FastContiguousSubArray{T,N,<:Union{Array,Memory}}
     @is_primitive MinimalCtx Tuple{
@@ -66,8 +65,7 @@ end
     end
 end
 
-# Byte pointers hide integer versus floating tangent storage, so typed rules own the fill.
-# Julia 1.12+ accepts Array, Memory, and contiguous views; earlier versions accept Array.
+# Xoshiro integer fills pass destination as Ptr{UInt8}; intercept accepted types.
 @static if VERSION >= v"1.12"
     const XoshiroIntegerArray{T} = Base.MutableDenseArrayType{T}
 else
@@ -111,8 +109,7 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
-# A draw is RNG state, not a reparameterised sample, so its derivative is zero.
-# DenseArray/AbstractRNG also serve GPU arrays and GPUArrays' RNG, which has no randexp!.
+# A draw is zero-derivative; DenseArray/AbstractRNG cover CuArray fills; RNG lacks randexp!.
 for (f, A) in (
         (rand!, DenseArray{<:FloatOrComplex}),
         (randn!, DenseArray{<:FloatOrComplex}),
@@ -120,8 +117,7 @@ for (f, A) in (
     ),
     n in (f === rand! ? (0, 1) : (0,))
 
-    # A plain @is_primitive cannot require the destination to be its own tangent
-    # (SharedArray is not), and Union eltypes need not have a scalar zero.
+    # Primitive if x is own tangent, not SharedArray; concrete eltype; Unions may lack zero.
     @eval function _is_primitive(
         ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{T}
     ) where {T<:Tuple{typeof($f),AbstractRNG,$A,Vararg{Union{Type,Random.Sampler},$n}}}
@@ -249,7 +245,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     return test_cases, Any[]
 end
 
-# RNGs created inside cases may stay advanced; test_rule requires input RNGs restored.
+# Build each RNG inside the case: fills advance it, and test_rule requires inputs restored.
 function _rand_fill_cases()
     rngs = Any[
         () -> Xoshiro(123),
