@@ -601,11 +601,25 @@ end
     dy .= _rvs_mul.(dy, c)
     return dy
 end
-# Nonfinite coefficients only: `0 * Inf` is NaN, so mask a whole-zero seed.
-@noinline function _rvs_axpby!(dx, dy, a, b)
-    zero_seed = all(iszero, dy)
-    dx .+= _rvs_zero.(_rvs_mul.(dy, a), zero_seed)
-    dy .= _rvs_zero.(_rvs_mul.(dy, b), zero_seed)
+# Mask each real product with a zero factor, as required by the numerical contract.
+# A zero entry, or a zero component of a complex entry, stays exactly zero.
+_rvs_strong_mul(d::T, c::T) where {T<:BlasRealFloat} = _rvs_zero(_rvs_mul(d, c), iszero(d))
+function _rvs_strong_mul(d::T, c::T) where {T<:BlasComplexFloat}
+    (dr, di), (cr, ci) = reim(d), reim(c)
+    re = _rvs_strong_mul(dr, cr) - _rvs_strong_mul(di, ci)
+    return T(re, _rvs_strong_mul(dr, ci) + _rvs_strong_mul(di, cr))
+end
+# Nonfinite coefficients only; out of line to keep the finite pullbacks' code unchanged.
+@noinline function _rvs_strong_axpy!(dx, dy, a)
+    dx .+= _rvs_strong_mul.(dy, a)
+    return dx
+end
+@noinline function _rvs_strong_scal!(dy, a)
+    dy .= _rvs_strong_mul.(dy, a)
+    return dy
+end
+@noinline function _rvs_strong_scal!(dy, a, b)
+    dy .= _rvs_strong_mul.(dy, a) .+ _rvs_strong_mul.(dy, b)
     return dy
 end
 _rvs_conj_mul(x, a) = conj(x) * a
@@ -1131,7 +1145,12 @@ function rrule!!(
     function axpy!_pb!!(::NoRData)
         y .= y_copy
         ∇a = _rvs_guarded_dot(x, dy)
-        _rvs_axpy!(_rvs_mul, dx, dy, a', all(iszero, dy)) # `y` keeps its own cotangent.
+        # `y` keeps its own cotangent.
+        if isfinite(a)
+            _rvs_axpy!(_rvs_mul, dx, dy, a', all(iszero, dy))
+        else
+            _rvs_strong_axpy!(dx, dy, a')
+        end
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
     end
     return Y_dY, axpy!_pb!!
@@ -1229,7 +1248,11 @@ function rrule!!(
     function axpy!_short_pb!!(::NoRData)
         copyto!(y, y_copy)
         da = _rvs_blas_alpha(a_da, _rvs_guarded_dot(xv, dyv))
-        _rvs_axpy!(_rvs_mul, dxv, dyv, a', all(iszero, dyv))
+        if isfinite(a)
+            _rvs_axpy!(_rvs_mul, dxv, dyv, a', all(iszero, dyv))
+        else
+            _rvs_strong_axpy!(dxv, dyv, a')
+        end
         return NoRData(), da, NoRData(), NoRData()
     end
     return Y_dY, axpy!_short_pb!!
@@ -1327,8 +1350,7 @@ function rrule!!(
             elseif isfinite(a) && isfinite(b)
                 dy .= a' .* dy .+ b' .* dy
             else
-                zero_seed = all(iszero, dy)
-                dy .= _rvs_zero.(_rvs_mul.(dy, a') .+ _rvs_mul.(dy, b'), zero_seed)
+                _rvs_strong_scal!(dy, a', b')
             end
         elseif isfinite(a) && isfinite(b)
             if P <: BlasRealFloat
@@ -1344,7 +1366,8 @@ function rrule!!(
                 dy .= _rvs_mul.(dy, b')
             end
         else
-            _rvs_axpby!(dxv, dyv, a', b')
+            _rvs_strong_axpy!(dxv, dyv, a')
+            _rvs_strong_scal!(dyv, b')
         end
         return NoRData(), ∇a, NoRData(), ∇b, NoRData()
     end
@@ -1379,7 +1402,11 @@ function rrule!!(
     function scal!_short_pb!!(::NoRData)
         copyto!(x, x_copy)
         da = _rvs_guarded_dot(x, dx)
-        dx .= _rvs_zero.(_rvs_mul.(dx, a'), all(iszero, dx))
+        if isfinite(a)
+            dx .= _rvs_zero.(_rvs_mul.(dx, a'), all(iszero, dx))
+        else
+            _rvs_strong_scal!(dx, a')
+        end
         return NoRData(), da, NoRData()
     end
     return X_dX, scal!_short_pb!!
@@ -2118,14 +2145,21 @@ function rrule!!(
 
     function scal_adjoint(::NoRData)
         zero_seed = all(iszero, dX)
+        finite = isfinite(a)
         ∇a = zero(P)
         @inbounds @simd for i in eachindex(X, X_copy, dX)
             X[i] = X_copy[i]
             ∇a += _rvs_mul(X_copy[i]', dX[i])
-            P <: BlasRealFloat && (dX[i] = _rvs_zero(_rvs_mul(dX[i], a'), zero_seed))
+            P <: BlasRealFloat &&
+                finite &&
+                (dX[i] = _rvs_zero(_rvs_mul(dX[i], a'), zero_seed))
         end
-        # The real loop vectorises; complex scaling vectorises better as a separate broadcast.
-        P <: BlasComplexFloat && (dX .= _rvs_zero.(_rvs_mul.(dX, a'), zero_seed))
+        if !finite
+            _rvs_strong_scal!(dX, a')
+        elseif P <: BlasComplexFloat
+            # The real loop vectorises; complex scaling vectorises better as a broadcast.
+            dX .= _rvs_zero.(_rvs_mul.(dX, a'), zero_seed)
+        end
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
@@ -5017,6 +5051,32 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                 CoDual(P(2), one(P)),
             ),
         )
+    end
+
+    # Each output reads one entry, so the mutated array's cotangent is zero in the other. At an
+    # infinite coefficient that entry, and the zero imaginary part of the read one, stay zero.
+    axpy_short = (a, v, w) -> (y=[w, one(v)]; BLAS.axpy!(a, [v, w], y); real(y[2]))
+    axpy_long = (a, v, w) -> (y=[w, one(v)]; BLAS.axpy!(2, a, [v, w], 1, y, 1); real(y[2]))
+    scal_short = (a, v, w) -> (x=[v, w]; BLAS.scal!(a, x); real(x[2]))
+    scal_long = (a, v, w) -> (x=[v, w]; BLAS.scal!(2, a, x, 1); real(x[2]))
+    separate_axpby =
+        (a, b, v, w) -> (y=[w, one(v)]; BLAS.axpby!(a, [v, w], b, y); real(y[2]))
+    aliased_axpby = (a, b, v, w) -> (x=[v, w]; BLAS.axpby!(a, x, b, x); real(x[2]))
+    # (function, coefficients, their cotangents, cotangents of `v` and `w`)
+    for (f, coefficients, dcoefficients, dvw) in (
+        (axpy_short, (Inf,), (3,), (0, Inf)),
+        (axpy_long, (Inf,), (3,), (0, Inf)),
+        (scal_short, (Inf,), (3,), (0, Inf)),
+        (scal_long, (Inf,), (3,), (0, Inf)),
+        (separate_axpby, (1, Inf), (3, 1), (0, 1)),
+        (separate_axpby, (Inf, 1), (3, 1), (0, Inf)),
+        (aliased_axpby, (1, Inf), (3, 3), (0, Inf)),
+        (aliased_axpby, (Inf, 1), (3, 3), (0, Inf)),
+    )
+        R = real(P)
+        deriv = (NoRData(), map(P, dcoefficients)..., map(P, dvw)...)
+        opts = (mode=ReverseMode, output_tangent=one(R), oracle=(value=R(Inf), deriv=deriv))
+        push!(test_cases, (false, :none, opts, f, map(P, coefficients)..., P(2), P(3)))
     end
 
     # Summing the coefficients first overflows, although each scaled cotangent is finite.
