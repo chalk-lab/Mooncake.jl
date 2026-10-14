@@ -171,8 +171,148 @@ sr(n::Int) = StableRNG(n)
             end
             return cases
         end...,
+        # Singleton reductions are identities, so Float16 finite differences remain
+        # resolvable. Cover each wrapped rule and each mutating storage combination.
+        [
+            (:none, true, logsumexp, view(zeros(Float16, 1), :)),
+            (:none, true, Core.kwcall, (; dims=:), logsumexp, view(zeros(Float16, 1), :)),
+            (:none, true, Core.kwcall, (; dims=1), logsumexp, view(zeros(Float16, 1), :)),
+            (
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=(1, 2)),
+                logsumexp,
+                view(zeros(Float16, 1, 1), :, :),
+            ),
+            (:none, true, logsumexp!, zeros(Float16, 1), view(zeros(Float16, 1), :)),
+            (:none, true, logsumexp!, view(zeros(Float16, 1), :), zeros(Float16, 1)),
+            (
+                :none,
+                true,
+                logsumexp!,
+                view(zeros(Float16, 1), :),
+                view(zeros(Float16, 1), :),
+            ),
+        ],
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+    end
+
+    @testset "logsumexp forward regressions" begin
+        # Translation has derivative one even when rounding hides log(2). A zero
+        # direction at infinity has derivative zero by the strong-zero contract.
+        cases = Any[]
+        for T in (Float16, Float32, Float64),
+            wrapped in (false, true),
+            call in (:positional, :colon, :axis, :tuple, :mutating),
+            kind in (:large, :zero)
+
+            f = let T=T, wrapped=wrapped, call=call, kind=kind
+                t -> begin
+                    a = if kind === :large
+                        fill(T(2)^precision(T) + t, 2)
+                    else
+                        T[Inf + t, t]
+                    end
+                    x = wrapped ? view(a, :) : a
+                    if call === :positional
+                        logsumexp(x)
+                    elseif call === :colon
+                        logsumexp(x; dims=:)
+                    elseif call === :axis
+                        only(logsumexp(x; dims=1))
+                    elseif call === :tuple
+                        only(logsumexp(x; dims=(1,)))
+                    else
+                        out = zeros(T, 1)
+                        only(logsumexp!(wrapped ? view(out, :) : out, x))
+                    end
+                end
+            end
+            # Even the largest width-8 lane stays finite; normalize before multiplying.
+            directions = kind === :large ? (one(T), floatmax(T) / T(8)) : (zero(T),)
+            for d in directions
+                push!(cases, ((; oracle=(deriv=d,)), f, Mooncake.CoDual(zero(T), d)))
+            end
+        end
+        # Float16 weights and lane sums accumulate in Float32; a long random reduction
+        # distinguishes both paths from the generic Float16 accumulator.
+        x16 = Float16.(2 .* randn(sr(1), 4096))
+        d16 = Float16.(randn(sr(2), 4096))
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                logsumexp,
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                x -> logsumexp(x; dims=:),
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                x -> only(logsumexp(x; dims=1)),
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        for T in (Float16, Float32, Float64), slope in (1, 2)
+            f = let slope=slope
+                t -> begin
+                    a = [one(t) + t, oftype(t, 2) + oftype(t, slope) * t]
+                    only(logsumexp!(view(a, 1:1), view(a, :)))
+                end
+            end
+            d = T(1 + (slope - 1) / (1 + exp(-1)))
+            cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
+            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+        end
+        # `Base.mightalias` misses each of these over `out`'s parent on some Julia version.
+        for T in (Float16, Float32, Float64),
+            W in (
+                A -> Diagonal(view(A, :, 1)),
+                UpperTriangular,
+                LowerTriangular,
+                Symmetric,
+                Hermitian,
+            )
+
+            f = let W=W
+                t -> begin
+                    A = [t 2 1; 1 0 2; 2 1 0]
+                    only(logsumexp!(view(A, 1:1, 1:1), W(A)))
+                end
+            end
+            A0 = [0 2 1; 1 0 2; 2 1 0]
+            d = T(exp(A0[1, 1]) / sum(exp, W(A0)))
+            cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
+            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+        end
+        @testset "$i" for (i, (opts, f, x)) in enumerate(cases)
+            test_rule(
+                sr(123456), f, x; mode=Mooncake.ForwardMode, is_primitive=false, opts...
+            )
+        end
     end
 
     # Assert primitive dispatch only in forward mode; reverse uses derived rules.

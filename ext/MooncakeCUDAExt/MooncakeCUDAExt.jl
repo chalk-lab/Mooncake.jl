@@ -663,9 +663,9 @@ tangent(p::CuMaybeComplexArray, ::NoRData) = p
 function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
     return (x, dx)
 end
-# The host Lifted overload excludes Float16/ComplexF16 via BlasFloat, while GPU
-# concat/permutedims admit them. _arrayify_lane handles dense and wrapped arrays
-# without that bound; this array-type-specific overload also covers BlasFloat.
+# The host Lifted overload excludes ComplexF16, while GPU concat/permutedims admit it.
+# _arrayify_lane handles dense and wrapped arrays without that bound; this
+# array-type-specific overload covers every element type.
 function arrayify(x::Lifted{<:CuMaybeWrappedArray,N}) where {N}
     A = Mooncake.primal(x)
     return A, ntuple(lane -> Mooncake._arrayify_lane(A, Mooncake.tangent(x), lane), Val(N))

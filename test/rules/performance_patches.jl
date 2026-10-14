@@ -78,7 +78,7 @@
         end
     end
 
-    # Wrapped Float16 must stay derived because arrayify supports only BlasFloat.
+    # Wrapped Float16 `_kron!` is not a forward primitive, so it must take the derived rule.
     # Loose tolerances accommodate Float16 finite differences.
     @testset "Float16 wrapped kron! is derived, not an arrayify crash" begin
         fk(A, B) = (

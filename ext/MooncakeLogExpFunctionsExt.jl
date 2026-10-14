@@ -1,9 +1,7 @@
 module MooncakeLogExpFunctionsExt
 
-using LinearAlgebra: dot
 using LogExpFunctions
 using Base: IEEEFloat
-using LinearAlgebra.BLAS: BlasFloat
 import Mooncake:
     DefaultCtx,
     @from_chainrules,
@@ -26,7 +24,8 @@ import Mooncake:
     arrayify,
     Lifted,
     ImmutableDual,
-    NDualArray
+    NDualArray,
+    _fwd_guarded_scale
 using Mooncake.Nfwd: NDual, _lane_views, _promote_matching_nduals
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
@@ -110,7 +109,7 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
     end
     # At an infinite maximum, scalar-NDual CUDA kernels use a uniform argmax subgradient
     # to avoid poisoning reductions with NaN. NDualArray frules and reverse rrules instead
-    # return NaN consistently to flag the singularity.
+    # give NaN for directions on the infinite entries and zero for the finite ones.
     isinf(u) && return _nf_logsumexp_inf(x, u)
     # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
     # Both _nf_logsumexp_accum and _nf_logsumexp_scale take grad as a function parameter
@@ -243,6 +242,80 @@ for f in (:xlogy, :xlog1py, :xexpy)
     end
 end
 
+# `logsumexp`'s own accumulator `(max, Σexp(x - max) - 1)`, mapped to
+# `(max, log Σexp(x - max))` so that `max + log` is its result bitwise. Weights formed
+# from it stay normalised where rounding hides the normaliser in the result:
+# `y == x[1]` at `x = fill(2^precision(P), 2)`.
+logsumexp_shift((m, r)) = (m, log1p(r))
+function logsumexp_shifts(x::AbstractArray{P}; dims=:) where {P}
+    a = reduce(LogExpFunctions._logsumexp_onepass_op, x; dims, init=(P(-Inf), zero(P)))
+    return a isa Tuple ? logsumexp_shift(a) : (a .= logsumexp_shift.(a))
+end
+function logsumexp_shifts!(s::AbstractArray{Tuple{P,P}}, x) where {P}
+    Base.reducedim!(LogExpFunctions._logsumexp_onepass_op, fill!(s, (P(-Inf), zero(P))), x)
+    return s .= logsumexp_shift.(s)
+end
+logsumexp_result((m, l)::Tuple) = m + l
+logsumexp_result(s::AbstractArray) = logsumexp_result.(s)
+logsumexp_weight(x, (m, l)) = exp((x - m) - l)
+
+# Float16's running sum stops growing once its terms fall to half its spacing (at 2048 for
+# unit terms), so Float16 weights are normalised by a Float32 sum instead. At an infinite
+# maximum every weight is already zero or NaN and needs no normaliser.
+logsumexp_weights(x, s::Tuple) = logsumexp_weight.(x, Ref(s))
+logsumexp_weights(x, s::AbstractArray) = logsumexp_weight.(x, s)
+function logsumexp_weights(x::AbstractArray{Float16}, (m, _)::Tuple)
+    w = exp.(Float32.(x) .- Float32(m))
+    return isfinite(m) ? (w ./= sum(w)) : w
+end
+function logsumexp_weights(x::AbstractArray{Float16}, s::AbstractArray)
+    w = exp.(Float32.(x) .- Float32.(first.(s)))
+    return w ./= ifelse.(isfinite.(first.(s)), sum!(similar(s, Float32), w), one(Float32))
+end
+
+# While every maximum is finite, every weight lies in [0, 1], so the direction-side
+# strong-zero guard is unnecessary; testing once keeps its cost out of that common case.
+function logsumexp_scale!(tmp, d, w, s)
+    if s isa Tuple ? isfinite(first(s)) : all(isfinite ∘ first, s)
+        return tmp .= ((di, wi) -> oftype(wi, di) * wi).(d, w)
+    end
+    return tmp .= ((di, wi) -> only(_fwd_guarded_scale((oftype(wi, di),), wi))).(d, w)
+end
+# The positional rules' lane sums `Σᵢ lanes[k][i] * logsumexp_weight(x[i], s)`, without a
+# weight array. `foldl` keeps the ntuple accumulator out of a captured, reassigned
+# variable, avoiding boxing.
+function logsumexp_lane_sums(x, lanes, s::Tuple, ::Val{N}) where {N}
+    init = ntuple(_ -> zero(first(s)), Val(N))
+    if isfinite(first(s))
+        return foldl(eachindex(x); init) do g, i
+            @inline
+            wi = logsumexp_weight(@inbounds(x[i]), s)
+            ntuple(k -> g[k] + oftype(wi, @inbounds(lanes[k][i])) * wi, Val(N))
+        end
+    end
+    return foldl(eachindex(x); init) do g, i
+        @inline
+        wi = logsumexp_weight(@inbounds(x[i]), s)
+        ds = _fwd_guarded_scale(ntuple(k -> oftype(wi, @inbounds(lanes[k][i])), Val(N)), wi)
+        ntuple(k -> g[k] + ds[k], Val(N))
+    end
+end
+# Float16 sums in Float32, as for its weights, accumulating the normaliser alongside the
+# lane sums and dividing once.
+function logsumexp_lane_sums(
+    x::AbstractArray{Float16}, lanes, (m16, _)::NTuple{2,Float16}, ::Val{N}
+) where {N}
+    m = Float32(m16)
+    isfinite(m) || return logsumexp_lane_sums(x, lanes, (m, zero(m)), Val(N))
+    init = (zero(m), ntuple(_ -> zero(m), Val(N)))
+    total, sums = foldl(eachindex(x); init) do (t, g), i
+        @inline
+        e = exp(Float32(@inbounds(x[i])) - m)
+        (t + e, ntuple(k -> g[k] + Float32(@inbounds(lanes[k][i])) * e, Val(N)))
+    end
+    return ntuple(k -> sums[k] / total, Val(N))
+end
+
 # logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
 # branching in the primal implementation. (In principle, the forward-mode rule for logsumexp
 # could be imported from ChainRulesCore, but that leads to extra allocations, so we
@@ -257,14 +330,15 @@ function frule!!(
     ::Lifted{typeof(logsumexp),Nw},
     x::Lifted{A,Nw,<:NDualArray{P,Nw,D,A,NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
-    _x = primal(x)
     kw = primal(kwargs)
-    y = logsumexp(_x; kw...)
-    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
-    tmp = similar(_x)  # scratch reused across lanes
+    _x = primal(x)
+    s = logsumexp_shifts(_x; kw...)
+    y = logsumexp_result(s)
+    w = logsumexp_weights(_x, s)
+    tmp = similar(w)
     dy = ntuple(Val(Nw)) do lane
-        tmp .= tangent_view(x, lane) .* w
-        sum(tmp; kw...)
+        result = sum(logsumexp_scale!(tmp, tangent_view(x, lane), w, s); kw...)
+        P === Float16 ? P.(result) : result
     end
     if y isa AbstractArray
         return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy))
@@ -277,15 +351,10 @@ function frule!!(
     x::Lifted{Array{P,D},Nw,<:NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat,D}
     _x = primal(x)
-    y = logsumexp(_x)
-    parts = _lane_views(tangent(x))
-    # Share each softmax weight across lanes without a weight array. `foldl` keeps
-    # the ntuple accumulator out of a captured, reassigned variable, avoiding boxing.
-    grad = foldl(eachindex(_x); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
-        wi = exp(@inbounds(_x[i]) - y)
-        ntuple(lane -> g[lane] + @inbounds(parts[lane][i]) * wi, Val(Nw))
-    end
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, grad))
+    s = logsumexp_shifts(_x)
+    y = logsumexp_result(s)
+    grad = logsumexp_lane_sums(_x, _lane_views(tangent(x)), s, Val(Nw))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, ntuple(k -> P(grad[k]), Val(Nw))))
 end
 # Dense non-`Array` storage (e.g. `CuArray`): the same per-lane reduction via broadcast,
 # since scalar indexing is unavailable. The `Array` loop method above is strictly more
@@ -294,28 +363,36 @@ function frule!!(
     ::Lifted{typeof(logsumexp),Nw}, x::Lifted{A,Nw,<:NDualArray{P,Nw,D,A,NDual{P,Nw}}}
 ) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
     _x = primal(x)
-    y = logsumexp(_x)
-    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
-    dy_lanes = ntuple(lane -> dot(tangent_view(x, lane), w), Val(Nw))
+    s = logsumexp_shifts(_x)
+    y = logsumexp_result(s)
+    w = logsumexp_weights(_x, s)
+    dy_lanes = ntuple(Val(Nw)) do lane
+        P(
+            sum(
+                ((d, wi) -> only(_fwd_guarded_scale((oftype(wi, d),), wi))).(
+                    tangent_view(x, lane), w
+                ),
+            ),
+        )
+    end
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
-# Wrapped inputs require arrayify, which supports only BlasFloat: wrapped Float16
-# fails with MethodError, while dense Float16 uses the IEEEFloat methods above.
+# Canonicalise wrapped storage without restricting the primitive's IEEEFloat domain.
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
     ::Lifted{typeof(logsumexp),Nw},
     x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual},
-) where {Nw,P<:BlasFloat}
+) where {Nw,P<:IEEEFloat}
     kw = primal(kwargs)
     px, dxs = arrayify(x, Val(:read))
-    y = logsumexp(px; kw...)
-    # `dot` conjugates, so keep `sum(dxs .* w)` here (P may be Complex); w is lane-independent.
-    w = exp.(px .- y)  # softmax weights, computed once, not per lane
-    tmp = similar(w)  # unrestricted scratch reused across lanes
+    s = logsumexp_shifts(px; kw...)
+    y = logsumexp_result(s)
+    w = logsumexp_weights(px, s)
+    tmp = similar(w)
     dy = ntuple(Val(Nw)) do lane
-        tmp .= dxs[lane] .* w
-        sum(tmp; kw...)
+        result = sum(logsumexp_scale!(tmp, dxs[lane], w, s); kw...)
+        P === Float16 ? P.(result) : result
     end
     if y isa AbstractArray
         return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy))
@@ -325,30 +402,35 @@ function frule!!(
 end
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw}, x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual}
-) where {Nw,P<:BlasFloat}
+) where {Nw,P<:IEEEFloat}
     px, dxs = arrayify(x, Val(:read))
-    y = logsumexp(px)
-    # As above, foldl shares weights across lanes without boxing the accumulator.
-    grad = foldl(eachindex(px); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
-        wi = exp(@inbounds(px[i]) - y)
-        ntuple(lane -> g[lane] + @inbounds(dxs[lane][i]) * wi, Val(Nw))
-    end
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, grad))
+    s = logsumexp_shifts(px)
+    y = logsumexp_result(s)
+    grad = logsumexp_lane_sums(px, dxs, s, Val(Nw))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, ntuple(k -> P(grad[k]), Val(Nw))))
 end
 # Canonicalise mixed/wrapped arguments; the dense/dense method is more specific.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
     out::Lifted{<:AbstractArray{P},Nw},
     x::Lifted{<:AbstractArray{P},Nw},
-) where {Nw,P<:BlasFloat}
+) where {Nw,P<:IEEEFloat}
     px, dxs = arrayify(x, Val(:read))
     y, dys = arrayify(out)
-    logsumexp!(y, px)
-    w = exp.(px .- y)  # softmax weights, lane-independent — computed once, not per lane
-    tmp = similar(w)  # unrestricted scratch reused across lanes
+    s = logsumexp_shifts!(similar(y, Tuple{P,P}), px)
+    # Read `x` in full before writing `out`: they can share memory in ways
+    # `Base.mightalias` misses, such as a `Diagonal` over a view of `out`'s parent.
+    w = logsumexp_weights(px, s)
+    y .= logsumexp_result.(s)
+    tmp = similar(w)
+    reduced = eltype(w) === P ? nothing : similar(y, eltype(w))
     for lane in 1:Nw
-        tmp .= dxs[lane] .* w
-        sum!(dys[lane], tmp)
+        logsumexp_scale!(tmp, dxs[lane], w, s)
+        if reduced === nothing
+            sum!(dys[lane], tmp)
+        else
+            dys[lane] .= sum!(reduced, tmp)
+        end
     end
     return out
 end
@@ -410,12 +492,19 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,Do,Dx,Ao<:AbstractArray{P,Do},Ax<:AbstractArray{P,Dx}}
     _x = primal(x)
     y = primal(out)
-    logsumexp!(y, _x)
-    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
-    tmp = similar(_x)  # scratch reused across lanes
+    s = logsumexp_shifts!(similar(y, Tuple{P,P}), _x)
+    # As above, read `x` in full before writing `out`.
+    w = logsumexp_weights(_x, s)
+    y .= logsumexp_result.(s)
+    tmp = similar(w)
+    reduced = eltype(w) === P ? nothing : similar(y, eltype(w))
     for lane in 1:Nw
-        tmp .= tangent_view(x, lane) .* w
-        sum!(tangent_view(out, lane), tmp)
+        logsumexp_scale!(tmp, tangent_view(x, lane), w, s)
+        if reduced === nothing
+            sum!(tangent_view(out, lane), tmp)
+        else
+            tangent_view(out, lane) .= sum!(reduced, tmp)
+        end
     end
     return out
 end

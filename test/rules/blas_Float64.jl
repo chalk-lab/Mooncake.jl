@@ -56,10 +56,11 @@
         end
 
         # Check wrapper type and write-through aliasing, which numerical rule tests do not pin.
-        @testset "forward _arrayify_lane: $W" for W in (
-            UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular
-        )
-            A = randn(StableRNG(1), 3, 3)
+        @testset "forward _arrayify_lane: $P, $W" for P in (Float16, Float64),
+            W in
+            (UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular)
+
+            A = randn(StableRNG(1), P, 3, 3)
             for x in (W(A), W(view(A, 1:2, 1:2))), N in (1, 2, 8)
                 slot = Mooncake.zero_lifted(Val(N), x)
                 _x, parts = Mooncake.arrayify(slot)

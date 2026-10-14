@@ -133,7 +133,7 @@ end
 # to zero recursively, including unit triangulars inside other wrappers.
 function arrayify(
     x::Lifted{<:AbstractArray{P},N}, mode::Val=Val(false)
-) where {P<:BlasFloat,N}
+) where {P<:Union{IEEEFloat,BlasFloat},N}
     A = primal(x)
     return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane, mode), Val(N))
 end

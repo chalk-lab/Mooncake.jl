@@ -90,8 +90,7 @@ end
 for T in (Float16, Float32, Float64)
     @eval @is_primitive DefaultCtx ForwardMode Tuple{typeof(sum),ContiguousSubVector{$T}}
 end
-# Summed straight off the parent's lane over the view's own index range: `arrayify` is
-# `BlasFloat`-only, and this rule is claimed for every `IEEEFloat`, `Float16` included.
+# Summed straight off the parent's lane over the view's own index range.
 function frule!!(
     ::Lifted{typeof(sum),N}, x::Lifted{ContiguousSubVector{P},N}
 ) where {N,P<:IEEEFloat}
@@ -318,8 +317,8 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
-# Dense forward inputs support IEEEFloat; wrapped inputs need arrayify's BlasFloat.
-# Wrapped Float16 stays derived. Keep modes separate: reverse supports only real IEEEFloat.
+# Dense forward inputs support IEEEFloat; wrapped Float16 stays derived.
+# Keep modes separate: reverse supports only real IEEEFloat.
 # Union elements need the derived elementwise rule; arrayify requires numeric storage.
 for T in (Float16, Float32, Float64, Union{})
     @eval @is_primitive DefaultCtx ForwardMode Tuple{
@@ -394,7 +393,7 @@ function _kron!_jvp_block!(outb, px1, x1b, px2, x2b, ::Val{N}) where {N}
     return outb
 end
 
-# Direct block access supports Float16 without arrayify; the primal runs once.
+# Direct block access avoids arrayify; the primal runs once.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{Aout,N,<:NDualArray{T,N,2,Aout}},
@@ -416,7 +415,7 @@ function Mooncake.frule!!(
     return out
 end
 
-# Struct-lift wrappers need arrayify (BlasFloat only); dense inputs take the method above.
+# Struct-lift wrappers need arrayify; dense inputs take the method above.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{<:AbstractMatrix{T},N},
@@ -490,8 +489,8 @@ function Mooncake.rrule!!(
     return CoDual(y, dy), kron_pb!!
 end
 
-# Forward needs real BlasFloat for arrayify and NDualArray packing; Float16/complex
-# stay derived. As in reverse, require dense output and declare the strided intersection.
+# Forward primitives cover Float32/Float64; Float16 and complex stay derived. As in
+# reverse, require dense output and declare the strided intersection.
 for T in (Float32, Float64, Union{})
     @eval begin
         @is_primitive DefaultCtx ForwardMode Tuple{
@@ -700,7 +699,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
 
-        # SubArray exercises the arrayify fallback, restricted to BlasFloat.
+        # SubArray exercises the wrapped method, a forward primitive only for BlasFloat.
         map([Float64, Float32]) do P
             return (
                 false,
@@ -789,9 +788,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             end
         end...,
 
-        # permutedims(x)
-        map([Float64, Float32]) do P
-            return (false, :stability, nothing, permutedims, randn(rng, P, 7, 11))
+        # permutedims(x). Float16 finite differences resolve only near zero, and the rule is
+        # linear, so the point does not matter.
+        map([Float64, Float32, Float16]) do P
+            x = P == Float16 ? zeros(P, 7, 11) : randn(rng, P, 7, 11)
+            return (false, :stability, nothing, permutedims, x)
         end,
 
         # x * y
