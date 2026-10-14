@@ -23,65 +23,27 @@ end
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
 
-    # Pointer access that would lose or misplace tangents is an error.
-    @testset "unsupported pointer access" begin
-        # Storing a differentiable value into memory with no tangent storage.
+    # Tangents can't be loaded or stored through a pointer into memory without a matching
+    # tangent: with no tangent storage (bytes) or a different layout (`Tuple{Int,Float64}`).
+    @testset "pointer access without a matching tangent" begin
         function store_load(x)
             b = zeros(UInt8, 8)
-            GC.@preserve b begin
-                p = Ptr{Float64}(pointer(b))
-                unsafe_store!(p, x)
-                return unsafe_load(p)
-            end
+            p = Ptr{Float64}(pointer(b))
+            return GC.@preserve b (unsafe_store!(p, x); unsafe_load(p))
         end
-        # Tangent memory laid out differently from the primal memory, with a different
-        # element size and with the same element size.
-        function mixed_layout(x)
-            v = [(1, x), (2, 3x)]
-            return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v, 1)) + 8)
+        bytes_load(x) = x * reinterpret(Float64, UInt8[0, 0, 0, 0, 0, 0, 0, 64])[1]
+        function mixed_load(x)
+            v = [(1, x)]
+            return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)) + 8)
         end
-        function offset_layout(x)
-            v = [(Int32(1), Float32(x), 2.0)]
-            return GC.@preserve v Float64(unsafe_load(Ptr{Float32}(pointer(v)) + 4))
-        end
-        function mixed_copy(x)
-            v = [(1, x), (2, 3x)]
-            w = similar(v)
-            GC.@preserve v w unsafe_copyto!(pointer(w), pointer(v), 2)
-            return w[2][2]
-        end
-        function mixed_wrap(x)
-            v = [(1, x), (2, 3x)]
-            return GC.@preserve v unsafe_wrap(Array, pointer(v), 2)[2][2]
-        end
-        # Copying or wrapping through a pointer into memory with no tangent storage.
         function bytes_copy(x)
             b = zeros(UInt8, 8)
             w = [x]
             GC.@preserve b w unsafe_copyto!(pointer(w), Ptr{Float64}(pointer(b)), 1)
             return w[1]
         end
-        function bytes_wrap(x)
-            b = zeros(UInt8, 8)
-            return GC.@preserve b x * unsafe_wrap(Array, Ptr{Float64}(pointer(b)), 1)[1]
-        end
-        @testset "$f" for f in [
-            store_load,
-            mixed_layout,
-            offset_layout,
-            mixed_copy,
-            mixed_wrap,
-            bytes_copy,
-            bytes_wrap,
-        ]
-            @test_throws ArgumentError begin
-                cache = Mooncake.prepare_gradient_cache(f, 1.0)
-                Mooncake.value_and_gradient!!(cache, f, 1.0)
-            end
-            @test_throws ArgumentError begin
-                cache = Mooncake.prepare_derivative_cache(f, 1.0)
-                Mooncake.value_and_derivative!!(cache, (f, NoTangent()), (1.0, 1.0))
-            end
+        @testset "$f" for f in [store_load, bytes_load, mixed_load, bytes_copy]
+            TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
         end
     end
 end

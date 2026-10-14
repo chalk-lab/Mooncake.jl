@@ -6,43 +6,30 @@ function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), _tangent_ptr_add(tangent(x), primal(y)))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    dx = _tangent_ptr_add(tangent(x), primal(y))
-    return CoDual(primal(x) + primal(y), dx), NoPullback(f, x, y)
+    return CoDual(primal(x) + primal(y), _tangent_ptr_add(tangent(x), primal(y))),
+    NoPullback(f, x, y)
 end
 
-# A tangent pointer equal to `MISMATCHED_LAYOUT_PTR` points into tangent memory that isn't
-# laid out like the primal memory (see `_tangent_data_ptr`), so tangents can't be found at
-# the primal pointer's offsets. Pointer arithmetic on it is allowed and leaves it unchanged,
-# so Base can still take pointers (e.g. to check for aliasing), but loading or storing a
-# tangent through it is an error.
-const MISMATCHED_LAYOUT_PTR = Ptr{Cvoid}(typemax(UInt))
+# A null tangent pointer stays null (see `_tangent_data_ptr`).
+_tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 
-function _check_tangent_layout(dx::Ptr)
-    dx == MISMATCHED_LAYOUT_PTR || return nothing
-    msg =
-        "Mooncake cannot differentiate loads or stores through a pointer into memory " *
-        "whose tangent memory is laid out differently (e.g. the tangent type of " *
-        "`Tuple{Int,Float64}` is `Tuple{NoTangent,Float64}`), because tangents would be " *
-        "loaded and stored at the wrong offsets."
-    throw(ArgumentError(msg))
+# The tangent of a value loaded or stored through a null tangent pointer. Only values without
+# a derivative can go through one.
+function _null_ptr_tangent(::Type{V}) where {V}
+    V == NoTangent && return NoTangent()
+    V <: Ptr && return V(C_NULL)
+    throw(ArgumentError(NULL_TANGENT_PTR_MSG))
 end
+const NULL_TANGENT_PTR_MSG =
+    "Mooncake cannot differentiate loading or storing a differentiable value through a " *
+    "pointer into memory without a matching tangent, e.g. a `Ptr{Float64}` into the memory " *
+    "of a `Vector{UInt8}`."
 
-# Copying or wrapping `n` elements through a null tangent pointer would read or write tangent
-# storage that doesn't exist, unless the tangent has no data (e.g. bytes, whose tangent
-# pointer is a `Ptr{NoTangent}`).
-function _check_tangent_storage(dx::Ptr{V}, n::Integer) where {V}
-    (V == NoTangent || dx != C_NULL || n == 0) && return nothing
-    msg =
-        "Mooncake cannot differentiate copying or wrapping through a pointer into memory " *
-        "that has no tangent storage (e.g. a `Ptr{Float64}` into the memory of a " *
-        "`Vector{UInt8}`)."
-    throw(ArgumentError(msg))
-end
-
-# Offsetting a null tangent pointer (no tangent storage) or `MISMATCHED_LAYOUT_PTR` leaves
-# it unchanged.
-function _tangent_ptr_add(dx::Ptr, y::Integer)
-    return (dx == C_NULL || dx == MISMATCHED_LAYOUT_PTR) ? dx : dx + y
+# Copying or wrapping `n` tangents through a null tangent pointer is only possible when they
+# take up no space.
+function _check_null_copy(dx::Ptr{V}, n::Integer) where {V}
+    (dx == C_NULL && n > 0 && V != NoTangent) && throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    return nothing
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
