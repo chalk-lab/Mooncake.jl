@@ -4565,6 +4565,7 @@ rebuilt rather than updated. For types with custom copy semantics, overload this
 """
 _copy_to_output!!(dst::Number, src::Number, c=nothing, r=nothing) = src
 _copy_to_output!!(::Type, src::Type, c=nothing, r=nothing) = src
+_copy_to_output!!(::NoFData, src::NoFData, c=nothing, r=nothing) = src
 # Atomic leaves are compiler-owned objects reached by reference that user code does not own.
 for T in (
     Core.TypeName,

@@ -1211,6 +1211,12 @@ function test_rrule_oracle(x_x̄::Vararg{Any,P}; rrule, oracle, output_tangent) 
             "the cotangent seed is random, which leaves `deriv` unpinned.",
         ),
     )
+    # A fresh -0.0 tangent preserves seed signs and matches the output's storage sharing.
+    seed = increment!!(
+        Mooncake._scale(-1.0, set_to_zero!!(zero_tangent(primal(out), tangent(out)))),
+        output_tangent,
+    )
+    Mooncake._copy_to_output!!(tangent(out), Mooncake.fdata(seed))
     @test cmp(pb!!(Mooncake.rdata(output_tangent)), _oracle_deriv(oracle.deriv, :rvs))
     return nothing
 end
