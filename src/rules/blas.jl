@@ -15,6 +15,7 @@ end
 
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 # `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
 # its parent, and reshaping an `Array` yields an `Array`.
@@ -99,7 +100,7 @@ function arrayify(
 end
 
 @static if VERSION >= v"1.11-rc4"
-    arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
+    arrayify(x::A, dx::A) where {A<:Memory{<:Union{IEEEFloat,BlasFloat}}} = (x, dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}
