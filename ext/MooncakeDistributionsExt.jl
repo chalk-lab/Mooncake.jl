@@ -21,7 +21,6 @@ import Mooncake:
     RData,
     ReverseMode,
     Tangent,
-    _arrayify_lane,
     _fields,
     _scalar_ndual,
     arrayify,
@@ -225,12 +224,6 @@ Base.@propagate_inbounds Base.getindex(c::_ConstLane, ::Int) = c.value
 _mean_lane(μ̇::Nfwd.NDualArray, k::Int) = Nfwd.tangent_view(μ̇, k)
 _mean_lane(μ̇, k::Int) = _ConstLane(μ̇.fields.value.partials[k])
 
-# `arrayify` is restricted to `BlasFloat`, but these rules are claimed for every `IEEEFloat`,
-# `Float16` included. `_arrayify_lane` is generic over the dual eltypes, so the lanes come from it.
-function _lanes(x, ::Val{N}) where {N}
-    return ntuple(k -> _arrayify_lane(primal(x), tangent(x), k), Val(N))
-end
-
 # A `Vector` mean carries its gradient in fdata; a `Fill` mean carries it in rdata, which
 # leaves the distribution with no fdata at all.
 _mean_fdata(::CoDual{<:ScalMvNormal,NoFData}) = NoFData()
@@ -265,7 +258,7 @@ function frule!!(
 ) where {P<:IEEEFloat,N}
     dp, px = primal(d), primal(x)
     _check_dims(dp, px)
-    dx = _lanes(x, Val(N))
+    dx = last(arrayify(x))
     dd = tangent(d).fields
     variance = dp.Σ.value
     y = let total = zero(P)
@@ -325,7 +318,7 @@ function frule!!(
 ) where {N,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(N))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     ḋ = tangent(d).fields
     variance = dp.Σ.diag
@@ -395,7 +388,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,N}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(Nw))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     dists = _dists(dp)
     ḋists = _fwd_dists(dp, tangent(d))
@@ -548,7 +541,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(Nw))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     ḋ = tangent(d).fields
     variance = dp.Σ.diag
@@ -634,7 +627,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(Nw))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     ḋ = tangent(d).fields
     variance = dp.Σ.diag
@@ -705,7 +698,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(Nw))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     ḋ = tangent(d).fields
     μ = dp.μ
@@ -793,7 +786,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    ẋs = _lanes(x, Val(Nw))
+    ẋs = last(arrayify(x))
     _check_dims(dp, px)
     ḋ = tangent(d).fields
     μ = dp.μ
@@ -878,7 +871,7 @@ function frule!!(
 ) where {P<:IEEEFloat,N}
     dp, px = primal(d), primal(x)
     _check_dims(dp, px)
-    dx = _lanes(x, Val(N))
+    dx = last(arrayify(x))
     dd = tangent(d).fields
     L = dp.Σ.chol.L
     standardized = L \ (px .- dp.μ)
@@ -888,7 +881,7 @@ function frule!!(
         y[j] = constant - P(0.5) * sum(abs2, view(standardized, :, j))
     end
     out = Mooncake.zero_lifted(Val(N), y)
-    dy = _lanes(out, Val(N))
+    dy = last(arrayify(out))
     for k in 1:N
         dL = _factor_tangent(
             dp.Σ.chol, Matrix(Nfwd.tangent_view(dd.Σ.fields.chol.fields.factors, k))
@@ -944,7 +937,7 @@ function frule!!(
 ) where {P<:IEEEFloat,N}
     dp, px = primal(d), primal(x)
     _check_dims(dp, px)
-    dx = _lanes(x, Val(N))
+    dx = last(arrayify(x))
     dd = tangent(d).fields
     L = dp.Σ.chol.L
     standardized = L \ (px .- dp.μ)
