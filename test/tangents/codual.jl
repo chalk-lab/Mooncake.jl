@@ -193,16 +193,14 @@ _rebind_value_f(x) = x * _REBIND_VALUE_G
                             fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
                         ) == (6.0, 3.0)
                     else
-                        for call in (
-                            () -> Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0),
-                            () -> Mooncake.value_and_derivative!!(
-                                fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
-                            ),
+                        # Each mode names what it compared: reverse a `CoDual`'s primal,
+                        # forward the stored value itself.
+                        @test_throws AssertionError("global_ref == primal(stored_value)") Mooncake.value_and_gradient!!(
+                            r, _rebind_value_f, 2.0
                         )
-                            @test_throws AssertionError(
-                                "global_ref == primal(stored_value)"
-                            ) call()
-                        end
+                        @test_throws AssertionError("global_ref == stored") Mooncake.value_and_derivative!!(
+                            fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                        )
                     end
                 end
                 global _REBIND_VALUE_G = NaN
