@@ -23,8 +23,6 @@ function _tangent_data_ptr(ptr::Ptr, ::DenseArray{P}, t::DenseArray{V}) where {P
     return bitcast(Ptr{NoTangent}, ptr)
 end
 
-@generated _tangent_layout_mirrors(::Type{P}, ::Type{V}) where {P,V} = _layout_mirrors(P, V)
-
 # Whether values of type `P` and their tangents of type `V` take up the same bytes.
 function _layout_mirrors(P::Type, V::Type)
     P === V && return true
@@ -35,11 +33,14 @@ function _layout_mirrors(P::Type, V::Type)
     Base.aligned_sizeof(P) == 0 && return true  # e.g. `Nothing` and `NoTangent`
     P <: Ptr && V <: Ptr && return true
     if Base.isbitsunion(P)
-        # Each tangent with data must be laid out like one of the union's members.
+        # Each member that takes up space must have a tangent laid out like it, e.g. not the
+        # `Int` in `Union{Int,Float64}`, and each tangent with data must be laid out like one
+        # of the members.
+        Ts = Base.uniontypes(P)
         Ws = Base.isbitsunion(V) ? Base.uniontypes(V) : Any[V]
         return all(
-            W -> W == NoTangent || any(T -> _layout_mirrors(T, W), Base.uniontypes(P)), Ws
-        )
+            T -> Base.aligned_sizeof(T) == 0 || any(W -> _layout_mirrors(T, W), Ws), Ts
+        ) && all(W -> W == NoTangent || any(T -> _layout_mirrors(T, W), Ts), Ws)
     end
     (P isa DataType && V isa DataType) || return false
     V <: Tangent && (V = fieldtype(V, :fields))
@@ -51,6 +52,9 @@ function _layout_mirrors(P::Type, V::Type)
     end
     return true
 end
+
+# Defined after `_layout_mirrors`, which its generator calls.
+@generated _tangent_layout_mirrors(::Type{P}, ::Type{V}) where {P,V} = _layout_mirrors(P, V)
 
 # A null tangent pointer stays null (see `_tangent_data_ptr`).
 _tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y

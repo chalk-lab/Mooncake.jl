@@ -90,6 +90,7 @@ import ..Mooncake:
     rrule!!,
     _check_null_copy,
     _null_ptr_tangent,
+    _tangent_layout_mirrors,
     frule!!,
     CoDual,
     Dual,
@@ -309,6 +310,19 @@ end
 
 # atomic_pointerswap
 
+# A pointer into tangent storage can't be cast to one whose elements have no tangent, or a
+# tangent laid out differently, e.g. from `Ptr{Float64}` to `Ptr{Int}`: storing an `Int`
+# through it would leave the tangent of the overwritten `Float64` in place.
+function _bitcast_tangent_ptr(::Type{Ptr{P}}, dx::Ptr{V}) where {P,V}
+    if dx != C_NULL && Base.aligned_sizeof(V) > 0 && Base.aligned_sizeof(P) > 0
+        _tangent_layout_mirrors(P, tangent_type(P)) || throw(ArgumentError(PTR_CAST_MSG))
+    end
+    return bitcast(Ptr{tangent_type(P)}, dx)
+end
+const PTR_CAST_MSG =
+    "Mooncake cannot differentiate casting a pointer into differentiable memory, e.g. a " *
+    "`Ptr{Float64}`, to a pointer to values without a matching tangent, e.g. `Ptr{Int}`."
+
 @intrinsic bitcast
 function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -323,7 +337,7 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+        dv = _bitcast_tangent_ptr(T, tangent(x))
     else
         dv = NoTangent()
     end
@@ -342,7 +356,7 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+        dv = _bitcast_tangent_ptr(T, tangent(x))
     elseif T <: Ptr && _x isa Union{Int,UInt}
         int2ptr_err_msg =
             "It is not permissible to bitcast from an Int/UInt type to a Ptr type during AD, as " *

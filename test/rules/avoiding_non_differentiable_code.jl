@@ -25,9 +25,25 @@
             v = [(Int32(1), Float32(x), 2.0)]
             return GC.@preserve v Float64(unsafe_load(Ptr{Float32}(pointer(v)) + 4))
         end
-        fs = Any[store_load, bytes_copy, mixed_load, offset_load]
-        # Before Julia 1.11, `reinterpret` does not load through a pointer, so this works.
-        VERSION >= v"1.11.0-rc4" && push!(fs, bytes_load)
+        function int_overwrite(x)
+            v = [x]
+            GC.@preserve v unsafe_store!(Ptr{Int}(pointer(v)), reinterpret(Int, 2.0))
+            return v[1]
+        end
+        function union_load(x)
+            v = Union{Int,Float64}[x]
+            v[1] = reinterpret(Int, 2.0)
+            return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
+        end
+        fs = [
+            store_load,
+            bytes_load,
+            bytes_copy,
+            mixed_load,
+            offset_load,
+            int_overwrite,
+            union_load,
+        ]
         @testset "$f" for f in fs
             TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
         end
