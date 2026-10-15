@@ -21,9 +21,9 @@ function _null_ptr_tangent(::Type{V}) where {V}
     throw(ArgumentError(NULL_TANGENT_PTR_MSG))
 end
 const NULL_TANGENT_PTR_MSG =
-    "Mooncake cannot differentiate loading or storing a differentiable value through a " *
-    "pointer into memory without a matching tangent, e.g. a `Ptr{Float64}` into the memory " *
-    "of a `Vector{UInt8}`."
+    "Mooncake cannot differentiate loading, storing or copying tangents through a pointer " *
+    "into memory without tangent storage, e.g. a `Ptr{Float64}` into the memory of a " *
+    "`Vector{UInt8}`."
 
 # Copying or wrapping `n` tangents through a null tangent pointer is only possible when they
 # take up no space.

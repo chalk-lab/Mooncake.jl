@@ -243,13 +243,13 @@ end
 # atomic_pointermodify
 # atomic_pointerreplace
 
-# Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 # Applies the tangent load or store `f` through `dx`, unless `dx` is a null tangent pointer,
 # through which only values without a derivative can go (see `_tangent_data_ptr`).
 function _unless_null(f, dx::Ptr{V}, args...) where {V}
     dx == C_NULL ? _null_ptr_tangent(V) : f(dx, args...)
 end
 
+# Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 @intrinsic atomic_pointerref
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
     a = atomic_pointerref(primal(x), primal(order))
