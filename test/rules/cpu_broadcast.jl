@@ -61,13 +61,17 @@ Mooncake.@is_primitive(
         @test _cpu_bcast_same(g_new, g_old)
     end
 
+    # Code-coverage instrumentation makes inference treat every function as having side
+    # effects, so the rule's guard check (and with it the rule) declines every broadcast.
+    under_coverage = Base.JLOptions().code_coverage != 0
     sig(bc) = Tuple{typeof(materialize),typeof(bc)}
     claimed(bc) = Mooncake.is_primitive(
         DefaultCtx, ReverseMode, sig(bc), Base.get_world_counter()
     )
     @testset "which broadcasts are claimed" begin
-        @test claimed(Base.broadcasted(+, randn(3), randn(3)))
-        @test claimed(Base.broadcasted(Base.literal_pow, ^, randn(3), Val(3)))
+        @test claimed(Base.broadcasted(+, randn(3), randn(3))) skip = under_coverage
+        @test claimed(Base.broadcasted(Base.literal_pow, ^, randn(3), Val(3))) skip =
+            under_coverage
         @test !claimed(Base.broadcasted(sqrt, randn(3)))  # reaches Nfwd's strong-zero guard
         @test !claimed(Base.broadcasted(>, randn(3), 0))  # Bool result
         @test !claimed(Base.broadcasted(Float32, randn(3)))  # `Type` as function

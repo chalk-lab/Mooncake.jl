@@ -96,6 +96,8 @@ function _cpu_bcast_supported(::Type{B}) where {B}
     return !_cpu_bcast_may_reach_guard(fieldtype(FB, :f), Ts)
 end
 
+# Under code-coverage instrumentation inference reports side effects everywhere, so this
+# check answers yes and the rule claims nothing; the derived rule is used instead.
 # Can `f` reach `Nfwd._pt_guarded_scale` on some path? `NDual{T,0}` is never built outside
 # this check, and its guard is replaced by one with a side effect, so the answer is whether
 # inference finds `f` free of side effects on width-0 duals. If inference cannot tell, the
