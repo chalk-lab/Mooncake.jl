@@ -110,6 +110,31 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
     return CoDual(y, dy), permutedims_pb!!
 end
 
+# `permutedims(x, perm)` with an explicit permutation, e.g. inside batched matrix products.
+@is_primitive DefaultCtx Tuple{
+    typeof(permutedims),Array{P,N},Union{NTuple{N,Int},Vector{Int}}
+} where {P<:IEEEFloat,N}
+function frule!!(
+    ::Dual{typeof(permutedims)}, x::Dual{<:Array{P,N}}, perm::Dual
+) where {P<:IEEEFloat,N}
+    px, dx = arrayify(x)
+    p = primal(perm)
+    return Dual(permutedims(px, p), permutedims(dx, p))
+end
+function rrule!!(
+    ::CoDual{typeof(permutedims)}, x::CoDual{<:Array{P,N}}, perm::CoDual
+) where {P<:IEEEFloat,N}
+    px, dx = arrayify(x)
+    p = primal(perm)
+    y = permutedims(px, p)
+    dy = zero(y)
+    function permutedims_perm_pb!!(::NoRData)
+        dx .+= PermutedDimsArray(dy, invperm(p))
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy), permutedims_perm_pb!!
+end
+
 # Matrices only: `kron(::Vector, ::Vector)` returns a `Vector`, which these rules would
 # widen to a `Matrix` by matrixifying their factors.
 const KronFactor{T} = Union{
@@ -253,6 +278,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # permutedims(x)
         map([Float64, Float32]) do P
             return (false, :stability, nothing, permutedims, randn(rng, P, 7, 11))
+        end,
+
+        # permutedims(x, perm)
+        map([Float64, Float32]) do P
+            return (
+                false, :stability, nothing, permutedims, randn(rng, P, 3, 4, 5), (2, 3, 1)
+            )
+        end,
+        map([Float64, Float32]) do P
+            return (
+                false, :none, nothing, permutedims, randn(rng, P, 2, 3, 4, 5), [4, 1, 3, 2]
+            )
         end,
 
         # x * y

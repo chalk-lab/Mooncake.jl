@@ -255,6 +255,22 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 )
             end,
         ),
+        # mean_var on CPU arrays (batchnorm and layernorm statistics)
+        [
+            (
+                false,
+                :none,
+                true,
+                Core.kwcall,
+                (dims=d, corrected=c),
+                LuxLib.Impl.mean_var,
+                x,
+            ) for (x, d, c) in (
+                (randn(5, 7), (2,), false),
+                (randn(3, 3, 4, 2), (1, 2, 4), false),
+                (randn(6, 5), 1, true),
+            )
+        ],
         vec(
             map(
                 Iterators.product(

@@ -19,7 +19,8 @@ using Mooncake:
     NoRData,
     extract,
     zero_rdata,
-    @zero_adjoint
+    @zero_adjoint,
+    ReverseMode
 
 @from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
 @from_rrule(
@@ -92,6 +93,52 @@ using Mooncake:
     cdims::Impl.ConvDims,
 ) where {F,wT,xT,N}
     return LuxLib.Impl.bias_activation(act, Impl.conv(x, weight, cdims), bias)
+end
+
+# `mean_var(x; dims, corrected)` on CPU arrays, used for batchnorm/layernorm statistics.
+# Mooncake would otherwise differentiate `Statistics.varm` element by element. Same gradient
+# as LuxLib's own `rrule`: dx = dμ / n + 2 / (n - corrected) * dσ² * (x - μ).
+const _MeanVarKw = NamedTuple{
+    (:dims, :corrected),<:Tuple{Union{Int,Tuple{Vararg{Int}}},Bool}
+}
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(Core.kwcall),_MeanVarKw,typeof(Impl.mean_var),Array{P}
+} where {P<:IEEEFloat}
+function Mooncake.rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:_MeanVarKw},
+    ::CoDual{typeof(Impl.mean_var)},
+    x::CoDual{<:Array{P}},
+) where {P<:IEEEFloat}
+    (; dims, corrected) = primal(kw)
+    px, dx = extract(x)
+    μ, σ² = Impl.mean_var(px; dims, corrected)
+    dμ, dσ² = zero(μ), zero(σ²)
+    function mean_var_pb!!(::NoRData)
+        n = prod(d -> size(px, d), dims)
+        c = P(2 / (n - corrected))
+        dx .+= dμ ./ P(n) .+ c .* dσ² .* (px .- μ)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual((μ, σ²), (dμ, dσ²)), mean_var_pb!!
+end
+
+# Under the generic broadcast mode, batchnorm normalises with one broadcast through `sqrt`,
+# which Mooncake differentiates element by element. On CPU arrays take LuxLib's looped path
+# instead, which reaches the native rule for `_batchnorm_affine_normalize_identity` below.
+@mooncake_overlay function LuxLib.Impl.batchnorm_affine_normalize(
+    ::LuxLib.GenericBroadcastOp,
+    act::F,
+    x::Array{xT,N},
+    μ::Array{μT,N},
+    σ²::Array{σ²T,N},
+    γ::LuxLib.Optional{<:Vector},
+    β::LuxLib.Optional{<:Vector},
+    ϵ,
+) where {F,xT,μT,σ²T,N}
+    return LuxLib.Impl.batchnorm_affine_normalize(
+        LuxLib.LoopedArrayOp(), act, x, μ, σ², γ, β, ϵ
+    )
 end
 
 # Helper function for the Lux affine transform.
@@ -179,6 +226,51 @@ function Mooncake.rrule!!(
     end
 
     return CoDual(y, ȳ), pb!!
+end
+
+# Native rule for LuxLib's fused bias + activation under the generic broadcast mode that the
+# overlay on `internal_operation_mode` forces. Without it, Mooncake differentiates
+# `σ.(x .+ b)` element by element on CPU; LuxLib's own ChainRules rule needs a `RuleConfig`,
+# which `@from_rrule` cannot supply. Restricted to activations whose derivative LuxLib can
+# compute from the output alone (`only_derivative(y, σ, NotaNumber())`).
+const _OutputDerivActivation = Union{
+    typeof(identity),
+    typeof(LuxLib.NNlib.relu),
+    typeof(tanh),
+    typeof(LuxLib.NNlib.sigmoid),
+    typeof(LuxLib.NNlib.tanh_fast),
+    typeof(LuxLib.NNlib.sigmoid_fast),
+}
+
+@is_primitive MinimalCtx Tuple{
+    typeof(Impl.bias_activation),
+    LuxLib.GenericBroadcastOp,
+    _OutputDerivActivation,
+    Array{P,N},
+    Vector{P},
+} where {P<:IEEEFloat,N}
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(Impl.bias_activation)},
+    opmode::CoDual{<:LuxLib.GenericBroadcastOp},
+    σ::CoDual{<:_OutputDerivActivation},
+    x::CoDual{Array{P,N}},
+    b::CoDual{Vector{P}},
+) where {P<:IEEEFloat,N}
+    _σ = primal(σ)
+    _x, x̄ = extract(x)
+    _b, b̄ = extract(b)
+    y = Impl.bias_activation(primal(opmode), _σ, _x, _b)
+    ȳ = zero_tangent(y)
+
+    function bias_activation_pb!!(::NoRData)
+        ∂x = Impl.∇activation(ȳ, y, _σ, Utils.NotaNumber())
+        x̄ .+= ∂x
+        b̄ .+= Impl.∇bias_add(_b, ∂x)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+
+    return CoDual(y, ȳ), bias_activation_pb!!
 end
 
 @mooncake_overlay function LuxLib.Impl.batchnorm_affine_normalize_internal(
