@@ -232,11 +232,11 @@ end
 # overlay on `internal_operation_mode` forces. Without it, Mooncake differentiates
 # `σ.(x .+ b)` element by element on CPU; LuxLib's own ChainRules rule needs a `RuleConfig`,
 # which `@from_rrule` cannot supply. Restricted to activations whose derivative LuxLib can
-# compute from the output alone (`only_derivative(y, σ, NotaNumber())`).
+# compute from the output alone (`only_derivative(y, σ, NotaNumber())`). Base's `tanh` is not
+# included: its derivative rule lives in ChainRules, which need not be loaded.
 const _OutputDerivActivation = Union{
     typeof(identity),
     typeof(LuxLib.NNlib.relu),
-    typeof(tanh),
     typeof(LuxLib.NNlib.sigmoid),
     typeof(LuxLib.NNlib.tanh_fast),
     typeof(LuxLib.NNlib.sigmoid_fast),
