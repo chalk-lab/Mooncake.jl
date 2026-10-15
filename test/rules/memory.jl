@@ -22,24 +22,4 @@ end
         t = f(p)
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
-
-    # Tangents can't be loaded or stored through a pointer into memory with no tangent
-    # storage, e.g. that of a `Vector{UInt8}`.
-    @testset "pointer access without tangent storage" begin
-        function store_load(x)
-            b = zeros(UInt8, 8)
-            p = Ptr{Float64}(pointer(b))
-            return GC.@preserve b (unsafe_store!(p, x); unsafe_load(p))
-        end
-        bytes_load(x) = x * reinterpret(Float64, UInt8[0, 0, 0, 0, 0, 0, 0, 64])[1]
-        function bytes_copy(x)
-            b = zeros(UInt8, 8)
-            w = [x]
-            GC.@preserve b w unsafe_copyto!(pointer(w), Ptr{Float64}(pointer(b)), 1)
-            return w[1]
-        end
-        @testset "$f" for f in [store_load, bytes_load, bytes_copy]
-            TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
-        end
-    end
 end

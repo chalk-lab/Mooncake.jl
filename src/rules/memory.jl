@@ -758,17 +758,6 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# Tangent memory whose elements take up no space (e.g. `Memory{NoTangent}`) has no storage,
-# so a pointer into it gets a null tangent pointer, and the pointer rules refuse to load or
-# store a tangent through it. (For a `MemoryRef`, `ptr_or_offset` is then an index.)
-function _tangent_data_ptr(ptr::Ptr, ::Memory{V}) where {V}
-    return if Base.elsize(Memory{V}) == 0
-        Ptr{NoTangent}(C_NULL)
-    else
-        bitcast(Ptr{NoTangent}, ptr)
-    end
-end
-
 function frule!!(
     ::Dual{typeof(lgetfield)},
     x::Dual{<:Memory,<:Memory},
@@ -780,7 +769,7 @@ function frule!!(
     dy = if wants_length
         NoTangent()
     else
-        _tangent_data_ptr(tangent(x).ptr, tangent(x))
+        _tangent_data_ptr(tangent(x).ptr, primal(x), tangent(x))
     end
     return Dual(y, dy)
 end
@@ -792,7 +781,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.dx)
+    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.x, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -805,7 +794,7 @@ function frule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dx = tangent(x)
-    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, dx.mem) : dx.mem
+    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -816,7 +805,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.dx.mem) : x.dx.mem
+    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1298,6 +1287,39 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             end),
             2.0,
         ),
+        # Pointer loads through memory whose tangent is laid out like the primal memory, and a
+        # copy that takes pointers into memory with another layout only to check for aliasing.
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=Union{Missing,Float64}[x];
+                GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
+            ),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=[(x=x, n=nothing)];
+                GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
+            ),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=Ptr{UInt8}[C_NULL];
+                GC.@preserve v x * length(unsafe_wrap(Array, pointer(v), 1))
+            ),
+            2.0,
+        ),
+        (false, :none, nothing, x -> (a=Any[]; append!(a, [(1, x)]); a[1][2]), 2.0),
     ]
     memory = Any[]
     return test_cases, memory

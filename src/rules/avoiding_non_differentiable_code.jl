@@ -10,6 +10,48 @@ function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Int
     NoPullback(f, x, y)
 end
 
+# A pointer into tangent memory is only usable if that memory mirrors the primal memory byte
+# for byte. If it has no storage (e.g. `Memory{NoTangent}`, or `Array{NoTangent}` before
+# Julia 1.11) or another layout (e.g. the
+# tangent of `Tuple{Int,Float64}` holds only the `Float64`), a pointer into it gets a null
+# tangent pointer, and the pointer rules refuse to load or store a tangent through it. (For a
+# `MemoryRef`, `ptr_or_offset` is an index when the elements take up no space.)
+function _tangent_data_ptr(ptr::Ptr, ::DenseArray{P}, t::DenseArray{V}) where {P,V}
+    if Base.elsize(t) == 0 || !_tangent_layout_mirrors(P, V)
+        return Ptr{NoTangent}(C_NULL)
+    end
+    return bitcast(Ptr{NoTangent}, ptr)
+end
+
+@generated _tangent_layout_mirrors(::Type{P}, ::Type{V}) where {P,V} = _layout_mirrors(P, V)
+
+# Whether values of type `P` and their tangents of type `V` take up the same bytes.
+function _layout_mirrors(P::Type, V::Type)
+    P === V && return true
+    inline = Base.allocatedinline(P)
+    inline == Base.allocatedinline(V) || return false
+    inline || return true  # both stored as references
+    Base.aligned_sizeof(P) == Base.aligned_sizeof(V) || return false
+    Base.aligned_sizeof(P) == 0 && return true  # e.g. `Nothing` and `NoTangent`
+    P <: Ptr && V <: Ptr && return true
+    if Base.isbitsunion(P)
+        # Each tangent with data must be laid out like one of the union's members.
+        Ws = Base.isbitsunion(V) ? Base.uniontypes(V) : Any[V]
+        return all(
+            W -> W == NoTangent || any(T -> _layout_mirrors(T, W), Base.uniontypes(P)), Ws
+        )
+    end
+    (P isa DataType && V isa DataType) || return false
+    V <: Tangent && (V = fieldtype(V, :fields))
+    n = fieldcount(P)
+    (n > 0 && n == fieldcount(V)) || return false
+    for i in 1:n
+        fieldoffset(P, i) == fieldoffset(V, i) || return false
+        _layout_mirrors(fieldtype(P, i), fieldtype(V, i)) || return false
+    end
+    return true
+end
+
 # A null tangent pointer stays null (see `_tangent_data_ptr`).
 _tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 
@@ -18,12 +60,12 @@ _tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 function _null_ptr_tangent(::Type{V}) where {V}
     V == NoTangent && return NoTangent()
     V <: Ptr && return V(C_NULL)
-    throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    return throw(ArgumentError(NULL_TANGENT_PTR_MSG))
 end
 const NULL_TANGENT_PTR_MSG =
     "Mooncake cannot differentiate loading, storing or copying tangents through a pointer " *
-    "into memory without tangent storage, e.g. a `Ptr{Float64}` into the memory of a " *
-    "`Vector{UInt8}`."
+    "into memory whose tangent has no storage or a different layout, e.g. a `Ptr{Float64}` " *
+    "into a `Vector{UInt8}` or a `Vector{Tuple{Int,Float64}}`."
 
 # Copying or wrapping `n` tangents through a null tangent pointer is only possible when they
 # take up no space.
