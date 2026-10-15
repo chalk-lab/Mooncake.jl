@@ -108,6 +108,8 @@ include("front_matter.jl")
         end
     elseif test_group == "rules/performance_patches"
         include(joinpath("rules", "performance_patches.jl"))
+    elseif test_group == "rules/cpu_broadcast"
+        include(joinpath("rules", "cpu_broadcast.jl"))
     elseif test_group == "rules/dispatch_doctor"
         include(joinpath("rules", "dispatch_doctor.jl"))
     elseif test_group == "rules/high_order_derivative_patches"

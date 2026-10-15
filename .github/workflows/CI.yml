@@ -35,6 +35,7 @@ jobs:
           'rules/blas_ComplexF32',
           'rules/builtins',
           'rules/complex',
+          'rules/cpu_broadcast',
           'rules/dispatch_doctor',
           'rules/fastmath',
           'rules/foreigncall',

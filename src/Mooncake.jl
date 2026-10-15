@@ -226,6 +226,7 @@ end
 
 include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "cpu_broadcast.jl"))
 include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
