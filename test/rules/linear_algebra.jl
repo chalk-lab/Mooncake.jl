@@ -8,7 +8,8 @@
         rng = StableRNG(123)
         TestUtils.test_rule_throws(rng, \, A, ones(4); err=ArgumentError)
         TestUtils.test_rule_throws(rng, \, collect(A'), ones(3); err=ArgumentError)
-        TestUtils.test_rule_throws(rng, logabsdet, [1.0 2.0; 2.0 4.0]; err=ArgumentError)
+        f(A) = first(logabsdet(A))
+        TestUtils.test_rule_throws(rng, f, [1.0 2.0; 2.0 4.0]; err=ArgumentError)
     end
 
     # Finite differences are too inaccurate to test det and non-square \ in Float32, so
@@ -16,6 +17,8 @@
     grad(f, x...) = Mooncake.value_and_gradient!!(
         Mooncake.prepare_gradient_cache(f, x...), f, x...
     )
+    # A matrix with a NaN has a NaN determinant and gradient, as without the rule.
+    @test all(isnan, grad(det, [1.0 NaN; 2.0 3.0])[2][2])
     @testset "det, Float32" for A in [
         [2.0 1.0 0.5; 0.3 3.0 1.0; 0.2 0.1 4.0], [2.0 1.0; 0.0 3.0], [1.0 2.0; 2.0 4.0]
     ]

@@ -108,7 +108,7 @@ function rrule!!(
     Y = inv(A)
     dY = zero(Y)
     function inv_pb!!(::NoRData)
-        mul!(dA, Y', dY * Y', -one(P), one(P))
+        _addmul!(dA, Y', dY * Y', -one(P))
         return NoRData(), NoRData()
     end
     return CoDual(Y, dY), inv_pb!!
@@ -120,7 +120,7 @@ end
 function _det_and_grad(A::AbstractMatrix{P}) where {P}
     F = _square_factor(A; check=false)
     d = det(F)
-    if isfinite(d) && !iszero(d) && !issubnormal(d)
+    if (isfinite(d) && !iszero(d) && !issubnormal(d)) || !all(isfinite, A)
         return d, rmul!(ldiv!(F', Matrix{P}(I, size(A))), d)
     end
     U, σ, V = svd(A)
@@ -148,16 +148,20 @@ function rrule!!(
     return CoDual(d, NoFData()), det_pb!!
 end
 
-# `logabsdet(A)` and the gradient of its first output, `inv(A)'`, which is unbounded at a
-# singular `A`.
+# `logabsdet(A)` and the gradient of its first output, `inv(A)'`. That gradient is unbounded
+# at a singular `A`, so the rules throw there if a derivative is needed.
 function _logabsdet_and_grad(A::AbstractMatrix{P}) where {P}
     F = _square_factor(A; check=false)
     ld, s = logabsdet(F)
-    if iszero(s)
-        msg = "Mooncake cannot differentiate `logabsdet` of a singular matrix."
-        throw(ArgumentError(msg))
+    return ld, s, iszero(s) ? zeros(P, size(A)) : ldiv!(F', Matrix{P}(I, size(A)))
+end
+function _check_logabsdet(s, dy)
+    if iszero(s) && !iszero(dy)
+        throw(
+            ArgumentError("Mooncake cannot differentiate `logabsdet` of a singular matrix.")
+        )
     end
-    return ld, s, ldiv!(F', Matrix{P}(I, size(A)))
+    return nothing
 end
 
 @is_primitive MinimalCtx Tuple{typeof(logabsdet),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
@@ -166,6 +170,7 @@ function frule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     ld, s, G = _logabsdet_and_grad(A)
+    _check_logabsdet(s, dA)
     return Dual((ld, s), (dot(G, dA), zero(P)))
 end
 function rrule!!(
@@ -174,6 +179,7 @@ function rrule!!(
     A, dA = arrayify(A_dA)
     ld, s, G = _logabsdet_and_grad(A)
     function logabsdet_pb!!(ȳ::Tuple{P,P})
+        _check_logabsdet(s, ȳ[1])
         dA .+= ȳ[1] .* G
         return NoRData(), NoRData()
     end
@@ -216,6 +222,8 @@ function frule!!(
     A, dA = map(_dense, arrayify(A_dA))
     B, dB = map(_as_matrix, arrayify(B_dB))
     m, n = size(A)
+    size(B, 1) == m ||
+        throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
     if m == n
         F = lu!(Matrix{P}(A))
         X = F \ B
@@ -249,6 +257,8 @@ function rrule!!(
     A = _dense(A)
     B, dB = map(_as_matrix, arrayify(B_dB))
     m, n = size(A)
+    size(B, 1) == m ||
+        throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
     X, dX, pb = m == n ? _ldiv_square(A, dA, B, dB) : _ldiv_nonsquare(A, dA, B, dB)
     return CoDual(_like(primal(B_dB), X), _like(primal(B_dB), dX)), pb
 end
@@ -256,12 +266,14 @@ end
 # `C .+= α .* (U * V)`. For an `Adjoint` or `Transpose` `C` (real here), this writes
 # `α .* (V' * U')` into its parent: 5-argument `mul!` into one isn't type-stable on Julia 1.10.
 _addmul!(C, U, V, α) = mul!(C, U, V, α, true)
-_addmul!(C::Union{Adjoint,Transpose}, U, V, α) = (mul!(parent(C), V', U', α, true); C)
+_addmul!(C::Union{Adjoint,Transpose}, U, V, α) = (_addmul!(parent(C), V', U', α); C)
 _addmul!(C::Base.ReshapedArray, U, V, α) = (C .+= α .* (U * V); C)
 
 # Products with a reshaped non-strided array aren't type-stable on Julia 1.10, so such an
 # array is copied before it is multiplied.
 _dense(x::Base.ReshapedArray) = collect(x)
+_dense(x::Adjoint) = adjoint(_dense(parent(x)))
+_dense(x::Transpose) = transpose(_dense(parent(x)))
 _dense(x) = x
 
 # Separate functions, so that each pullback captures concretely typed values: an LU for
@@ -281,7 +293,8 @@ end
 function _ldiv_nonsquare(A, dA, B, dB::AbstractVecOrMat{P}) where {P}
     m, n = size(A)
     F = _tall_qr(m > n ? A : A')
-    X = m > n ? F \ B : A' * _gram_ldiv(F, B)
+    Y = m < n ? _gram_ldiv(F, B) : Matrix{P}(undef, 0, 0)
+    X = m > n ? F \ B : A' * Y
     dX = zero(X)
     function ldiv_nonsquare_pb!!(::NoRData)
         if m > n
@@ -292,7 +305,7 @@ function _ldiv_nonsquare(A, dA, B, dB::AbstractVecOrMat{P}) where {P}
         else
             B̄ = _gram_ldiv(F, A * dX)
             _addmul!(dA, B̄, X', -one(P))
-            _addmul!(dA, _gram_ldiv(F, B), dX' - B̄' * A, one(P))
+            _addmul!(dA, Y, dX' - B̄' * A, one(P))
         end
         dB .+= B̄
         return NoRData(), NoRData(), NoRData()
@@ -337,6 +350,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         # `inv` of a non-strided array goes through `factorize`, which isn't type-stable.
         push!(cases, (false, :none, nothing, inv, R))
         push!(cases, (false, :stability, nothing, \, R, randn(rng, P, 4)))
+        push!(cases, (false, :stability, nothing, \, R', randn(rng, P, 4)))
+        push!(cases, (false, :stability, nothing, \, R, view(randn(rng, P, 6), 2:5)))
+        push!(cases, (false, :stability, nothing, \, R, transpose(randn(rng, P, 2, 4))))
         push!(cases, (false, :stability, nothing, logabsdet, transpose(A)))
         push!(cases, (false, :stability, nothing, \, A', randn(rng, P, 2, N)'))
         return cases
