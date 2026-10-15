@@ -252,7 +252,8 @@ end
     ::NumericStorage, ::NumericStorage, ::Val{N}, stored, val
 ) where {N}
     out = zero_dual(Val(N), stored)
-    copyto!(getfield(out, :partials_block), getfield(tangent(val), :partials_block))
+    block, _ = _partials_block(val)
+    copyto!(getfield(out, :partials_block), block)
     return out
 end
 # Otherwise a numeric union holds one dual per element: rebuild each from `val`'s lanes.
@@ -371,6 +372,18 @@ function rrule!!(
     return d, setindex_pb!!
 end
 
+# A key added to the global after build has no tangent entry, so the read rebuilds and stores
+# one. A `Dict` is probed by index: `get` with a `nothing` default boxed its V on Julia 1.11.
+@inline function _read_dict_entry(::Val{N}, y, d::Lifted{<:Dict}, key) where {N}
+    td = tangent(d)
+    i = Base.ht_keyindex(td, key)
+    i > 0 || return _rebuild_lifted!(Val(N), d, key)::lifted_type(Val(N), typeof(y))
+    return _read_lifted(Val(N), y, (@inbounds td.vals[i]), d, key)
+end
+@inline function _read_dict_entry(::Val{N}, y, d::Lifted{<:IdDict}, key) where {N}
+    return _read_lifted(Val(N), y, get(tangent(d), key, nothing), d, key)
+end
+
 @is_primitive MinimalCtx Tuple{typeof(get),KeyedDict,Any,Any}
 function frule!!(
     ::Lifted{typeof(get),N}, d::Lifted{<:KeyedDict{K,V},N}, key::Lifted, default::Lifted
@@ -380,7 +393,7 @@ function frule!!(
     haskey(primal(d), _key) || return default
     # Use the stored type: V may be Any, which would break downstream slot dispatch.
     y = primal(d)[_key]
-    return Lifted{typeof(y),N}(y, tangent(d)[_key])
+    return _read_dict_entry(Val(N), y, d, _key)
 end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{<:KeyedDict{K,V}}, key::CoDual, default::CoDual
@@ -410,7 +423,7 @@ function frule!!(
     ::Lifted{typeof(getindex),N}, d::Lifted{<:KeyedDict{K,V},N}, key::Lifted
 ) where {N,K,V}
     y = getindex(primal(d), primal(key))
-    return Lifted{typeof(y),N}(y, getindex(tangent(d), primal(key)))
+    return _read_dict_entry(Val(N), y, d, primal(key))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{<:KeyedDict{K,V}}, key::CoDual
