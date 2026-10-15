@@ -155,7 +155,7 @@ for order in ((), (:order,))
                 V_i = uninit_dual(Val(Nw), primal_field)
             end
             _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-            return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
+            return _read_lifted(Val(Nw), primal_field, V_i, x, f, $(order...))
         end
         # NDualRef stores partials separately, so field reads must rebuild the scalar V.
         @inline function frule!!(
@@ -189,6 +189,7 @@ end
     ) where {T<:Nfwd.NDualEltype,N,D,A<:Array{T,D}}
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
+            Nfwd._check_block(V)
             # Share block storage so mutations alias. Use its flat parent's ref to avoid
             # allocating a reshape header on every element access; array.ref starts at column 1.
             return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
@@ -255,10 +256,13 @@ end
         end
         return NoDual()
     end
-    # Element-wise arrays project .ref by name or index; .size is non-differentiable.
-    @inline function _get_lifted_field(V::Array, name::Union{Symbol,Int})
+    # Element-wise arrays project .ref by name or index; .size is non-differentiable. The V
+    # must cover the primal: a global grown between calls would be read past its storage.
+    @inline function _get_lifted_field(p::Array, V::Array, name::Union{Symbol,Int})
         name = name isa Int ? fieldname(typeof(V), name) : name
-        return name === :ref ? getfield(V, :ref) : NoDual()
+        name === :ref || return NoDual()
+        Nfwd._check_storage(length(V), 1, length(p))
+        return getfield(V, :ref)
     end
     # Element-wise refs project .mem and a width-1 pointer typed for the dual element,
     # so unsafe_copyto! uses the correct stride (as in the 1.10 jl_array_ptr rule).
@@ -492,9 +496,8 @@ function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:I
     y = primal(x)[p]
     # Element `i` of `y` is element `p[i]` of `x`, so its lane column is column `p[i]` of `x`'s block.
     dy = NDualArray{T,N,1,Vector{T}}(y)
-    copyto!(
-        getfield(dy, :partials_block), view(getfield(tangent(x), :partials_block), :, p)
-    )
+    block, _ = _partials_block(x)
+    copyto!(getfield(dy, :partials_block), view(block, :, p))
     return Lifted{Vector{T},N}(y, dy)
 end
 

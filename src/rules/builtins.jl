@@ -1961,7 +1961,7 @@ for bounds in ((), (:inbounds,))
                     V_i = uninit_dual(Val(Nw), y)
                 end
                 _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-                return Lifted{typeof(y),Nw}(y, V_i)
+                return _read_lifted(Val(Nw), y, V_i, x, _name, $(bounds_vals...))
             end
         end
         # NDualRef has no _get_lifted_field method: rebuild its real/complex scalar V

@@ -944,7 +944,7 @@ end
         ord = primal(ordering)
         bc = primal(boundscheck)
         y = memoryrefget(primal(x), ord, bc)
-        return Lifted{typeof(y),Nw}(y, memoryrefget(tangent(x), ord, bc))
+        return _read_lifted(Val(Nw), y, memoryrefget(tangent(x), ord, bc), x, (ord, bc))
     end
     @inline function frule!!(
         ::Lifted{typeof(lmemoryrefget),Nw},
@@ -953,8 +953,12 @@ end
         ::Lifted{Val{boundscheck}},
     ) where {Nw,ordering,boundscheck}
         y = lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))
-        return Lifted{typeof(y),Nw}(
-            y, lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck))
+        return _read_lifted(
+            Val(Nw),
+            y,
+            lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck)),
+            x,
+            (ordering, boundscheck),
         )
     end
     @inline function frule!!(
@@ -1409,7 +1413,9 @@ function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
     yp = copy(primal(a))
-    block = copy(getfield(tangent(a), :partials_block))
+    source, _ = _partials_block(a)
+    block = NDualBlock{T,D + 1}(undef, N, size(yp)...)
+    copyto!(block, source)
     return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, block))
 end
 @inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}

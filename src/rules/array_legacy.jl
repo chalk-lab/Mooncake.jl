@@ -438,6 +438,7 @@ function frule!!(
             "Differentiate at chunk width 1.",
         ),
     )
+    Nfwd._check_block(tangent(a))
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
     block_parent = getfield(getfield(tangent(a), :partials_block), :parent)
     return Lifted{Ptr{T},N}(y, (ccall(:jl_array_ptr, Ptr{T}, (Any,), block_parent),))
@@ -526,6 +527,8 @@ function frule!!(
     _n = primal(n)
     _doffs = primal(doffs)
     _soffs = primal(soffs)
+    Nfwd._check_block(tangent(dest))
+    Nfwd._check_block(tangent(src))
     Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
     # Element-major: the `_n` elements' lanes are one contiguous run of `_n * N` block entries,
     # so all lanes move in a single copy.
@@ -613,8 +616,8 @@ function frule!!(
 ) where {N,P<:IEEEFloat,D}
     y = complex(primal(x))  # y = x + 0im
     # d(complex(x)) = complex(dx): complexify the block, which keeps its element-major layout.
-    blk = getfield(tangent(x), :partials_block)
-    new_block = NDualBlock(complex.(getfield(blk, :parent)), getfield(blk, :dims))
+    blk, _ = _partials_block(x)
+    new_block = NDualBlock(vec(complex.(blk)), (N, size(y)...))
     return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, new_block))
 end
 
@@ -644,7 +647,8 @@ Base.@propagate_inbounds function frule!!(
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     y = arrayref(_inb, primal(x), _inds...)
-    return Lifted{typeof(y),Nw}(y, arrayref(_inb, tangent(x), _inds...))
+    Nfwd._check_storage(length(tangent(x)), 1, length(primal(x)))
+    return _read_lifted(Val(Nw), y, arrayref(_inb, tangent(x), _inds...), x, _inds)
 end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
@@ -774,7 +778,9 @@ function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
     new_primal = copy(primal(a))
-    new_block = copy(getfield(tangent(a), :partials_block))
+    block, _ = _partials_block(a)
+    new_block = NDualBlock{T,D + 1}(undef, N, size(new_primal)...)
+    copyto!(new_block, block)
     return Lifted{Array{T,D},N}(
         new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_block)
     )

@@ -32,17 +32,18 @@ function frule!!(
 ) where {N,P<:IEEEFloat,D}
     # Wide tuple loads avoid N scalar loads per element and keep the fold allocation-free.
     nda = tangent(x)
+    Nfwd._check_block(nda)
     pv = sum(getfield(nda, :primal))
     blk = getfield(getfield(nda, :partials_block), :parent)
     lanes = if N == 1
         # At width 1 the flat block is the lane; sum supplies a pairwise SIMD reduction.
-        (sum(blk),)
+        (sum(view(blk, 1:length(getfield(nda, :primal)))),)
     else
         # Four accumulators provide 4N independent adds, avoiding small-width latency stalls.
         cols = reinterpret(NTuple{N,P}, blk)
         z = ntuple(_ -> zero(P), Val(N))
         a1, a2, a3, a4 = z, z, z, z
-        n = length(cols)
+        n = length(getfield(nda, :primal))
         j = 1
         @inbounds while j + 3 <= n
             a1 = _tadd(a1, cols[j])
@@ -130,6 +131,7 @@ function frule!!(
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     nda = tangent(x)
+    Nfwd._check_block(nda)
     p = getfield(nda, :primal)
     v = sum(abs2, p)
     blk = getfield(getfield(nda, :partials_block), :parent)
@@ -802,6 +804,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
     )
+    # Pin a cached V whose primal grew outside AD: a `throws` row accepts Lifted seeds, so
+    # the mismatch survives construction of the tested primitive rule.
+    for N in (1, 8)
+        x = zero_lifted(Val(N), [3.0])
+        push!(primal(x), 7.0)
+        opts = (
+            mode=ForwardMode,
+            chunk_size=N,
+            throws=(ArgumentError, "derivative storage covers"),
+        )
+        push!(test_cases, (false, :none, opts, sum, x))
+        push!(test_cases, (false, :none, opts, sum, abs2, x))
+    end
     memory = Any[]
     return test_cases, memory
 end

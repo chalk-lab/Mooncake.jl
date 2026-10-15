@@ -65,6 +65,141 @@ struct Lifted{P,N,V}
     end
 end
 
+# A constant's V is built once, so a field or element read from it can hold another value,
+# other storage or another type; `nothing` tells the read site to rebuild over the current
+# primal.
+@inline function _read_lifted(::Val{N}, p::P, v) where {N,P}
+    v isa dual_type(Val(N), P) || return nothing
+    return Lifted{P,N}(p, v)
+end
+# A scalar keeps its partials; its inner value must equal the current primal.
+@inline function _read_lifted(::Val{N}, p::P, v::NDual{T,N}) where {N,P,T}
+    P === T || return nothing
+    return Lifted{T,N}(p, NDual{T,N}(p, v.partials))
+end
+@inline function _read_lifted(::Val{N}, p::P, v::Complex{NDual{T,N}}) where {N,P,T}
+    P === Complex{T} || return nothing
+    return Lifted{P,N}(
+        p,
+        Complex(
+            NDual{T,N}(real(p), real(v).partials), NDual{T,N}(imag(p), imag(v).partials)
+        ),
+    )
+end
+@inline function _read_lifted(::Val{N}, p::P, v::NDualArray) where {N,P}
+    getfield(v, :primal) === p || return nothing
+    return Lifted{P,N}(p, v)
+end
+@static if VERSION >= v"1.11-rc4"
+    @inline function _read_lifted(::Val{N}, p::P, v::NDualMemoryRef) where {N,P}
+        getfield(v, :primal) === p || return nothing
+        return Lifted{P,N}(p, v)
+    end
+end
+# An immutable aggregate matches by type with stale leaves inside, and a rule that consumes
+# the whole V (`evalpoly`) reads them; refresh each leaf as a field read would. Dispatch on
+# the primal: `Ptr` and `TwicePrecision` have tuple Vs without being aggregates.
+@inline function _read_lifted(
+    ::Val{N}, p::P, v::Union{Tuple,NamedTuple}
+) where {N,P<:Union{Tuple,NamedTuple}}
+    return _read_refreshed(Val(N), p, v)
+end
+@inline _read_lifted(::Val{N}, p::P, v::ImmutableDual) where {N,P} = _read_refreshed(
+    Val(N), p, v
+)
+@inline function _read_refreshed(::Val{N}, p::P, v) where {N,P}
+    v isa dual_type(Val(N), P) || return nothing
+    r = _refresh_leaves(Val(N), p, v)
+    r === nothing && return nothing
+    return Lifted{P,N}(p, r)
+end
+# The refreshed V keeps `typeof(v)`: a leaf's canonical element type can be abstract (`Any`),
+# and `Lifted` is invariant in V, so a tuple typed from its values would not be the slot's V.
+@inline _refresh_leaves(::Val{N}, ::Tuple{}, ::Tuple{}) where {N} = ()
+@inline function _refresh_leaves(::Val{N}, p::Tuple, v::Tuple) where {N}
+    h = _read_lifted(Val(N), p[1], v[1])
+    h === nothing && return nothing
+    t = _refresh_leaves(Val(N), Base.tail(p), Base.tail(v))
+    t === nothing && return nothing
+    return typeof(v)((tangent(h), t...))
+end
+@inline function _refresh_leaves(
+    ::Val{N}, p::NamedTuple{names}, v::NamedTuple{names}
+) where {N,names}
+    r = _refresh_leaves(Val(N), Tuple(p), Tuple(v))
+    r === nothing && return nothing
+    return typeof(v)(r)
+end
+@inline function _refresh_leaves(
+    ::Val{N}, p, v::ImmutableDual{<:NamedTuple{names}}
+) where {N,names}
+    fields = getfield(v, :fields)
+    r = _refresh_fields(Val(N), p, fields, names)
+    r === nothing && return nothing
+    return ImmutableDual(typeof(fields)(r))
+end
+@inline _refresh_fields(::Val{N}, p, fields, ::Tuple{}) where {N} = ()
+@inline function _refresh_fields(::Val{N}, p, fields, names::Tuple) where {N}
+    name = names[1]
+    f = getfield(fields, name)
+    r = if f isa PossiblyUninitTangent
+        if is_init(f) && isdefined(p, name)
+            h = _read_lifted(Val(N), getfield(p, name), val(f))
+            h === nothing ? nothing : typeof(f)(tangent(h))
+        else
+            f
+        end
+    else
+        h = _read_lifted(Val(N), getfield(p, name), f)
+        h === nothing ? nothing : tangent(h)
+    end
+    r === nothing && return nothing
+    t = _refresh_fields(Val(N), p, fields, Base.tail(names))
+    t === nothing && return nothing
+    return (r, t...)
+end
+# The rebuild takes the slot, not the loaded `p`, and returns boxed: a rooted argument or an
+# unboxed `Lifted` return would put a GC frame on every read's fast path.
+@inline function _read_lifted(::Val{N}, p::P, v, x::Lifted, key, rest...) where {N,P}
+    out = _read_lifted(Val(N), p, v)
+    out === nothing || return out
+    return _rebuild_lifted!(Val(N), x, key, rest...)::lifted_type(Val(N), P)
+end
+# The rebuilt V is stored over the stale one, so the next read is an identity check again.
+@noinline function _rebuild_lifted!(::Val{N}, x::Lifted, key, rest...) where {N}
+    out = zero_lifted(Val(N), _read_key(primal(x), key, rest...))
+    _store_v!(tangent(x), key, tangent(out))
+    return Base.inferencebarrier(out)
+end
+# A field projected from an `NDualArray` (`.ref`) is built from its current primal on every
+# read, so it cannot be stale and needs no identity check.
+@inline function _read_lifted(
+    ::Val{N}, p::P, v, ::Lifted{<:Any,N,<:NDualArray}, key, rest...
+) where {N,P}
+    return Lifted{P,N}(p, v)
+end
+@inline _read_key(parent, name, rest...) = getfield(parent, name, rest...)
+@inline _read_key(parent::Array, inds::Tuple) = parent[inds...]
+@inline _read_key(parent::AbstractDict, key) = parent[key]
+# Immutable parents (tuples, `ImmutableDual`) keep the stale V, so replaced storage inside one
+# is rebuilt on every read.
+@inline _store_v!(parent, key, v) = nothing
+@inline function _store_v!(parent::MutableDual, key::Union{Symbol,Int}, v)
+    name = key isa Int ? fieldname(typeof(getfield(parent, :fields)), key) : key
+    return _setfield_tangent!(parent, name, v)
+end
+@inline _store_v!(parent::Array, inds::Tuple, v) = (parent[inds...]=v; nothing)
+@inline _store_v!(parent::AbstractDict, key, v) = (parent[key]=v; nothing)
+@static if VERSION >= v"1.11-rc4"
+    @inline function _read_key(parent::MemoryRef, (ordering, boundscheck)::Tuple)
+        return memoryrefget(parent, ordering, boundscheck)
+    end
+    @inline function _store_v!(parent::MemoryRef, (ordering, boundscheck)::Tuple, v)
+        memoryrefset!(parent, v, ordering, boundscheck)
+        return nothing
+    end
+end
+
 # NDualArray / NDualMemoryRef already name their primal storage; use that identity.
 # Wrapper primals (SubArray, Diagonal, …) cannot be rebuilt from their field Vs because
 # metadata such as indices lifts to NoDual, so mismatched wrapper slots remain constructible.

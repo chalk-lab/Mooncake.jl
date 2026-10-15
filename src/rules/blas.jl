@@ -159,6 +159,7 @@ end
     ::DenseVector, V::NDualArray{T,N,1,A,D,B}, lane::Int, ::Val{:read}
 ) where {T,N,A,D,B<:Nfwd.NDualBlock}
     @boundscheck 1 <= lane <= N || throw(BoundsError(V, lane))
+    Nfwd._check_block(V)
     indices = (lane, Base.Slice(Base.OneTo(length(getfield(V, :primal)))))
     return SubArray{T,1,B,typeof(indices),true}(
         getfield(V, :partials_block), indices, lane - N, N
@@ -1495,7 +1496,14 @@ end
 @inline function _partials_block(
     x::Lifted{P,N,<:NDualArray}
 ) where {T,D,P<:AbstractArray{T,D},N}
-    return getfield(tangent(x), :partials_block), false
+    v = tangent(x)
+    Nfwd._check_block(v)
+    b = getfield(v, :partials_block)
+    p = primal(x)
+    size(b) == (N, size(p)...) && return (b, false)
+    # A primal shrunk outside AD leaves the block longer than it; copy the covered columns
+    # into a block of the primal's shape so every path returns the same block type.
+    return (typeof(b)(vec(collect(view(b, :, axes(p)...))), (N, size(p)...)), true)
 end
 @inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
     p = primal(x)
@@ -1709,8 +1717,8 @@ function frule!!(
     result = dot(x, y)
     # Two wide gemv! calls contract contiguous blocks (~3.5× faster than lane dots).
     # The length-Nw output allocation is permitted here (no :allocs guard).
-    Xb = getfield(tangent(x_dx), :partials_block)
-    Yb = getfield(tangent(y_dy), :partials_block)
+    Xb, _ = _partials_block(x_dx)
+    Yb, _ = _partials_block(y_dy)
     # Empty gemv skips even β scaling, so empty dot needs explicitly zeroed lanes.
     out = zeros(P, Nw)
     BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
@@ -2095,7 +2103,7 @@ function _scal_partials!(a_da::Lifted{P,Nw}, X_dX::Lifted, n, step) where {P,Nw}
         return nothing
     end
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
-    Xb, _ = _partials_block(X_dX)
+    Xb, xcopied = _partials_block(X_dX)
     Xbm = reshape(Xb, Nw, :)
     # Per-lane Frechet dX_k := a·dX_k + da_k·X, all lanes in one pass: each touched
     # element's lanes are one contiguous block column.
@@ -2106,6 +2114,7 @@ function _scal_partials!(a_da::Lifted{P,Nw}, X_dX::Lifted, n, step) where {P,Nw}
             Xbm[k, i] = a * Xbm[k, i] + das[k] * xi
         end
     end
+    xcopied && _write_back_partials!(X_dX, Xb)
     return nothing
 end
 # Raw-pointer path: per-lane tangent pointers are dense buffers by the `Ptr` dual
@@ -5120,6 +5129,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     )
 
     memory = Any[]
+    # Complex `dot` is allocation-free: a pin that `_partials_block` returns one block type.
+    if P <: Complex
+        push!(
+            test_cases,
+            (false, :allocs, (; mode=ForwardMode), x -> real(dot(x, x)), randn(rng, P, 16)),
+        )
+    end
     return test_cases, memory
 end
 

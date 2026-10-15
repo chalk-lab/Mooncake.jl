@@ -2144,15 +2144,17 @@ end
 
 # Per-lane strided views write through to the block; tangent_view builds just one lane.
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
+    _check_block(a)
     block = getfield(a, :partials_block)
-    colons = ntuple(_ -> Colon(), Val(D))
+    colons = ntuple(d -> axes(getfield(a, :primal), d), Val(D))
     return ntuple(k -> view(block, k, colons...), Val(N))
 end
 
 # Write-through lane view, unlike tangent(x, lane)'s dense reverse-shaped copy.
-@inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
-    getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
-)
+@inline function tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D}
+    _check_block(a)
+    return view(getfield(a, :partials_block), k, axes(getfield(a, :primal))...)
+end
 
 # Shape follows the primal; resize mutates primal and block together while preserving
 # the immutable wrapper's field identities.
@@ -2161,10 +2163,37 @@ function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
     return IndexStyle(A)
 end
 
+# The block covers the primal unless the primal was resized outside differentiated code (a
+# global grown between calls); a lane read past it would be silent garbage, so refuse. The
+# throw takes the lengths, not `a`: a tracked call argument needs a GC root, which would put a
+# frame on every reader's fast path.
+@inline function _check_block(a::NDualArray{Element,N}) where {Element,N}
+    entries = length(_block_storage(getfield(a, :partials_block)))
+    return _check_storage(entries, N, length(getfield(a, :primal)))
+end
+# Element-wise V arrays share the check with `N == 1` and one V entry per element.
+@inline function _check_storage(entries::Int, N::Int, len::Int)
+    entries >= N * len || _throw_storage_mismatch(entries, N, len)
+    return nothing
+end
+@noinline function _throw_storage_mismatch(entries::Int, N::Int, len::Int)
+    throw(
+        ArgumentError(
+            "The forward derivative storage covers $(entries ÷ N) elements but the array " *
+            "now has $len: it was resized outside differentiated code after its " *
+            "derivative storage was built (e.g. a global resized between calls). Rebuild " *
+            "the rule or cache.",
+        ),
+    )
+end
+
 # The primal's linear index for `i`, which `_lane_index` turns into a block address.
 # `LinearIndices` accepts both the linear and the cartesian index forms and bounds-checks them,
 # so the block access itself can be `@inbounds`.
-@inline _linear_elem(a::NDualArray, i::Vararg{Int}) = LinearIndices(getfield(a, :primal))[i...]
+@inline function _linear_elem(a::NDualArray, i::Vararg{Int})
+    _check_block(a)
+    return LinearIndices(getfield(a, :primal))[i...]
+end
 
 # Element-wise reduction over a flat block. Reading each element's lane column as one
 # `NTuple{N,Element}` load matters twice over: `getindex` would reload the block's parent pointer
@@ -2178,6 +2207,7 @@ end
     ilast::Integer,
 ) where {F,O,Element,N,D,W}
     ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
+    _check_block(A)
     i0, i1 = Int(ifirst), Int(ilast)
     p = getfield(A, :primal)
     cols = reinterpret(NTuple{N,Element}, getfield(getfield(A, :partials_block), :parent))

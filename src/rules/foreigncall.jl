@@ -501,6 +501,7 @@ function frule!!(
     a::Lifted{Array{E,D},Nw,<:NDualArray{E,Nw,D,Array{E,D}}},
     dims::Lifted,
 ) where {Nw,E<:NDualEltype,M,D}
+    Nfwd._check_block(tangent(a))
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
     # A new header over the same parent preserves the original partials storage.

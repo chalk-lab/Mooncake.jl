@@ -63,6 +63,11 @@ _**No Global Mutable State**_
 
 `function`s can in principle also communicate via `global` mutable state.
 We make the decision to _not_ support this.
+Reading a global is supported when its derivative-carrying storage does not alias an argument.
+Forward mode reads current values and replaced storage inside globals between AD calls,
+including calls reusing a prepared cache and slots whose value type changes.
+Reverse mode requires changes to remain compatible with its cached tangent representation.
+The restriction below concerns mutation of global state during the differentiated call.
 
 For example, we assume `function`s of the following form cannot be encountered:
 ```julia

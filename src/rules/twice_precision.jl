@@ -827,6 +827,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # of finite-differencing the constructor output.
         (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
         (false, :allocs, nothing, (a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0),
+        # A range ARGUMENT: its `TwicePrecision` fields have tuple Vs that are not aggregates.
+        (
+            false,
+            :none,
+            nothing,
+            (x, r) -> sum(x .* r),
+            [1.0, 2.0, 3.0],
+            range(0.0, 1.0; length=3),
+        ),
     ]
     for (P, S) in ((Float16, Float32), (Float16, Float64), (Float32, Float64)),
         (f, deriv) in ((+, 1.5), (*, 5.0), (/, 0.1875))
