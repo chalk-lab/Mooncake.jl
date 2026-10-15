@@ -4386,6 +4386,9 @@ function rrule!!(
         r_bc = _gpu_accum_pullback!(
             flat_pargs, flat_fdatas, out, dy_out, bc_primal, scalar_map, scalar_count
         )
+        # `out` holds the NDual partials, which nothing reads after this pullback. Returning
+        # its device memory now saves the garbage collector a pass to reclaim it.
+        unsafe_free!(out)
         return NoRData(), r_bc
     end
 
