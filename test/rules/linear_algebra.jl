@@ -34,6 +34,13 @@
         @test g32[2] ≈ g64[2] rtol = 1e-4
         @test g32[3] ≈ g64[3] rtol = 1e-4
     end
+    # A badly conditioned wide `A`, whose minimum-norm solution sums to `b[1]`.
+    @testset "\\, Float32, ill-conditioned wide" begin
+        A = Float32[1 1 0; 1 1.0001 0]
+        y, (_, g) = grad(b -> sum(A \ b), Float32[1, 0])
+        @test y ≈ 1 rtol = 1e-2
+        @test g ≈ [1, 0] atol = 1e-2
+    end
 end
 
 if Base.get_extension(Mooncake, :MooncakeChainRulesExt) !== nothing

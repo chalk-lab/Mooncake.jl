@@ -187,9 +187,9 @@ function rrule!!(
 end
 
 # For a non-square `A`, `A \ B` is `pinv(A) * B` (least squares or minimum norm). The rules
-# work with whichever of `A` and `A'` is tall, `M`, through `(M'M) \ x`, computed from the R
-# factor of its pivoted QR. At a rank-deficient `A` the solution, which LinearAlgebra
-# truncates by rank, is not differentiable, so they throw.
+# work with whichever of `A` and `A'` is tall, `M`, through the pivoted QR of `M`. At a
+# rank-deficient `A` the solution, which LinearAlgebra truncates by rank, is not
+# differentiable, so they throw.
 function _tall_qr(M::AbstractMatrix{P}) where {P}
     F = qr!(Matrix{P}(M), ColumnNorm())
     # The rank as LinearAlgebra's least-squares solve estimates it, with the same tolerance.
@@ -212,6 +212,24 @@ function _gram_ldiv(F, x)
     return out
 end
 
+# `M⁺ x` and `M⁺' y` (`M⁺ = (M'M) \ M'`) for the pivoted QR `F` of a tall `M` with full rank,
+# as `R \ (Q'x)` and `Q (R' \ y)`, which don't square the condition number of `M`.
+function _pinv_ldiv(F, x)
+    R = UpperTriangular(F.R)
+    y = R \ view(_q_mul!('T', F, copy(x)), axes(R, 1), :)
+    out = similar(y)
+    out[F.p, :] .= y
+    return out
+end
+function _pinv_adj_ldiv(F, y::AbstractMatrix{P}) where {P}
+    R = UpperTriangular(F.R)
+    z = zeros(P, size(F.factors, 1), size(y, 2))
+    z[axes(R, 1), :] .= R' \ y[F.p, :]
+    return _q_mul!('N', F, z)
+end
+# `Q * x` or `Q' * x`, in place: `F.Q` isn't type-stable on Julia 1.10.
+_q_mul!(trans, F, x) = LAPACK.ormqr!('L', trans, getfield(F, :factors), getfield(F, :τ), x)
+
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(\),DenseMatOrAdj{P},DenseVecOrMatArg{P}} where {P<:BlasRealFloat},
@@ -231,13 +249,12 @@ function frule!!(
     elseif m > n
         F = _tall_qr(A)
         X = F \ B
-        dX = _gram_ldiv(F, A' * (dB - dA * X) + dA' * (B - A * X))
+        dX = _pinv_ldiv(F, dB - dA * X) + _gram_ldiv(F, dA' * (B - A * X))
     else
         F = _tall_qr(A')
-        Y = _gram_ldiv(F, B)
-        X = A' * Y
-        W = dA' * Y
-        dX = W + A' * _gram_ldiv(F, dB - dA * X - A * W)
+        X = _pinv_adj_ldiv(F, B)
+        W = dA' * _gram_ldiv(F, B)
+        dX = W + _pinv_adj_ldiv(F, dB - dA * X - A * W)
     end
     return Dual(_like(primal(B_dB), X), _like(primal(B_dB), dX))
 end
@@ -294,16 +311,16 @@ function _ldiv_nonsquare(A, dA, B, dB::AbstractVecOrMat{P}) where {P}
     m, n = size(A)
     F = _tall_qr(m > n ? A : A')
     Y = m < n ? _gram_ldiv(F, B) : Matrix{P}(undef, 0, 0)
-    X = m > n ? F \ B : A' * Y
+    X = m > n ? F \ B : _pinv_adj_ldiv(F, B)
     dX = zero(X)
     function ldiv_nonsquare_pb!!(::NoRData)
         if m > n
             Z = _gram_ldiv(F, dX)
-            B̄ = A * Z
+            B̄ = _pinv_adj_ldiv(F, dX)
             _addmul!(dA, B̄, X', -one(P))
             _addmul!(dA, B - A * X, Z', one(P))
         else
-            B̄ = _gram_ldiv(F, A * dX)
+            B̄ = _pinv_ldiv(F, dX)
             _addmul!(dA, B̄, X', -one(P))
             _addmul!(dA, Y, dX' - B̄' * A, one(P))
         end
