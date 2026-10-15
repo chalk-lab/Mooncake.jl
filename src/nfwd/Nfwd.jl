@@ -251,16 +251,16 @@ end
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 # Either zero factor makes a derivative product zero, including at NaN or Inf.
-@inline function _fwd_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+# Workaround: keep guard calls until prebuilt reverse rules preserve primitive boundaries in AD-safe IR for forward-over-reverse.
+@noinline function _fwd_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
     zs = iszero(s)
     return ntuple(i -> ifelse(iszero(p[i]) | zs, zero(T), p[i] * s), Val(N))
 end
-# Eager selection lets batches of divisions vectorize without changing strong zeros.
-@inline _nfwd_guarded_div(x::T, y::T) where {T<:AbstractFloat} = ifelse(
+@noinline _nfwd_guarded_div(x::T, y::T) where {T<:AbstractFloat} = ifelse(
     iszero(x), zero(T), x / y
 )
 # A separate operation lets its AD rules retain perturbations through zero factors.
-@inline _nfwd_guarded_muladd(f::F, a::T, b::T, c::T) where {F,T} = ifelse(
+@noinline _nfwd_guarded_muladd(f::F, a::T, b::T, c::T) where {F,T} = ifelse(
     iszero(a) | iszero(b), c, f(a, b, c)
 )
 @inline _fwd_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))

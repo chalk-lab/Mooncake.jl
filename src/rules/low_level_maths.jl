@@ -30,15 +30,14 @@
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
 # Like `_fwd_guarded_scale`, either zero factor makes a derivative product zero.
-@inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = ifelse(
+# Workaround: keep guard calls until prebuilt reverse rules preserve primitive boundaries in AD-safe IR for forward-over-reverse.
+@noinline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = ifelse(
     iszero(ȳ) | iszero(grad), zero(T), ȳ * grad
 )
 
 # Differentiate the operation, not the zero branch: a zero cotangent can have a
 # live outer perturbation. Guard each product-rule term independently.
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(_rvs_guarded_scale),P,P
-} where {P<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(_rvs_guarded_scale),P,P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(_rvs_guarded_scale),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {P<:IEEEFloat,N}
@@ -51,7 +50,15 @@ function frule!!(
     return Lifted{P,N}(v, NDual{P,N}(v, parts))
 end
 
-@is_primitive MinimalCtx ForwardMode Tuple{
+function rrule!!(
+    ::CoDual{typeof(_rvs_guarded_scale)}, x::CoDual{P}, y::CoDual{P}
+) where {P<:IEEEFloat}
+    a, b = primal(x), primal(y)
+    pb(dy) = (NoRData(), _rvs_guarded_scale(dy, b), _rvs_guarded_scale(dy, a))
+    return zero_fcodual(_rvs_guarded_scale(a, b)), pb
+end
+
+@is_primitive MinimalCtx Tuple{
     typeof(_fwd_guarded_scale),NTuple{M,P},P
 } where {M,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
 function frule!!(
@@ -69,9 +76,20 @@ function frule!!(
     return Lifted{typeof(v),N}(v, duals)
 end
 
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(Nfwd._nfwd_guarded_div),P,P
-} where {P<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(_fwd_guarded_scale)}, x::CoDual{NTuple{M,P}}, y::CoDual{P}
+) where {M,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    a, b = primal(x), primal(y)
+    function pb(dy)
+        M == 0 && return (NoRData(), NoRData(), zero(P))
+        da = _fwd_guarded_scale(dy, conj(b))
+        db = sum(ntuple(i -> _fwd_guarded_scale((dy[i],), conj(a[i]))[1], Val(M)))
+        return NoRData(), da, db
+    end
+    return zero_fcodual(_fwd_guarded_scale(a, b)), pb
+end
+
+@is_primitive MinimalCtx Tuple{typeof(Nfwd._nfwd_guarded_div),P,P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(Nfwd._nfwd_guarded_div),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {P<:IEEEFloat,N}
@@ -86,8 +104,21 @@ function frule!!(
     return Lifted{P,N}(v, NDual{P,N}(v, parts))
 end
 
+function rrule!!(
+    ::CoDual{typeof(Nfwd._nfwd_guarded_div)}, x::CoDual{P}, y::CoDual{P}
+) where {P<:IEEEFloat}
+    a, b = primal(x), primal(y)
+    v = Nfwd._nfwd_guarded_div(a, b)
+    pb(dy) = (
+        NoRData(),
+        Nfwd._nfwd_guarded_div(dy, b),
+        -Nfwd._nfwd_guarded_div(_rvs_guarded_scale(dy, v), b),
+    )
+    return zero_fcodual(v), pb
+end
+
 # As with guarded scale, differentiate the fused operation, not its zero branch.
-@is_primitive MinimalCtx ForwardMode Tuple{
+@is_primitive MinimalCtx Tuple{
     typeof(Nfwd._nfwd_guarded_muladd),F,P,P,P
 } where {F<:Union{typeof(muladd),typeof(fma)},P<:IEEEFloat}
 function frule!!(
@@ -109,6 +140,20 @@ function frule!!(
         Val(N),
     )
     return Lifted{P,N}(v, NDual{P,N}(v, parts))
+end
+
+function rrule!!(
+    ::CoDual{typeof(Nfwd._nfwd_guarded_muladd)},
+    f::CoDual{F},
+    a::CoDual{P},
+    b::CoDual{P},
+    c::CoDual{P},
+) where {F<:Union{typeof(muladd),typeof(fma)},P<:IEEEFloat}
+    op, x, y, z = primal(f), primal(a), primal(b), primal(c)
+    pb(dy) = (
+        NoRData(), NoRData(), _rvs_guarded_scale(dy, y), _rvs_guarded_scale(dy, x), dy
+    )
+    return zero_fcodual(Nfwd._nfwd_guarded_muladd(op, x, y, z)), pb
 end
 
 # Horner on dual coefficients preserves their partials and avoids transform overhead.
@@ -920,11 +965,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (Nfwd._nfwd_guarded_muladd, muladd, P(0), P(3), P(2)),
                 (Nfwd._nfwd_guarded_muladd, fma, P(0), P(3), P(2)),
                 (_fwd_guarded_scale, (P(0), P(1)), P(3)),
-                (_fwd_guarded_scale, (complex(P(0)), complex(P(1))), complex(P(3))),
+                (
+                    _fwd_guarded_scale,
+                    (complex(P(0)), complex(P(1), P(2))),
+                    complex(P(3), P(-4)),
+                ),
             ]
-            return map(
-                c -> (false, :stability_and_allocs, (mode=ForwardMode,), c...), cases
-            )
+            return map(c -> (false, :stability_and_allocs, nothing, c...), cases)
         end...,
         # Forward-only primitive; seed coefficients too, at short and longer Horner folds.
         map([Float32, Float64]) do P
@@ -1119,8 +1166,129 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             end
         end...,
     )
+    let P = Float16
+        z, o = zero(P), one(P)
+        for (f, b, expected, rvs) in (
+            (_rvs_guarded_scale, P(3), P(3), (NoRData(), P(3), z)),
+            (Nfwd._nfwd_guarded_div, P(2), P(0.5), (NoRData(), P(0.5), -z)),
+        )
+            opts = (oracle=(value=z, deriv=(fwd=expected, rvs=rvs)), output_tangent=o)
+            push!(
+                test_cases,
+                (false, :stability_and_allocs, opts, f, CoDual(z, o), CoDual(b, z)),
+            )
+        end
+        for op in (muladd, fma)
+            opts = (
+                oracle=(value=o, deriv=(fwd=P(3), rvs=(NoRData(), NoRData(), P(3), z, o))),
+                output_tangent=o,
+            )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :stability_and_allocs,
+                    opts,
+                    Nfwd._nfwd_guarded_muladd,
+                    op,
+                    CoDual(z, o),
+                    CoDual(P(3), z),
+                    CoDual(o, z),
+                ),
+            )
+        end
+    end
+    for P in (Float16, Float32, Float64), bad in (P(Inf), P(NaN))
+        z, o = zero(P), one(P)
+        for (a, b, da, db, dy) in
+            ((z, bad, z, o, z), (bad, z, o, z, z), (z, z, bad, bad, bad))
+            opts = (
+                oracle=(value=z, deriv=(fwd=z, rvs=(NoRData(), z, z))), output_tangent=dy
+            )
+            push!(
+                test_cases,
+                (false, :none, opts, _rvs_guarded_scale, CoDual(a, da), CoDual(b, db)),
+            )
+            for op in (muladd, fma)
+                opts = (
+                    oracle=(value=o, deriv=(fwd=z, rvs=(NoRData(), NoRData(), z, z, dy))),
+                    output_tangent=dy,
+                )
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        opts,
+                        Nfwd._nfwd_guarded_muladd,
+                        op,
+                        CoDual(a, da),
+                        CoDual(b, db),
+                        CoDual(o, z),
+                    ),
+                )
+            end
+        end
+        for (a, b, da, db) in ((z, P(3), z, bad), (bad, P(3), z, z), (z, bad, z, z))
+            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z, -z)),), output_tangent=z)
+            push!(
+                test_cases,
+                (false, :none, opts, Nfwd._nfwd_guarded_div, CoDual(a, da), CoDual(b, db)),
+            )
+        end
+    end
     memory = Any[]
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
+    cases = [
+        ((a, b) -> _rvs_guarded_scale(a, b), CoDual(1.0, 0.0), CoDual(0.0, 1.0)),
+        ((p, s) -> _fwd_guarded_scale(p, s), (0.0, 1.0), 3.0),
+        ((p, s) -> _fwd_guarded_scale(p, s), (0.0 + 0.0im, 1.0 + 0.0im), 3.0 + 0.0im),
+        ((a, b) -> Nfwd._nfwd_guarded_div(a, b), CoDual(0.0, 1.0), CoDual(3.0, 0.0)),
+        (
+            (a, b, c) -> Nfwd._nfwd_guarded_muladd(muladd, a, b, c),
+            CoDual(0.0, 1.0),
+            CoDual(3.0, 0.0),
+            CoDual(2.0, 0.0),
+        ),
+        (
+            (a, b, c) -> Nfwd._nfwd_guarded_muladd(fma, a, b, c),
+            CoDual(0.0, 1.0),
+            CoDual(3.0, 0.0),
+            CoDual(2.0, 0.0),
+        ),
+    ]
+    test_cases = Any[(false, :none, nothing, c...) for c in cases]
+    for P in (Float16, Float32, Float64), T in (P, Complex{P}), M in (1, 2, 8)
+        width = Val(M)
+        f = (a, b) -> _fwd_guarded_scale(ntuple(_ -> a, width), b)
+        a = T <: Complex ? T(1, 2) : zero(T)
+        b = T <: Complex ? T(3, -4) : T(3)
+        opts = (
+            oracle=(
+                value=ntuple(_ -> a * b, M),
+                deriv=(fwd=ntuple(_ -> b, M), rvs=(NoRData(), M * conj(b), M * conj(a))),
+            ),
+            output_tangent=ntuple(_ -> one(T), M),
+        )
+        push!(test_cases, (false, :none, opts, f, CoDual(a, one(T)), CoDual(b, zero(T))))
+        for bad in (T(Inf), T(NaN)),
+            (a, b, da, db, dy) in (
+                (zero(T), bad, zero(T), one(T), zero(T)),
+                (bad, zero(T), one(T), zero(T), zero(T)),
+                (zero(T), zero(T), bad, bad, bad),
+            )
+
+            z = zero(T)
+            zs = ntuple(_ -> z, M)
+            opts = (
+                oracle=(value=zs, deriv=(fwd=zs, rvs=(NoRData(), z, z))),
+                output_tangent=ntuple(_ -> dy, M),
+            )
+            push!(test_cases, (false, :none, opts, f, CoDual(a, da), CoDual(b, db)))
+        end
+    end
+    return test_cases, Any[]
+end

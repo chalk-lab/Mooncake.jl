@@ -51,6 +51,10 @@ let rule = build_rrule(Tuple{typeof(_throw_empty_fdata_exception),Float64})
 end
 
 @testset "hessian_scalar_functions" begin
+    @testset "square at zero" begin
+        @test _compute_hessian(x -> x[1] * x[1], [0.0]) == [2.0;;]
+    end
+
     @testset "sum" begin
         g(x) = sum(x)
         x = [2.0]
@@ -108,6 +112,11 @@ end
         H = _compute_hessian(f, x)
         # f(x) = x₁² + x₂², so ∇f = [2x₁, 2x₂] and H = 2I
         @test H ≈ [2.0 0.0; 0.0 2.0] rtol = 1e-10
+    end
+
+    @testset "reduced GAMS objective" begin
+        f(x) = (x[1] * x[1] + x[2] * x[2])^2 - 4x[1]
+        @test _compute_hessian(f, [0.0, 1.0]) == [4.0 0.0; 0.0 12.0]
     end
 
     @testset "GAMS objective" begin
