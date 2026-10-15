@@ -568,6 +568,21 @@ end
         # bias_act!(identity, x, b): modifies x in-place
         (false, :stability, true, bias_act!, identity, _rand(rng, 8, 4), _rand(rng, 8)),
         (false, :stability, true, bias_act!, identity, _rand(rng, 8), _rand(rng, 8)),
+
+        # bias_act!(σ, x, b) for NNlib's activations, and tanh: derivative from the output
+        # (relu, σ, elu, swish' needs x) or the input (gelu, softplus); Dense and Conv biases
+        map([relu, sigmoid, elu, swish, gelu, softplus, tanh]) do σ
+            (false, :none, true, bias_act!, σ, _rand(rng, 8, 4), _rand(rng, 8))
+        end...,
+        (
+            false,
+            :none,
+            true,
+            bias_act!,
+            relu,
+            _rand(rng, 3, 3, 4, 2),
+            _rand(rng, 1, 1, 4, 1),
+        ),
     ]
     if cuda
         push!(

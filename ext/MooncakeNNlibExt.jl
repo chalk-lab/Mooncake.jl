@@ -662,8 +662,9 @@ end
 # Handle Flux's common non-identity activations directly to avoid the generic NDual broadcast
 # machinery. Like the identity rule above, these rules restore `x` during the pullback.
 const GPUFastActivation = Union{typeof(tanh),typeof(tanh_fast)}
+const BiasActArray{P} = Union{Array{P},AbstractGPUArray{P}}
 @is_primitive MinimalCtx Tuple{
-    typeof(bias_act!),GPUFastActivation,AbstractGPUArray{P},AbstractGPUArray{P}
+    typeof(bias_act!),GPUFastActivation,BiasActArray{P},BiasActArray{P}
 } where {P<:IEEEFloat}
 
 @inline function _tanh_fast_derivative(x)
@@ -676,8 +677,8 @@ end
 function frule!!(
     ::Dual{typeof(bias_act!)},
     σ::Dual{<:GPUFastActivation},
-    x::Dual{<:AbstractGPUArray{P}},
-    b::Dual{<:AbstractGPUArray{P}},
+    x::Dual{<:BiasActArray{P}},
+    b::Dual{<:BiasActArray{P}},
 ) where {P<:IEEEFloat}
     px, dx = arrayify(x)
     pb, db = arrayify(b)
@@ -690,8 +691,8 @@ end
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
     σ::CoDual{<:GPUFastActivation},
-    x::CoDual{<:AbstractGPUArray{P}},
-    b::CoDual{<:AbstractGPUArray{P}},
+    x::CoDual{<:BiasActArray{P}},
+    b::CoDual{<:BiasActArray{P}},
 ) where {P<:IEEEFloat}
     px, dx = arrayify(x)
     pb, db = arrayify(b)
@@ -710,6 +711,65 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return x, gpu_bias_act_pb!!
+end
+
+# The remaining activations NNlib gives a `@scalar_rule`, on CPU and GPU arrays. As above,
+# `x` is overwritten and restored by the pullback. Like NNlib's own `rrule`, the derivative
+# is taken from the output where the activation allows it, so `x .+ b` is not recomputed.
+const NNlibActivation = Union{
+    (typeof(getfield(NNlib, f)) for (f, _) in NNlib.UNARY_ACTS if f != :tanh_fast)...
+}
+@is_primitive MinimalCtx Tuple{
+    typeof(bias_act!),NNlibActivation,BiasActArray{P},BiasActArray{P}
+} where {P<:IEEEFloat}
+
+@inline function _derivative_from_output(σ, ::Type{P}) where {P}
+    T = Tuple{P,typeof(σ),NNlib.NotaNumber}
+    return isconcretetype(Core.Compiler.return_type(NNlib.only_derivative, T))
+end
+
+function frule!!(
+    ::Dual{typeof(bias_act!)},
+    σ::Dual{<:NNlibActivation},
+    x::Dual{<:BiasActArray{P}},
+    b::Dual{<:BiasActArray{P}},
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
+    pσ = primal(σ)
+    z = px .+ pb
+    px .= pσ.(z)
+    dx .= NNlib.only_derivative.(px, pσ, z) .* (dx .+ db)
+    return x
+end
+
+function rrule!!(
+    ::CoDual{typeof(bias_act!)},
+    σ::CoDual{<:NNlibActivation},
+    x::CoDual{<:BiasActArray{P}},
+    b::CoDual{<:BiasActArray{P}},
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
+    pσ = primal(σ)
+    old_px = copy(px)
+    bias_act!(pσ, px, pb)
+    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:ndims(px)))
+    function bias_act_pb!!(::NoRData)
+        if _derivative_from_output(pσ, P)
+            dx .*= NNlib.only_derivative.(px, pσ, NNlib.NotaNumber())
+        else
+            dx .*= NNlib.only_derivative.(px, pσ, old_px .+ pb)
+        end
+        if isempty(broadcast_dims)
+            db .+= dx
+        else
+            db .+= reshape(sum(dx; dims=broadcast_dims), size(pb))
+        end
+        copyto!(px, old_px)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return x, bias_act_pb!!
 end
 
 # σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
