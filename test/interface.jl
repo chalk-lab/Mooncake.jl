@@ -4523,6 +4523,27 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test x == [10.0, 2.0, 3.0]
             end
 
+            @static if VERSION >= v"1.11.0-rc4"
+                @testset "throwing Hessian restores resized input" for n in (1, 3)
+                    function f(x)
+                        if x[1] < 0
+                            resize!(x, n)
+                            error("resize failure")
+                        end
+                        return sum(abs2, x)
+                    end
+                    x = [1.0, 2.0]
+                    cache = prepare_hessian_cache(
+                        f, x; config=Mooncake.Config(; chunk_size=2)
+                    )
+                    x[1] = -1.0
+                    @test_throws ErrorException("resize failure") value_gradient_and_hessian!!(
+                        cache, f, x
+                    )
+                    @test x == [-1.0, 2.0]
+                end
+            end
+
             @testset "cache reuse with different x" begin
                 f(x) = sum(x .^ 2)
                 x1 = [1.0, 0.0]

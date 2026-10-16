@@ -4120,7 +4120,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
     cols(start_col) = ntuple(lane -> let slot = start_col + lane - 1
         slot <= n ? slot : 0
     end, Val(W))
-    x_snapshot = copy(x1)
+    _snapshot_inputs!!(fwd.input_snapshot, (x1,))
     try
         output = _value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
         po = primal(output)
@@ -4131,7 +4131,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
             H[:, lane] .= tangent(output, lane)[2]
         end
         for start_col in (W + 1):W:n
-            copyto!(x1, x_snapshot)
+            _restore_inputs!!(fwd.input_snapshot, (x1,))
             output = _value_and_derivative!!(
                 fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
             )
@@ -4143,7 +4143,7 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
         end
         return value
     finally
-        copyto!(x1, x_snapshot)
+        _restore_inputs!!(fwd.input_snapshot, (x1,))
     end
 end
 
