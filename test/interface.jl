@@ -4487,29 +4487,34 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H ≈ A
             end
 
-            @testset "chunked Hessian == width-1 (chunk_size $W)" for W in (1, 2, 3, 5)
-                # The Hessian sweep batches W forward-over-reverse columns per pass; results must
-                # match the width-1 column loop across widths (incl. n not divisible by W), and the
-                # input must be left unchanged. value_and_hvp!! must stay width-1 regardless.
-                f(x) = sum(abs2, x) + x[1] * x[2] + 0.5 * x[2] * x[3]
-                x0 = [0.3, -0.7, 1.1, 0.5, -0.2]
-                ref = prepare_hessian_cache(
-                    f, copy(x0); config=Mooncake.Config(; chunk_size=1)
-                )
-                _, g1, H1 = value_gradient_and_hessian!!(ref, f, copy(x0))
-                xc = copy(x0)
-                c = prepare_hessian_cache(
-                    f, copy(x0); config=Mooncake.Config(; chunk_size=W)
-                )
-                _, g, H = value_gradient_and_hessian!!(c, f, xc)
-                @test H ≈ H1 rtol = 1e-10
-                @test g ≈ g1 rtol = 1e-10
-                @test xc == x0
-                # A chunk-configured cache still serves a width-1 single-direction HVP.
-                v = [1.0, 0.0, 0.0, 0.0, 0.0]
-                hc = prepare_hvp_cache(f, copy(x0); config=Mooncake.Config(; chunk_size=W))
-                _, _, hv = value_and_hvp!!(hc, f, v, copy(x0))
-                @test hv ≈ H1[:, 1] rtol = 1e-10
+            # The 32-bit runner has 4 GiB of address space; x64 runs these checks.
+            @static if Sys.WORD_SIZE != 32
+                @testset "chunked Hessian == width-1 (chunk_size $W)" for W in (1, 2, 3, 5)
+                    # The Hessian sweep batches W forward-over-reverse columns per pass; results must
+                    # match the width-1 column loop across widths (incl. n not divisible by W), and the
+                    # input must be left unchanged. value_and_hvp!! must stay width-1 regardless.
+                    f(x) = sum(abs2, x) + x[1] * x[2] + 0.5 * x[2] * x[3]
+                    x0 = [0.3, -0.7, 1.1, 0.5, -0.2]
+                    ref = prepare_hessian_cache(
+                        f, copy(x0); config=Mooncake.Config(; chunk_size=1)
+                    )
+                    _, g1, H1 = value_gradient_and_hessian!!(ref, f, copy(x0))
+                    xc = copy(x0)
+                    c = prepare_hessian_cache(
+                        f, copy(x0); config=Mooncake.Config(; chunk_size=W)
+                    )
+                    _, g, H = value_gradient_and_hessian!!(c, f, xc)
+                    @test H ≈ H1 rtol = 1e-10
+                    @test g ≈ g1 rtol = 1e-10
+                    @test xc == x0
+                    # A chunk-configured cache still serves a width-1 single-direction HVP.
+                    v = [1.0, 0.0, 0.0, 0.0, 0.0]
+                    hc = prepare_hvp_cache(
+                        f, copy(x0); config=Mooncake.Config(; chunk_size=W)
+                    )
+                    _, _, hv = value_and_hvp!!(hc, f, v, copy(x0))
+                    @test hv ≈ H1[:, 1] rtol = 1e-10
+                end
             end
 
             # The rule registry cannot check a public sweep's input restoration on failure.
@@ -4580,14 +4585,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H ≈ zeros(3, 3)
             end
 
-            @testset "debug_mode=true" begin
-                z = [1.2, 1.2]
-                cache = prepare_hessian_cache(
-                    rosen, z; config=Mooncake.Config(; debug_mode=true)
-                )
-                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
-                @test v ≈ rosen(z)
-                @test H ≈ rosen_H(z) rtol = 1e-10
+            # The 32-bit runner has 4 GiB of address space; x64 runs these checks.
+            @static if Sys.WORD_SIZE != 32
+                @testset "debug_mode=true" begin
+                    z = [1.2, 1.2]
+                    cache = prepare_hessian_cache(
+                        rosen, z; config=Mooncake.Config(; debug_mode=true)
+                    )
+                    v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
+                    @test v ≈ rosen(z)
+                    @test H ≈ rosen_H(z) rtol = 1e-10
+                end
             end
 
             @testset "n=0 edge case" begin
