@@ -169,11 +169,11 @@ accumulated gradient. Forward gradients have the restrictions described below.
 
 ### Conflicting forward tangents for one shared storage
 
-Every public `value_and_derivative!!` entry point requires positions sharing differentiable
-storage to share tangent storage too. This applies to bare rules, prepared caches under either
-`friendly_tangents` setting, and caller-supplied `Lifted` slots. Conflicting seeds raise
-`ArgumentError` before conversion or lifting can discard a direction. The check uses the
-call-time inputs, including aliases introduced after cache preparation.
+For every public `value_and_derivative!!` entry point, providing compatible tangent storage
+for positions sharing differentiable storage is the caller's responsibility. This applies to
+bare rules, prepared caches under either `friendly_tangents` setting, and caller-supplied
+`Lifted` slots. Supplied tangents are not checked for this: conflicting seeds give an undefined
+direction without an error.
 
 Distinct objects can share storage. For example:
 
@@ -186,14 +186,15 @@ db = fill(2.0, 3, 1)
 ```
 
 Here `da` and `db` specify conflicting directions for one buffer. Bare tuple calls and both
-prepared tuple interfaces refuse these seeds with the same `ArgumentError`. Use compatible
-shared seeds, such as `db = reshape(da, 3, 1)`; all three paths then return `(12.0, 6.0)`.
+prepared tuple interfaces accept these seeds, but the returned direction is undefined. Use
+compatible shared seeds, such as `db = reshape(da, 3, 1)`; all three paths then return `(12.0, 6.0)`.
 The same requirement applies to views, captured fields, and an `Array` beside its backing
 `Memory`. Equal values in separate tangent buffers do not establish shared storage.
 
 For `Lifted` inputs, build the slots jointly so their partial buffers share storage in every
 lane. Independently lifting two aliased primals allocates independent partial buffers, even
-when their supplied seeds are the same object; passing those slots together is refused.
+when their supplied seeds are the same object. Passing those slots together does not raise an
+error for the conflicting storage, but the returned direction is undefined.
 
 ### Forward gradients of arguments that share one storage
 
