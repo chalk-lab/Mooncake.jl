@@ -70,3 +70,70 @@ end
         end
     end
 end
+
+@testset "numeric refusal preserves storage" begin
+    leaves(v::Mooncake.Nfwd.NDualArray) = [
+        getfield(v, :primal), getfield(getfield(v, :partials_block), :parent)
+    ]
+    leaves(v::Tuple) = reduce(vcat, map(leaves, v); init=Any[])
+    leaves(v) = Any[]
+    cases, memory = Mooncake.derived_rule_test_cases(StableRNG, Val(:array_legacy))
+    GC.@preserve memory for (io, perf, opts, f, args...) in cases
+        opts isa NamedTuple && haskey(opts, :throws) || continue
+        get(opts, :mode, nothing) === ForwardMode || continue
+        c = IdDict{Any,Any}()
+        slots = map(
+            x -> TestUtils._throws_slot(StableRNG(123), Val(opts.chunk_size), x, c), args
+        )
+        arrays = reduce(vcat, map(x -> leaves(tangent(x)), slots); init=Any[])
+        before, pointers = map(copy, arrays), map(pointer, arrays)
+        TestUtils.test_rule(
+            StableRNG(123),
+            f,
+            slots...;
+            interface_only=io,
+            perf_flag=perf,
+            is_primitive=false,
+            opts...,
+        )
+        @test arrays == before
+        @test map(pointer, arrays) == pointers
+    end
+end
+
+@testset "shared filter predicate effects" begin
+    for N in (1, 8), keep in (true, false)
+        calls = Ref(0)
+        f = (x, calls, keep) -> begin
+            a = vec(reshape(x, 1, 2))
+            filter!(a) do v
+                calls[] += 1
+                keep || v < 3
+            end
+            sum(a)
+        end
+        z = Base.Fix1(Mooncake.zero_lifted, Val(N))
+        x = z([2.0, 3.0])
+        rule = build_frule(f, primal(x), calls, keep; chunk_size=N)
+        if keep
+            @test primal(rule(z(f), x, z(calls), z(keep))) == 5
+        else
+            @test_throws ArgumentError rule(z(f), x, z(calls), z(keep))
+        end
+        @test calls[] == 2
+        @test primal(x) == [2.0, 3.0]
+    end
+end
+
+@testset "sole pre-reshaped input" begin
+    for N in (1, 8)
+        p = vec(reshape([2.0, 3.0], 1, 2))
+        z = Base.Fix1(Mooncake.zero_lifted, Val(N))
+        x = z(p)
+        fill!(getfield(tangent(x), :partials_block), 1.0)
+        f = x -> (push!(x, 0.0); sum(x))
+        y = build_frule(f, p; chunk_size=N)(z(f), x)
+        @test primal(y) == 5.0
+        @test all(tangent(y, k) == 2.0 for k in 1:N)
+    end
+end

@@ -1535,11 +1535,7 @@ end
             Lifted{A,1}(
                 x,
                 NDualArray{E,1,D,A}(
-                    x,
-                    Nfwd.NDualBlock{E,D + 1}(
-                        getfield(getfield(cached, :partials_block), :parent),
-                        (1, size(x)...),
-                    ),
+                    x, Nfwd._share_block(getfield(cached, :partials_block), (1, size(x)...))
                 ),
             )
         else
@@ -1974,7 +1970,8 @@ end
             # constructor takes its argument as `Any` and dispatches at runtime.
             shared = getfield(getfield(d[sk], :partials_block), :parent)::Vector{eltype(x)}
             return NDualArray{eltype(x),N,ndims(x),typeof(x)}(
-                x, Nfwd.NDualBlock{eltype(x),ndims(x) + 1}(shared, (N, size(x)...))
+                x,
+                Nfwd._share_block(Nfwd.NDualBlock(shared, (N, length(x))), (N, size(x)...)),
             )
         end
         v = owned()

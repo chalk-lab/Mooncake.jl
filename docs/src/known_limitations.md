@@ -23,13 +23,17 @@ LAPACK operands must also have unit first stride where the routine requires it, 
 On Julia 1.10, resizing a vector whose tangent storage is shared with another array
 header throws an `ArgumentError`. Copy the array before resizing it. Resizing can
 otherwise detach tangent storage and silently lose gradients, including on prepared
-cache reuse. Non-resizing operations on aliases remain supported.
+cache reuse. In forward mode, numeric derivative storage remains marked as shared
+after a second header is created, even if that header is no longer live. A sole
+input reshaped before differentiation still receives private derivative storage.
+Non-resizing operations on aliases remain supported.
 
 This applies to `push!`, `append!`, `resize!`, `pushfirst!`, `prepend!`, `insert!`,
-`pop!`, `popfirst!`, `deleteat!`, `splice!`, `empty!`, and reallocating `sizehint!`
+`pop!`, `popfirst!`, `deleteat!`, `splice!`, `filter!`, `keepat!`, `empty!`, and reallocating `sizehint!`
 calls. The checks cover both differentiation modes at the legacy `_growbeg!`,
 `_growend!`, `_growat!`, `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!`
-rules. Arrays on Julia 1.11 and later are unaffected.
+rules. Forward collection deletion checks run before Base moves elements. Arrays
+on Julia 1.11 and later are unaffected.
 
 ## Numerical Workarounds and Singularities
 
@@ -457,6 +461,14 @@ in the parts the alias guard does not inspect: it does not traverse mutable stru
 abstractly typed fields, array elements, or other variable-length containers such as
 dictionaries. It does not establish overlap introduced through raw pointers or
 `unsafe_wrap`; on Julia 1.10, array storage aliasing is identified by `Base.dataids`.
+
+On Julia 1.10, resizing after creating a second array header with `unsafe_wrap`
+inside differentiated code is not refused and can give a wrong forward derivative.
+For example, given `x = [2.0, 3.0]; sizehint!(x, 100)`, differentiating
+`b = unsafe_wrap(Array, pointer(x), length(x)); push!(x, 0.0); x[1] *= 2; sum(b)`
+at width one can return 2.0 instead of 3.0 in direction `[1.0, 1.0]`.
+Keeping such raw-pointer aliases valid is the caller's responsibility.
+
 Every forward prepared-cache entry point preserves the prepared storage and object aliasing
 at fixed positions, including aliasing between the callable and its arguments, unless
 `check_aliasing=false` opts out of those per-call comparisons.
