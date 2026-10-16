@@ -25,6 +25,68 @@ function oracle_result_count(ts, T)
     end
 end
 
+wrong_mutation!(x, bad_width) = (x .*= 2; nothing)
+Mooncake.@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(wrong_mutation!),Vector{Float64},Int
+}
+function Mooncake.frule!!(
+    ::Lifted{typeof(wrong_mutation!),N}, x::Lifted, bad_width::Lifted
+) where {N}
+    primal(x) .*= 2
+    for k in 1:N
+        tangent_view(x, k) .*= N >= primal(bad_width) ? 99 : 2
+    end
+    return Mooncake.zero_lifted(Val(N), nothing)
+end
+
+mutable struct MutationBox{T}
+    x::T
+end
+
+mutation_leaf(x::AbstractVector{<:AbstractVector}) = x[1]
+mutation_leaf(x::Union{MutationBox,Base.RefValue}) = x.x
+
+wrong_nested_mutation!(x, bad_width) = (mutation_leaf(x) .*= 2; nothing)
+Mooncake.@is_primitive DefaultCtx ForwardMode Tuple{typeof(wrong_nested_mutation!),Any,Int}
+function Mooncake.frule!!(
+    ::Lifted{typeof(wrong_nested_mutation!),N}, x::Lifted, bad_width::Lifted
+) where {N}
+    mutation_leaf(primal(x)) .*= 2
+    v = tangent(x)
+    v = v isa AbstractVector ? v[1] : Mooncake.val(v.fields.x)
+    for k in 1:N
+        tangent_view(v, k) .*= N >= primal(bad_width) && k == 2 ? 99 : 2
+    end
+    return Mooncake.zero_lifted(Val(N), nothing)
+end
+
+wrong_field_mutation!(x, bad_width) = (x.x *= 2; nothing)
+Mooncake.@is_primitive DefaultCtx ForwardMode Tuple{typeof(wrong_field_mutation!),Any,Int}
+function Mooncake.frule!!(
+    ::Lifted{typeof(wrong_field_mutation!),N}, x::Lifted, bad_width::Lifted
+) where {N}
+    primal(x).x *= 2
+    v = tangent(x)
+    ps = v isa Mooncake.Nfwd.NDualRef ? v.partials[] : v.fields.x.partials
+    parts = ntuple(N) do k
+        ps[k] * (N >= primal(bad_width) && k == 2 ? 99 : 2)
+    end
+    if v isa Mooncake.Nfwd.NDualRef
+        v.partials[] = parts
+    else
+        v.fields = (x=Mooncake.Nfwd.NDual(primal(x).x, parts),)
+    end
+    @assert TestUtils._chunked_v_invariant(primal(x), v)
+    return Mooncake.zero_lifted(Val(N), nothing)
+end
+
+wrong_square(x) = x * x
+Mooncake.@is_primitive DefaultCtx ForwardMode Tuple{typeof(wrong_square),Float64}
+function Mooncake.frule!!(::Lifted{typeof(wrong_square),N}, x::Lifted) where {N}
+    p = primal(x)^2
+    return Lifted{Float64,N}(p, Mooncake.Nfwd.NDual(p, ntuple(k -> 99tangent(x, k), N)))
+end
+
 @testset "test_utils" begin
     @testset "JET report cache" begin
         tt = Tuple{typeof(jet_cache_target),Vector{Any}}
@@ -332,7 +394,7 @@ end
     end
 
     @testset "lane relevance is decided exactly" begin
-        # Tolerance must not erase small nonzero directions when substituting zero seeds.
+        # Tolerance must not erase small nonzero directions.
         @test !TestUtils._lane_reads_equal(3.31826f-4, 6.63652f-4)
         # Zero and non-differentiable reads still qualify as direction-free.
         @test TestUtils._lane_reads_equal(0.0f0, 0.0f0)
@@ -581,6 +643,60 @@ end
     end
 
     @testset "forward chunk widths" begin
+        withenv("TEST_MODE" => nothing) do
+            for (bad_width, failures) in ((1, 1), (8, 8), (9, 0))
+                captured = @testset OracleTestSet "mutated argument lanes" begin
+                    test_rule(
+                        Xoshiro(1),
+                        wrong_mutation!,
+                        [1.0],
+                        bad_width;
+                        mode=ForwardMode,
+                        print_results=false,
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+            for (f, x) in (
+                (wrong_field_mutation!, Ref(1.0)),
+                (wrong_field_mutation!, MutationBox(1.0)),
+                (wrong_nested_mutation!, [[1.0]]),
+                (wrong_nested_mutation!, MutationBox([1.0])),
+                (wrong_nested_mutation!, Ref([1.0])),
+            )
+                for (bad_width, failures) in ((8, 1), (9, 0))
+                    captured = @testset OracleTestSet "aggregate argument lanes" begin
+                        test_rule(
+                            Xoshiro(1),
+                            f,
+                            x,
+                            bad_width;
+                            mode=ForwardMode,
+                            print_results=false,
+                        )
+                    end
+                    @test oracle_result_count(captured, Test.Fail) == failures
+                    @test oracle_result_count(captured, Test.Error) == 0
+                end
+            end
+            for oracle in (nothing, (deriv=4.0,))
+                captured = @testset OracleTestSet "independent width-1 check" begin
+                    test_rule(
+                        Xoshiro(1),
+                        wrong_square,
+                        CoDual(2.0, 1.0);
+                        mode=ForwardMode,
+                        chunk_size=8,
+                        oracle,
+                        print_results=false,
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == 1
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+        end
+
         # A registry row cannot compare the probe stream across harness configurations.
         rngs = [StableRNG(123456) for _ in 1:3]
         for (rng, widths) in zip(rngs, ((1,), (1, 4), (1, 8)))
