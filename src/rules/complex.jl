@@ -114,7 +114,7 @@ end
     return reshape(_reinterpret_storage(parent(p), _fields(d).parent), size(p))
 end
 @inline function _reinterpret_storage(p::Base.ReinterpretArray, d::TangentOrFData)
-    return reinterpret(eltype(p), _reinterpret_storage(parent(p), _fields(d).parent))
+    return _reinterpret_like(p, _reinterpret_storage(parent(p), _fields(d).parent))
 end
 @inline function _reinterpret_tangent(x::CoDual{<:FloatReinterpretArray}, f=getindex)
     p = primal(x).parent
@@ -373,6 +373,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
         (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:im)),
         (false, :stability_and_allocs, nothing, _new_, ComplexF64, 1.5, -0.5),
     ]
+    a = view(reinterpret(reshape, Float64, ComplexF64[1, 2]), :, :)
+    push!(
+        cases,
+        (false, :none, (; unsafe_perturb=true), getindex, reinterpret(ComplexF64, a), 1, 2),
+    )
     for T in (Float32, Float64), (E, S) in ((T, Complex{T}), (Complex{T}, T))
         x = reinterpret(E, S[1, 2, 3, 4])
         for inds in ((1,), (1, 2))

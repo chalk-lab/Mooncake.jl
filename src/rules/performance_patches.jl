@@ -294,6 +294,41 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
     return CoDual(y, dy), permutedims_pb!!
 end
 
+# Julia signatures cannot express arbitrary wrapper depth; follow arrayify's parent walk.
+function _kron_arrayifiable(mode, ::Type{A}) where {A}
+    isconcretetype(A) || return false
+    T = eltype(A)
+    T <: Union{IEEEFloat,BlasFloat} || return false
+    A <: Array && return true
+    @static if VERSION >= v"1.11-rc4"
+        A <: Memory && return true
+    end
+    if A <: Union{SubArray,Adjoint,Transpose}
+        return _kron_arrayifiable(mode, fieldtype(A, :parent))
+    elseif A <: Union{ReshapedArray,Base.ReinterpretArray}
+        mode === ReverseMode && !(T <: BlasFloat) && return false
+        return _kron_arrayifiable(mode, fieldtype(A, :parent))
+    elseif A <: Diagonal
+        mode === ReverseMode && !(T <: BlasFloat) && return false
+        return _kron_arrayifiable(mode, fieldtype(A, :diag))
+    elseif A <: Union{
+        UpperTriangular,
+        LowerTriangular,
+        UnitUpperTriangular,
+        UnitLowerTriangular,
+        Symmetric,
+        Hermitian,
+    }
+        P = fieldtype(A, :data)
+        if mode === ReverseMode
+            A <: Symmetric || T <: IEEEFloat || return false
+            A <: Union{Symmetric,Hermitian} && !(P <: StridedMatrix) && return false
+        end
+        return _kron_arrayifiable(mode, P)
+    end
+    return false
+end
+
 # Both pullbacks contract dy in one memory-order pass and fold dense cotangents onto
 # stored entries. Small blocks make per-(q,n) BLAS gemv calls slower than this loop.
 function _kron_pb!(dx1, dx2, dy, px1, px2)
@@ -318,6 +353,35 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
     return nothing
 end
 
+@inline _check_kron_destination(::Array) = nothing
+@static if VERSION >= v"1.11-rc4"
+    @inline _check_kron_destination(::Memory) = nothing
+end
+@inline function _check_kron_destination(A::SubArray)
+    all(
+        i -> i isa Union{Integer,AbstractUnitRange,Base.Slice} || allunique(i), A.indices
+    ) || throw(
+        ArgumentError(
+            "_kron! refuses destinations with repeated indices in any wrapper, even if the outer selection is injective",
+        ),
+    )
+    return _check_kron_destination(parent(A))
+end
+@inline function _check_kron_destination(
+    A::Union{
+        ReshapedArray,
+        Base.ReinterpretArray,
+        Adjoint,
+        Transpose,
+        LinearAlgebra.AbstractTriangular,
+        Symmetric,
+        Hermitian,
+    },
+)
+    return _check_kron_destination(parent(A))
+end
+@inline _check_kron_destination(A::Diagonal) = _check_kron_destination(A.diag)
+
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Dense forward inputs support IEEEFloat; wrapped Float16 stays derived.
 # Keep modes separate: reverse supports only real IEEEFloat.
@@ -327,22 +391,26 @@ for T in (Float16, Float32, Float64, Union{})
         typeof(LinearAlgebra._kron!),Array{$T,2},Array{$T,2},Array{$T,2}
     }
 end
-for T in (Float32, Float64, ComplexF32, ComplexF64, Union{})
-    @eval @is_primitive DefaultCtx ForwardMode Tuple{
-        typeof(LinearAlgebra._kron!),
-        AbstractMatrix{$T},
-        AbstractMatrix{$T},
-        AbstractMatrix{$T},
+for (mode, types) in (
+        (ForwardMode, (Float32, Float64, ComplexF32, ComplexF64, Union{})),
+        (ReverseMode, (Float16, Float32, Float64, Union{})),
+    ),
+    T in types
+
+    @eval function _is_primitive(
+        ::Type{DefaultCtx}, ::Type{<:$mode}, ::Type{S}
+    ) where {
+        S<:Tuple{
+            typeof(LinearAlgebra._kron!),
+            AbstractMatrix{$T},
+            AbstractMatrix{$T},
+            AbstractMatrix{$T},
+        },
     }
-end
-# Reverse folds dense cotangents onto stored entries; complex stays derived.
-for T in (Float16, Float32, Float64, Union{})
-    @eval @is_primitive DefaultCtx ReverseMode Tuple{
-        typeof(LinearAlgebra._kron!),
-        AbstractMatrix{$T},
-        AbstractMatrix{$T},
-        AbstractMatrix{$T},
-    }
+        return _kron_arrayifiable($mode, fieldtype(S, 2)) &&
+               _kron_arrayifiable($mode, fieldtype(S, 3)) &&
+               _kron_arrayifiable($mode, fieldtype(S, 4))
+    end
 end
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
@@ -402,6 +470,7 @@ function Mooncake.frule!!(
     x1::Lifted{A1,N,<:NDualArray{T,N,2,A1}},
     x2::Lifted{A2,N,<:NDualArray{T,N,2,A2}},
 ) where {N,T<:IEEEFloat,Aout<:AbstractMatrix{T},A1<:AbstractMatrix{T},A2<:AbstractMatrix{T}}
+    _check_kron_destination(primal(out))
     pout = primal(out)
     px1 = primal(x1)
     px2 = primal(x2)
@@ -424,6 +493,7 @@ function Mooncake.frule!!(
     x1::Lifted{<:AbstractMatrix{T},N},
     x2::Lifted{<:AbstractMatrix{T},N},
 ) where {N,T<:BlasFloat}
+    _check_kron_destination(primal(out))
     if _storage_kind(T) isa StructuralStorage
         T === Union{} || _throw_nonconcrete_primitive(T)
         LinearAlgebra._kron!(primal(out), primal(x1), primal(x2))
@@ -444,6 +514,7 @@ function Mooncake.rrule!!(
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
+    _check_kron_destination(primal(out))
     pout, dout = arrayify(out)
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
@@ -462,18 +533,21 @@ end
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 # At least one strided operand guarantees dense output; matching structured wrappers
-# can return structured output and must stay derived. The strided×strided intersection
-# prevents primitive ambiguity. Reverse folds dense cotangents onto stored entries.
-for T in (Float16, Float32, Float64, Union{})
-    @eval @is_primitive DefaultCtx ReverseMode Tuple{
-        typeof(kron),StridedMatrix{$T},AbstractMatrix{$T}
-    }
-    @eval @is_primitive DefaultCtx ReverseMode Tuple{
-        typeof(kron),AbstractMatrix{$T},StridedMatrix{$T}
-    }
-    @eval @is_primitive DefaultCtx ReverseMode Tuple{
-        typeof(kron),StridedMatrix{$T},StridedMatrix{$T}
-    }
+# can return structured output and must stay derived.
+for (mode, types) in (
+        (ForwardMode, (Float32, Float64, Union{})),
+        (ReverseMode, (Float16, Float32, Float64, Union{})),
+    ),
+    T in types
+
+    @eval function _is_primitive(
+        ::Type{DefaultCtx}, ::Type{<:$mode}, ::Type{S}
+    ) where {S<:Tuple{typeof(kron),AbstractMatrix{$T},AbstractMatrix{$T}}}
+        A, B = fieldtype(S, 2), fieldtype(S, 3)
+        return (A <: StridedMatrix || B <: StridedMatrix) &&
+               _kron_arrayifiable($mode, A) &&
+               _kron_arrayifiable($mode, B)
+    end
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
@@ -491,21 +565,6 @@ function Mooncake.rrule!!(
     return CoDual(y, dy), kron_pb!!
 end
 
-# Forward primitives cover Float32/Float64; Float16 and complex stay derived. As in
-# reverse, require dense output and declare the strided intersection.
-for T in (Float32, Float64, Union{})
-    @eval begin
-        @is_primitive DefaultCtx ForwardMode Tuple{
-            typeof(kron),StridedMatrix{$T},AbstractMatrix{$T}
-        }
-        @is_primitive DefaultCtx ForwardMode Tuple{
-            typeof(kron),AbstractMatrix{$T},StridedMatrix{$T}
-        }
-        @is_primitive DefaultCtx ForwardMode Tuple{
-            typeof(kron),StridedMatrix{$T},StridedMatrix{$T}
-        }
-    end
-end
 # Dense operands have partials blocks, allowing contiguous writes across all lanes.
 # Wrapped operands keep the generic path because they have no block of their own.
 function Mooncake.frule!!(
@@ -789,6 +848,142 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 )
             end
         end...,
+        map_prod(
+            (
+                a -> view(Symmetric(a), :, :),
+                a -> UpperTriangular(transpose(a)),
+                a -> reshape(Symmetric(a), 1, 4),
+                a -> Adjoint(Symmetric(a)),
+                a -> Transpose(Hermitian(a)),
+                a -> Diagonal(view(vec(a), [1, 2])),
+            ),
+            (false, true),
+            (kron, LinearAlgebra._kron!),
+        ) do (wrap, swap, f)
+            a, b = wrap([1.0 2.0; 3.0 4.0]), ones(1, 1)
+            x, y = swap ? (b, a) : (a, b)
+            args = f === kron ? (x, y) : (zeros(size(a)), x, y)
+            return (false, :none, nothing, f, args...)
+        end,
+        map([
+            a -> Diagonal(vec(a)), Symmetric, Hermitian, UpperTriangular, LowerTriangular
+        ]) do wrap
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra._kron!,
+                wrap(fill(2.0, 1, 1)),
+                ones(1, 1),
+                ones(1, 1),
+            )
+        end,
+        map([UnitUpperTriangular, UnitLowerTriangular]) do wrap
+            i, j = wrap === UnitUpperTriangular ? (1, 2) : (2, 1)
+            out = view(wrap(ones(2, 2)), i:i, j:j)
+            return (
+                false, :none, nothing, LinearAlgebra._kron!, out, ones(1, 1), ones(1, 1)
+            )
+        end,
+        map_prod(
+            (
+                view(zeros(2, 1), [1, 1], :),
+                view(reinterpret(reshape, Float64, ComplexF64[0]), [1, 1], :),
+                view(zeros(1, 2), :, [1, 1]),
+                transpose(view(zeros(2, 1), [1, 1], :)),
+                reshape(view(zeros(2, 1), [1, 1], :), 1, 2),
+                reinterpret(Float64, view(zeros(ComplexF64, 1, 2), :, [1, 1])),
+                view(transpose(view(zeros(2, 1), [1, 1], :)), :, :),
+            ),
+            (nothing, ForwardMode),
+        ) do (out, mode)
+            return (
+                false,
+                :none,
+                (;
+                    mode,
+                    chunk_size=mode === ForwardMode ? 8 : 1,
+                    throws=(
+                        ArgumentError,
+                        "_kron! refuses destinations with repeated indices in any wrapper, even if the outer selection is injective",
+                    ),
+                ),
+                LinearAlgebra._kron!,
+                out,
+                reshape(collect(2.0:(length(out) + 1)), size(out)),
+                ones(1, 1),
+            )
+        end,
+        map([a -> view(a, [1, 2], :), transpose]) do wrap
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra._kron!,
+                wrap(zeros(2, 2)),
+                [1.0 2.0; 3.0 4.0],
+                ones(1, 1),
+            )
+        end,
+        [(
+            false,
+            :none,
+            (; mode=ForwardMode),
+            LinearAlgebra._kron!,
+            zeros(ComplexF64, 2, 2),
+            view(Symmetric(ComplexF64[1 2; 3 4]), :, :),
+            ones(ComplexF64, 1, 1),
+        )],
+        [(
+            false,
+            :none,
+            (; unsafe_perturb=true),
+            kron,
+            reinterpret(Float64, Symmetric(ComplexF64[1+2im 3+4im; 5+6im 7+8im])),
+            ones(1, 1),
+        )],
+        map([kron, LinearAlgebra._kron!]) do f
+            a = reshape(
+                reinterpret(
+                    Float64, reinterpret(reshape, ComplexF64, reshape([1.0, 2.0], 2, 1))
+                ),
+                1,
+                2,
+            )
+            args = f === kron ? (a, ones(1, 1)) : (zeros(size(a)), a, ones(1, 1))
+            return (false, :none, (; unsafe_perturb=true), f, args...)
+        end,
+        map_prod((1, 2), (kron, LinearAlgebra._kron!)) do (n, f)
+            a = view(reinterpret(reshape, Float64, ComplexF64.(1:n)), :, :)
+            args = f === kron ? (a, ones(1, 1)) : (zeros(size(a)), a, ones(1, 1))
+            return (false, :none, (; unsafe_perturb=true), f, args...)
+        end,
+        map([1, 2]) do n
+            a = view(reinterpret(reshape, Float64, ComplexF64.(1:n)), :, :)
+            return (
+                false,
+                :none,
+                (; unsafe_perturb=true),
+                LinearAlgebra._kron!,
+                a,
+                ones(size(a)),
+                ones(1, 1),
+            )
+        end,
+        map([
+            reinterpret(reshape, Float64, ComplexF64[1, 2]),
+            reinterpret(Float64, view(ComplexF64[1 2], [1], :)),
+        ]) do out
+            return (
+                false,
+                :none,
+                (; unsafe_perturb=true),
+                LinearAlgebra._kron!,
+                out,
+                ones(size(out)),
+                ones(1, 1),
+            )
+        end,
 
         # permutedims(x). Float16 finite differences resolve only near zero, and the rule is
         # linear, so the point does not matter.
@@ -827,6 +1022,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     precisions = [Float64, Float32]
     test_cases = vcat(
+        map_prod(
+            (
+                Bidiagonal([2.0, 3.0], [4.0], :U),
+                Tridiagonal([1.0], [2.0, 3.0], [4.0]),
+                SymTridiagonal([2.0, 3.0], [4.0]),
+            ),
+            (false, true),
+            (kron, kron!),
+        ) do (a, swap, f)
+            b = ones(1, 1)
+            x, y = swap ? (b, a) : (a, b)
+            args = f === kron ? (x, y) : (zeros(2, 2), x, y)
+            return (false, :none, nothing, f, args...)
+        end,
         # Both-Symmetric stays derived and leaves the unstored result triangle undef.
         # Float32 needs interface_only: finite differences cannot resolve this composite;
         # Float64 checks its derivative.

@@ -74,9 +74,12 @@ function arrayify(x::ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasF
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
 end
+@inline function _reinterpret_like(::Base.ReinterpretArray{T,N,S,A,R}, p) where {T,N,S,A,R}
+    return R ? reinterpret(reshape, T, p) : reinterpret(T, p)
+end
 function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, reinterpret(T, _dx)
+    return x, _reinterpret_like(x, _dx)
 end
 function arrayify(
     x::Tx, dx::TangentOrFData
@@ -216,8 +219,8 @@ end
 )
     return tril(_arrayify_lane(x.data, V.fields.data, lane, d), -1)
 end
-@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
-    T, _arrayify_lane(x.parent, V.fields.parent, lane, d)
+@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = _reinterpret_like(
+    x, _arrayify_lane(x.parent, V.fields.parent, lane, d)
 )
 
 """
@@ -233,6 +236,8 @@ part `dx` can represent. A tangent backed by strided storage is structurally unr
 even if indexing makes the view itself non-strided, so the common case costs nothing.
 """
 densify_tangent(dx::StridedArray) = dx
+densify_tangent(dx::Base.StridedReinterpretArray) = dx
+densify_tangent(dx::Base.ReinterpretArray) = zeros(eltype(dx), size(dx))
 densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
 function densify_tangent(
     dx::Union{
@@ -261,6 +266,17 @@ parents. Callers must allow `dense` to be overwritten.
 """
 function increment_densified_tangent!!(dx::StridedArray, dense)
     dx === dense || (dx .+= dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::Base.StridedReinterpretArray, dense)
+    dx === dense || (dx .+= dense)
+    return nothing
+end
+function increment_densified_tangent!!(
+    dx::Base.ReinterpretArray{T,N,S,A,R}, dense
+) where {T,N,S,A,R}
+    p = R ? reinterpret(reshape, S, dense) : reinterpret(S, dense)
+    increment_densified_tangent!!(parent(dx), p)
     return nothing
 end
 # Both view methods accumulate repeated indices, via broadcast or the explicit loop.
@@ -4360,6 +4376,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
         end...,
+        [(
+            false,
+            :none,
+            (; unsafe_perturb=true),
+            BLAS.gemv!,
+            'N',
+            P(1),
+            view(reinterpret(
+                reshape,
+                P,
+                if P <: Real
+                    Complex{P}[1 + 2im, 3 + 4im]
+                else
+                    reshape(real(P).(1:8), 2, 2, 2)
+                end,
+            ), :, :),
+            P[1, 2],
+            P(0),
+            zeros(P, 2),
+        )],
 
         # Zero-length x quick-returns without β scaling; the size sweep above is nonempty.
         map(βs) do β
