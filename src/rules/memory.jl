@@ -1832,6 +1832,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     )
         push!(test_cases, (false, perf, (mode=ForwardMode,), f, collect(1.0:4.0)))
     end
+    # Tuple lifting uses the cache-aware seed path; bare array lifting owns only the
+    # visible window and cannot project the backing Memory during growth.
+    for (T, len) in ((Float64, 0), (ComplexF64, 0), (Float64, 1))
+        v = T[1, 2]
+        for _ in 1:(2 - len)
+            popfirst!(v)
+        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode,),
+                ax -> (push!(ax[1], ax[2]); sum(ax[1])),
+                (v, T(3)),
+            ),
+        )
+    end
     # Growth can reuse primal capacity without allocating. Structural V storage must
     # have the same capacity and offset before the derived growth code runs.
     for p in (Any[2.0, 3.0], [2, 3], [[2.0], [3.0]]), offset in (false, true)
