@@ -35,6 +35,10 @@
             v[1] = reinterpret(Int, 2.0)
             return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
         end
+        function missing_load(x)
+            v = Union{Missing,Float64}[x]
+            return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
+        end
         fs = [
             store_load,
             bytes_load,
@@ -43,6 +47,7 @@
             offset_load,
             int_overwrite,
             union_load,
+            missing_load,
         ]
         @testset "$f" for f in fs
             TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)

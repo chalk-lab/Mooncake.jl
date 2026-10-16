@@ -33,14 +33,13 @@ function _layout_mirrors(P::Type, V::Type)
     Base.aligned_sizeof(P) == 0 && return true  # e.g. `Nothing` and `NoTangent`
     P <: Ptr && V <: Ptr && return true
     if Base.isbitsunion(P)
-        # Each member that takes up space must have a tangent laid out like it, e.g. not the
-        # `Int` in `Union{Int,Float64}`, and each tangent with data must be laid out like one
-        # of the members.
-        Ts = Base.uniontypes(P)
+        # A member without a tangent, e.g. the `Int` in `Union{Int,Float64}` or `missing`,
+        # leaves the tangent bytes of the value it replaces behind.
         Ws = Base.isbitsunion(V) ? Base.uniontypes(V) : Any[V]
-        return all(
-            T -> Base.aligned_sizeof(T) == 0 || any(W -> _layout_mirrors(T, W), Ws), Ts
-        ) && all(W -> W == NoTangent || any(T -> _layout_mirrors(T, W), Ts), Ws)
+        NoTangent in Ws && return false
+        Ts = Base.uniontypes(P)
+        return all(T -> any(W -> _layout_mirrors(T, W), Ws), Ts) &&
+               all(W -> any(T -> _layout_mirrors(T, W), Ts), Ws)
     end
     (P isa DataType && V isa DataType) || return false
     V <: Tangent && (V = fieldtype(V, :fields))

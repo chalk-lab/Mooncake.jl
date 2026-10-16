@@ -1294,16 +1294,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             :none,
             nothing,
             x -> (
-                v=Union{Missing,Float64}[x];
-                GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
-            ),
-            2.0,
-        ),
-        (
-            false,
-            :none,
-            nothing,
-            x -> (
                 v=[(x=x, n=nothing)];
                 GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
             ),
