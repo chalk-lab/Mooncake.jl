@@ -671,9 +671,7 @@ end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
+        return rrule!!(zero_fcodual(Memory{P}), zero_fcodual(undef), n)
     end
 end
 
@@ -686,6 +684,7 @@ function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
     x = Memory{P}(undef, primal(n))
+    # Fresh tangents must be zero even when the primal allocation contains stale data.
     dx = zero_tangent_internal(x, NoCache())
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
@@ -797,6 +796,10 @@ function rrule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    # Zero-size tangent memories store offsets rather than storage addresses.
+    if wants_offset && !IntrinsicsWrappers._elements_occupy_storage(eltype(x.dx))
+        dy = Ptr{NoTangent}(0)
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1176,6 +1179,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent pointer is NULL")),
+            x -> unsafe_load(Ptr{Float64}(pointer(x, 9))),
+            zeros(UInt8, 16),
+        ),
         (true, :none, nothing, Array{Float64,0}, undef),
         (true, :none, nothing, Array{Float64,1}, undef, 5),
         (true, :none, nothing, Array{Float64,2}, undef, 5, 4),
