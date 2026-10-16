@@ -35,7 +35,10 @@ include("front_matter.jl")
         Aqua.test_all(Mooncake)
         include("utils.jl")
         include(joinpath("tangents", "tangents.jl"))
-        include(joinpath("tangents", "fwds_rvs_data.jl"))
+        # The 32-bit runner has 4 GiB of address space; x64 runs these checks.
+        @static if Sys.WORD_SIZE != 32
+            include(joinpath("tangents", "fwds_rvs_data.jl"))
+        end
         include(joinpath("tangents", "codual.jl"))
         include(joinpath("tangents", "lifted.jl"))
         include("debug_mode.jl")
