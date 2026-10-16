@@ -16,6 +16,7 @@ using Mooncake
 using Mooncake:
     primal,
     tangent,
+    tangent_view,
     randn_tangent,
     increment!!,
     NoTangent,
@@ -28,7 +29,7 @@ using Mooncake:
     _scale,
     _add_to_primal,
     _dot,
-    Dual,
+    Lifted,
     zero_dual,
     zero_codual,
     codual_type,
@@ -105,6 +106,8 @@ using .TestUtils:
     populate_address_map_internal,
     populate_address_map,
     test_tangent,
+    test_lifted,
+    test_lifted_type,
     check_allocs
 
 using .TestResources:

@@ -1,3 +1,23 @@
+# A linked-list node: the recursion is inside a union, which is how it is usually spelled.
+mutable struct _RecursiveNode
+    v::Float64
+    next::Union{Nothing,_RecursiveNode}
+end
+
+# Wider than `_reaches_recursive_type`'s node budget, but not recursive: the walk cannot answer.
+struct _WideConst{T}
+    junk::T
+    v::Vector{Float64}
+end
+
+# A non-const global, for the rebinding test below. Both modes re-read it on every call.
+global _GLOBAL_ALIAS_G::Vector{Float64} = [1.0, 2.0]
+global _REBIND_ALIAS_G = [1.0, 2.0]
+_rebind_alias_f(x) = sum(x .* _REBIND_ALIAS_G)
+_global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
+global _REBIND_VALUE_G = 3.0
+_rebind_value_f(x) = x * _REBIND_VALUE_G
+
 @testset "codual" begin
     @test CoDual(5.0, 4.0) isa CoDual{Float64,Float64}
     @test CoDual(Float64, NoTangent()) isa CoDual{Type{Float64},NoTangent}
@@ -80,10 +100,14 @@
         phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
         @test codual_type(phantom) === CoDual
         @test Mooncake.fcodual_type(phantom) === CoDual
-        @test dual_type(phantom) === Dual
+        # Phantom-TypeVar primals widen to `Any` at the requested width.
+        @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        @test dual_type(phantom_tuple) === Dual
+        # Free TypeVars leave `P` unbound; tuple methods must guard before using it.
+        @test dual_type(Val(1), phantom_tuple) === Any
+        # The slot widens to `Lifted`, while its inner representation widens to `Any`.
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
     @testset "NoPullback" begin
@@ -97,5 +121,122 @@
         p = Ptr{Float64}()
         @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
         @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
+    end
+
+    @testset "_reaches_recursive_type" begin
+        # Avoid `tangent_type` on recursive types, including recursion through a field.
+        @test Mooncake._reaches_recursive_type(Base.ImmutableDict{Symbol,Any})
+        @test Mooncake._reaches_recursive_type(IOContext{IOStream})
+        # Constants that do own shareable derivative storage stay guarded.
+        @test !Mooncake._reaches_recursive_type(Vector{Float64})
+        @test !Mooncake._reaches_recursive_type(Diagonal{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(Tuple{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(String)
+        # Follow unions to detect linked-list recursion before asking for its tangent type.
+        @test Mooncake._reaches_recursive_type(_RecursiveNode)
+    end
+
+    @testset "a rebound non-const global is matched by binding, not by build-time value" begin
+        # Resolve globals at call time in both modes. The registry cannot rebind a global
+        # between building and calling a rule, so this needs a direct test.
+        r = Mooncake.build_rrule(_global_alias_f, [1.0, 2.0])
+        x = [1.0, 2.0]                    # equal contents, DIFFERENT object
+        global _GLOBAL_ALIAS_G = x        # the argument is now the global
+        @test_throws ArgumentError Mooncake.value_and_gradient!!(r, _global_alias_f, x)
+
+        # A rebinding that does NOT alias an argument stays legal: the value is re-read, so only
+        # the aliasing question is affected.
+        global _GLOBAL_ALIAS_G = [1.0, 2.0]
+        _, g = Mooncake.value_and_gradient!!(r, _global_alias_f, [3.0, 4.0])
+        @test g[2] == [1.0, 2.0]
+
+        # Same for the forward transform, which records the binding at its own `GlobalRef` site.
+        fr = Mooncake.build_frule(_global_alias_f, [1.0, 2.0])
+        y = [1.0, 2.0]
+        global _GLOBAL_ALIAS_G = y
+        @test_throws ArgumentError fr(
+            Mooncake.zero_lifted(Val(1), _global_alias_f), Mooncake.lift(y, [1.0, 0.0])
+        )
+        global _GLOBAL_ALIAS_G = [1.0, 2.0]
+        # The untyped global deliberately makes these rule calls type-unstable.
+        TestUtils.test_hook(Val(:allow_unstable_global_rebinding_test)) do
+            global _REBIND_ALIAS_G = 2.0
+            scalar_fr = Mooncake.build_frule(_rebind_alias_f, 2.0)
+            @test Mooncake.value_and_derivative!!(
+                scalar_fr, (_rebind_alias_f, NoTangent()), (2.0, 1.0)
+            ) == (4.0, 2.0)
+            @test Mooncake._check_constant_aliasing(
+                scalar_fr.consts, (zero_codual(_rebind_alias_f), zero_codual(2.0))
+            ) === nothing
+            # A scalar at build time can acquire storage before the first call.
+            fr = Mooncake.build_frule(_rebind_alias_f, y)
+            global _REBIND_ALIAS_G = y
+            @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                fr, (_rebind_alias_f, NoTangent()), (y, [1.0, 0.0])
+            )
+            global _REBIND_ALIAS_G = [1.0, 2.0]
+        end
+    end
+
+    @testset "non-const global rebinding must preserve its build-time value" begin
+        # The registry cannot rebind a global between building and calling a rule.
+        TestUtils.test_hook(Val(:allow_unstable_global_rebinding_test)) do
+            r = Mooncake.build_rrule(_rebind_value_f, 2.0)
+            fr = Mooncake.build_frule(_rebind_value_f, 2.0)
+            try
+                for s in (3.0, 7.0, 3)
+                    global _REBIND_VALUE_G = s
+                    if s == 3.0
+                        @test Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0) ==
+                            (6.0, (NoTangent(), 3.0))
+                        @test Mooncake.value_and_derivative!!(
+                            fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                        ) == (6.0, 3.0)
+                    else
+                        # Each mode names what it compared: reverse a `CoDual`'s primal,
+                        # forward the stored value itself.
+                        @test_throws AssertionError("global_ref == primal(stored_value)") Mooncake.value_and_gradient!!(
+                            r, _rebind_value_f, 2.0
+                        )
+                        @test_throws AssertionError("global_ref == stored") Mooncake.value_and_derivative!!(
+                            fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                        )
+                    end
+                end
+                global _REBIND_VALUE_G = NaN
+                # Fresh interpreters avoid reusing rules captured before the NaN binding.
+                sig = Tuple{typeof(_rebind_value_f),Float64}
+                r = Mooncake.build_rrule(Mooncake.MooncakeInterpreter(ReverseMode), sig)
+                fr = Mooncake.build_frule(Mooncake.MooncakeInterpreter(ForwardMode), sig)
+                @test isequal(
+                    Mooncake.value_and_gradient!!(r, _rebind_value_f, 2.0),
+                    (NaN, (NoTangent(), NaN)),
+                )
+                @test isequal(
+                    Mooncake.value_and_derivative!!(
+                        fr, (_rebind_value_f, NoTangent()), (2.0, 1.0)
+                    ),
+                    (NaN, NaN),
+                )
+            finally
+                global _REBIND_VALUE_G = 3.0
+            end
+        end
+    end
+
+    @testset "record_const_alias! records what it cannot ask about" begin
+        # Budget exhaustion must record conservatively, even for non-recursive types.
+        wide = _WideConst(ntuple(i -> Val(i), 601), [1.0, 2.0])
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, wide)
+        @test length(consts) == 1
+        # A recursive type is recorded without asking `tangent_type`, which would not terminate.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, Base.ImmutableDict{Symbol,Any}(:a, 1))
+        @test length(consts) == 1
+        # Non-differentiable constants are still skipped, so `===` cannot match one spuriously.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, "abc")
+        @test isempty(consts)
     end
 end

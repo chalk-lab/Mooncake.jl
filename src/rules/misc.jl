@@ -32,7 +32,6 @@
 @zero_derivative MinimalCtx Tuple{typeof(verify_args),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_dual_inputs),Tuple}
 @zero_derivative MinimalCtx Tuple{typeof(verify_dual_output),Any,Any}
-@zero_derivative MinimalCtx Tuple{typeof(verify_dual_value),Dual}
 @zero_derivative MinimalCtx Tuple{typeof(verify_rvs_input),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_rvs_output),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_fwds_inputs),Any,Tuple}
@@ -100,8 +99,9 @@ stop_gradient(x) = x
 
 @is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
 
-function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
-    return zero_dual(primal(x))
+# Zero partials must retain the canonical V; NoDual would break downstream field access.
+function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
+    return zero_lifted(Val(Nw), primal(x))
 end
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
@@ -112,6 +112,14 @@ function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     stop_gradient_pb!!(_) = (NoRData(), instantiate(lzr))
     return y, stop_gradient_pb!!
 end
+
+# `rethrow` is a `ccall(:jl_rethrow)`, which has no foreigncall rule, so a `finally` or `catch`
+# block's exception path would raise `MissingForeigncallRuleError` in place of the exception
+# itself. Forward only: reverse refuses try/catch before any rule is reached.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(rethrow)}
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(rethrow),Any}
+frule!!(::Lifted{typeof(rethrow)}) = rethrow()
+frule!!(::Lifted{typeof(rethrow)}, e::Lifted) = rethrow(primal(e))
 
 """
     lgetfield(x, f::Val)
@@ -132,27 +140,201 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
-) where {P,T<:StandardTangentType,f}
-    primal_field = getfield(primal(x), f)
-    if tangent_type(P) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        Dual(primal_field, _get_tangent_field(tangent(x), f))
+for order in ((), (:order,))
+    order_arg = [:(::Lifted{Val{$o}}) for o in order]
+    @eval begin
+        @inline function frule!!(
+            ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, $(order_arg...)
+        ) where {Nw,f,$(order...)}
+            primal_field = getfield(primal(x), f, $(order...))
+            # A NoDual parent can have a differentiable field (e.g. DataType.parameters).
+            # TODO(#1295): fresh partials do not alias the pass's seeded field storage.
+            tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
+            V_i = _get_lifted_field(primal(x), tangent(x), f)
+            if primal_field isa Ptr{Nothing} && V_i isa NoDual
+                V_i = uninit_dual(Val(Nw), primal_field)
+            end
+            _check_lifted_field_ptr_lanes(V_i, Val(Nw))
+            return _read_lifted(Val(Nw), primal_field, V_i, x, f, $(order...))
+        end
+        # NDualRef stores partials separately, so field reads must rebuild the scalar V.
+        @inline function frule!!(
+            ::Lifted{typeof(lgetfield),Nw},
+            x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+            ::Lifted{<:Union{Val{:x},Val{1}}},
+            $(order_arg...),
+        ) where {Nw,P<:NDualEltype,$(order...)}
+            v = getfield(primal(x), :x, $(order...))
+            return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+        end
     end
 end
 
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
-_get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
-function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
-    return val(getfield(f.fields, name, inbounds))
+@inline _get_lifted_field(p, V, name) = _get_lifted_field(V, name)
+@inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
+@inline _coerce_backing_field(::Type{F}, v) where {F<:PossiblyUninitTangent} = F(v)
+@inline _coerce_backing_field(::Type, v) = v
+# A `PossiblyUninitTangent` backing field is unwrapped via `val` (the caller has already read the
+# primal field, so the PUT is initialised); any other field passes through unchanged.
+@inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = val(
+    getfield(getfield(V, :fields), name)
+)
+@inline _get_lifted_field(::NoDual, _) = NoDual()
+# Complex{NDual} fields already hold their canonical scalar V.
+@inline _get_lifted_field(V::Complex, name) = getfield(V, name)
+@static if VERSION >= v"1.11-rc4"
+    # Project Array.ref by name or index, preserving the memoryref chain's canonical V.
+    @inline function _get_lifted_field(
+        V::Nfwd.NDualArray{T,N,D,A}, name::Union{Symbol,Int}
+    ) where {T<:Nfwd.NDualEltype,N,D,A<:Array{T,D}}
+        name = name isa Int ? fieldname(typeof(V.primal), name) : name
+        if name === :ref
+            Nfwd._check_block(V)
+            # Share block storage so mutations alias. Use its flat parent's ref to avoid
+            # allocating a reshape header on every element access; array.ref starts at column 1.
+            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
+                getfield(V.primal, :ref),
+                getfield(getfield(getfield(V, :partials_block), :parent), :ref),
+                length(V.primal),
+                1,
+            )
+        end
+        return NoDual()
+    end
+    # The ref may cover only a window (e.g. a grown Vector with capacity slack).
+    # Mem slot 1 is at refoff + (col - o)*N; project the whole Memory over the
+    # same backing so mutations through the ref and Memory V still alias.
+    @inline function _get_lifted_field(
+        V::Nfwd.NDualMemoryRef{T,N,M}, name::Union{Symbol,Int}
+    ) where {T,N,M}
+        name = name isa Int ? fieldname(typeof(V.primal), name) : name
+        if name === :mem
+            p = getfield(V, :primal)
+            primal_mem = getfield(p, :mem)
+            len = length(primal_mem)
+            bref = getfield(V, :partials_ref)
+            backing = getfield(bref, :mem)
+            start =
+                Core.memoryrefoffset(bref) +
+                (getfield(V, :col) - Core.memoryrefoffset(p)) * N
+            if start < 1 || start + N * len - 1 > length(backing)
+                throw(
+                    ArgumentError(
+                        "Cannot project `.mem` of a lifted `MemoryRef{$T}`: its partials " *
+                        "block does not cover the whole backing `Memory` (length $len; " *
+                        "block backing length $(length(backing)), start offset $start). " *
+                        "This ref's block was created for a smaller container.",
+                    ),
+                )
+            end
+            # One header construction, branching on the REF rather than on the header: LLVM
+            # will not promote an allocation that reaches a phi node, so building the empty
+            # case separately keeps both headers alive. An empty window has no slot to address,
+            # so it takes the block's own ref, which `_new_` never dereferences at length 0.
+            ref = if len == 0
+                bref
+            else
+                Core.memoryrefnew(Core.memoryrefnew(backing), start, true)
+            end
+            flat = _new_(Vector{T}, ref, (N * len,))
+            return Nfwd.NDualArray{T,N,1,M}(primal_mem, NDualBlock{T,2}(flat, (N, len)))
+        elseif name === :ptr_or_offset
+            # Per-lane raw pointers require dense per-lane storage; in the element-major block
+            # a lane is strided (stride N), so only width 1 has an addressable lane.
+            N == 1 || throw(
+                ArgumentError(
+                    "Forward-mode raw pointer (`ptr_or_offset`) of a lifted `MemoryRef{$T}` " *
+                    "is unsupported at chunk width $N > 1: the element-major partials block " *
+                    "stores each lane with stride $N, so there is no dense per-lane buffer " *
+                    "a raw pointer could address. Differentiate at chunk width 1.",
+                ),
+            )
+            lane_ref = Nfwd._block_column_ref(
+                getfield(V, :partials_ref), getfield(V, :col), N
+            )
+            return PtrDual((getfield(lane_ref, :ptr_or_offset),), T, T)
+        end
+        return NoDual()
+    end
+    # Element-wise arrays project .ref by name or index; .size is non-differentiable. The V
+    # must cover the primal: a global grown between calls would be read past its storage.
+    @inline function _get_lifted_field(p::Array, V::Array, name::Union{Symbol,Int})
+        name = name isa Int ? fieldname(typeof(V), name) : name
+        name === :ref || return NoDual()
+        Nfwd._check_storage(length(V), 1, length(p))
+        return getfield(V, :ref)
+    end
+    # Element-wise refs project .mem and a width-1 pointer typed for the dual element,
+    # so unsafe_copyto! uses the correct stride (as in the 1.10 jl_array_ptr rule).
+    @inline function _get_lifted_field(
+        p::MemoryRef{P}, V::MemoryRef, name::Union{Symbol,Int}
+    ) where {P}
+        name = name isa Int ? fieldname(typeof(V), name) : name
+        name === :mem && return getfield(V, :mem)
+        if name === :ptr_or_offset
+            E = eltype(getfield(V, :mem))
+            E === NoDual && return NoDual()
+            return PtrDual(
+                (getfield(V, :ptr_or_offset),),
+                E,
+                P === Any ? BoxedPointerStorage(p.mem, V.mem) : P,
+            )
+        end
+        return NoDual()
+    end
+    # Raw Memory pointers retain the element type of their structural storage.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Memory{E}, name::Union{Symbol,Int}
+    ) where {P,E}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        return if name === :ptr && tangent_type(P) !== NoTangent
+            PtrDual((Ptr{Nothing}(pointer(V)),), E, P)
+        else
+            NoDual()
+        end
+    end
+    # Numeric Memory uses the element-major NDualArray representation.  Its `:ptr`
+    # field still needs the same provenance descriptor as structural Memory: at
+    # width one the lane points at the parallel partials buffer; at wider widths
+    # the partials are interleaved, so retain a non-null address only as a
+    # provenance marker and let pointer loads/stores refuse the incoherent lanes.
+    @inline function _get_lifted_field(
+        p::Memory{P}, V::Nfwd.NDualArray{E,N,1,A}, name::Union{Symbol,Int}
+    ) where {P,E,N,A<:Memory}
+        name = name isa Int ? fieldname(typeof(p), name) : name
+        name === :ptr || return NoDual()
+        tangent_type(P) === NoTangent && return NoDual()
+        lanes = if N == 1
+            block = getfield(V, :partials_block)
+            (Ptr{Nothing}(pointer(getfield(block, :parent))),)
+        else
+            q = Ptr{Nothing}(pointer(getfield(V, :primal)))
+            ntuple(_ -> q, Val(N))
+        end
+        return PtrDual(lanes, E, P)
+    end
 end
-# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
-# another struct), field access also contributes no derivative.
-_get_tangent_field(::NoTangent, _) = NoTangent()
-_get_tangent_field(::NoTangent, _, _) = NoTangent()
+# Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
+@inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
+
+# Element-wise pointer tuples support only width 1: no dense per-lane buffer exists
+# at wider widths. Every _get_lifted_field caller building a slot must check this;
+# the projection itself cannot see Nw. Coherent NTuple{Nw,Ptr} values pass through.
+@inline function _check_lifted_field_ptr_lanes(V_i, ::Val{Nw}) where {Nw}
+    if Nw > 1 &&
+        V_i isa Union{PtrDual,Tuple{Vararg{Union{Ptr,PtrTangent}}}} &&
+        length(V_i) != Nw
+        throw(
+            ArgumentError(
+                "Forward-mode raw pointer of lifted element-wise storage is unsupported at chunk " *
+                "width $Nw > 1: the pointer projection provides one lane, but the forward " *
+                "representation requires $Nw lanes. " *
+                "Differentiate at chunk width 1.",
+            ),
+        )
+    end
+    return nothing
+end
 
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
@@ -174,6 +356,9 @@ _get_tangent_field(::NoTangent, _, _) = NoTangent()
     return y, pb!!
 end
 
+# TODO(#1295): the `NoFData` method below mints fresh fdata for a differentiable field of a
+# `NoTangent` parent, breaking the aliasing invariant. This is the site a literal field name
+# reaches, via `lgetfield`; the dynamic-name spelling is in `builtins.jl`.
 @unstable @inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
 @unstable @inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
 @unstable @inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
@@ -192,23 +377,7 @@ end
 # lgetfield with order argument
 #
 
-# This is largely copy + pasted from the above. Attempts were made to refactor to avoid
-# code duplication, but it wound up not being any cleaner than this copy + pasted version.
-
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{P,<:StandardTangentType},
-    ::Dual{Val{f}},
-    ::Dual{Val{order}},
-) where {P,f,order}
-    primal_field = getfield(primal(x), f, order)
-    if tangent_type(P) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        return Dual(primal_field, _get_tangent_field(tangent(x), f))
-    end
-end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
@@ -231,20 +400,44 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
 @inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
-) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, x)
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{P,Nw,<:MutableDual},
+    ::Lifted{Val{name}},
+    x::Lifted,
+) where {Nw,P,name}
+    setfield!(primal(value), name, primal(x))
+    # The backing NamedTuple requires symbol keys.
+    nm = name isa Int ? fieldname(P, name) : name
+    # Share runtime-name writeback, including conversion for abstract backing fields.
+    _setfield_tangent!(tangent(value), nm, tangent(x))
+    return x
+end
+# Non-differentiable struct (V === NoDual): set the primal field; there is no
+# tangent to update. Mirrors the reverse `F == NoFData` branch of `lsetfield_rrule`.
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{P,Nw,NoDual},
+    ::Lifted{Val{name}},
+    x::Lifted,
+) where {Nw,P,name}
+    setfield!(primal(value), name, primal(x))
+    return x
+end
+# NDualRef keeps scalar partials in a separate shadow buffer.
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    ::Lifted{<:Union{Val{:x},Val{1}}},
+    x::Lifted{P,Nw},
+) where {Nw,P<:NDualEltype}
+    setfield!(primal(value), :x, primal(x))
+    tangent(value).partials[] = ntuple(k -> _nfwd_dual_partial(tangent(x), k), Val(Nw))
+    return x
 end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
     return lsetfield_rrule(value, name, x)
-end
-
-function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
-    setfield!(primal(value), name, primal(x))
-    T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
-    return x
 end
 
 function lsetfield_rrule(
@@ -280,33 +473,32 @@ function lsetfield_rrule(
     return y, pb!!
 end
 
-@static if VERSION < v"1.11"
-    @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
-        return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
-    end
-    function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
-        dx = tangent(a)
-        t = dx.fields
-        new_fields = typeof(t)((
-            copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-        ))
-        dy = MutableTangent(new_fields)
-        y = CoDual(copy(primal(a)), dy)
-        function copy_pullback!!(::NoRData)
-            increment!!(dx, dy)
-            return NoRData(), NoRData()
-        end
-        return y, copy_pullback!!
-    end
+@noinline function _throw_nonconcrete_primitive(T)
+    throw(
+        ArgumentError(
+            "This forward primitive requires a concrete numeric element type; got $T."
+        ),
+    )
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(sortperm),Vector{<:IEEEFloat}}
-@is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
+@is_primitive MinimalCtx ReverseMode Tuple{typeof(sort),Vector{<:IEEEFloat}}
+for T in (Float16, Float32, Float64, Union{})
+    @eval @is_primitive MinimalCtx ForwardMode Tuple{typeof(sort),Vector{$T}}
+end
 
-function frule!!(::Dual{typeof(sort)}, x::Dual{<:Vector{<:IEEEFloat}})
+function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:IEEEFloat}
+    if _storage_kind(T) isa StructuralStorage
+        T === Union{} || _throw_nonconcrete_primitive(T)
+        return zero_lifted(Val(N), sort(primal(x)))
+    end
     p = sortperm(primal(x))
-    return Dual(primal(x)[p], tangent(x)[p])
+    y = primal(x)[p]
+    # Element `i` of `y` is element `p[i]` of `x`, so its lane column is column `p[i]` of `x`'s block.
+    dy = NDualArray{T,N,1,Vector{T}}(y)
+    block, _ = _partials_block(x)
+    copyto!(getfield(dy, :partials_block), view(block, :, p))
+    return Lifted{Vector{T},N}(y, dy)
 end
 
 function rrule!!(::CoDual{typeof(sort)}, x::CoDual{<:Vector{<:IEEEFloat}})
@@ -415,6 +607,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
             Val(:y),
             true,
         ),
+        # Foo.x::Real requires converting the merged backing NamedTuple; abstract fields
+        # legitimately box, so use :none rather than asserting stability/allocations.
+        (false, :none, nothing, lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
+        # Positional access on a single-field Ref: setfield!(r, 1, v) === setfield!(r, :x, v), so the
+        # lsetfield! frule must accept Val(1) as well as Val(:x).
+        (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
+        (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
+        (false, :stability, (; mode=ForwardMode), sort, Union{}[]),
+        (
+            false,
+            :none,
+            (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
+            sort,
+            Union{Float32,Float64}[2.0f0, 3.0],
+        ),
     ]
 
     for T in (Float16, Float32, Float64), f in (sort, sortperm)
@@ -466,6 +673,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
         (false, :none, nothing, lgetfield, UInt8, Val(:hash)),
         (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
+
+        # NDualRef reads by name and position, with both arities from the order loop.
+        (false, :none, nothing, lgetfield, Ref(5.0), Val(:x)),
+        (false, :none, nothing, lgetfield, Ref(5.0), Val(1)),
     ]
 
     # Create `lgetfield` tests for each type in TestTypes for broader coverage.

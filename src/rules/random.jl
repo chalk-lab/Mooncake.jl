@@ -6,7 +6,7 @@ for (f, nargs) in
     @eval @is_primitive MinimalCtx Tuple{
         typeof($f),Union{TaskLocalRNG,Xoshiro},Ptr{UInt8},Int,Any,Vararg{Any,$nargs}
     }
-    for (rule, D) in ((:frule!!, :Dual), (:rrule!!, :CoDual))
+    for (rule, D) in ((:frule!!, :Lifted), (:rrule!!, :CoDual))
         @eval function $rule(
             ::$D{typeof($f)},
             ::$D{<:Union{TaskLocalRNG,Xoshiro}},
@@ -35,14 +35,15 @@ end
         Random.SamplerTrivial{Random.CloseOpen01{T}},
     } where {T<:IEEEFloat}
     function frule!!(
-        ::Dual{typeof(rand!)},
-        rng::Dual{<:Union{TaskLocalRNG,Xoshiro}},
-        x::Dual{<:XoshiroFloatView{T}},
-        sampler::Dual{<:Random.SamplerTrivial{Random.CloseOpen01{T}}},
-    ) where {T<:IEEEFloat}
-        px, dx = arrayify(x)
-        rand!(primal(rng), px, primal(sampler))
-        fill!(dx, zero(T))
+        ::Lifted{typeof(rand!)},
+        rng::Lifted{<:Union{TaskLocalRNG,Xoshiro}},
+        x::Lifted{<:XoshiroFloatView{T},N},
+        sampler::Lifted{<:Random.SamplerTrivial{Random.CloseOpen01{T}}},
+    ) where {T<:IEEEFloat,N}
+        rand!(primal(rng), primal(x), primal(sampler))
+        for lane in 1:N
+            fill!(_arrayify_lane(primal(x), tangent(x), lane), zero(T))
+        end
         return x
     end
     function rrule!!(
@@ -75,10 +76,10 @@ end
     typeof(rand!),Union{TaskLocalRNG,Xoshiro},XoshiroIntegerArray{T},Random.SamplerType{T}
 } where {T<:Union{Base.BitInteger,Bool}}
 function frule!!(
-    ::Dual{typeof(rand!)},
-    rng::Dual{<:Union{TaskLocalRNG,Xoshiro}},
-    x::Dual{<:XoshiroIntegerArray{T}},
-    sampler::Dual{Random.SamplerType{T}},
+    ::Lifted{typeof(rand!)},
+    rng::Lifted{<:Union{TaskLocalRNG,Xoshiro}},
+    x::Lifted{<:XoshiroIntegerArray{T}},
+    sampler::Lifted{Random.SamplerType{T}},
 ) where {T<:Union{Base.BitInteger,Bool}}
     rand!(primal(rng), primal(x), primal(sampler))
     return x
@@ -126,13 +127,13 @@ for (f, A) in (
         return isconcretetype(eltype(P)) && tangent_type(P) == P
     end
     @eval function frule!!(
-        ::Dual{typeof($f)},
-        rng::Dual{<:AbstractRNG},
-        x::Dual{P,P},
-        sampler::Vararg{Dual{<:Union{Type,Random.Sampler}},$n},
+        ::Lifted{typeof($f)},
+        rng::Lifted{<:AbstractRNG},
+        x::Lifted{P},
+        sampler::Vararg{Lifted{<:Union{Type,Random.Sampler}},$n},
     ) where {P<:$A}
         $f(primal(rng), primal(x), map(primal, sampler)...)
-        fill!(tangent(x), zero(eltype(P)))
+        Nfwd._zero_seed!(tangent(x))
         return x
     end
     @eval function rrule!!(

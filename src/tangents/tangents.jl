@@ -1,3 +1,9 @@
+# Keyed dictionaries share their tangent algebra and lookup/store rules.
+# Keep this union closed: other AbstractDict implementations retain their own representation.
+# `Base.ImmutableDict` keeps the structural tangent: its self-typed `parent` field makes
+# `tangent_type` recurse without bound.
+const KeyedDict{K,V} = Union{Dict{K,V},IdDict{K,V}}
+
 """
     NoTangent
 
@@ -7,6 +13,10 @@ construction work.
 You might need to use this for `primitive type`s though.
 """
 struct NoTangent end
+
+# Fields containing derivative storage. Custom tangents must exclude executable code;
+# mutable identity/cycle guards belong to the walkers, before descending into these fields.
+_tangent_fields(::Type{T}) where {T} = fieldnames(T)
 
 """
     PossiblyUninitTangent{T}
@@ -306,7 +316,9 @@ We've already seen a couple of primitive types (`Float64` and `Int`).
 The basic story here is that all primitive types require an explicit specification of what their tangent type must be.
 
 One interesting case are `Ptr` types.
-The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`.
+The tangent type of a `Ptr{P}` is `Ptr{T}`, where `T = tangent_type(P)`, except
+for erased pointers, boxed `Ptr{Any}` slots, and zero-size pointee tangents, which
+use `PtrTangent` to retain storage provenance and, for boxed stores, owners.
 For example
 ```julia
 julia> tangent_type(Ptr{Float64})
@@ -330,7 +342,75 @@ tangent_type(::Type{<:Type}) = NoTangent
 
 tangent_type(::Type{<:TypeVar}) = NoTangent
 
-@unstable @foldable tangent_type(::Type{Ptr{P}}) where {P} = Ptr{tangent_type(P)}
+@unstable @foldable function tangent_type(::Type{Ptr{P}}) where {P}
+    T = tangent_type(P)
+    return isbitstype(T) && sizeof(T) == 0 ? PtrTangent : Ptr{T}
+end
+
+"""
+Reverse pointer tangent that carries provenance, so re-typed, erased or shifted pointers are
+checked against their source storage instead of silently addressing the wrong derivative.
+
+    PtrTangent
+
+Tangent of an erased pointer or a pointer with a zero-size pointee tangent.
+These pointers retain provenance so non-differentiable reads cannot hide stores
+into differentiated storage. Such pointers can come from
+`unsafe_convert(Ptr{Cvoid}, p)` (including `unsafe_copyto!` and `pointer(::Array)`) or
+from storage with no tangent; the primal type alone cannot distinguish them.
+
+`elt` records the tangent element type and `primal_elt` the primal
+element type. `_tangent_retyping_verdict` refuses cross-type reads.
+Empty payloads and placeholders use the following convention:
+For `pointer_from_objref`, `primal_elt` is the object type; placeholders retain the
+pointer's declared element type.
+For nonempty object payloads, `elt` is the tangent payload type and
+`primal_elt` is a `Pair{Any,Any}` of object and primal payload types. This
+keeps boxed or mutable round trips valid without cross-type inline
+payload reads. Raw loads and stores that copy mutable structs with
+inline differentiable fields are refused. A sole field supplies the
+payload types; multiple fields supply their field NamedTuples. Empty
+payloads record `NoTangent` and the object type; zero/uninit tags
+record `NoTangent` and the pointer's declared element type.
+
+`NoTangent` marks absent differentiable storage and is also the actual
+tangent element type for non-differentiable buffers.
+"""
+struct PtrTangent
+    p::Ptr{Nothing}
+    elt::Any
+    primal_elt::Any
+end
+
+_tangent_fields(::Type{PtrTangent}) = ()
+
+# A boxed slot needs its owner for GC-safe writes; raw seeds have no owner.
+@static if VERSION >= v"1.11-rc4"
+    struct BoxedPointerStorage
+        primal::Memory{Any}
+        shadow::Memory{Any}
+    end
+    BoxedPointerStorage(a::Array{Any}, d::Array{Any}) = BoxedPointerStorage(
+        a.ref.mem, d.ref.mem
+    )
+else
+    struct BoxedPointerStorage
+        primal::Vector{Any}
+        shadow::Vector{Any}
+    end
+    BoxedPointerStorage(a::Array{Any}, d::Array{Any}) = BoxedPointerStorage(vec(a), vec(d))
+end
+
+# Copying a Ptr preserves its address, so its owners must also remain the same objects.
+Base.deepcopy_internal(x::BoxedPointerStorage, ::IdDict) = x
+
+@inline function Base.getproperty(d::PtrTangent, name::Symbol)
+    value = getfield(d, name)
+    return name === :primal_elt && value isa BoxedPointerStorage ? Any : value
+end
+
+tangent_type(::Type{Ptr{Any}}) = PtrTangent
+tangent_type(::Type{Ptr{Nothing}}) = PtrTangent
 
 tangent_type(::Type{<:Ptr}) = NoTangent
 
@@ -404,6 +484,21 @@ tangent_type(::Type{Core.Compiler.InferenceResult}) = NoTangent
 
 @static if VERSION >= v"1.11"
     tangent_type(::Type{Core.Compiler.AnalysisResults}) = NoTangent
+end
+
+@static if isdefined(Base, :HAMT)
+    # `HAMT{K,V}` is recursive through `data::Vector{Union{Leaf{K,V},HAMT{K,V}}}`, so the
+    # structural fallback never terminates on it, nor on `PersistentDict` or `ScopedValues.Scope`
+    # (reached by any `ScopedValue` read), which hold one. `dual_type` asks `tangent_type` first,
+    # so this one method covers forward mode too.
+    function tangent_type(::Type{P}) where {P<:Base.HAMT.HAMT}
+        msg =
+            "Mooncake.jl cannot derive a tangent type for `$P`: `Base.HAMT.HAMT` is recursive " *
+            "through its `data::Vector{Union{Leaf,HAMT}}` field. `Base.PersistentDict` and " *
+            "`Base.ScopedValues.Scope` are built on it, so reading a `ScopedValue` inside " *
+            "differentiated code is not supported either."
+        return error(msg)
+    end
 end
 
 function split_union_tuple_type(tangent_types)
@@ -482,9 +577,11 @@ end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
 
-    # This method can only handle struct types. Something has gone wrong if P is primitive.
+    # Defer errors to runtime: generator-time throws survive in callers' `@foldable`
+    # cached IR even after a more-specific extension overload is added.
     if isprimitivetype(P)
-        return error("$P is a primitive type. Implement a method of `tangent_type` for it.")
+        msg = "$P is a primitive type. Implement a method of `tangent_type` for it."
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -575,8 +672,9 @@ end
 # Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
 # placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
 function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
-    return bitcast(Ptr{tangent_type(P)}, x)
+    return uninit_tangent(x)
 end
+# Cache the `SimpleVector` itself to preserve aliasing, before filling to break cycles.
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::Vector{Any}
     t = Vector{Any}(undef, length(x))
@@ -661,7 +759,13 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # primal address to Ptr{tangent_type(P)}. The result must NOT be dereferenced — it is a
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
-@inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
+@inline function uninit_tangent(x::Ptr{P}) where {P}
+    return if tangent_type(typeof(x)) === PtrTangent
+        PtrTangent(Ptr{Nothing}(x), NoTangent, P)
+    else
+        bitcast(Ptr{tangent_type(P)}, x)
+    end
+end
 
 """
     randn_tangent(rng::AbstractRNG, x::P) where {P}
@@ -757,7 +861,7 @@ circular references or aliasing. Returns `Val{true}()` if caching is required (t
 or `Val{false}()` if tangents of type [`tangent_type(P)`](@ref) are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
-This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()`
+This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()` 
 can improve performance by avoiding cache overhead, but is only safe when the memory layout
 of the tangent type is provably tree-like. 
 
@@ -924,7 +1028,11 @@ counting". If `c` is a `NoCache`, assume no aliasing or circular referencing.
 """
 increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
-function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
+function increment_internal!!(::IncCache, x::Ptr, y::Ptr)
+    return x === y ? x : throw(error("Incrementing pointers is not supported!"))
+end
+# Same rule for an erased tangent pointer: two tangents for one primal must be one address.
+function increment_internal!!(::IncCache, x::PtrTangent, y::PtrTangent)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 @generated function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Tuple}
@@ -1035,7 +1143,7 @@ end
 struct FieldUndefined end
 
 """
-    _dot(t::T, s::T)::Float64 where {T}
+    _dot(t, s)::Float64
 
 Required for testing.
 Should be defined for all standard tangent types.
@@ -1043,16 +1151,20 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(t, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 
 """
-    _dot_internal(c::MaybeCache, t::T, s::T) where {T}
+    _dot_internal(c::MaybeCache, t, s)
 
 Implementation for [`_dot`](@ref). Use `c` to handle circular references and aliasing.
 If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular references
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
+# Cross-type dots occur when forward/reverse representations differ, e.g. an Array's
+# forward `MemoryRef` tangent versus reverse `NoTangent` rdata. NoTangent contributes zero.
+_dot_internal(::MaybeCache, ::NoTangent, ::Any) = 0.0
+_dot_internal(::MaybeCache, ::Any, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
@@ -1107,6 +1219,21 @@ aliasing correctly. If `c` is a `NoCache`, assume there is no circular reference
 aliasing in either `x` or `t`.
 """
 _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
+
+# Pointer placeholders carry no derivative of the address and are inert in arithmetic.
+# `increment!!` additionally requires identical tangents for one primal. Forward rules
+# must refuse derivative reads through placeholders, including through `unsafe_wrap`.
+# `uninit_tangent` gives the correct tangent type, including `PtrTangent` for Cvoid;
+# returning the primal pointer is only type-correct when `tangent_type(P) === P`.
+randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = uninit_tangent(x)
+set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
+_scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
+_dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
+set_to_zero_internal!!(::SetToZeroCache, t::PtrTangent) = t
+_scale_internal(::MaybeCache, ::Float64, t::PtrTangent) = t
+_dot_internal(::MaybeCache, ::PtrTangent, ::PtrTangent) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::PtrTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool
@@ -1381,6 +1508,24 @@ struct FriendlyTangentCache{M,B}
 end
 FriendlyTangentCache{M}(buffer::B) where {M,B} = FriendlyTangentCache{M,B}(buffer)
 
+# A statically acyclic cache tree needs no identity map. Keep these decisions type-only
+# so per-call friendly conversion retains its allocation and inference behaviour.
+function _friendly_cache_may_cycle(P, seen=())
+    isbitstype(P) && return false
+    isconcretetype(P) || return true
+    P in seen && return true
+    seen = (seen..., P)
+    P <: AbstractArray && return _friendly_cache_may_cycle(eltype(P), seen)
+    return any(t -> _friendly_cache_may_cycle(t, seen), fieldtypes(P))
+end
+@generated function _friendly_cache_needs_seen(::Type{P}) where {P}
+    _friendly_cache_may_cycle(P) || return false
+    P <: AbstractDict && return false
+    P <: Union{Tuple,NamedTuple} && return true
+    P <: AbstractArray && return :(tangent_type($(eltype(P))) !== NoTangent)
+    return :(tangent_type($P) <: Union{Tangent,MutableTangent})
+end
+
 """
     friendly_tangent_cache(x)
 
@@ -1415,31 +1560,49 @@ Overloads for `LinearAlgebra.Adjoint`, `LinearAlgebra.Transpose`,
 `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and `LinearAlgebra.SymTridiagonal`
 live in `src/rules/linear_algebra.jl`.
 
-!!! warning
-    Mutable structs whose fields form a self-referential cycle (e.g. a linked-list node
-    whose `next` field points to another instance of the same type) will cause a
-    `StackOverflowError` when this function descends into their fields at prepare time.
-    Override `friendly_tangent_cache` for such types to avoid recursion:
-    ```julia
-    Mooncake.friendly_tangent_cache(::MyRecursiveType) =
-        Mooncake.FriendlyTangentCache{Mooncake.AsRaw}(nothing)
-    ```
+Cycles are cut at repeated mutable objects using a primal-shaped buffer. The remaining
+fields retain their usual friendly representation; shared objects reuse their prepared cache.
 """
-@unstable @generated function friendly_tangent_cache(x::P) where {P}
+@unstable friendly_tangent_cache(x) = _friendly_tangent_cache(x, NoCache())
+
+@unstable @inline function friendly_tangent_cache(x, seen::MaybeCache)
+    if !_friendly_cache_needs_seen(typeof(x))
+        return friendly_tangent_cache(x)
+    end
+    if haskey(seen, x)
+        dest = seen[x]
+        return if dest === nothing
+            (seen[x] = FriendlyTangentCache{AsPrimal}(_copy_output(x)))
+        else
+            dest
+        end
+    end
+    ismutable(x) && (seen[x] = nothing)
+    # Preserve the public one-argument customisation hook while threading the traversal cache.
+    dest =
+        if which(friendly_tangent_cache, Tuple{typeof(x)}) ===
+            which(friendly_tangent_cache, Tuple{Any})
+            _friendly_tangent_cache(x, seen)
+        else
+            friendly_tangent_cache(x)
+        end
+    ismutable(x) && (seen[x] = dest)
+    return dest
+end
+
+@unstable @generated function _friendly_tangent_cache(x::P, seen::MaybeCache) where {P}
+    needs_seen = seen === NoCache && _friendly_cache_may_cycle(P)
     # Concrete Tuple: recurse element-wise and return a Tuple dest.
     # Tuple tangents are plain tuples (no val() wrapping); always recurse.
     if P <: Tuple && isconcretetype(P)
-        dest_exprs = [:(friendly_tangent_cache(getfield(x, $i))) for i in 1:fieldcount(P)]
+        needs_seen && return :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+        dest_exprs = [
+            :(friendly_tangent_cache(getfield(x, $i), seen)) for i in 1:fieldcount(P)
+        ]
         return :(($(dest_exprs...),))
     end
-    # Immutable struct with fields: recurse element-wise and return a NamedTuple dest.
-    # Mutable types are excluded for two reasons:
-    #   1. They can be recursive (e.g. tree nodes), making field-by-field descent infinite.
-    #   2. Calling tangent_type(P) here would invoke a generated function from another
-    #      generated function's body, risking world-age cycles (see AGENTS.md).
-    # Immutable structs are safe: they cannot be self-referential (infinite memory) and
-    # always have a standard Tangent{...} tangent type.
-    # AbstractArray and AbstractDict subtypes have dedicated overloads; exclude for clarity.
+    # Custom struct tangents need not be field-parallel to their primal.
+    # Check tangent_type in the returned expression so later custom methods remain visible.
     if !isprimitivetype(P) &&
         !ismutabletype(P) &&
         fieldcount(P) > 0 &&
@@ -1450,21 +1613,33 @@ live in `src/rules/linear_algebra.jl`.
         inits = always_initialised(P)
         dest_exprs = map(1:fieldcount(P), inits) do i, init
             if init
-                :(friendly_tangent_cache(getfield(x, $i)))
+                :(friendly_tangent_cache(getfield(x, $i), seen))
             else
                 # Field may be undefined: guard with isdefined to avoid UndefRefError.
                 # The AsRaw non-composite mode with a nothing buffer is safe because tangent_to_friendly!!
                 # returns dest[$i] as-is when both the primal and tangent fields are undefined.
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(getfield(x, $i), seen)
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
                 )
             end
         end
-        return :(NamedTuple{$names}(($(dest_exprs...),)))
+        return :(
+            if ($P <: NamedTuple || tangent_type($P) <: Tangent)
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(NamedTuple{$names}(($(dest_exprs...),)))
+                    end
+                )
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Non-float arrays need element caches only for differentiable elements.
     # Emit the `tangent_type` call at runtime so later extension overloads remain visible.
@@ -1474,14 +1649,19 @@ live in `src/rules/linear_algebra.jl`.
             if tangent_type($ET) === NoTangent
                 friendly_tangent_cache_internal(x)
             else
-                map(friendly_tangent_cache, x)
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(map(Base.Fix2(friendly_tangent_cache, seen), x))
+                    end
+                )
             end
         )
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
     # in the buffer as a NamedTuple, mirroring the immutable struct path. This avoids
-    # per-call allocation in tangent_to_friendly!!. Self-referential types (e.g. linked-list
-    # nodes) will stack-overflow here; override friendly_tangent_cache for such types.
+    # per-call allocation in tangent_to_friendly!!.
     if !isprimitivetype(P) &&
         ismutabletype(P) &&
         fieldcount(P) > 0 &&
@@ -1491,20 +1671,32 @@ live in `src/rules/linear_algebra.jl`.
         inits = always_initialised(P)
         dest_exprs = map(1:fieldcount(P), inits) do i, init
             if init
-                :(friendly_tangent_cache(getfield(x, $i)))
+                :(friendly_tangent_cache(getfield(x, $i), seen))
             else
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(getfield(x, $i), seen)
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
                 )
             end
         end
-        return :(FriendlyTangentCache{AsMutableFields}(
-            NamedTuple{$names}(($(dest_exprs...),))
-        ))
+        return :(
+            if tangent_type($P) <: MutableTangent
+                $(
+                    if needs_seen
+                        :(friendly_tangent_cache(x, IdDict{Any,Any}()))
+                    else
+                        :(FriendlyTangentCache{AsMutableFields}(
+                            NamedTuple{$names}(($(dest_exprs...),))
+                        ))
+                    end
+                )
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Everything else: primitives, zero-field types, and custom-tangent types.
     return :(friendly_tangent_cache_internal(x))
@@ -1748,8 +1940,9 @@ end
 # 2-arg convenience: builds dest + cache from the primal, then delegates.
 # Unstable: dest type from friendly_tangent_cache is value-dependent.
 @unstable function tangent_to_friendly!!(primal::P, tangent) where {P}
-    dest = friendly_tangent_cache(primal)
     c = isbitstype(P) ? NoCache() : IdDict{Any,Any}()
+    dest = friendly_tangent_cache(primal, c)
+    _friendly_cache_needs_seen(P) && empty!(c)
     return tangent_to_friendly!!(dest, primal, tangent, c)
 end
 
@@ -1805,10 +1998,29 @@ modifying the tangent in place as much as possible to minimize allocations.
 The primal is not modified, and the returned tangent will not alias it.
 """
 function primal_to_tangent!!(tangent, primal::P) where {P}
-    @assert typeof(tangent) <: tangent_type(P)
+    typeof(tangent) <: tangent_type(P) || throw(
+        ArgumentError(
+            "Invalid friendly tangent of type `$P`: its native tangent type is " *
+            "`$(tangent_type(P))`, but the prepared tangent has type `$(typeof(tangent))`. " *
+            "Supply a direction with the same structure as the primal; an array argument " *
+            "requires an array direction, even when its elements are nondifferentiable.",
+        ),
+    )
     return primal_to_tangent_internal!!(
         tangent, primal, isbitstype(P) ? NoCache() : IdDict()
     )::tangent_type(P)
+end
+
+# Called at each array leaf of the recursive friendly-to-native conversion.
+@inline function _check_friendly_tangent_size(tangent, direction)
+    size(tangent) == size(direction) || throw(
+        ArgumentError(
+            "Invalid friendly tangent: direction size $(size(direction)) does not match " *
+            "the primal's tangent size $(size(tangent)). Supply a direction with the " *
+            "same shape as the primal.",
+        ),
+    )
+    return nothing
 end
 
 """
@@ -2050,6 +2262,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (svec(5.0), Vector{Any}),
         ([3.0, 2.0], Vector{Float64}),
         (Float64[], Vector{Float64}),
+        (Union{}[], Vector{Union{}}),
         ([1, 2], Vector{NoTangent}),
         ([[1.0], [1.0, 2.0]], Vector{Vector{Float64}}),
         (setindex!(Vector{Vector{Float64}}(undef, 2), [1.0], 1), Vector{Vector{Float64}}),
@@ -2081,6 +2294,15 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     circular_vector = Any[5.0]
     circular_vector[1] = circular_vector
 
+    # A cycle that closes through an IMMUTABLE aggregate rather than array-to-array, which the
+    # element-wise traversals' own visited sets already cover.
+    tuple_cycle_vector = Any[]
+    push!(tuple_cycle_vector, (tuple_cycle_vector,))
+
+    # One array in two positions. Every traversal must keep the two on one storage; equality of
+    # values holds either way, so only the storage counts in `test_lifted` can tell.
+    aliased_array = randn(5)
+
     rel_test_cases = Any[
         TestResources.StructFoo(6.0, [1.0, 2.0]),
         TestResources.StructFoo(6.0),
@@ -2089,10 +2311,24 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.StructNoFwds(5.0),
         TestResources.StructNoRvs([5.0]),
         TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0),
+        # An ARRAY of mutable structs: the element's lane read has to compose inside the array's
+        # reverse storage, which a write-through proxy cannot be stored in.
+        [TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0)],
+        # Complex scalar + array: a differentiable element type otherwise absent from this list,
+        # so it is driven through both test_lifted (forward) and test_tangent (reverse).
+        1.0 + 2.0im,
+        ComplexF64[1.0 + 2.0im, -3.0 + 0.5im, 0.0 - 1.0im],
         LowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitLowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitUpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
+        (Union{}[], 1.0),
+        Ref(Union{}[]),
+        Ref{Union{}}(),
+        Union{Float32,Float64}[2.0f0, 3.0],
+        Ref{Union{Float32,Float64}}(2.0),
+        Union{Float32,ComplexF64}[2.0f0, 3.0 + 1.0im],
+        Ref{Union{Float32,ComplexF64}}(3.0 + 1.0im),
         (2.0, 3),
         (3, 2.0),
         (2.0, 1.0),
@@ -2106,6 +2342,9 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (a=randn(10), b=randn(10)),
         (Base.TOML.ErrorType(1), NoTangent()), # Enum
         circular_vector,
+        tuple_cycle_vector,
+        (aliased_array, aliased_array),
+        svec(aliased_array, aliased_array),
         TestResources.make_circular_reference_struct(),
         TestResources.make_indirect_circular_reference_array(),
         # Regression tests to catch type inference failures, see https://github.com/chalk-lab/Mooncake.jl/pull/422
@@ -2113,8 +2352,23 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (((((((((randn(33)...,),),),),), randn(5)...),),),),
         Base.OneTo{Int},
         TestResources.build_big_isbits_struct(),
+        # Dictionary tangent algebra and lifting use keys rather than table slots.
+        Dict(:a => 5.0, :b => 4.0),
     ]
+    if VERSION >= v"1.11"
+        mem = Memory{Union{}}(undef, 0)
+        append!(rel_test_cases, (mem, memoryref(mem)))
+        union_mem = Memory{Union{Float32,Float64}}([2.0f0, 3.0])
+        append!(rel_test_cases, (union_mem, memoryref(union_mem)))
+        complex_union_mem = Memory{Union{Float32,ComplexF64}}([2.0f0, 3.0 + 1.0im])
+        append!(rel_test_cases, (complex_union_mem, memoryref(complex_union_mem)))
+    end
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
+    VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
+    # A complex `MemoryRef`: the `Memory` and `MemoryRef` lifts have to agree on which eltypes
+    # take the block-backed representation, and only the float half of that pair was covered.
+    VERSION >= v"1.11" &&
+        push!(rel_test_cases, memoryref(fill!(Memory{ComplexF64}(undef, 3), 1.0 + 2.0im)))
     return vcat(
         map(x -> (false, x...), abs_test_cases),
         map(x -> (false, x), rel_test_cases),

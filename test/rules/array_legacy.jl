@@ -26,6 +26,8 @@ end
 end
 
 @testset "shared tangent resize refusal" begin
+    # Use tuple elements for plain-Array forward storage; numeric vectors resize
+    # their NDualArray partial block separately.
     for (f, args) in (
             (Base._growbeg!, (1,)),
             (Base._growend!, (1,)),
@@ -38,26 +40,27 @@ end
         mode in (frule!!, rrule!!),
         borrowed in (false, true)
 
-        a = [1.0, 2.0]
-        da = zeros(2)
+        a = mode === frule!! ? [(1.0,), (2.0,)] : [1.0, 2.0]
+        da = mode === frule!! ? zero_dual(Val(1), a) : zeros(2)
         alias = reshape(reshape(da, 2, 1), 2)
         da = borrowed ? alias : da
-        dual = mode === frule!! ? Dual : CoDual
-        zero = mode === frule!! ? zero_dual : zero_fcodual
+        dual = mode === frule!! ? Lifted{typeof(a),1} : CoDual
+        zero = mode === frule!! ? Base.Fix1(Mooncake.zero_lifted, Val(1)) : zero_fcodual
+        a_before, da_before = copy(a), copy(da)
         @test_throws r"ArgumentError:.*array.*copy.*before resizing" mode(
             zero(f), dual(a, da), map(zero, args)...
         )
-        @test a == [1.0, 2.0]
-        @test da == zeros(2)
+        @test a == a_before
+        @test da == da_before
     end
     for mode in (frule!!, rrule!!), capacity in (2, 1000), borrowed in (false, true)
-        a = [1.0, 2.0]
-        da = zeros(2)
+        a = mode === frule!! ? [(1.0,), (2.0,)] : [1.0, 2.0]
+        da = mode === frule!! ? zero_dual(Val(1), a) : zeros(2)
         sizehint!(a, borrowed ? capacity : 2)
         sizehint!(da, capacity)
         alias = reshape(reshape(da, 2, 1), 2)
-        dual = mode === frule!! ? Dual : CoDual
-        zero = mode === frule!! ? zero_dual : zero_fcodual
+        dual = mode === frule!! ? Lifted{typeof(a),1} : CoDual
+        zero = mode === frule!! ? Base.Fix1(Mooncake.zero_lifted, Val(1)) : zero_fcodual
         d = dual(a, borrowed ? alias : da)
         if capacity == 2
             mode(zero(sizehint!), d, zero(2))

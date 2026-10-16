@@ -7,7 +7,16 @@ Mooncake.jl has a number of known qualitative limitations, which we document her
 While `Mooncake.jl` should now work on a very large subset of the language, there remain things that you should expect not to work. A non-exhaustive list of things to bear in mind includes:
 1. It is always necessary to produce hand-written rules for `ccall`s (and, more generally, foreigncall nodes). We have rules for many `ccall`s, but not all. If you encounter a foreigncall without a hand-written rule, you should get an informative error message which tells you what is going on and how to deal with it.
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
+1. Element access and stores through `reinterpret` between `T` and `Complex{T}` (`T <: IEEEFloat`) are supported for ordinary Array/Memory storage and views, preserving aliases with the parent. Other reinterpretations and pointer re-typing are restricted, including through `Ptr{Cvoid}`, to the same primal element type when derivative storage is required; write a rule for the enclosing function otherwise. Reads through pointers narrowed to non-differentiable elements remain admitted, but stores and nonempty copies through such pointers over differentiated storage raise `ArgumentError`.
+1. Nonzero pointer byte shifts raise `ArgumentError` when the tangent storage stride differs from the primal element stride, including through erased or narrowed pointers. Use typed element indexing where supported, or write a rule for the enclosing function. Zero shifts remain supported. Reverse pointer `unsafe_copyto!` also refuses differing strides; forward copies and array/MemoryRef copies use their own element strides. Forward pointers from derivative-carrying `Memory` retain their source element type: re-typing to a different differentiable element type is refused. Numeric Memory permits same-type derivative access at width one; widths greater than one refuse derivative loads and stores because lanes are interleaved. Address-only casts and shifts over storage with no tangent are supported except for forward transport of a struct pointer through a non-inlined call, which can raise `TypeError`; Symbol-selected transport can also terminate Julia before returning a derivative. Narrowed stores, nonempty copies, and `unsafe_wrap` over differentiated storage raise `ArgumentError`.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
+1. Prepared caches refuse `Dict`s whose values can carry derivatives, including those nested in `f`, struct fields, tuples, named tuples, array element types or `Ref`s; pass values in a `Vector`/`NamedTuple`, build the `Dict` inside the function, or use rule-taking forms (abstract or `Any`-typed storage is inspected by runtime type at preparation only, so preserve those types on reuse).
+1. The rule-taking forms support `Dict` and `IdDict` tangent conversion by key, including nested native tangent leaves; prepared caches support this conversion for `IdDict`. Direction keys must match the call-time primal; table capacity and insertion order do not affect the tangent. Native `Dict` tangents are keyed dictionaries. Dictionary keys carry no derivatives. Insertion and lookup accept differentiable keys with zero key derivatives. Exposing a stored differentiable key (pair/key iteration, `getkey`, or `pop!` on a set on Julia 1.11+) is unsupported and raises an error. Value iteration does not expose keys. `replace`/`replace!` on a `Dict` or `Set`, and random sampling from those containers, remain unsupported. Sampling Dict key/value iterators also reaches unsupported table internals on Julia 1.11+ (Julia 1.10 can sample keys, but Base has no value-iterator sampler); direct differentiation through `Dict` fields or unsupported hash-table internals raises an error. Friendly forward directions for other `AbstractDict` primals are refused; pass a native tangent through a cache prepared with `Config(; friendly_tangents=false)`.
+1. An `IdDict` argument's key objects must be the prepare-time ones; prepare a new cache after replacing them.
+1. HVPs through a captured or constructed `FunctionWrapper` are unsupported. On Julia 1.10/1.11, captured wrappers may fail only after a long compilation or may not terminate in practice.
+
+BLAS/LAPACK matrix rules require a column stride at least the row count for multi-row matrices, and a positive column stride for one-row matrices with multiple columns; they preserve `gemv!`'s own stride normalisation, empty-output calls, and `lacpy!` single-column and identity copies.
+LAPACK operands must also have unit first stride where the routine requires it, including matrix and vector right-hand sides of `trtrs!` when they have more than one row; offset and padded storage satisfying these requirements remains supported.
 
 ## Resizing shared arrays on Julia 1.10
 
@@ -102,11 +111,15 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
+The takeaway: do not attempt to differentiate functions which modify global state.
+When reading a non-`const` global through a `GlobalRef` in the lowered code, both modes require its value to remain `===` or `==` to its value when the rule was built; otherwise, the call raises an error (explicit `getglobal` calls bypass this check).
+Rebinding to an equal value is accepted, but the same object must not also be an argument.
+
+Forward mode reads current values and replaced storage inside a global between calls (`R[] = [7.0]`), including changes of the slot's value type and scalars replaced inside an immutable aggregate (`R[] = (7.0, 7.0)`). Reverse mode supports changes that remain compatible with its cached tangent representation; replacement with another type can raise an exception. A global array grown beyond its cached derivative storage, whether a numeric array's partials block or an element-wise array's tangent array (`Vector{Vector{Float64}}`, `Vector{Any}`), is refused in forward mode with an `ArgumentError`; this also applies when the array is returned as a Jacobian output. Shrinking is supported, except that on Julia 1.11 `reshape` of a vector whose capacity exceeds its length (any grown or shrunk vector, global or not) takes a `jl_genericmemory_slice` foreign call that has no rule and raises `MissingForeigncallRuleError`. The CUDA extension's block readers do not perform the growth check. Storage replaced inside an immutable aggregate held by a global (`R[] = ([7.0],)`) is read correctly in forward mode.
 
 ## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
 
 A `NoTangent` parent:
 
@@ -133,7 +146,7 @@ julia> Mooncake.value_and_gradient!!(rule, f, state)
 
 `state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
-A global:
+A global, which is refused:
 
 ```jldoctest global-alias
 julia> const X = [3.0];
@@ -146,10 +159,12 @@ julia> function g(x)
 julia> rule = Mooncake.build_rrule(g, X);
 
 julia> Mooncake.value_and_gradient!!(rule, g, X)
-(6.0, (NoTangent(), [1.0]))
+ERROR: ArgumentError: An argument is the same object as a constant or global read inside the function being differentiated (a Vector{Float64}). Their derivative storage is separate — the constant's is created once when the rule is built — so the contribution through the constant would be silently dropped and the derivative returned would be wrong. Pass a copy of the argument, or read the value through an argument instead of a global.
+[...]
 ```
 
-`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
+`X` and `x` are the same vector, and their derivative storage is separate, so the contribution
+through `X` would be dropped. Mooncake raises an `ArgumentError` instead of returning an incorrect derivative.
 
 ## Passing Differentiable Data as a Type
 
@@ -167,8 +182,8 @@ mysquare (generic function with 1 method)
 
 julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
 
-julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
-Mooncake.Dual{Float64, Float64}(9.0, 0.0)
+julia> Mooncake.value_and_derivative!!(cache, (mysquare, Mooncake.NoTangent()), (3.0, 1.0))
+(9.0, 0.0)
 ```
 As you can see, the tangent is `0.0` rather than `6.0`.
 
@@ -327,6 +342,21 @@ An example implementation of this is provided [here](developer_documentation/cus
 
 ## Tangent Generation and Pointers
 
+Reverse mode refuses raw pointer loads and stores that copy mutable
+structs with inline differentiable fields, including `unsafe_load` /
+`unsafe_store!` and atomic variants: cotangents of these copies cannot
+be propagated back to their sources. Copies whose differentiable data
+is held only in referenced children share those children's tangents
+and remain supported. The guard uses primal field types conservatively;
+a custom tangent does not override an inline primal float field.
+Boxed reference slots and isbits loads are unaffected.
+To recover an object from `pointer_from_objref`, use
+`unsafe_pointer_to_objref`; casts through boxed or mutable pointer
+types are supported. Non-differentiable casts retain pointer provenance;
+recovery with a NULL tangent address is refused.
+Casts to inline targets must match the payload element type, so
+reading individual float fields of a multi-field object is refused.
+
 _**The Problem**_
 
 
@@ -360,6 +390,21 @@ This is only really a problem for tangent / fdata / rdata generation functionali
 As a work-around, AD testing functionality permits users to pass in `CoDual`s.
 So if you are testing something involving a pointer, you will need to construct its tangent yourself, and pass a `CoDual` to e.g. `Mooncake.TestUtils.test_rule`.
 
+Forward mode supports ordinary and atomic stores through `pointer(::Array{Any})`
+at every chunk width: each boxed shadow slot receives the complete forward value.
+Boxed stores and copies retain the storage owner and apply a GC write barrier to
+both primal and shadow writes, including reverse-mode restoration. Stores through
+hand-built `Ptr{Any}` values without a known boxed shadow and owner are refused
+with an `ArgumentError` before mutation when the pointer carries tangent storage,
+even for non-differentiable values. Forward stores with no tangent storage are allowed.
+Address-only round trips from `Ptr{Any}` through
+`Ptr{Cvoid}` or `Ptr{UInt8}` preserve unknown shadow provenance and are allowed.
+Forward copies between boxed pointers require known boxed shadows. Copies through
+pointers narrowed or erased from boxed slots are refused when they move data,
+even with unknown shadows. Zero-byte copies and copies onto the same pointer
+are allowed.
+Boxed pointer loads remain unsupported in forward mode.
+
 While pointers tend to be a low-level implementation detail in Julia code, you could in principle actually be interested in differentiating a function of a pointer.
 In this case, you will not be able to use `Mooncake.value_and_gradient!!` as this requires the use of `zero_tangent`.
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.
@@ -370,20 +415,85 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 DocTestSetup = nothing
 ```
 
-## Reusing prepared reverse caches
+## Reusing prepared caches
+
+Reuse must preserve the alias relationships from preparation. Per-call aliasing comparisons
+run by default; set `Config(check_aliasing=false)` to skip their fixed-position comparisons
+and, for structured forward gradient seeds, array-leaf traversal at zero per-call cost.
+With the opt-out, a call with changed aliasing can return a wrong gradient without an error:
+for `f(a, b, x) = (a[1] *= x; sum(b) * x + x * x)`, preparing with
+`f(v, v, 1.5)` and calling with `f(a, b, 1.5)`, where `v`, `a` and `b` are distinct
+arrays each equal to `[1.0, 2.0]`,
+can return `7.5` for the derivative with respect to `x`, whose correct value is `6.0`.
+This fixed-position mismatch is refused by default. Aliasing in array elements is not
+checked per call yet. Shape and type checks and preparation-time refusals remain on, including
+`Dict` admission and aliased storage across arguments in forward gradients and HVP/Hessian.
 
 `prepare_gradient_cache` and `prepare_pullback_cache` record the alias relationships of
-mutable inputs, including leaves nested in tuples and named tuples. Reuse must preserve
-both object identity relationships and shared backing storage. On Julia 1.11 and later,
-array offsets within backing `Memory` must also match. A mismatch raises
+mutable inputs and storage carried by immutable values, including `MemoryRef`, tuples,
+named tuples, closures and immutable array wrappers. Reuse must preserve
+both object identity relationships and shared backing storage for leaf types that can carry
+derivatives, including empty containers that the function can fill. Distinct empty arrays
+count as independent storage only when their owning backing `Memory` has length zero
+(Julia 1.11+). Arrays emptied with `empty!` can retain
+nonempty backing storage, whose aliasing must still be preserved. Julia 1.10 uses
+`Base.dataids` to identify storage. On Julia 1.11 and later,
+relative offsets within each shared backing `Memory` group must also match. With the default
+aliasing checks, a mismatch raises
 `Mooncake.PreparedCacheError` before resetting tangent buffers or running the rule.
 New objects with the same relationships are allowed; prepare a separate cache when
-those relationships change.
+those relationships change. Forward caches using structured gradient seeds also check
+the aliasing of differentiable array leaves inside struct fields before refreshing their buffers.
 
-Callers must preserve types, shapes, and aliasing throughout the inputs, including
-parts the guard does not inspect. The guard does not traverse struct fields (including
-closures and array wrappers), array elements, or other variable-length containers such
-as dictionaries. It does not establish overlap introduced through raw pointers or
-`unsafe_wrap`; on Julia 1.10, array storage sharing is identified by `Base.dataids`.
+Reverse reuse checks derivative storage through tuples, named tuples, builtin arrays
+and structural tangents in `f` and `x`: sizes, compatible slot types, defined primal
+slots and `MemoryRef` offsets. Above the first mutable or array storage, immutable
+slots may change type when their fdata type is unchanged; the same swap inside a
+vector, `Ref` or mutable struct is refused. An undefined primal slot may reuse an
+initialized tangent slot. Custom tangent interiors, including `IdDict` values and
+`FunctionWrapper` captures, are not checked. Custom `AbstractArray` tangents have a
+size check when the primal is also an `AbstractArray`. Callers must preserve aliasing
+in the parts the alias guard does not inspect: it does not traverse mutable struct interiors,
+abstractly typed fields, array elements, or other variable-length containers such as
+dictionaries. It does not establish overlap introduced through raw pointers or
+`unsafe_wrap`; on Julia 1.10, array storage aliasing is identified by `Base.dataids`.
+Every forward prepared-cache entry point preserves the prepared storage and object aliasing
+at fixed positions, including aliasing between the callable and its arguments, unless
+`check_aliasing=false` opts out of those per-call comparisons.
+With the default aliasing checks, preparing with distinct arrays and reusing with one
+array at both positions raises
+`Mooncake.PreparedCacheError`, even for caller-supplied native directions. Derivative
+and Jacobian calls permit offset changes that preserve these aliasing relationships.
+Unchanged aliasing remains supported for derivative and Jacobian calls; forward gradients
+refuse derivative storage shared across arguments, including the callable.
+The prepared aliasing check has the same boundary, including abstractly typed
+fields and mutable functor interiors.
 Passing this check does not establish that unchecked aliases are safe. Rebuild the cache
 when their relationships change.
+
+## Low-level BLAS increments
+
+Low-level `BLAS.nrm2(n, x, incx)` differentiation requires `incx > 0` in both
+modes. Zero- and negative-increment behavior varies between BLAS implementations.
+Low-level `BLAS.scal!` differentiation requires a positive increment in both modes.
+Low-level `BLAS.asum`, `BLAS.axpy!`, `BLAS.nrm2` and `BLAS.scal!`
+differentiation requires the raw-memory walk to stay within the supplied operand's
+elements in both modes, even if BLAS can read other elements of its parent.
+Pass a view covering every visited address. `BLAS.dot`, `BLAS.dotc` and `BLAS.dotu`
+also accept walks outside a view when every visited address stays in its backing
+array. BLAS level-1 rules refuse `ReinterpretArray` operands in both modes,
+including generic routes that reach these rules. Direct `LinearAlgebra.dot` between
+vectors of the same element type supports operands reinterpreting `T` ↔ `Complex{T}`
+(`T <: IEEEFloat`). High-level matrix multiplication on `reinterpret(Float64, z)`
+and Cholesky on `Symmetric(reinterpret(Float64, z))` also differentiate correctly
+through the element-access rules. These rules require the same `T`/`Complex{T}`
+layout throughout the backing storage, including views, reshapes, and nested
+reinterprets; an incompatible inner reinterpret throws `ArgumentError` naming the
+access. Wrapped `Float16` and `ComplexF16` `dot` operands (including views of
+reinterpreted vectors) work through generic element access. Wrapped `dot` operands that reach
+BLAS (`Float32`, `Float64`, `ComplexF32`, `ComplexF64`), `axpy!`, and `scal!`
+remain refused with `BLAS does not support operand`.
+`reinterpret(reshape, …)` remains refused by the pointer re-typing, object-pointer,
+or chunk-width guards; ordinary `reshape(reinterpret(T, x), …)` is supported.
+A bare `Ptr` operand has no owning array, so its walk is not bounds-checked and
+staying within the buffer is the caller's responsibility.

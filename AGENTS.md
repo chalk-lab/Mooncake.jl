@@ -46,6 +46,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Mooncake's AD transform should preserve core execution properties: if the primal has zero allocation, the pullback should also have zero allocation; otherwise, pullbacks should allocate only a small constant-factor times the primal allocation (`c *` primal allocation); and type-stable primals should yield type-stable pullbacks.
 - BLAS reverse rules keep two numerical contracts. Strong zeros: an exact zero factor in a derivative product (a zero cotangent weight or a zero coefficient) gives an exact zero, even when the other factor is NaN or Inf; every rule should honour this in both modes. A whole-zero output cotangent gives exact-zero cotangent contributions in every BLAS and LAPACK reverse rule, while a partially zero seed inside a BLAS contraction is left to BLAS arithmetic. Evaluation order at extreme magnitudes: `gemv!`/`symv!`/`hemv!` multiply by the coefficient first, `gemm!`/`symm!`/`hemm!` pass it to BLAS, and their forward rules keep that split (the scalar product rule for the vector products, the BLAS `frule`'s term order for the matrix ones). Inf or NaN produced by that order is expected; the extreme tests pin it bit for bit, including through forward-over-reverse, so a rewrite must keep them passing unchanged.
 - Preserve the aliasing invariant (`primal(a) === primal(b)` implies `fdata(a) === fdata(b)`): aliased primals must share fdata. Custom rules that intentionally break this must not allow the shared primal to be mutated in-place while both `CoDual`s are live. See the "Aliasing Invariant" subsection of `docs/src/understanding_mooncake/rule_system.md`.
+- Forward `value_and_gradient!!` refuses derivative-carrying storage shared across arguments, including the callable. Within one argument, repeated storage leaves are supported when they are identical (`===`) after traversing wrappers and struct fields: `(a, view(a, 1:2))` reaches the same array `a` through the view's parent. Distinct `Array`, `Memory`, or `MemoryRef` leaves over one backing storage are refused even within one argument; identical `MemoryRef`s have the same owner and offset. `value_and_derivative!!` supports shared storage with consistent seeds.
 - In reverse mode, Mooncake usually restores mutations on the pullback; stateful exceptions need explicit rules and focused tests.
 - Treat random draws as zero-derivative stateful operations. For mutating `rand!`-style rules, restore the destination primal and fdata in the pullback, but deliberately leave the RNG advanced; never restore or rewind its seed/state. Because the result aliases the destination, use a mutation-aware rule rather than `@zero_derivative`, and test the subsequent draw.
 - Internal helper APIs may change freely, but exported and public behaviour should come with tests, documentation, and clear error messages.
@@ -54,6 +55,10 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
 - When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
+
+## Forward Representation
+
+- Every forward entry point that chooses storage from an element type must use `_storage_kind`; only concrete `NDualEltype` elements use numeric storage. Numeric unions and `Union{}` use structural storage. Top-level real-union Array inputs remain unsupported and must fail at forward preparation.
 
 ## Consistency
 

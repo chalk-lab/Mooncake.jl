@@ -53,6 +53,32 @@ sr(n::Int) = StableRNG(n)
                 (:none, true, logsumexp, UpperTriangular(randn(sr(20), P, 4, 4))),
                 (:none, true, logsumexp, UnitUpperTriangular(zeros(P, 2, 2))),
                 (:none, true, logsumexp, UnitLowerTriangular(zeros(P, 2, 2))),
+                (
+                    :none,
+                    false,
+                    x -> logsumexp(x; dims=1),
+                    UnitUpperTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    false,
+                    x -> logsumexp(x; dims=2),
+                    UnitLowerTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    zeros(P, 1, 2),
+                    UnitUpperTriangular(zeros(P, 2, 2)),
+                ),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    zeros(P, 2, 1),
+                    UnitLowerTriangular(zeros(P, 2, 2)),
+                ),
                 (:none, true, logsumexp, Diagonal(randn(sr(21), P, 4))),
                 (:none, true, logsumexp, Symmetric(randn(sr(22), P, 4, 4))),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
@@ -134,6 +160,8 @@ sr(n::Int) = StableRNG(n)
                     ),
                     (:none, true, logsumexp!, zeros(P, 1, 2), Transpose(view(x, :, :))),
                     (:none, true, logsumexp, Diagonal(reshape(x, 4))),
+                    (:none, true, logsumexp, UpperTriangular(x)),
+                    (:none, true, logsumexp, LowerTriangular(x)),
                     (:none, true, logsumexp, V(view(x, :, :))),
                 )
             end
@@ -143,17 +171,176 @@ sr(n::Int) = StableRNG(n)
             end
             return cases
         end...,
+        # Singleton reductions are identities, so Float16 finite differences remain
+        # resolvable. Cover each wrapped rule and each mutating storage combination.
+        [
+            (:none, true, logsumexp, view(zeros(Float16, 1), :)),
+            (:none, true, Core.kwcall, (; dims=:), logsumexp, view(zeros(Float16, 1), :)),
+            (:none, true, Core.kwcall, (; dims=1), logsumexp, view(zeros(Float16, 1), :)),
+            (
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=(1, 2)),
+                logsumexp,
+                view(zeros(Float16, 1, 1), :, :),
+            ),
+            (:none, true, logsumexp!, zeros(Float16, 1), view(zeros(Float16, 1), :)),
+            (:none, true, logsumexp!, view(zeros(Float16, 1), :), zeros(Float16, 1)),
+            (
+                :none,
+                true,
+                logsumexp!,
+                view(zeros(Float16, 1), :),
+                view(zeros(Float16, 1), :),
+            ),
+        ],
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
     end
 
-    @testset "nested unit-triangular reverse rules" begin
-        for W in (UnitUpperTriangular, UnitLowerTriangular)
-            x = W(randn(sr(24), 2, 2))
-            # Forward arrayify throws "Cannot convert Matrix{Float64} to UnitUpperTriangular" here.
-            for V in (UpperTriangular, LowerTriangular)
-                test_rule(sr(123456), logsumexp, V(x); mode=Mooncake.ReverseMode)
+    @testset "logsumexp forward regressions" begin
+        # Translation has derivative one even when rounding hides log(2). A zero
+        # direction at infinity has derivative zero by the strong-zero contract.
+        cases = Any[]
+        for T in (Float16, Float32, Float64),
+            wrapped in (false, true),
+            call in (:positional, :colon, :axis, :tuple, :mutating),
+            kind in (:large, :zero)
+
+            f = let T=T, wrapped=wrapped, call=call, kind=kind
+                t -> begin
+                    a = if kind === :large
+                        fill(T(2)^precision(T) + t, 2)
+                    else
+                        T[Inf + t, t]
+                    end
+                    x = wrapped ? view(a, :) : a
+                    if call === :positional
+                        logsumexp(x)
+                    elseif call === :colon
+                        logsumexp(x; dims=:)
+                    elseif call === :axis
+                        only(logsumexp(x; dims=1))
+                    elseif call === :tuple
+                        only(logsumexp(x; dims=(1,)))
+                    else
+                        out = zeros(T, 1)
+                        only(logsumexp!(wrapped ? view(out, :) : out, x))
+                    end
+                end
             end
+            # Even the largest width-8 lane stays finite; normalize before multiplying.
+            directions = kind === :large ? (one(T), floatmax(T) / T(8)) : (zero(T),)
+            for d in directions
+                push!(cases, ((; oracle=(deriv=d,)), f, Mooncake.CoDual(zero(T), d)))
+            end
+        end
+        # Float16 weights and lane sums accumulate in Float32; a long random reduction
+        # distinguishes both paths from the generic Float16 accumulator.
+        x16 = Float16.(2 .* randn(sr(1), 4096))
+        d16 = Float16.(randn(sr(2), 4096))
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                logsumexp,
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                x -> logsumexp(x; dims=:),
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        push!(
+            cases,
+            (
+                (;
+                    mode=Mooncake.ForwardMode,
+                    skip_chunked=true,
+                    oracle=(deriv=Float16(0.18917951944454753),),
+                ),
+                x -> only(logsumexp(x; dims=1)),
+                Mooncake.CoDual(x16, d16),
+            ),
+        )
+        for T in (Float16, Float32, Float64), slope in (1, 2)
+            f = let slope=slope
+                t -> begin
+                    a = [one(t) + t, oftype(t, 2) + oftype(t, slope) * t]
+                    only(logsumexp!(view(a, 1:1), view(a, :)))
+                end
+            end
+            d = T(1 + (slope - 1) / (1 + exp(-1)))
+            cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
+            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+        end
+        # `Base.mightalias` misses each of these over `out`'s parent on some Julia version.
+        for T in (Float16, Float32, Float64),
+            W in (
+                A -> Diagonal(view(A, :, 1)),
+                UpperTriangular,
+                LowerTriangular,
+                Symmetric,
+                Hermitian,
+            )
+
+            f = let W=W
+                t -> begin
+                    A = [t 2 1; 1 0 2; 2 1 0]
+                    only(logsumexp!(view(A, 1:1, 1:1), W(A)))
+                end
+            end
+            A0 = [0 2 1; 1 0 2; 2 1 0]
+            d = T(exp(A0[1, 1]) / sum(exp, W(A0)))
+            cmp = (a, b) -> isapprox(a, b; atol=4eps(T), rtol=4eps(T))
+            push!(cases, ((; oracle=(deriv=d, cmp)), f, Mooncake.CoDual(zero(T), one(T))))
+        end
+        @testset "$i" for (i, (opts, f, x)) in enumerate(cases)
+            test_rule(
+                sr(123456), f, x; mode=Mooncake.ForwardMode, is_primitive=false, opts...
+            )
+        end
+    end
+
+    # Assert primitive dispatch only in forward mode; reverse uses derived rules.
+    @testset "forward-only primitives" begin
+        for P in (Float64, Float32), (f, x) in ((log1psq, P(0.3)), (log2mexp, P(0.1)))
+            test_rule(
+                sr(123456),
+                f,
+                x;
+                perf_flag=:allocs,
+                is_primitive=true,
+                mode=Mooncake.ForwardMode,
+            )
+        end
+    end
+
+    @testset "nested unit-triangular reads" begin
+        for P in (Float64, Float32),
+            W in (UnitUpperTriangular, UnitLowerTriangular),
+            wrap in (x -> view(x, :, :), x -> reshape(x, 4), Symmetric)
+
+            test_rule(
+                sr(123456),
+                logsumexp,
+                wrap(W(zeros(P, 2, 2)));
+                mode=wrap === Symmetric ? Mooncake.ForwardMode : nothing,
+                is_primitive=true,
+            )
         end
     end
 
@@ -167,9 +354,9 @@ sr(n::Int) = StableRNG(n)
             @test pb(zero(T))[2] == zero(T)
             for dx in (one(T), -one(T), zero(T))
                 expected = iszero(dx) ? zero(T) : d * dx
-                result = Mooncake.frule!!(Mooncake.zero_dual(xlogx), Mooncake.Dual(x, dx))
+                result = Mooncake.frule!!(Mooncake.zero_dual(xlogx), Mooncake.lift(x, dx))
                 @test isequal(Mooncake.primal(result), xlogx(x))
-                @test Mooncake.tangent(result) == expected
+                @test only(Mooncake.tangent(result).partials) == expected
                 for N in (1, 8)
                     result = xlogx(NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)))
                     @test isequal(result.value, xlogx(x))
@@ -199,10 +386,10 @@ sr(n::Int) = StableRNG(n)
                 dx, dy = T(dx), T(dy)
                 expected = (iszero(dx) ? zero(T) : a) + (iszero(dy) ? zero(T) : b)
                 result = Mooncake.frule!!(
-                    Mooncake.zero_dual(f), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
+                    Mooncake.zero_dual(f), Mooncake.lift(x, dx), Mooncake.lift(y, dy)
                 )
                 @test isequal(Mooncake.primal(result), f(x, y))
-                @test Mooncake.tangent(result) == expected
+                @test only(Mooncake.tangent(result).partials) == expected
                 for N in (1, 8)
                     result = f(
                         NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)),

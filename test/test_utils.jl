@@ -8,6 +8,23 @@ Test.finish(ts::JETTestSet) = ts
 
 jet_cache_target(x::Vector{Any}) = x[1](1)
 
+# Capture harness assertion failures; registry `throws` cases assert rule exceptions instead.
+struct OracleTestSet <: Test.AbstractTestSet
+    results::Vector{Any}
+end
+OracleTestSet(description) = OracleTestSet(Any[])
+Test.record(ts::OracleTestSet, result) = push!(ts.results, result)
+function Test.finish(ts::OracleTestSet)
+    parent = Test.get_testset()
+    parent isa OracleTestSet && Test.record(parent, ts)
+    return ts
+end
+function oracle_result_count(ts, T)
+    sum(ts.results; init=0) do result
+        result isa Test.AbstractTestSet ? oracle_result_count(result, T) : result isa T
+    end
+end
+
 @testset "test_utils" begin
     @testset "JET report cache" begin
         tt = Tuple{typeof(jet_cache_target),Vector{Any}}
@@ -51,11 +68,11 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
         # `rtol`, so a fixed relative error used to pass at 1e5 and fail at 1e6.
         @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
         @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
+        @test has_equal_data(5.0, 5.0)
         # `exact_floats` drops the tolerance, and reaches the leaves through the structural
         # recursion rather than only the top level.
         @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
         @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
-        @test has_equal_data(5.0, 5.0)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
         @test has_equal_data(Float64, Float64)
@@ -65,6 +82,17 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
         @test !has_equal_data(ones(1), ones(2))
         @test !has_equal_data(randn(5), randn(5))
         @test has_equal_data(ones(5), ones(5))
+        a, b = Mooncake.Stack{Float64}(), Mooncake.Stack{Float64}()
+        push!(a, 1.0)
+        push!(b, 1.0)
+        push!(b, 2.0)
+        pop!(b)
+        @test has_equal_data(a, b; exact_floats=true)
+        b.memory[1] = 2.0
+        @test !has_equal_data(a, b; exact_floats=true)
+        b.memory[1] = 1.0
+        pop!(b)
+        @test !has_equal_data(a, b; exact_floats=true)
         @test has_equal_data(Base, Base)
         @test !has_equal_data(Base, Core)
         @test has_equal_data(:a, :a)
@@ -248,6 +276,7 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
             max_fd_step=1e-3,
         )
     end
+
     @testset "_deepcopy_all preserves cross-argument aliasing" begin
         # Per-element copies would sever cross-argument aliases before a rule sees them.
         x = [1.0, 2.0]
@@ -269,7 +298,7 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
         f = (a, b) -> nothing
         function frule(f, a, b)
             push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
-            return Mooncake.zero_dual(nothing)
+            return Mooncake.zero_lifted(Val(1), nothing)
         end
         function rrule(f, a, b)
             push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
@@ -277,13 +306,298 @@ jet_cache_target(x::Vector{Any}) = x[1](1)
         end
         x = [1.0]
         TestUtils.test_rule(StableRNG(123), f, x, x; frule, rrule, interface_only=true)
-        @test length(seen) == 2
-        @test all(p == t for (p, t) in seen)
+        @test length(seen) == (TestUtils._test_mode_filter() === nothing ? 2 : 1)
+        @test all(p && t for (p, t) in seen)
         empty!(seen)
-        d = Mooncake.zero_dual(x)
-        TestUtils.test_frule_interface(Mooncake.zero_dual(f), d, d; frule)
+        d = Mooncake.zero_lifted(Val(1), x)
+        TestUtils.test_frule_interface(Mooncake.zero_lifted(Val(1), f), d, d; frule)
         c = zero_codual(x)
         TestUtils.test_rrule_interface(zero_codual(f), c, c; rrule)
         @test seen == [(true, true), (true, true)]
+    end
+
+    @testset "a pinned tangent spreads over distinct lanes" begin
+        # Identical directions would let broadcasting lane 1 pass the per-lane oracle.
+        lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
+        p = lanes(CoDual(2.0, 1.5), 8).partials
+        @test p[1] == 1.5                      # lane 1 is the pin exactly
+        @test length(unique(p)) == 8           # ...and no two lanes agree
+        @test lanes(CoDual(2.0, 1.5), 1).partials == (1.5,)
+        # Zero pins must still reach BLAS iszero(dα) paths at every width.
+        @test all(iszero, lanes(CoDual(2.0, 0.0), 8).partials)
+        c = lanes(CoDual(2.0 + 0.0im, 1.0 + 2.0im), 8)
+        @test real(c).partials[1] == 1.0
+        @test imag(c).partials[1] == 2.0
+        @test length(unique(real(c).partials)) == 8
+    end
+
+    @testset "lane relevance is decided exactly" begin
+        # Tolerance must not erase small nonzero directions when substituting zero seeds.
+        @test !TestUtils._lane_reads_equal(3.31826f-4, 6.63652f-4)
+        # Zero and non-differentiable reads still qualify as direction-free.
+        @test TestUtils._lane_reads_equal(0.0f0, 0.0f0)
+        @test TestUtils._lane_reads_equal(
+            fill(Mooncake.NoDual(), 3), fill(Mooncake.NoDual(), 3)
+        )
+    end
+
+    @testset "float_precision" begin
+        # Widening Float32 results does not recover Float64 precision.
+        v = 0.4568637f0
+        @test !has_equal_data(10.0 * v, 10.0 * prevfloat(v))
+        @test has_equal_data(10.0 * v, 10.0 * prevfloat(v); float_precision=Float32)
+        @test_throws ArgumentError has_equal_data(1.0, 1.0; float_precision=Int)
+        # The precision comes from the seeds' partials: narrowest wins, and a shape carrying
+        # none constrains nothing.
+        p32 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), Float32[1.0]))
+        p64 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), 1.0))
+        @test TestUtils._partials_precision(p32) === Float32
+        @test TestUtils._partials_precision(p64) === Float64
+        @test TestUtils._partials_precision((p64, p32)) === Float32
+        @test TestUtils._partials_precision((p64, Mooncake.NoDual())) === Float64
+        # Exceed sum's pairwise block size so direct and AD reduction orders differ even
+        # with bounds checks. Per-lane reduction-order differences require the CUDA suite.
+        mixed(a, y) = a * sum(y)
+        x = Float32[sqrt(i) for i in 1:2048]
+        @test sum(x) != foldl(+, x)
+        test_rule(Xoshiro(1), mixed, 10.0, x; is_primitive=false, perf_flag=:none)
+    end
+
+    @testset "oracle validation" begin
+        # A reference that names nothing, or names it wrongly, would leave a case asserting
+        # nothing while reading as green — the failure mode a pinned reference exists to avoid.
+        f(x, y) = x * y
+        run(o) = TestUtils.test_rule(
+            Xoshiro(1),
+            f,
+            2.0,
+            3.0;
+            is_primitive=false,
+            mode=Mooncake.ForwardMode,
+            print_results=false,
+            oracle=o,
+        )
+        for oracle in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
+            @test_throws ArgumentError run(oracle)
+        end
+        # A value-only reference still validates derivatives by finite differences.
+        run((value=6.0,))
+        bad_frule(args...) = Lifted{Float64,1}(
+            4.0, Mooncake.Nfwd.NDual{Float64,1}(4.0, (0.0,))
+        )
+        bad_rrule(args...) = (zero_fcodual(4.0), dy -> (NoRData(), 0.0 * dy))
+        for (mode, kwargs) in (
+            (ForwardMode, (; frule=bad_frule)),
+            (ReverseMode, (; rrule=bad_rrule, output_tangent=1.0)),
+        )
+            TestUtils._test_mode_filter() in (nothing, mode) || continue
+            captured = @testset OracleTestSet "partial oracle" begin
+                test_rule(
+                    Xoshiro(1),
+                    x -> x^2,
+                    2.0;
+                    mode,
+                    print_results=false,
+                    perf_flag=:none,
+                    is_primitive=false,
+                    oracle=(value=4.0,),
+                    kwargs...,
+                )
+            end
+            @test oracle_result_count(captured, Test.Fail) == 1
+            @test oracle_result_count(captured, Test.Error) == 0
+        end
+        if TestUtils._test_mode_filter() in (nothing, ReverseMode)
+            bad_rrule =
+                (_, x) -> (zero_fcodual(sum(primal(x))), _ -> (NoRData(), NoRData()))
+            captured_function = let a = [1.0]
+                x -> sum(x) + sum(a)
+            end
+            function_err = try
+                TestUtils.test_rrule_oracle(
+                    zero_codual(captured_function),
+                    zero_codual([1.0, 2.0]);
+                    rrule=bad_rrule,
+                    output_tangent=1.0,
+                    oracle=(deriv=(NoRData(), NoRData()),),
+                )
+                nothing
+            catch e
+                e
+            end
+            @test function_err isa ArgumentError
+            @test occursin("the function `f`", sprint(showerror, function_err))
+            @test TestUtils.test_rrule_oracle(
+                zero_codual(sum),
+                zero_codual([1.0, 2.0]);
+                rrule=bad_rrule,
+                output_tangent=1.0,
+                oracle=(value=3.0,),
+            ) === nothing
+            err = try
+                TestUtils.test_rrule_oracle(
+                    zero_codual(sum),
+                    zero_codual([1.0, 2.0]);
+                    rrule=bad_rrule,
+                    output_tangent=1.0,
+                    oracle=(deriv=(NoRData(), NoRData()),),
+                )
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test occursin("positional argument 1 of `f`", sprint(showerror, err))
+            # Registry `throws` cases cannot assert that the harness rejects a wrong oracle.
+            for (deriv, failures) in ((3.0, 0), (0.0, 1))
+                seed = [1.0, 1.0]
+                captured = @testset OracleTestSet "array output oracle" begin
+                    test_rule(
+                        Xoshiro(1),
+                        x -> [x, 2x],
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=false,
+                        output_tangent=seed,
+                        oracle=(value=[2.0, 4.0], deriv=(NoRData(), deriv)),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+                @test seed == [1.0, 1.0]
+            end
+            for (f, output_tangent) in (
+                (
+                    x -> Any[[x], [2x]],
+                    let t = [1.0];
+                        Any[t, t]
+                    end,
+                ),
+                (
+                    x -> TestResources.PointerChildren([x], [2x]),
+                    let t = [1.0];
+                        MutableTangent((a=t, b=t))
+                    end,
+                ),
+            )
+                captured = @testset OracleTestSet "shared output seed" begin
+                    test_rule(
+                        Xoshiro(1),
+                        f,
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=false,
+                        output_tangent,
+                        oracle=(deriv=(NoRData(), 3.0),),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == 0
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+            for (deriv, failures) in ((0.0, 0), (-0.0, 1))
+                captured = @testset OracleTestSet "signed-zero output oracle" begin
+                    test_rule(
+                        Xoshiro(1),
+                        Mooncake.IntrinsicsWrappers.neg_float,
+                        2.0;
+                        mode=ReverseMode,
+                        print_results=false,
+                        is_primitive=true,
+                        output_tangent=-0.0,
+                        oracle=(value=-2.0, deriv=(NoRData(), deriv)),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+            end
+            # A consuming pullback exposes the array seed's sign and must not mutate it.
+            for (deriv, failures) in ((0.0, 0), (-0.0, 1))
+                seed = [-0.0]
+                captured = @testset OracleTestSet "signed-zero array output oracle" begin
+                    TestUtils.test_rrule_oracle(
+                        zero_codual(x -> [-x]),
+                        zero_codual(2.0);
+                        rrule=(_, x) -> begin
+                            out = CoDual([-primal(x)], [0.0])
+                            out, _ -> begin
+                                dx = -only(tangent(out))
+                                fill!(tangent(out), 0.0)
+                                (NoRData(), dx)
+                            end
+                        end,
+                        output_tangent=seed,
+                        oracle=(deriv=(NoRData(), deriv),),
+                    )
+                end
+                @test oracle_result_count(captured, Test.Fail) == failures
+                @test oracle_result_count(captured, Test.Error) == 0
+                @test isequal(seed, [-0.0])
+            end
+        end
+        if TestUtils._test_mode_filter() in (nothing, ForwardMode)
+            f = x -> (x .*= 2; nothing)
+            broken_frule = function (f, x)
+                primal(x) .*= 2
+                Mooncake.zero_lifted(Val(1), nothing)
+            end
+            correct_frule = function (f, x)
+                primal(x) .*= 2
+                Mooncake.tangent_view(x, 1) .= 2
+                Mooncake.zero_lifted(Val(1), nothing)
+            end
+            x_ẋ = (Mooncake.zero_lifted(Val(1), f), Mooncake.lift([1.0, 1.0], [1.0, 1.0]))
+            oracle = (deriv=Mooncake.tangent(Mooncake.zero_lifted(Val(1), nothing), 1),)
+            for frule in (broken_frule, correct_frule)
+                err = try
+                    TestUtils.test_frule_oracle(x_ẋ...; frule, oracle)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ArgumentError
+                @test occursin("call mutated", sprint(showerror, err))
+            end
+            nonmutating_frule =
+                (f, x) -> Mooncake.lift(2 * primal(x), 2 * Mooncake.tangent(x, 1))
+            @test TestUtils.test_frule_oracle(
+                Mooncake.zero_lifted(Val(1), x -> 2x),
+                Mooncake.lift(1.0, 1.0);
+                frule=nonmutating_frule,
+                oracle=(value=2.0, deriv=2.0),
+            ) === nothing
+            captured = let a = [1.0, 2.0]
+                x -> x * sum(a)
+            end
+            @test TestUtils.test_frule_oracle(
+                Mooncake.zero_lifted(Val(1), captured),
+                Mooncake.lift(1.0, 1.0);
+                frule=(f, x) ->
+                    Mooncake.lift(primal(f)(primal(x)), 3 * Mooncake.tangent(x, 1)),
+                oracle=(value=3.0, deriv=3.0),
+            ) === nothing
+        end
+    end
+
+    @testset "forward chunk widths" begin
+        # A registry row cannot compare the probe stream across harness configurations.
+        rngs = [StableRNG(123456) for _ in 1:3]
+        for (rng, widths) in zip(rngs, ((1,), (1, 4), (1, 8)))
+            TestUtils.test_frule(rng, sin, 1.0; sig=Tuple{typeof(sin),Float64}, widths)
+        end
+        @test randn(rngs[1]) == randn(rngs[2]) == randn(rngs[3])
+
+        # `chunk_size === nothing` is "unspecified", not "pin to 1" — `run_rule_test_cases`
+        # passes it for every row, so conflating the two would run every case at width 1.
+        @test TestUtils._fwd_widths(false, nothing) == (1, 8)
+        @test TestUtils._fwd_widths(true, nothing) == (1,)
+        @test TestUtils._fwd_widths(false, 4) == (4,)
+        @test TestUtils._fwd_widths(true, 1) == (1,)
+        @test_throws ArgumentError TestUtils._fwd_widths(true, 8)
+        # A pin the path cannot satisfy is refused rather than dropped, end to end.
+        @test_throws ArgumentError test_rule(
+            Xoshiro(1), sin, 1.0; skip_chunked=true, chunk_size=8
+        )
     end
 end

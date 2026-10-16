@@ -87,14 +87,14 @@ Although this pattern is especially visible in BLAS- and LAPACK-backed rules—w
 
 When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gradient_cache`, Mooncake converts its internal tangent representation into user-facing values. The conversion by type is:
 
-- **Immutable structs, mutable structs (with standard `MutableTangent`), and closures with differentiable fields**: `NamedTuple` of per-field gradients, keyed by field name.
+- **Structs and closures with standard `Tangent` or `MutableTangent` representations**: `NamedTuple` of per-field gradients, keyed by field name.
 - **`Tuple`**: `Tuple` of per-element gradients.
 - **`AbstractArray` with non-`IEEEFloat` (or complex) eltype**: array of per-element gradients.
 - **`AbstractArray` with `IEEEFloat` (or complex) eltype**: plain array tangent, unchanged.
 - **Callables with no captured differentiable state**: `NoTangent()`, unchanged.
 - **`AbstractDict`**: a dict of the same type as the primal, with the same keys and gradient values.
 - **`LinearAlgebra.Adjoint` / `Transpose`** over a differentiable parent eltype: the same wrapper around the parent's gradient — an `AbstractMatrix` of `size(x)`, not a dense `Matrix`.
-- **Everything else** (primitive types, zero-field types, mutable structs with custom tangent types): raw Mooncake tangent, unchanged unless customised as described below.
+- **Everything else** (primitive types, zero-field types, non-differentiable structs, and mutable or immutable structs with custom tangent types): raw Mooncake tangent, unchanged unless customised as described below.
 
 For example, with `friendly_tangents=false` (default), an immutable struct `Foo` with fields `a::Float64` and `b::Vector{Float64}` returns a `Mooncake.Tangent` wrapping `(a = da, b = db)`, and a mutable struct `Bar` with the same fields returns a `Mooncake.MutableTangent` wrapping `(a = da, b = db)`. With `friendly_tangents=true` both unwrap to the plain `NamedTuple` `(a = da, b = db)` where `da::Float64` and `db::Vector{Float64}`.
 
