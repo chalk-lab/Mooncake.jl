@@ -113,22 +113,22 @@ end
 
 # Julia 1.10 jl_array_t stores flags after data and length. Bit 14 is isshared.
 # Read only: resizing cannot reconnect detached headers on the reverse pass.
-@inline function _legacy_check_resize(a::Vector, da::Vector, operation, sz=nothing)
+@inline function _legacy_check_resize(a::Vector, da::Vector, operation, sz=nothing, lanes=1)
     flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(da) + 2sizeof(Int)))
     iszero(flags & 0x4000) && return nothing
-    return _legacy_shared_resize(a, da, operation, sz)
+    return _legacy_shared_resize(a, da, operation, sz, lanes)
 end
 
-@noinline function _legacy_shared_resize(a, da, operation, sz)
+@noinline function _legacy_shared_resize(a, da, operation, sz, lanes)
     if sz !== nothing
         changes_storage = false
-        for x in (a, da)
+        for (x, requested) in ((a, sz), (da, lanes * sz))
             GC.@preserve x begin
                 p = pointer_from_objref(x)
                 flags = unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
                 offset = unsafe_load(Ptr{UInt32}(p + 2sizeof(Int) + 4))
                 capacity = unsafe_load(Ptr{UInt}(p + 3sizeof(Int) + 8))
-                n = max(UInt(sz), UInt(length(x)) + offset)
+                n = max(UInt(requested), UInt(length(x)) + offset)
                 # jl_array_sizehint grows beyond capacity, or shrinks owned buffers
                 # when more than one eighth of their capacity would be released.
                 how = flags & 0x0003
@@ -145,6 +145,73 @@ end
             "storage is shared with another array header; copy the array before resizing it",
         ),
     )
+end
+
+function _legacy_resize_shared(a::Array)
+    flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(a) + 2sizeof(Int)))
+    return !iszero(flags & 0x4000)
+end
+function _legacy_resize_shared(a::NDualArray)
+    return _legacy_resize_shared(getfield(getfield(a, :partials_block), :parent))
+end
+@is_primitive MinimalCtx Tuple{typeof(_legacy_resize_shared),Vector{<:NDualEltype}}
+function frule!!(::Lifted{typeof(_legacy_resize_shared),N}, a::Lifted) where {N}
+    return zero_lifted(Val(N), _legacy_resize_shared(tangent(a)))
+end
+
+function rrule!!(f::CoDual{typeof(_legacy_resize_shared)}, a::CoDual)
+    return zero_fcodual(false), NoPullback(f, a)
+end
+
+_legacy_refuse_deletion(a, operation) = _legacy_shared_resize(a, a, operation, nothing, 1)
+@zero_derivative MinimalCtx Tuple{typeof(_legacy_refuse_deletion),Vector{<:NDualEltype},Any}
+
+# Base's collection deletions move elements before reaching the resize primitive.
+function _legacy_check_deletion(a, inds, operation)
+    remaining = copy(a)
+    operation(remaining, inds)
+    length(remaining) == length(a) || _legacy_refuse_deletion(a, operation)
+    return nothing
+end
+
+@mooncake_overlay function Base._deleteat!(
+    a::Vector{<:NDualEltype}, inds, deleted::Union{Base.Nowhere,Vector}
+)
+    if _legacy_resize_shared(a)
+        _legacy_check_deletion(a, inds, Base._deleteat!)
+        return a
+    end
+    return invoke(Base._deleteat!, Tuple{Vector,Any,Any}, a, inds, deleted)
+end
+
+for I in (AbstractVector{Bool}, AbstractUnitRange{Bool})
+    @eval @mooncake_overlay function Base.deleteat!(a::Vector{<:NDualEltype}, inds::$I)
+        if _legacy_resize_shared(a)
+            _legacy_check_deletion(a, inds, deleteat!)
+            return a
+        end
+        return invoke(deleteat!, Tuple{Vector,AbstractVector{Bool}}, a, inds)
+    end
+end
+
+for I in (Any, AbstractVector{Bool})
+    @eval @mooncake_overlay function Base._keepat!(a::Vector{<:NDualEltype}, inds::$I)
+        if _legacy_resize_shared(a)
+            _legacy_check_deletion(a, inds, keepat!)
+            return a
+        end
+        return invoke(Base._keepat!, Tuple{AbstractVector,$I}, a, inds)
+    end
+end
+
+@mooncake_overlay function Base.filter!(f, a::Vector{<:NDualEltype})
+    if _legacy_resize_shared(a)
+        for x in a
+            f(x)::Bool || _legacy_refuse_deletion(a, filter!)
+        end
+        return a
+    end
+    return invoke(filter!, Tuple{Any,AbstractVector}, f, a)
 end
 
 # On Julia 1.10 dataids compares raw addresses without dereferencing them; its Tuple{UInt}
@@ -165,6 +232,9 @@ for f in (Base._deletebeg!, Base._deleteend!, Base._growbeg!, Base._growend!)
             d::Lifted,
         ) where {N,T<:NDualEltype}
             d_p = primal(d)
+            _legacy_check_resize(
+                primal(a), getfield(getfield(tangent(a), :partials_block), :parent), $f
+            )
             $f(primal(a), d_p)
             Nfwd._resize_block!($f, getfield(tangent(a), :partials_block), N, d_p)
             return zero_lifted(Val(N), nothing)
@@ -281,6 +351,9 @@ for (f, arg) in ((Base._deleteat!, :delta), (Base._growat!, :d))
         ) where {N,T<:NDualEltype}
             i_p = primal(i)
             d_p = primal($arg)
+            _legacy_check_resize(
+                primal(a), getfield(getfield(tangent(a), :partials_block), :parent), $f
+            )
             $f(primal(a), i_p, d_p)
             # Element `i_p` starts at block entry `(i_p - 1) * N + 1`, and `d_p` elements span `d_p * N`.
             $f(
@@ -399,6 +472,13 @@ function frule!!(
     sz::Lifted,
 ) where {N,T<:NDualEltype}
     sz_p = primal(sz)
+    _legacy_check_resize(
+        primal(x),
+        getfield(getfield(tangent(x), :partials_block), :parent),
+        sizehint!,
+        sz_p,
+        N,
+    )
     sizehint!(primal(x), sz_p)
     sizehint!(getfield(getfield(tangent(x), :partials_block), :parent), N * sz_p)
     return x
@@ -1025,5 +1105,205 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
             ),
         )
     end
-    return test_cases, Any[]
+    for (f, args) in (
+            (Base._growbeg!, (1,)),
+            (Base._growend!, (1,)),
+            (Base._growat!, (2, 1)),
+            (Base._deletebeg!, (1,)),
+            (Base._deleteend!, (1,)),
+            (Base._deleteat!, (2, 1)),
+            (sizehint!, (100,)),
+        ),
+        N in (1, 8)
+
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (
+                    throws="its tangent storage is shared with another array header",
+                    mode=ForwardMode,
+                    chunk_size=N,
+                ),
+                (f, x, args) -> f(vec(reshape(x, 1, 2)), args...),
+                f,
+                [2.0, 3.0],
+                args,
+            ),
+        )
+    end
+    for N in (1, 8)
+        for (f, inds) in (
+            (deleteat!, [1]),
+            (Base._deleteat!, [1]),
+            (deleteat!, [true, false]),
+            (deleteat!, false:true),
+            (splice!, [1]),
+            (keepat!, [2]),
+            (Base._keepat!, [2]),
+            (keepat!, [false, true]),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (mode=ForwardMode, chunk_size=N),
+                    (f, inds, x) -> begin
+                        a = Union{Float32,Float64}[x, 2x]
+                        f(a, inds)
+                        only(a)
+                    end,
+                    f,
+                    inds,
+                    2.0,
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                x -> begin
+                    a = Union{Float32,Float64}[x, 2x]
+                    filter!(>(3), a)
+                    only(a)
+                end,
+                2.0,
+            ),
+        )
+    end
+    memory = Any[]
+    for N in (1, 8)
+        refusal = (
+            throws="its tangent storage is shared with another array header",
+            mode=ForwardMode,
+            chunk_size=N,
+        )
+        for (f, arg) in (
+            (deleteat!, [1]),
+            (Base._deleteat!, [1]),
+            (Base._keepat!, [2]),
+            (deleteat!, (1,)),
+            (deleteat!, [true, false]),
+            (deleteat!, false:true),
+            (splice!, [1]),
+            (keepat!, [2]),
+            (keepat!, [false, true]),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    refusal,
+                    (f, x, arg) -> f(vec(reshape(x, 1, 2)), arg),
+                    f,
+                    [2.0, 3.0],
+                    arg,
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                refusal,
+                x -> filter!(>(2.0), vec(reshape(x, 1, 2))),
+                [2.0, 3.0],
+            ),
+        )
+        for route in (
+            x -> (reshape(x, 1, 2); x),
+            x -> vec(reshape(x, 1, 2)),
+            x -> parent(view(vec(reshape(x, 1, 2)), :)),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    refusal,
+                    (route, x) -> begin
+                        push!(route(x), 0.0)
+                        sum(x)
+                    end,
+                    route,
+                    [2.0, 3.0],
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (false, :none, refusal, x -> begin
+                y = sum(reshape(x, 1, 2))
+                push!(x, 0.0)
+                y
+            end, [2.0, 3.0]),
+        )
+        x = [2.0, 3.0]
+        sizehint!(x, 100)
+        push!(test_cases, (false, :none, refusal, x -> begin
+            b = reshape(x, 1, 2)
+            sizehint!(x, 100)
+            sum(b)
+        end, x))
+        x = [2.0, 3.0]
+        y = unsafe_wrap(Vector{Float64}, pointer(x), 2)
+        push!(memory, x)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                refusal,
+                xs -> (push!(xs[1], 0.0); xs[1][1] *= 2; sum(xs[2])),
+                (x, y),
+            ),
+        )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                x -> (push!(x, 0.0); sum(x)),
+                vec(reshape([2.0, 3.0], 1, 2)),
+            ),
+        )
+    end
+    for N in (1, 8),
+        shared in (false, true),
+        (f, inds) in (
+            (deleteat!, Int[]),
+            (deleteat!, ()),
+            (deleteat!, [false, false]),
+            (keepat!, [1, 2]),
+            (keepat!, [true, true]),
+            (splice!, Int[]),
+        )
+
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                (f, x, inds, shared) -> begin
+                    a = shared ? vec(reshape(x, 1, 2)) : x
+                    f(a, inds)
+                    sum(a)
+                end,
+                f,
+                [2.0, 3.0],
+                inds,
+                shared,
+            ),
+        )
+    end
+    return test_cases, memory
 end

@@ -1961,6 +1961,16 @@ function Base.reshape(b::NDualBlock{T}, dims::NTuple{D,Int}) where {T,D}
     return NDualBlock{T,D}(getfield(b, :parent), dims)
 end
 
+# A second primal header permanently marks legacy derivative storage as shared.
+@inline function _share_block(b::NDualBlock, dims)
+    @static if VERSION < v"1.11-rc4"
+        p = getfield(b, :parent)
+        flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(p) + 2sizeof(Int)))
+        iszero(flags & 0x4000) && reshape(p, (1, length(p)))
+    end
+    return reshape(b, dims)
+end
+
 # Access the flat parent to keep hot stores on one array; the fallback serves CUDA blocks.
 @inline _block_storage(b::NDualBlock) = getfield(b, :parent)
 @inline _block_storage(b) = b

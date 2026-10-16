@@ -505,7 +505,7 @@ function frule!!(
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
     # A new header over the same parent preserves the original partials storage.
-    new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
+    new_block = Nfwd._share_block(getfield(tangent(a), :partials_block), (Nw, d...))
     return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
 end
 # Element-wise Array V covers non-differentiable and structured differentiable elements;
