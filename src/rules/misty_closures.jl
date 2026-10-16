@@ -1,3 +1,15 @@
+# Retain width-one code across lane materialisations without changing width-one tangents.
+struct MistyClosureFRule{R}
+    rule::R
+    lane_rule::Base.RefValue{Any}
+end
+MistyClosureFRule(rule) = MistyClosureFRule(rule, Ref{Any}())
+MistyClosureFRule(rule::MistyClosureFRule) = rule
+
+@inline (rule::MistyClosureFRule)(args::Vararg{Lifted,N}) where {N} = rule.rule(args...)
+verify_args(rule::MistyClosureFRule, args) = verify_args(rule.rule, args)
+@inline __call_rule(rule::MistyClosureFRule, args) = __call_rule(rule.rule, args)
+
 """
     MistyClosureTangent(captures_tangent::Any, dual_callable::Any)
 
@@ -7,10 +19,8 @@ variables, and `dual_callable` contains a callable object which performs forward
 That the field type of `captures_tangent` is `Any` is unavoidable since the `captures`
 field of an `OpaqueClosure` has field type `Any`.
 
-That the field type of `dual_callable` is `Any` is a limitation of the current
-implementation. The concrete type of `dual_callable` might be one of a couple of things,
-notably either `typeof(frule!!)` or `DerivedFRule`. It might be possible to figure out which
-it is, and use this information to improve the type stability of this function.
+The type of `dual_callable` varies between `typeof(frule!!)`, `DerivedFRule`, `DebugFRule`,
+and the lane-caching `MistyClosureFRule`.
 """
 struct MistyClosureTangent
     captures_tangent::Any
@@ -52,7 +62,25 @@ function _dual_mc(p::MistyClosure, chunk_size::Int=1)
         mc_world = UInt(p.oc.world)
     end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true, chunk_size)
+    rule = build_frule(interp, p; skip_world_age_check=true, chunk_size)
+    return chunk_size == 1 ? rule : MistyClosureFRule(rule)
+end
+
+function _mc_lane_rule(
+    p::MistyClosure, rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}
+) where {P,A,R,isva,nargs}
+    return fieldtype(A, 1) <: Lifted{<:Any,1} ? rule : _dual_mc(p)
+end
+function _mc_lane_rule(p::MistyClosure, rule::DebugFRule)
+    lane_rule = _mc_lane_rule(p, rule.rule)
+    return lane_rule === rule.rule ? rule : DebugFRule(lane_rule)
+end
+_mc_lane_rule(::MistyClosure, ::typeof(frule!!)) = frule!!
+function _mc_lane_rule(p::MistyClosure, rule::MistyClosureFRule)
+    if !isassigned(rule.lane_rule)
+        rule.lane_rule[] = _mc_lane_rule(p, rule.rule)
+    end
+    return rule.lane_rule[]
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -70,7 +98,7 @@ function TestUtils._chunked_v_invariant(_p, v::MistyClosureTangent, c::IdDict)
 end
 
 # Forward V holds a Lifted captures slot, built once with cache c keyed by captures identity.
-# This shares fwds_oc/pb_oc tangent buffers for forward-over-reverse; dual_callable is _dual_mc.
+# This shares fwds_oc/pb_oc tangent buffers for forward-over-reverse.
 @foldable @inline dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} =
     MistyClosureTangent
 lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
@@ -95,7 +123,8 @@ function _materialise_lane(
 ) where {P<:MistyClosure,N}
     v = tangent(x)
     return MistyClosureTangent(
-        _materialise_lane(v.captures_tangent, lane, cache), v.dual_callable
+        _materialise_lane(v.captures_tangent, lane, cache),
+        N == 1 ? v.dual_callable : _mc_lane_rule(primal(x), v.dual_callable),
     )
 end
 

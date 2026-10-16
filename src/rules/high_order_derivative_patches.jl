@@ -117,6 +117,8 @@ function _for_rule_dual(rule, fwd_dc, rvs_dc, ::Val{N}, debug_mode::Bool) where 
     rvs_capsV = Lifted{typeof(rvs_caps),N}(
         rvs_caps, _zero_dual_internal(Val(N), rvs_caps, d)
     )
+    fwd_dc = N == 1 ? fwd_dc : MistyClosureFRule(fwd_dc)
+    rvs_dc = N == 1 ? rvs_dc : MistyClosureFRule(rvs_dc)
     innerV = ImmutableDual((;
         fwds_oc=MistyClosureTangent(fwd_capsV, fwd_dc),
         pb_oc_ref=MutableDual((;

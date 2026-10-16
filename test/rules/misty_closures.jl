@@ -79,6 +79,31 @@ end
         @test primal(out) == 9.0
         @test all(k -> tangent(out, k) == 1.0, 1:N)
     end
+    @testset "lane round trip" for N in (1, 8)
+        seed = Mooncake.basis_lifted!!(Mooncake.zero_lifted(Val(N), mc2), ntuple(_ -> 1, N))
+        for k in 1:N
+            lane = Mooncake.lift(mc2, tangent(seed, k))
+            out = Mooncake.frule!!(lane, Mooncake.zero_lifted(Val(1), 4.0))
+            @test (primal(out), tangent(out, 1)) == (9.0, 1.0)
+        end
+    end
+    @testset "prepared lane reuse" begin
+        ordinary = (mc2, zero_tangent(mc2))
+        seed = Mooncake.zero_lifted(Val(8), mc2)
+        materialised = (mc2, tangent(seed, 1))
+        args = ((run_misty_closure, NoTangent()), (4.0, 1.0))
+        for input in (ordinary, materialised)
+            @test Mooncake.value_and_derivative!!(cache, args[1], input, args[2]) ==
+                (9.0, 1.0)
+        end
+        ordinary_bytes = @allocated Mooncake.value_and_derivative!!(
+            cache, args[1], ordinary, args[2]
+        )
+        @test (@allocated Mooncake.value_and_derivative!!(
+            cache, args[1], materialised, args[2]
+        )) <= ordinary_bytes
+        @test tangent(seed, 1).dual_callable === materialised[2].dual_callable
+    end
     TestUtils.test_rule(
         StableRNG(123),
         mc2,
