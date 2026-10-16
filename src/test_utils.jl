@@ -211,6 +211,7 @@ end
 # A fifth argument would lose the option below extension-defined nodes.
 # Singleton option keys cannot collide with visited `(x, y)` pairs.
 struct ExactFloats end
+struct CompareBackingStorage end
 
 # Only precision narrower than a leaf loosens its tolerance, so
 # `_float_tolerance` only needs to check Float16 and Float32.
@@ -362,6 +363,19 @@ for T in (
     @eval function has_equal_data_internal(
         x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
     )
+        if haskey(d, CompareBackingStorage())
+            typeof(x) === typeof(y) || return false
+            # The diagonal signature selects field comparison; `Tuple{Any,Any,...}`
+            # selects the unequal-type fallback.
+            return invoke(
+                has_equal_data_internal,
+                Tuple{S,S,Bool,IdDict{Any,Bool}} where {S},
+                x,
+                y,
+                equal_undefs,
+                d,
+            )
+        end
         size(x) == size(y) || return false
         id_pair = (x, y)
         haskey(d, id_pair) && return d[id_pair]
@@ -1219,8 +1233,9 @@ function test_frule_oracle(x_ẋ::Vararg{Any,P}; frule, oracle) where {P}
         # unseen.
         input_primals = map(x -> _deepcopy(primal(x)), x_ẋ)
         out = frule(x_ẋ...)
+        visited = IdDict{Any,Bool}(ExactFloats() => true, CompareBackingStorage() => true)
         for (position, (x, input_primal)) in enumerate(zip(x_ẋ, input_primals))
-            has_equal_data(primal(x), input_primal; exact_floats=true) && continue
+            has_equal_data_internal(primal(x), input_primal, true, visited) && continue
             positional_argument = "positional argument $(position - 1) of `f`"
             what = position == 1 ? "the function `f`" : positional_argument
             throw(

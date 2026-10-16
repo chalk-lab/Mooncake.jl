@@ -621,6 +621,39 @@ end
                 @test err isa ArgumentError
                 @test occursin("call mutated", sprint(showerror, err))
             end
+            @testset "wrapper backing mutation" begin
+                for (Wrapper, index) in (
+                        (Symmetric, CartesianIndex(2, 1)),
+                        (Hermitian, CartesianIndex(2, 1)),
+                        (UpperTriangular, CartesianIndex(2, 1)),
+                        (LowerTriangular, CartesianIndex(1, 2)),
+                        (UnitUpperTriangular, CartesianIndex(1, 1)),
+                        (UnitLowerTriangular, CartesianIndex(1, 1)),
+                    ),
+                    wrap in (identity, tuple)
+
+                    unwrap = wrap === identity ? identity : only
+                    f = x -> (parent(unwrap(x))[index] *= 2; nothing)
+                    x = Wrapper(ones(2, 2))
+                    dx = randn_tangent(StableRNG(1), x)
+                    bad_frule = function (f, x)
+                        primal(f)(primal(x))
+                        Mooncake.zero_lifted(Val(1), nothing)
+                    end
+                    @test TestUtils.test_frule_oracle(
+                        Mooncake.zero_lifted(Val(1), _ -> nothing),
+                        Mooncake.lift(wrap(x), wrap(dx));
+                        frule=bad_frule,
+                        oracle=(deriv=NoTangent(),),
+                    ) === nothing
+                    @test_throws r"positional argument 1 of `f` because the call mutated it" TestUtils.test_frule_oracle(
+                        Mooncake.zero_lifted(Val(1), f),
+                        Mooncake.lift(wrap(x), wrap(dx));
+                        frule=bad_frule,
+                        oracle=(deriv=NoTangent(),),
+                    )
+                end
+            end
             nonmutating_frule =
                 (f, x) -> Mooncake.lift(2 * primal(x), 2 * Mooncake.tangent(x, 1))
             @test TestUtils.test_frule_oracle(
