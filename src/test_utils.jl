@@ -788,18 +788,36 @@ function test_frule_correctness(
     return nothing
 end
 
-# Only allow lane tangents that lift back to width-1 seeds and compare with
-# `has_equal_data`. Other shapes skip the lane oracle, not the invariant check.
-_chunk_lane_checkable(::Mooncake.Nfwd.NDual) = true
-_chunk_lane_checkable(::Mooncake.Nfwd.NDualArray) = true
-_chunk_lane_checkable(::Complex{<:Mooncake.Nfwd.NDual}) = true
-_chunk_lane_checkable(::NoDual) = true
-_chunk_lane_checkable(v::Tuple) = all(_chunk_lane_checkable, v)
-_chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
-# ImmutableDual lanes lift back as reverse Tangents. MutableDual lanes are
-# write-through views without `lift`; `test_lifted` checks their independence.
-_chunk_lane_checkable(v::Mooncake.ImmutableDual) = _chunk_lane_checkable(v.fields)
-_chunk_lane_checkable(@nospecialize(_v)) = false
+# Pointer lanes carry addresses, not owned storage that can be compared across replays.
+_chunk_lane_checkable(v) = _chunk_lane_checkable(v, IdDict{Any,Nothing}())
+_chunk_lane_checkable(::Union{Ptr,Mooncake.PtrDual,Mooncake.PtrTangent}, ::IdDict) = false
+function _chunk_lane_checkable(@nospecialize(v), seen::IdDict)
+    haskey(seen, v) && return true
+    seen[v] = nothing
+    return all(Mooncake._tangent_fields(typeof(v))) do name
+        !isdefined(v, name) || _chunk_lane_checkable(getfield(v, name), seen)
+    end
+end
+function _chunk_lane_checkable(v::Union{AbstractArray,Dict,IdDict}, seen::IdDict)
+    haskey(seen, v) && return true
+    seen[v] = nothing
+    return all(keys(v)) do i
+        (v isa AbstractArray && !isassigned(v, i)) || _chunk_lane_checkable(v[i], seen)
+    end
+end
+function _chunk_lane_checkable(
+    ::Union{
+        NoDual,Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual},Mooncake.Nfwd.NDualRef
+    },
+    ::IdDict,
+)
+    true
+end
+_chunk_lane_checkable(::Mooncake.Nfwd.NDualArray, ::IdDict) = true
+@static if VERSION >= v"1.11-rc4"
+    _chunk_lane_checkable(::Mooncake.Nfwd.NDualMemoryRef, ::IdDict) = true
+    _chunk_lane_checkable(v::MemoryRef, seen::IdDict) = _chunk_lane_checkable(v.mem, seen)
+end
 
 # Compare differently ordered reductions at the partials' precision, even when
 # the result is wider. Float64 is the identity for absent or unrecognised partials.
@@ -896,8 +914,8 @@ end
 
 The width-parameterised forward-rule harness: one entry point covering every chunk width.
 
-For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
-across calls), interface (types / aliasing), finite-difference correctness, and performance.
+Correctness tests always validate width 1 against finite differences or an oracle.
+Selecting width 1 also checks reuse, interface, and performance against `frule`.
 
 For each `N > 1` it builds the frule at chunk size `N`, seeds each argument with `N`
 independent random lane directions, runs it, and checks invariants the width-1 battery
@@ -906,8 +924,9 @@ in-place primal, lets an inner dual's `.value` drift from the primal, or compute
 wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
 across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
 `.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
-partials match what the width-1 frule produces when seeded with *that lane's* direction — the
-width-1 path being finite-difference-validated above, so it is the trusted per-lane oracle.
+and argument partials match the validated width-1 frule seeded with that lane's direction.
+Pointer-containing arguments and outputs skip only their own lane comparison: pointer
+addresses do not identify comparable storage across independent replays.
 
 Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
 is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
@@ -938,19 +957,21 @@ function test_frule(
 ) where {P}
     @nospecialize rng x
     # Share width-1 seeds across checks; CoDual arguments retain their pinned tangents.
-    if 1 in widths
+    if 1 in widths || !interface_only
         # One cache across the tuple: seeding each argument separately gives two arguments over
         # one array independent partials, so an aliasing rule could not be tested at all.
         x_ẋ = _seed_lifteds(Val(1), rng, x)
-        interface_only || test_frule_reuse(x_ẋ...; frule)
-        test_frule_interface(x_ẋ...; frule, is_primitive)
+        if 1 in widths
+            interface_only || test_frule_reuse(x_ẋ...; frule)
+            test_frule_interface(x_ẋ...; frule, is_primitive)
+        end
         if !interface_only
             test_frule_correctness(
                 rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step, oracle
             )
             isnothing(oracle) || test_frule_oracle(x_ẋ...; frule, oracle)
         end
-        test_frule_performance(perf_flag, frule, x_ẋ...)
+        1 in widths && test_frule_performance(perf_flag, frule, x_ẋ...)
     end
 
     # Derived rules also run chunked checks; only the case's widths control these.
@@ -968,41 +989,32 @@ function test_frule(
         seeds = _seed_lifteds(Val(N), chunk_rng, _deepcopy_all(x))
         # Direct and width-1 references may reduce in different orders.
         prec = _partials_precision(map(tangent, seeds))
-        # Only liftable lane tangents can form the width-1 oracle; invariants check all shapes.
-        # Equal lane reads carry no direction and must not veto other arguments.
-        # Measure relevance: predicting it from V's type can silently bypass an unsupported shape.
-        irrelevant = map(
-            s -> N > 1 && _lane_reads_equal(tangent(s, 1), tangent(s, 2)), seeds
-        )
-        lane_checkable = all(zip(seeds, irrelevant)) do (s, skip)
-            return skip || _chunk_lane_checkable(tangent(s))
-        end
-        # Snapshot primals AND partials before in-place rules mutate them.
-        # Direction-free arguments may have unliftable lane tangents, so seed them with zero.
-        lane_seeds = if lane_checkable
-            [
-                map(seeds, irrelevant) do s, skip
-                    p = _deepcopy(primal(s))
-                    return if skip
-                        zero_lifted(Val(1), p)
-                    else
-                        lift(p, _deepcopy(tangent(s, k)))
-                    end
-                end for k in 1:N
-            ]
-        else
-            nothing
-        end
+        # Retain one seed snapshot; materialise only the lane being replayed.
+        inputs = _deepcopy_all(seeds)
         y_ẏ = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
         @test has_equal_data(y_true, primal(y_ẏ); float_precision=prec)
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
-        # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
-        # lane k's direction. Skipped (same allowlist) when the output is not a plain numeric dual.
-        if lane_checkable && _chunk_lane_checkable(tangent(y_ẏ))
-            frule1 = build_frule(interp, sig; chunk_size=1)
-            for k in 1:N
-                y1 = frule1(lane_seeds[k]...)
+        frule1 = build_frule(interp, sig; chunk_size=1)
+        output_checkable = _chunk_lane_checkable(tangent(y_ẏ))
+        args_checkable = map(s -> _chunk_lane_checkable(tangent(s)), seeds)
+        for k in 1:N
+            lanes = IdDict{Any,Any}()
+            copies = IdDict{Any,Any}()
+            lifted = IdDict{Any,Any}()
+            lane_seeds = map(inputs) do s
+                p = _deepcopy(primal(s), copies)
+                t = Mooncake._materialise_lane(s, k, lanes)
+                return lift(p, _deepcopy(t, copies), lifted)
+            end
+            y1 = frule1(lane_seeds...)
+            if output_checkable
                 @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1); float_precision=prec)
+            end
+            for i in eachindex(seeds)
+                args_checkable[i] || continue
+                @test has_equal_data(
+                    tangent(seeds[i], k), tangent(lane_seeds[i], 1); float_precision=prec
+                )
             end
         end
     end
@@ -2395,8 +2407,7 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
     return nothing
 end
 
-# Exact comparison is required: equal reads replace the real seed with ZERO,
-# so tolerance could erase small directions (e.g. Float32 symm! dβ).
+# Compare lane reads exactly so small nonzero directions remain distinguishable.
 function _lane_reads_equal(a, b)
     return has_equal_data(_lane_read_value(a), _lane_read_value(b); exact_floats=true)
 end
