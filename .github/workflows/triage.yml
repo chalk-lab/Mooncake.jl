@@ -1,0 +1,49 @@
+# Closes stalled issues and PRs per .github/triage/README.md. Previews by default;
+# decisions are printed to the log. To enable writes:
+#   1. Create the `keep-open` label and remove the "Not active yet" note from
+#      .github/triage/README.md.
+#   2. Set the variable TRIAGE_START_DATE (YYYY-MM-DD, UTC); older items are exempt,
+#      1970-01-01 includes everything. Then do a manual run with `apply` checked.
+#   3. Set TRIAGE_APPLY=true for scheduled writes; unset it to go back to previews.
+name: Contributor triage
+
+on:
+  pull_request:
+    paths:
+      - '.github/APPROVED_CONTRIBUTORS'
+      - '.github/triage/triage.sh'
+      - '.github/workflows/triage.yml'
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Apply changes (requires TRIAGE_START_DATE; otherwise preview only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    concurrency:
+      # PR previews get their own group so they cannot displace a scheduled run.
+      group: contributor-triage-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Preview or apply triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRIAGE_START_DATE: ${{ vars.TRIAGE_START_DATE }}
+          TRIAGE_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || github.event_name == 'schedule' && vars.TRIAGE_APPLY == 'true' }}
+        run: bash .github/triage/triage.sh
