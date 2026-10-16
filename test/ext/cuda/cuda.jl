@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "CUDA")
 
 using AllocCheck, CUDA, Distributions, JET, Mooncake, Random, StableRNGs, Test
 using CUDA.CUDACore.GPUArrays: unsafe_free!
@@ -28,6 +27,19 @@ end
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
+        @testset "comparison options" begin
+            a = CuArray([1.0, NaN])
+            b = CuArray([1.0 + 1e-10, NaN])
+            @test Mooncake.TestUtils.has_equal_data(a, b)
+            @test !Mooncake.TestUtils.has_equal_data(a, b; exact_floats=true)
+            @test Mooncake.TestUtils.has_equal_data(a, a; exact_floats=true)
+            c = CuArray([1.00001, NaN])
+            @test !Mooncake.TestUtils.has_equal_data(a, c)
+            @test Mooncake.TestUtils.has_equal_data(a, c; float_precision=Float32)
+            @test !Mooncake.TestUtils.has_equal_data(
+                CuArray([0.0]), CuArray([-0.0]); exact_floats=true
+            )
+        end
         # TODO: move test case definitions to `src/ext/MooncakeCUDAExt.jl`, in line
         # with other rules.
         #

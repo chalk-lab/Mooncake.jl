@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "BFloat16s")
 
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
