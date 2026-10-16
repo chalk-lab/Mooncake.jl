@@ -219,26 +219,40 @@ sr(n::Int) = StableRNG(n)
         end...,
         # Singleton reductions are identities, so Float16 finite differences remain
         # resolvable. Cover each wrapped rule and each mutating storage combination.
-        [
-            (:none, true, logsumexp, view(zeros(Float16, 1), :)),
-            (:none, true, Core.kwcall, (; dims=:), logsumexp, view(zeros(Float16, 1), :)),
-            (:none, true, Core.kwcall, (; dims=1), logsumexp, view(zeros(Float16, 1), :)),
-            (
-                :none,
-                true,
+        TestCase[
+            TestCase(logsumexp, view(zeros(Float16, 1), :); perf_flag=:none),
+            TestCase(
+                Core.kwcall,
+                (; dims=:),
+                logsumexp,
+                view(zeros(Float16, 1), :);
+                perf_flag=:none,
+            ),
+            TestCase(
+                Core.kwcall,
+                (; dims=1),
+                logsumexp,
+                view(zeros(Float16, 1), :);
+                perf_flag=:none,
+            ),
+            TestCase(
                 Core.kwcall,
                 (; dims=(1, 2)),
                 logsumexp,
-                view(zeros(Float16, 1, 1), :, :),
+                view(zeros(Float16, 1, 1), :, :);
+                perf_flag=:none,
             ),
-            (:none, true, logsumexp!, zeros(Float16, 1), view(zeros(Float16, 1), :)),
-            (:none, true, logsumexp!, view(zeros(Float16, 1), :), zeros(Float16, 1)),
-            (
-                :none,
-                true,
+            TestCase(
+                logsumexp!, zeros(Float16, 1), view(zeros(Float16, 1), :); perf_flag=:none
+            ),
+            TestCase(
+                logsumexp!, view(zeros(Float16, 1), :), zeros(Float16, 1); perf_flag=:none
+            ),
+            TestCase(
                 logsumexp!,
                 view(zeros(Float16, 1), :),
-                view(zeros(Float16, 1), :),
+                view(zeros(Float16, 1), :);
+                perf_flag=:none,
             ),
         ],
     )
