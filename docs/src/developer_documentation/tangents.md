@@ -23,3 +23,18 @@ Mooncake.TestUtils.test_data
 ```
 
 If all the tests in these functions pass, then you have satisfied the interface.
+
+## Forward-mode representation interface
+
+The functions above define the reverse-mode tangent interface. Custom reverse tangents need
+additional methods to support forward mode; see the
+[forward-mode counterpart](@ref custom-forward-representation).
+[`Mooncake.TestUtils.test_lifted`](@ref) checks forward representations and seed factories at
+chunk widths 1 and 8. [`Mooncake.TestUtils.test_lifted_type`](@ref) checks their type-level
+contract. Use [`Mooncake.TestUtils.test_rule`](@ref) separately to check differentiation rules.
+
+The forward-mode slot type itself:
+
+```@docs; canonical=true
+Mooncake.Lifted
+```

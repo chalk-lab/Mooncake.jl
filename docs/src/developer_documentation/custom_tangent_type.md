@@ -276,6 +276,22 @@ By contrast, separate rules for `setfield!` are generally unnecessary. In Moonca
 
 By following this process—starting with a minimal set of methods and expanding as Mooncake requests more—you can support recursive types robustly in Mooncake.jl.
 
+### [Forward-mode counterpart](@id custom-forward-representation)
+
+The implementation in this page provides reverse-mode support. For forward-mode support,
+implement `dual_type` and the representation operations described in
+[`TestUtils.test_lifted`](@ref). The generic `zero_lifted`, `uninit_lifted`, and `randn_lifted`
+wrappers call `_zero_dual_internal`, `_uninit_dual_internal`, and `_randn_dual_internal`,
+respectively; overload those internal methods for custom seed construction.
+
+Run `test_lifted` alongside `test_data`. At chunk widths 1 and 8, it checks the lifted
+factories, the cache-free `zero_dual`/`uninit_dual`/`randn_dual(Val(N), …)` factories, and
+per-lane materialisation through `tangent(slot, lane)` (`_materialise_lane` for aggregates).
+It also checks the width-one `lift`/`unlift` round trip.
+[`TestUtils.test_lifted_type`](@ref) checks the representation's type-level contract.
+For cyclic values, use `test_lifted(rng, p; cache_free=false)` to omit the cache-free factory
+checks. Test differentiation rules separately with [`TestUtils.test_rule`](@ref).
+
 ## Appendix: Full Implementations
 
 Before defining the full implementation, [`TestUtils.test_data`](@ref) will fail.

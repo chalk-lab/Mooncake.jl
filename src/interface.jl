@@ -3075,6 +3075,25 @@ end
 # `value_and_gradient!!` generic chunked path
 #
 
+# Shared finalisation for every value_and_gradient!! path: return the native gradient
+# directly, or (when the cache was prepared with `friendly_tangents=true`) convert it to a
+# friendly one. Type-stable — each caller's types are concrete at the call site.
+@inline function _finalize_gradient(cache::FCache, y, native_gradients, input_primals)
+    isnothing(cache.input_tangents) && return y, native_gradients
+    native_gradients = native_gradients::typeof(cache.input_tangents)
+    c = _friendly_cache(input_primals)
+    return y,
+    tuple_map(
+        (d, p, t) -> _forward_friendly_gradient(d, p, t, c),
+        cache.friendly_gradients,
+        input_primals,
+        native_gradients,
+    )
+end
+
+# The generic fallback uses runtime width in seed type parameters, deliberately trading
+# type stability and fresh per-chunk allocations for shape generality. Concrete fast
+# paths retain type stability and zero allocation.
 """
     value_and_gradient!!(cache::FCache, f, x...)
 
@@ -3118,25 +3137,6 @@ fields is not restored. Random draws leave RNGs advanced, once per executed chun
     returned gradients will be overwritten if you call this function again with the same
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
-# Shared finalisation for every value_and_gradient!! path: return the native gradient
-# directly, or (when the cache was prepared with `friendly_tangents=true`) convert it to a
-# friendly one. Type-stable — each caller's types are concrete at the call site.
-@inline function _finalize_gradient(cache::FCache, y, native_gradients, input_primals)
-    isnothing(cache.input_tangents) && return y, native_gradients
-    native_gradients = native_gradients::typeof(cache.input_tangents)
-    c = _friendly_cache(input_primals)
-    return y,
-    tuple_map(
-        (d, p, t) -> _forward_friendly_gradient(d, p, t, c),
-        cache.friendly_gradients,
-        input_primals,
-        native_gradients,
-    )
-end
-
-# The generic fallback uses runtime width in seed type parameters, deliberately trading
-# type stability and fresh per-chunk allocations for shape generality. Concrete fast
-# paths retain type stability and zero allocation.
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     _check_dict_cache_inputs((f, x...))
     _check_cache_constants(cache.single_rule, (f, x...))
