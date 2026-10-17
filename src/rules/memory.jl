@@ -133,8 +133,7 @@ end
 
 tangent(f::Memory, ::NoRData) = f
 
-# ChainRules interop, as for `Array`. An unassigned element, such as an empty slot of a
-# `Dict`, has a zero tangent.
+# An unassigned element, such as an empty slot of a `Dict`, has a zero tangent.
 to_cr_tangent(t::Memory{<:IEEEFloat}) = t
 function to_cr_tangent(t::Memory)
     return map(
