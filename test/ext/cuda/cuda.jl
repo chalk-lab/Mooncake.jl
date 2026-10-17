@@ -10,11 +10,14 @@ using Mooncake.TestUtils:
     has_equal_data,
     test_tangent_interface,
     test_tangent_splitting,
-    test_rule,
     _test_rule_throws,
     test_frule_interface,
     test_rrule_interface
 using LinearAlgebra, Statistics
+
+# Fit CI's 60-minute CUDA budget; local runs keep width-8 checks.
+const _ci = get(ENV, "CI", "false") == "true"
+test_rule(args...; kw...) = Mooncake.TestUtils.test_rule(args...; skip_chunked=_ci, kw...)
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
