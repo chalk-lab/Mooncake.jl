@@ -123,10 +123,15 @@ end
     # v1.11-only tests.
     if VERSION >= v"1.11"
         TestUtils.test_tangent_type(Core.Compiler.AnalysisResults, NoTangent)
-        # A `ScopedValue` read reaches `Scope`, whose `PersistentDict` holds a `HAMT`, recursive
+        # `Scope` contains a `PersistentDict` holding a `HAMT`, recursive
         # through a `Vector` eltype: the structural fallback overflowed the stack in both modes.
         @test_throws "recursive" tangent_type(Base.ScopedValues.Scope)
-        TestUtils.test_rule(Xoshiro(123456), _read_scoped_value, 1.5; throws="recursive")
+        TestUtils.test_rule(
+            Xoshiro(123456),
+            _read_scoped_value,
+            1.5;
+            throws=(Mooncake.UnhandledLanguageFeatureException, "Reading a ScopedValue"),
+        )
     end
 
     @testset "$(typeof(p))" for (interface_only, p, t...) in Mooncake.tangent_test_cases()
