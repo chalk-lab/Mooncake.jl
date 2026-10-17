@@ -638,22 +638,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     end
     test_cases = vcat(
         map([Float32, Float64]) do T
-            (false, :none, (mode=ForwardMode,), hvcat, (2, 2), T.(1:4)...)
+            TestCase(hvcat, (2, 2), T.(1:4)...; mode=ForwardMode)
         end,
         map([Float32, Float64]) do T
-            (false, :none, (mode=ForwardMode,), hvcat, (3, 3, 3), T.(1:9)...)
+            TestCase(hvcat, (3, 3, 3), T.(1:9)...; mode=ForwardMode)
         end,
         map([Float32, Float64]) do T
-            (false, :none, (mode=ForwardMode,), hvcat, (1,), T(1))
+            TestCase(hvcat, (1,), T(1); mode=ForwardMode)
         end,
         map([Float32, Float64]) do T
-            (false, :none, (mode=ForwardMode,), hvcat, (4, 4, 4, 4), T.(1:16)...)
+            TestCase(hvcat, (4, 4, 4, 4), T.(1:16)...; mode=ForwardMode)
         end,
         [
-            (
-                false,
-                :none,
-                (mode=ForwardMode, throws=DimensionMismatch, primal=true),
+            TestCase(
                 hvcat,
                 (2, 1, 1),
                 1.0,
@@ -661,22 +658,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 3.0,
                 4.0,
                 5.0,
-                6.0,
+                6.0;
+                mode=ForwardMode,
+                throws=DimensionMismatch,
+                primal_throws=true,
             ),
-            (
-                false,
-                :none,
-                (mode=ForwardMode, throws=ArgumentError, primal=true),
+            TestCase(
                 hvcat,
                 (2, 2),
                 1.0,
                 2.0,
-                3.0,
+                3.0;
+                mode=ForwardMode,
+                throws=ArgumentError,
+                primal_throws=true,
             ),
-            (
-                false,
-                :none,
-                (mode=ForwardMode, throws=ArgumentError, primal=true),
+            TestCase(
                 hvcat,
                 (3, 3, 3),
                 1.0,
@@ -686,30 +683,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 5.0,
                 6.0,
                 7.0,
-                8.0,
+                8.0;
+                mode=ForwardMode,
+                throws=ArgumentError,
+                primal_throws=true,
             ),
-            (
-                false,
-                :none,
-                (mode=ForwardMode, throws=hvcat_throws[1], primal=true),
-                hvcat,
-                (),
-                1.0,
+            TestCase(
+                hvcat, (), 1.0; mode=ForwardMode, throws=hvcat_throws[1], primal_throws=true
             ),
-            (
-                false,
-                :none,
-                (mode=ForwardMode, throws=hvcat_throws[2], primal=true),
+            TestCase(
                 hvcat,
                 (-1,),
-                1.0,
+                1.0;
+                mode=ForwardMode,
+                throws=hvcat_throws[2],
+                primal_throws=true,
             ),
         ],
 
         # sum(x)
         map_prod(sum_sizes, precisions) do (sz, P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
-            return (flags..., sum, randn(rng, P, sz...))
+            flags = (;
+                interface_only=P == Float16 ? true : false, perf_flag=:stability_and_allocs
+            )
+            return TestCase(sum, randn(rng, P, sz...); flags...)
         end,
 
         # Forward-only primitives. Finite differences cannot resolve ties, so pinned
@@ -717,113 +714,115 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         map((maximum, minimum)) do f
             vcat(
                 map(precisions) do P
-                    flags = (P == Float16, :stability_and_allocs, (mode=ForwardMode,))
-                    return (flags..., f, randn(rng, P, 11))
+                    flags = (;
+                        interface_only=P == Float16,
+                        perf_flag=:stability_and_allocs,
+                        mode=ForwardMode,
+                    )
+                    return TestCase(f, randn(rng, P, 11); flags...)
                 end,
                 map([Float64, Float32]) do P
                     value, deriv = f === maximum ? (3, 40) : (1, 20)
                     opts = (
                         mode=ForwardMode,
-                        oracle=(value=P(value), deriv=P(deriv)),
+                        reference=(value=P(value), deriv=P(deriv)),
                         skip_chunked=true,
                     )
                     values = f === maximum ? P[1, 3, 2, 3] : P[3, 1, 2, 1]
                     x = CoDual(values, P[10, 20, 30, 40])
-                    return (false, :none, opts, f, x)
+                    return TestCase(f, x; opts...)
                 end,
             )
         end...,
 
         # sum(view(x, a:b))
         map(precisions) do P
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
-            return (flags..., sum, view(randn(rng, P, 11), 2:9))
+            flags = (;
+                interface_only=P == Float16 ? true : false, perf_flag=:stability_and_allocs
+            )
+            return TestCase(sum, view(randn(rng, P, 11), 2:9); flags...)
         end,
 
         # sum(abs2, x)
         map_prod(vcat(sum_sizes, [(0,), (0, 3)]), precisions) do (sz, P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
-            return (flags..., sum, abs2, randn(rng, P, sz...))
+            flags = (;
+                interface_only=P == Float16 ? true : false, perf_flag=:stability_and_allocs
+            )
+            return TestCase(sum, abs2, randn(rng, P, sz...); flags...)
         end,
 
-        # _kron!(x, y). `interface_only` for `Float16` alone, as the `sum` rows above: finite
+        # _kron!(x, y). `interface_only` for `Float16` alone, as the `sum` test cases above: finite
         # differences are hopeless at that precision and meaningful at the others.
         map(precisions) do (P)
-            return (
-                P == Float16,
-                :none,
-                nothing,
+            return TestCase(
                 LinearAlgebra._kron!,
                 zeros(P, 50, 50),
                 randn(rng, P, 5, 5),
-                randn(rng, P, 10, 10),
+                randn(rng, P, 10, 10);
+                interface_only=P == Float16,
             )
         end,
 
         # SubArray exercises the wrapped method, a forward primitive only for BlasFloat.
         map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
+            return TestCase(
                 LinearAlgebra._kron!,
                 zeros(P, 50, 50),
                 view(randn(rng, P, 6, 6), 1:5, 1:5),
                 randn(rng, P, 10, 10),
             )
         end,
-        [(
-            true,
-            :stability,
-            (; mode=ForwardMode),
-            kron,
-            Matrix{Union{}}(undef, 0, 0),
-            Matrix{Union{}}(undef, 0, 0),
-        )],
-        [(
-            false,
-            :stability,
-            (; mode=ForwardMode),
-            LinearAlgebra._kron!,
-            Matrix{Union{}}(undef, 0, 0),
-            Matrix{Union{}}(undef, 0, 0),
-            Matrix{Union{}}(undef, 0, 0),
-        )],
-        [(
-            false,
-            :stability,
-            (; mode=ForwardMode),
-            permutedims,
-            Matrix{Union{}}(undef, 0, 0),
-        )],
         [
-            (
-                false,
-                :none,
-                (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
-                permutedims,
-                Union{Float32,Float64}[2.0f0 3.0],
+            TestCase(
+                kron,
+                Matrix{Union{}}(undef, 0, 0),
+                Matrix{Union{}}(undef, 0, 0);
+                interface_only=true,
+                perf_flag=:stability,
+                mode=ForwardMode,
             ),
-            (
-                false,
-                :none,
-                (; mode=ForwardMode, throws=(ArgumentError, "for top-level real Arrays")),
+        ],
+        [
+            TestCase(
+                LinearAlgebra._kron!,
+                Matrix{Union{}}(undef, 0, 0),
+                Matrix{Union{}}(undef, 0, 0),
+                Matrix{Union{}}(undef, 0, 0);
+                perf_flag=:stability,
+                mode=ForwardMode,
+            ),
+        ],
+        [
+            TestCase(
+                permutedims,
+                Matrix{Union{}}(undef, 0, 0);
+                perf_flag=:stability,
+                mode=ForwardMode,
+            ),
+        ],
+        [
+            TestCase(
+                permutedims,
+                Union{Float32,Float64}[2.0f0 3.0];
+                mode=ForwardMode,
+                throws=(ArgumentError, "for top-level real Arrays"),
+            ),
+            TestCase(
                 kron,
                 Union{Float32,Float64}[2.0f0 3.0],
-                Union{Float32,Float64}[2.0f0 3.0],
+                Union{Float32,Float64}[2.0f0 3.0];
+                mode=ForwardMode,
+                throws=(ArgumentError, "for top-level real Arrays"),
             ),
         ],
         # Allocating kron has its own block writer: check derivatives at widths 1 and 8.
         # Only Float32/Float64 are forward primitives; Float16 stays derived.
         map([Float64, Float32]) do P
-            return (false, :none, nothing, kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
+            return TestCase(kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
         end,
         # Wrapped operands take the `arrayify`/`convert` path into the same lane writer.
         map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
+            return TestCase(
                 kron,
                 view(randn(rng, P, 6, 6), 1:5, 1:4),
                 UpperTriangular(randn(rng, P, 3, 3)),
@@ -838,13 +837,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             (identity, (3, 4), x -> Hermitian(x, :L), (3, 3)),
         )) do (wrap1, sz1, wrap2, sz2)
             map([Float64, Float32]) do P
-                return (
-                    false,
-                    :none,
-                    nothing,
-                    kron,
-                    wrap1(randn(rng, P, sz1...)),
-                    wrap2(randn(rng, P, sz2...)),
+                return TestCase(
+                    kron, wrap1(randn(rng, P, sz1...)), wrap2(randn(rng, P, sz2...))
                 )
             end
         end...,
@@ -863,27 +857,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             a, b = wrap([1.0 2.0; 3.0 4.0]), ones(1, 1)
             x, y = swap ? (b, a) : (a, b)
             args = f === kron ? (x, y) : (zeros(size(a)), x, y)
-            return (false, :none, nothing, f, args...)
+            return TestCase(f, args...)
         end,
         map([
             a -> Diagonal(vec(a)), Symmetric, Hermitian, UpperTriangular, LowerTriangular
         ]) do wrap
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra._kron!,
-                wrap(fill(2.0, 1, 1)),
-                ones(1, 1),
-                ones(1, 1),
+            return TestCase(
+                LinearAlgebra._kron!, wrap(fill(2.0, 1, 1)), ones(1, 1), ones(1, 1)
             )
         end,
         map([UnitUpperTriangular, UnitLowerTriangular]) do wrap
             i, j = wrap === UnitUpperTriangular ? (1, 2) : (2, 1)
             out = view(wrap(ones(2, 2)), i:i, j:j)
-            return (
-                false, :none, nothing, LinearAlgebra._kron!, out, ones(1, 1), ones(1, 1)
-            )
+            return TestCase(LinearAlgebra._kron!, out, ones(1, 1), ones(1, 1))
         end,
         map_prod(
             (
@@ -897,51 +883,41 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             ),
             (nothing, ForwardMode),
         ) do (out, mode)
-            return (
-                false,
-                :none,
-                (;
-                    mode,
-                    chunk_size=mode === ForwardMode ? 8 : 1,
-                    throws=(
-                        ArgumentError,
-                        "_kron! refuses destinations with repeated indices in any wrapper, even if the outer selection is injective",
-                    ),
-                ),
+            return TestCase(
                 LinearAlgebra._kron!,
                 out,
                 reshape(collect(2.0:(length(out) + 1)), size(out)),
-                ones(1, 1),
+                ones(1, 1);
+                mode,
+                chunk_size=mode === ForwardMode ? 8 : 1,
+                throws=(
+                    ArgumentError,
+                    "_kron! refuses destinations with repeated indices in any wrapper, even if the outer selection is injective",
+                ),
             )
         end,
         map([a -> view(a, [1, 2], :), transpose]) do wrap
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra._kron!,
-                wrap(zeros(2, 2)),
-                [1.0 2.0; 3.0 4.0],
-                ones(1, 1),
+            return TestCase(
+                LinearAlgebra._kron!, wrap(zeros(2, 2)), [1.0 2.0; 3.0 4.0], ones(1, 1)
             )
         end,
-        [(
-            false,
-            :none,
-            (; mode=ForwardMode),
-            LinearAlgebra._kron!,
-            zeros(ComplexF64, 2, 2),
-            view(Symmetric(ComplexF64[1 2; 3 4]), :, :),
-            ones(ComplexF64, 1, 1),
-        )],
-        [(
-            false,
-            :none,
-            (; unsafe_perturb=true),
-            kron,
-            reinterpret(Float64, Symmetric(ComplexF64[1+2im 3+4im; 5+6im 7+8im])),
-            ones(1, 1),
-        )],
+        [
+            TestCase(
+                LinearAlgebra._kron!,
+                zeros(ComplexF64, 2, 2),
+                view(Symmetric(ComplexF64[1 2; 3 4]), :, :),
+                ones(ComplexF64, 1, 1);
+                mode=ForwardMode,
+            ),
+        ],
+        [
+            TestCase(
+                kron,
+                reinterpret(Float64, Symmetric(ComplexF64[1+2im 3+4im; 5+6im 7+8im])),
+                ones(1, 1);
+                unsafe_perturb=true,
+            ),
+        ],
         map([kron, LinearAlgebra._kron!]) do f
             a = reshape(
                 reinterpret(
@@ -951,37 +927,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 2,
             )
             args = f === kron ? (a, ones(1, 1)) : (zeros(size(a)), a, ones(1, 1))
-            return (false, :none, (; unsafe_perturb=true), f, args...)
+            return TestCase(f, args...; unsafe_perturb=true)
         end,
         map_prod((1, 2), (kron, LinearAlgebra._kron!)) do (n, f)
             a = view(reinterpret(reshape, Float64, ComplexF64.(1:n)), :, :)
             args = f === kron ? (a, ones(1, 1)) : (zeros(size(a)), a, ones(1, 1))
-            return (false, :none, (; unsafe_perturb=true), f, args...)
+            return TestCase(f, args...; unsafe_perturb=true)
         end,
         map([1, 2]) do n
             a = view(reinterpret(reshape, Float64, ComplexF64.(1:n)), :, :)
-            return (
-                false,
-                :none,
-                (; unsafe_perturb=true),
-                LinearAlgebra._kron!,
-                a,
-                ones(size(a)),
-                ones(1, 1),
+            return TestCase(
+                LinearAlgebra._kron!, a, ones(size(a)), ones(1, 1); unsafe_perturb=true
             )
         end,
         map([
             reinterpret(reshape, Float64, ComplexF64[1, 2]),
             reinterpret(Float64, view(ComplexF64[1 2], [1], :)),
         ]) do out
-            return (
-                false,
-                :none,
-                (; unsafe_perturb=true),
-                LinearAlgebra._kron!,
-                out,
-                ones(size(out)),
-                ones(1, 1),
+            return TestCase(
+                LinearAlgebra._kron!, out, ones(size(out)), ones(1, 1); unsafe_perturb=true
             )
         end,
 
@@ -989,13 +953,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # linear, so the point does not matter.
         map([Float64, Float32, Float16]) do P
             x = P == Float16 ? zeros(P, 7, 11) : randn(rng, P, 7, 11)
-            return (false, :stability, nothing, permutedims, x)
+            return TestCase(permutedims, x; perf_flag=:stability)
         end,
 
         # x * y
         map_prod([(7, 11, 5), (1, 7, 1), (7, 1, 5)], [Float64, Float32]) do ((m, p, n), P)
-            return (
-                false, :stability, nothing, *, randn(rng, P, m, p), randn(rng, P, p, n)
+            return TestCase(
+                *, randn(rng, P, m, p), randn(rng, P, p, n); perf_flag=:stability
             )
         end,
     )
@@ -1009,10 +973,47 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             chunk_size=N,
             throws=(ArgumentError, "derivative storage covers"),
         )
-        push!(test_cases, (false, :none, opts, sum, x))
-        push!(test_cases, (false, :none, opts, sum, abs2, x))
+        push!(test_cases, TestCase(sum, x; opts...))
+        push!(test_cases, TestCase(sum, abs2, x; opts...))
     end
     memory = Any[]
+    for (f, x, name, direction, reference, cmp) in (
+        (
+            sum,
+            [1.0, 2.0, 3.0],
+            "primitive sum",
+            [1.0, 0.0, 0.0],
+            (value=6.0, gradient=ones(3), hvp=zeros(3)),
+            isapprox,
+        ),
+        (
+            sum,
+            Float64[],
+            "empty sum Hessian",
+            Float64[],
+            (value=0.0, gradient=Float64[], hessian=zeros(0, 0)),
+            (==),
+        ),
+        (
+            x -> sum(abs2, x),
+            [2.0, 3.0, 4.0],
+            "fused sum abs2 HVP",
+            [0.0, 1.0, 0.0],
+            (hvp=[0.0, 2.0, 0.0],),
+            isapprox,
+        ),
+    )
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                x;
+                name,
+                hvp=(; check=:reference, directions=(direction,), reference, cmp),
+            ),
+        )
+    end
+
     return test_cases, memory
 end
 
@@ -1034,44 +1035,30 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             b = ones(1, 1)
             x, y = swap ? (b, a) : (a, b)
             args = f === kron ? (x, y) : (zeros(2, 2), x, y)
-            return (false, :none, nothing, f, args...)
+            return TestCase(f, args...)
         end,
         # Both-Symmetric stays derived and leaves the unstored result triangle undef.
         # Float32 needs interface_only: finite differences cannot resolve this composite;
         # Float64 checks its derivative.
         map([Float64, Float32]) do P
-            return (
-                P == Float32,
-                :none,
-                nothing,
+            return TestCase(
                 LinearAlgebra.kron,
                 Symmetric(randn(rng, P, 3, 3)),
-                Symmetric(randn(rng, P, 3, 3), :L),
+                Symmetric(randn(rng, P, 3, 3), :L);
+                interface_only=P == Float32,
             )
         end,
 
         # Exercise the hvcat primitive inside a derived function.
-        (
-            false,
-            :none,
-            nothing,
-            (a, b, c, d) -> hvcat((2, 2), a, b, c, d),
-            1.0,
-            2.0,
-            3.0,
-            4.0,
-        ),
+        TestCase((a, b, c, d) -> hvcat((2, 2), a, b, c, d), 1.0, 2.0, 3.0, 4.0),
         # Check correctness for mixed Float32/Float64 literals.
-        (false, :none, nothing, hvcat, (2, 2), 1.0f0, 2.0, 3.0f0, 4.0),
+        TestCase(hvcat, (2, 2), 1.0f0, 2.0, 3.0f0, 4.0),
 
         # Complex Hermitian: forward wraps lanes, reverse stays derived because folding
         # onto the stored triangle needs conjugation. Check both against finite differences.
         map([ComplexF64, ComplexF32]) do C
             return map([:U, :L]) do uplo
-                return (
-                    false,
-                    :none,
-                    nothing,
+                return TestCase(
                     LinearAlgebra.kron,
                     Hermitian(randn(rng, C, 3, 3), uplo),
                     randn(rng, C, 4, 2),
@@ -1089,10 +1076,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             (x -> view(x, 1:5, 1:5), UpperTriangular),
         )) do (wrap1, wrap2)
             map(precisions) do P
-                return (
-                    false,
-                    :none,
-                    nothing,
+                return TestCase(
                     LinearAlgebra.kron,
                     wrap1(randn(rng, P, 5, 5)),
                     wrap2(randn(rng, P, 10, 10)),
@@ -1102,30 +1086,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # Diagonal operand: the reverse pullback must fold only the diagonal of the dense
         # gradient into the `Diagonal` fdata (off-diagonal are structural zeros, dropped).
         map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                Diagonal(randn(rng, P, 4)),
-                randn(rng, P, 3, 3),
+            return TestCase(
+                LinearAlgebra.kron, Diagonal(randn(rng, P, 4)), randn(rng, P, 3, 3)
             )
         end,
         map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                randn(rng, P, 4, 4),
-                Diagonal(randn(rng, P, 3)),
+            return TestCase(
+                LinearAlgebra.kron, randn(rng, P, 4, 4), Diagonal(randn(rng, P, 3))
             )
         end,
 
         # `A * A` aliases the rule's arguments, so `dA === dB` and the pullback must
         # accumulate both terms into the one array.
         map(precisions) do (P)
-            return (false, :none, nothing, _square_matmul, randn(rng, P, 5, 5))
+            return TestCase(_square_matmul, randn(rng, P, 5, 5))
         end,
     )
     memory = Any[]

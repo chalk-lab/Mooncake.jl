@@ -8,6 +8,7 @@ AD anything.
 module TestResources
 
 using ..Mooncake
+using ..TestUtils: TestCase
 using ..Mooncake:
     CoDual,
     Tangent,
@@ -861,6 +862,8 @@ tuple_with_union(x::Bool) = (x ? 5.0 : 5, nothing)
 tuple_with_union_2(x::Bool) = (x ? 5.0 : 5, x ? 5 : 5.0)
 tuple_with_union_3(x::Bool, y::Bool) = (x ? 5.0 : (y ? 5 : nothing), nothing)
 
+float_union(x, y, b::Bool) = (b ? x : y) + x
+
 struct NoDefaultCtor{T}
     x::T
     NoDefaultCtor(x::T) where {T} = new{T}(x)
@@ -904,290 +907,365 @@ function test_xoshiro_seed_pointer(x::Vector{Float64})
     return x[1] * 2 + Float64(rand(r, UInt8) == 0)
 end
 
+struct _RefCaptureWrap{F}
+    f::F
+end
+(w::_RefCaptureWrap)(x) = w.f(x)
+Mooncake.tangent_type(::Type{<:_RefCaptureWrap}) = Mooncake.NoTangent
+
+const _EMPTY_FDATA_EXCEPTION = ErrorException("x")
+_throw_empty_fdata_exception(x) = x < 0 ? throw(_EMPTY_FDATA_EXCEPTION) : x^2
+
+function _add_hvp_case!(cases, f, x, name, directions, reference; options...)
+    push!(
+        cases,
+        TestCase(f, x; name, hvp=(; check=:reference, directions, reference, options...)),
+    )
+end
+
 function generate_test_functions()
-    return Any[
-        (false, :allocs, nothing, const_tester),
-        (false, :allocs, nothing, const_tester_non_differentiable),
-        (false, :allocs, nothing, identity, 5.0),
-        (false, :allocs, nothing, foo, 5.0),
-        (false, :none, nothing, removable_singularity_tester, 0.0),
-        (false, :none, (lb=1e-3, ub=1_000), test_xoshiro_seed_pointer, randn(2)),
-        (false, :allocs, nothing, non_differentiable_foo, 5),
-        (false, :allocs, nothing, bar, 5.0, 4.0),
-        (false, :allocs, nothing, unused_expression, 5.0, 1),
-        (false, :none, nothing, type_unstable_argument_eval, sin, 5.0),
-        (
-            false,
-            :none,
-            (lb=1e-3, ub=300),
+    test_cases = TestCase[
+        TestCase(const_tester; perf_flag=:allocs),
+        TestCase(const_tester_non_differentiable; perf_flag=:allocs),
+        TestCase(identity, 5.0; perf_flag=:allocs),
+        TestCase(float_union, 5.0, 4.0f0, true),
+        TestCase(float_union, 5.0, 4.0f0, false),
+        TestCase(foo, 5.0; perf_flag=:allocs),
+        TestCase(removable_singularity_tester, 0.0),
+        TestCase(test_xoshiro_seed_pointer, randn(2); bench=(; lb=0.001, ub=1000)),
+        TestCase(non_differentiable_foo, 5; perf_flag=:allocs),
+        TestCase(bar, 5.0, 4.0; perf_flag=:allocs),
+        TestCase(unused_expression, 5.0, 1; perf_flag=:allocs),
+        TestCase(type_unstable_argument_eval, sin, 5.0),
+        TestCase(
             abstractly_typed_unused_container,
             StructFoo(5.0, [4.0]),
-            5.0,
+            5.0;
+            bench=(lb=1e-3, ub=300),
         ),
-        (false, :none, (lb=1e-3, ub=1_000), pi_node_tester, Ref{Any}(5.0)),
-        (false, :none, (lb=1e-3, ub=1_000), pi_node_tester, Ref{Any}(5)),
-        (false, :none, nothing, arg_in_pi_node, false),
-        (false, :allocs, nothing, intrinsic_tester, 5.0),
-        (false, :allocs, nothing, goto_tester, 5.0),
-        (false, :allocs, nothing, new_tester, 5.0, :hello),
-        (false, :allocs, nothing, new_tester_2, 4.0),
-        (false, :none, nothing, new_tester_3, Ref{Any}(StructFoo)),
-        (false, :none, nothing, splatnew_tester, Ref{Tuple}((5.0, :a))),
-        (false, :allocs, nothing, type_stable_getfield_tester_1, StableFoo(5.0, :hi)),
-        (false, :allocs, nothing, type_stable_getfield_tester_2, StableFoo(5.0, :hi)),
-        (false, :none, nothing, globalref_tester),
-        (false, :none, nothing, globalref_tester_bool),
-        (false, :none, nothing, globalref_tester_2, true),
-        (false, :none, nothing, globalref_tester_2, false),
-        (false, :allocs, nothing, globalref_tester_3),
-        (false, :allocs, nothing, globalref_tester_4),
-        (false, :none, nothing, globalref_tester_5),
-        (false, :allocs, nothing, globalref_tester_6),
-        (false, :none, (lb=1e-3, ub=1_000), type_unstable_tester_0, Ref{Any}(5.0)),
-        (false, :none, nothing, type_unstable_tester, Ref{Any}(5.0)),
-        (false, :none, nothing, type_unstable_tester_2, Ref{Real}(5.0)),
-        (false, :none, (lb=1e-3, ub=500), type_unstable_tester_3, Ref{Any}(5.0)),
-        (false, :none, (lb=1e-3, ub=500), test_primitive_dynamic_dispatch, Any[5.0, false]),
-        (false, :none, nothing, type_unstable_function_eval, Ref{Any}(sin), 5.0),
-        (false, :allocs, nothing, phi_const_bool_tester, 5.0),
-        (false, :allocs, nothing, phi_const_bool_tester, -5.0),
-        (false, :allocs, nothing, phi_node_with_undefined_value, true, 4.0),
-        (false, :allocs, nothing, phi_node_with_undefined_value, false, 4.0),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, 5.0),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, -5.0),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, 1.5),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, -1.5),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_finally_tester, 1.5, [2.0]),
-        (
-            false,
-            :none,
-            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+        TestCase(pi_node_tester, Ref{Any}(5.0); bench=(lb=1e-3, ub=1_000)),
+        TestCase(pi_node_tester, Ref{Any}(5); bench=(lb=1e-3, ub=1_000)),
+        TestCase(arg_in_pi_node, false),
+        TestCase(intrinsic_tester, 5.0; perf_flag=:allocs),
+        TestCase(goto_tester, 5.0; perf_flag=:allocs),
+        TestCase(new_tester, 5.0, :hello; perf_flag=:allocs),
+        TestCase(new_tester_2, 4.0; perf_flag=:allocs),
+        TestCase(new_tester_3, Ref{Any}(StructFoo)),
+        TestCase(splatnew_tester, Ref{Tuple}((5.0, :a))),
+        TestCase(type_stable_getfield_tester_1, StableFoo(5.0, :hi); perf_flag=:allocs),
+        TestCase(type_stable_getfield_tester_2, StableFoo(5.0, :hi); perf_flag=:allocs),
+        TestCase(globalref_tester),
+        TestCase(globalref_tester_bool),
+        TestCase(globalref_tester_2, true),
+        TestCase(globalref_tester_2, false),
+        TestCase(globalref_tester_3; perf_flag=:allocs),
+        TestCase(globalref_tester_4; perf_flag=:allocs),
+        TestCase(globalref_tester_5),
+        TestCase(globalref_tester_6; perf_flag=:allocs),
+        TestCase(type_unstable_tester_0, Ref{Any}(5.0); bench=(lb=1e-3, ub=1_000)),
+        TestCase(type_unstable_tester, Ref{Any}(5.0)),
+        TestCase(type_unstable_tester_2, Ref{Real}(5.0)),
+        TestCase(type_unstable_tester_3, Ref{Any}(5.0); bench=(lb=1e-3, ub=500)),
+        TestCase(test_primitive_dynamic_dispatch, Any[5.0, false]; bench=(lb=1e-3, ub=500)),
+        TestCase(type_unstable_function_eval, Ref{Any}(sin), 5.0),
+        TestCase(phi_const_bool_tester, 5.0; perf_flag=:allocs),
+        TestCase(phi_const_bool_tester, -5.0; perf_flag=:allocs),
+        TestCase(phi_node_with_undefined_value, true, 4.0; perf_flag=:allocs),
+        TestCase(phi_node_with_undefined_value, false, 4.0; perf_flag=:allocs),
+        TestCase(try_catch_arg_tester, 5.0; mode=Mooncake.ForwardMode),
+        TestCase(try_catch_arg_tester, -5.0; mode=Mooncake.ForwardMode),
+        TestCase(try_catch_computed_tester, 1.5; mode=Mooncake.ForwardMode),
+        TestCase(try_catch_computed_tester, -1.5; mode=Mooncake.ForwardMode),
+        TestCase(try_finally_tester, 1.5, [2.0]; mode=Mooncake.ForwardMode),
+        TestCase(
             try_finally_tester,
             1.5,
-            Float64[],
+            Float64[];
+            throws=BoundsError,
+            primal_throws=true,
+            mode=Mooncake.ForwardMode,
         ),
-        (
-            false,
-            :none,
-            (mode=Mooncake.ForwardMode,),
-            try_catch_rethrow_tester,
-            1.5,
-            Float64[],
-        ),
-        (
-            false,
-            :none,
-            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+        TestCase(try_catch_rethrow_tester, 1.5, Float64[]; mode=Mooncake.ForwardMode),
+        TestCase(
             try_catch_rethrow_tester,
             -1.5,
-            Float64[],
+            Float64[];
+            throws=BoundsError,
+            primal_throws=true,
+            mode=Mooncake.ForwardMode,
         ),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, true),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, false),
-        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, -1.5, true),
-        (false, :allocs, nothing, test_multiple_phinode_block, 3.0, 3),
-        (
-            false,
-            :none,
-            nothing,
-            Base._unsafe_getindex,
-            IndexLinear(),
-            randn(5),
-            1,
-            Base.Slice(Base.OneTo(1)),
+        TestCase(try_catch_undef_tester, 1.5, true; mode=Mooncake.ForwardMode),
+        TestCase(try_catch_undef_tester, 1.5, false; mode=Mooncake.ForwardMode),
+        TestCase(try_catch_undef_tester, -1.5, true; mode=Mooncake.ForwardMode),
+        TestCase(test_multiple_phinode_block, 3.0, 3; perf_flag=:allocs),
+        TestCase(
+            Base._unsafe_getindex, IndexLinear(), randn(5), 1, Base.Slice(Base.OneTo(1))
         ), # fun PhiNode example
-        (false, :allocs, nothing, avoid_throwing_path_tester, 5.0),
-        (true, :allocs, nothing, simple_foreigncall_tester, "hello"),
-        (
-            false,
-            :none,
-            nothing,
-            simple_foreigncall_tester_2,
-            TypeVar(:T, Union{}, Any),
-            Vector{T} where {T},
+        TestCase(avoid_throwing_path_tester, 5.0; perf_flag=:allocs),
+        TestCase(
+            simple_foreigncall_tester, "hello"; interface_only=true, perf_flag=:allocs
         ),
-        (false, :none, nothing, no_primitive_inlining_tester, 5.0),
-        (false, :allocs, nothing, varargs_tester, 5.0),
-        (false, :allocs, nothing, varargs_tester, 5.0, 4),
-        (false, :allocs, nothing, varargs_tester, 5.0, 4, 3.0),
-        (false, :allocs, nothing, varargs_tester_2, 5.0),
-        (false, :allocs, nothing, varargs_tester_2, 5.0, 4),
-        (false, :allocs, nothing, varargs_tester_2, 5.0, 4, 3.0),
-        (false, :allocs, nothing, varargs_tester_3, 5.0),
-        (false, :allocs, nothing, varargs_tester_3, 5.0, 4),
-        (false, :allocs, nothing, varargs_tester_3, 5.0, 4, 3.0),
-        (false, :allocs, nothing, varargs_tester_4, 5.0),
-        (false, :allocs, nothing, varargs_tester_4, 5.0, 4),
-        (false, :allocs, nothing, varargs_tester_4, 5.0, 4, 3.0),
-        (false, :allocs, nothing, splatting_tester, 5.0),
-        (false, :allocs, nothing, splatting_tester, (5.0, 4.0)),
-        (false, :allocs, nothing, splatting_tester, (5.0, 4.0, 3.0)),
-        # (false, :stability, nothing, unstable_splatting_tester, Ref{Any}(5.0)), # known failure case -- no rrule for _apply_iterate
-        # (false, :stability, nothing, unstable_splatting_tester, Ref{Any}((5.0, 4.0))), # known failure case -- no rrule for _apply_iterate
-        # (false, :stability, nothing, unstable_splatting_tester, Ref{Any}((5.0, 4.0, 3.0))), # known failure case -- no rrule for _apply_iterate
-        (false, :none, (lb=1e-3, ub=1_000), inferred_const_tester, Ref{Any}(nothing)),
-        (false, :none, (lb=1e-3, ub=1_000), datatype_slot_tester, 1),
-        (false, :none, (lb=1e-3, ub=1_000), datatype_slot_tester, 2),
-        (false, :none, (lb=1e-3, ub=100_000_000), test_union_of_arrays, randn(5), true),
-        (
-            false,
-            :none,
-            nothing,
-            test_union_of_types,
-            Ref{Union{Type{Float64},Type{Int}}}(Float64),
+        TestCase(
+            simple_foreigncall_tester_2, TypeVar(:T, Union{}, Any), Vector{T} where {T}
         ),
-        (false, :allocs, nothing, test_self_reference, 1.1, 1.5),
-        (false, :allocs, nothing, test_self_reference, 1.5, 1.1),
-        (false, :none, nothing, test_recursive_sum, randn(2)),
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(no_primitive_inlining_tester, 5.0),
+        TestCase(varargs_tester, 5.0; perf_flag=:allocs),
+        TestCase(varargs_tester, 5.0, 4; perf_flag=:allocs),
+        TestCase(varargs_tester, 5.0, 4, 3.0; perf_flag=:allocs),
+        TestCase(varargs_tester_2, 5.0; perf_flag=:allocs),
+        TestCase(varargs_tester_2, 5.0, 4; perf_flag=:allocs),
+        TestCase(varargs_tester_2, 5.0, 4, 3.0; perf_flag=:allocs),
+        TestCase(varargs_tester_3, 5.0; perf_flag=:allocs),
+        TestCase(varargs_tester_3, 5.0, 4; perf_flag=:allocs),
+        TestCase(varargs_tester_3, 5.0, 4, 3.0; perf_flag=:allocs),
+        TestCase(varargs_tester_4, 5.0; perf_flag=:allocs),
+        TestCase(varargs_tester_4, 5.0, 4; perf_flag=:allocs),
+        TestCase(varargs_tester_4, 5.0, 4, 3.0; perf_flag=:allocs),
+        TestCase(splatting_tester, 5.0; perf_flag=:allocs),
+        TestCase(splatting_tester, (5.0, 4.0); perf_flag=:allocs),
+        TestCase(splatting_tester, (5.0, 4.0, 3.0); perf_flag=:allocs),
+        TestCase(inferred_const_tester, Ref{Any}(nothing); bench=(lb=1e-3, ub=1_000)),
+        TestCase(datatype_slot_tester, 1; bench=(lb=1e-3, ub=1_000)),
+        TestCase(datatype_slot_tester, 2; bench=(lb=1e-3, ub=1_000)),
+        TestCase(test_union_of_arrays, randn(5), true; bench=(lb=1e-3, ub=100_000_000)),
+        TestCase(test_union_of_types, Ref{Union{Type{Float64},Type{Int}}}(Float64)),
+        TestCase(test_self_reference, 1.1, 1.5; perf_flag=:allocs),
+        TestCase(test_self_reference, 1.5, 1.1; perf_flag=:allocs),
+        TestCase(test_recursive_sum, randn(2)),
+        TestCase(
             LinearAlgebra._modify!,
             LinearAlgebra.MulAddMul(5.0, 4.0),
             5.0,
             randn(5, 4),
             (5, 4),
         ), # for Bool comma,
-        (false, :allocs, nothing, getfield_tester, (5.0, 5)),
-        (false, :allocs, nothing, getfield_tester_2, (5.0, 5)),
-        (
-            false,
-            :allocs,
-            nothing,
+        TestCase(getfield_tester, (5.0, 5); perf_flag=:allocs),
+        TestCase(getfield_tester_2, (5.0, 5); perf_flag=:allocs),
+        TestCase(
             setfield_tester_left!,
             FullyInitMutableStruct(5.0, randn(3)),
-            4.0,
+            4.0;
+            perf_flag=:allocs,
         ),
-        (
-            false,
-            :none,
-            nothing,
-            setfield_tester_right!,
-            FullyInitMutableStruct(5.0, randn(3)),
-            randn(5),
-        ),
-        (false, :none, nothing, mul!, randn(3, 5)', randn(5, 5), randn(5, 3), 4.0, 3.0),
-        (false, :none, nothing, Random.SHA.digest!, Random.SHA.SHA2_256_CTX()),
-        (false, :none, nothing, Xoshiro, 123456),
-        (false, :none, nothing, *, randn(250, 500), randn(500, 250)),
-        (false, :allocs, nothing, test_sin, 1.0),
-        (false, :allocs, nothing, test_cos_sin, 2.0),
-        (false, :allocs, nothing, test_isbits_multiple_usage, 5.0),
-        (false, :allocs, nothing, test_isbits_multiple_usage_2, 5.0),
-        (false, :allocs, nothing, test_isbits_multiple_usage_3, 4.1),
-        (false, :allocs, nothing, test_isbits_multiple_usage_4, 5.0),
-        (false, :allocs, nothing, test_isbits_multiple_usage_5, 4.1),
-        (false, :allocs, nothing, test_isbits_multiple_usage_phi, false, 1.1),
-        (false, :allocs, nothing, test_isbits_multiple_usage_phi, true, 1.1),
-        (false, :allocs, nothing, test_multiple_call_non_primitive, 5.0),
-        (false, :none, (lb=1e-3, ub=1500), test_multiple_pi_nodes, Ref{Any}(5.0)),
-        (false, :none, (lb=1e-3, ub=500), test_multi_use_pi_node, Ref{Any}(5.0)),
-        (false, :allocs, nothing, test_getindex, [1.0, 2.0]),
-        (false, :allocs, nothing, test_mutation!, [1.0, 2.0]),
-        (false, :allocs, nothing, test_while_loop, 2.0),
-        (false, :allocs, nothing, test_for_loop, 3.0),
-        (false, :none, nothing, test_mutable_struct_basic, 5.0),
-        (false, :none, nothing, test_mutable_struct_basic_sin, 5.0),
-        (false, :none, nothing, test_mutable_struct_setfield, 4.0),
-        (false, :none, (lb=1e-3, ub=500), test_mutable_struct, 5.0),
-        (false, :none, nothing, test_struct_partial_init, 3.5),
-        (false, :none, nothing, test_mutable_partial_init, 3.3),
-        (false, :none, nothing, test_mutable_struct_array, 3.1),
+        TestCase(setfield_tester_right!, FullyInitMutableStruct(5.0, randn(3)), randn(5)),
+        TestCase(mul!, randn(3, 5)', randn(5, 5), randn(5, 3), 4.0, 3.0),
+        TestCase(Random.SHA.digest!, Random.SHA.SHA2_256_CTX()),
+        TestCase(Xoshiro, 123456),
+        TestCase(*, randn(250, 500), randn(500, 250)),
+        TestCase(test_sin, 1.0; perf_flag=:allocs),
+        TestCase(test_cos_sin, 2.0; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage, 5.0; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_2, 5.0; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_3, 4.1; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_4, 5.0; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_5, 4.1; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_phi, false, 1.1; perf_flag=:allocs),
+        TestCase(test_isbits_multiple_usage_phi, true, 1.1; perf_flag=:allocs),
+        TestCase(test_multiple_call_non_primitive, 5.0; perf_flag=:allocs),
+        TestCase(test_multiple_pi_nodes, Ref{Any}(5.0); bench=(lb=1e-3, ub=1500)),
+        TestCase(test_multi_use_pi_node, Ref{Any}(5.0); bench=(lb=1e-3, ub=500)),
+        TestCase(test_getindex, [1.0, 2.0]; perf_flag=:allocs),
+        TestCase(test_mutation!, [1.0, 2.0]; perf_flag=:allocs),
+        TestCase(test_while_loop, 2.0; perf_flag=:allocs),
+        TestCase(test_for_loop, 3.0; perf_flag=:allocs),
+        TestCase(test_mutable_struct_basic, 5.0),
+        TestCase(test_mutable_struct_basic_sin, 5.0),
+        TestCase(test_mutable_struct_setfield, 4.0),
+        TestCase(test_mutable_struct, 5.0; bench=(lb=1e-3, ub=500)),
+        TestCase(test_struct_partial_init, 3.5),
+        TestCase(test_mutable_partial_init, 3.3),
+        TestCase(test_mutable_struct_array, 3.1),
         # `skip_chunked`: takes a raw pointer to an element-wise dual array, which the
         # `jl_array_ptr` frule supports at chunk width 1 only.
-        (
-            false,
-            :none,
-            (skip_chunked=true,),
+        TestCase(
             test_elementwise_dual_pointer_copy,
             [(0.0, 0.0), (0.0, 0.0)],
-            [(1.0, 2.0), (3.0, 4.0)],
+            [(1.0, 2.0), (3.0, 4.0)];
+            skip_chunked=true,
         ),
-        (
-            false,
-            :allocs,
-            nothing,
+        TestCase(
             test_naive_mat_mul!,
             randn(100, 50),
             randn(100, 30),
-            randn(30, 50),
+            randn(30, 50);
+            perf_flag=:allocs,
         ),
-        (
-            false,
-            :allocs,
-            nothing,
+        TestCase(
             (A, C) -> test_naive_mat_mul!(C, A, A),
             randn(25, 25),
-            randn(25, 25),
+            randn(25, 25);
+            perf_flag=:allocs,
         ),
-        (false, :allocs, nothing, sum, randn(32)),
-        (false, :none, nothing, test_diagonal_to_matrix, Diagonal(randn(30))),
-        (
-            false,
-            :allocs,
-            nothing,
-            ldiv!,
-            randn(20, 20),
-            Diagonal(rand(20) .+ 1),
-            randn(20, 20),
+        TestCase(sum, randn(32); perf_flag=:allocs),
+        TestCase(test_diagonal_to_matrix, Diagonal(randn(30))),
+        TestCase(
+            ldiv!, randn(20, 20), Diagonal(rand(20) .+ 1), randn(20, 20); perf_flag=:allocs
         ),
-        (
-            false,
-            :none,
-            nothing,
-            LinearAlgebra._kron!,
-            randn(25, 25),
-            randn(5, 5),
-            randn(5, 5),
+        TestCase(LinearAlgebra._kron!, randn(25, 25), randn(5, 5), randn(5, 5)),
+        TestCase(kron!, randn(25, 25), Diagonal(randn(5)), randn(5, 5); perf_flag=:allocs),
+        TestCase(
+            test_mlp, randn(sr(1), 50, 20), randn(sr(2), 70, 50), randn(sr(3), 30, 70)
         ),
-        (false, :allocs, nothing, kron!, randn(25, 25), Diagonal(randn(5)), randn(5, 5)),
-        (
-            false,
-            :none,
-            nothing,
-            test_mlp,
-            randn(sr(1), 50, 20),
-            randn(sr(2), 70, 50),
-            randn(sr(3), 30, 70),
-        ),
-        (false, :allocs, nothing, test_handwritten_sum, randn(128, 128)),
-        (false, :allocs, nothing, _naive_map_sin_cos_exp, randn(1024), randn(1024)),
-        (false, :allocs, nothing, _naive_map_negate, randn(1024), randn(1024)),
-        (false, :allocs, nothing, test_from_slack, randn(10_000)),
-        (false, :none, nothing, _sum, randn(1024)),
-        (false, :none, nothing, test_map, randn(1024), randn(1024)),
-        (false, :none, nothing, _broadcast_sin_cos_exp, randn(10, 10)),
-        (false, :none, nothing, _map_sin_cos_exp, randn(10, 10)),
-        (false, :none, nothing, ArgumentError, "hi"),
-        (false, :none, nothing, test_small_union, Ref{Union{Float64,Vector{Float64}}}(5.0)),
-        (
-            false,
-            :none,
-            nothing,
-            test_small_union,
-            Ref{Union{Float64,Vector{Float64}}}([1.0]),
-        ),
-        (false, :allocs, nothing, inlinable_invoke_call, 5.0),
-        (false, :none, nothing, inlinable_vararg_invoke_call, (2, 2), 5.0, 4.0, 3.0, 2.0),
-        (false, :none, nothing, hvcat, (2, 2), 3.0, 2.0, 0.0, 1.0),
-        (false, :none, nothing, partial_typevar_tester),
-        (false, :none, nothing, typevar_tester),
-        (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
-        (false, :allocs, nothing, highly_nested_tuple, 5.0),
-        (false, :none, nothing, sig_argcount_mismatch, ones(4)),
+        TestCase(test_handwritten_sum, randn(128, 128); perf_flag=:allocs),
+        TestCase(_naive_map_sin_cos_exp, randn(1024), randn(1024); perf_flag=:allocs),
+        TestCase(_naive_map_negate, randn(1024), randn(1024); perf_flag=:allocs),
+        TestCase(test_from_slack, randn(10_000); perf_flag=:allocs),
+        TestCase(_sum, randn(1024)),
+        TestCase(test_map, randn(1024), randn(1024)),
+        TestCase(_broadcast_sin_cos_exp, randn(10, 10)),
+        TestCase(_map_sin_cos_exp, randn(10, 10)),
+        TestCase(ArgumentError, "hi"),
+        TestCase(test_small_union, Ref{Union{Float64,Vector{Float64}}}(5.0)),
+        TestCase(test_small_union, Ref{Union{Float64,Vector{Float64}}}([1.0])),
+        TestCase(inlinable_invoke_call, 5.0; perf_flag=:allocs),
+        TestCase(inlinable_vararg_invoke_call, (2, 2), 5.0, 4.0, 3.0, 2.0),
+        TestCase(hvcat, (2, 2), 3.0, 2.0, 0.0, 1.0),
+        TestCase(partial_typevar_tester),
+        TestCase(typevar_tester),
+        TestCase(inplace_invoke!, randn(1_024); perf_flag=:allocs),
+        TestCase(highly_nested_tuple, 5.0; perf_flag=:allocs),
+        TestCase(sig_argcount_mismatch, ones(4)),
         # `skip_chunked`: at width `N` the argument is an `NTuple{1000,NDual{Float64,N}}`, which
         # reaches Julia's own tuple-recursion stack limit ("recursion over very long tuples").
         # Width 1 is what this case exists to stress.
-        (
-            false,
-            :allocs,
-            (lb=2, ub=1500, skip_chunked=true),
+        TestCase(
             large_tuple_inference,
-            Tuple(zeros(1_000)),
+            Tuple(zeros(1_000));
+            perf_flag=:allocs,
+            skip_chunked=true,
+            bench=(lb=2, ub=1500),
         ),
-        (false, :none, nothing, regression_319, randn(3)),
+        TestCase(regression_319, randn(3)),
     ]
+    # The closure-captured variant follows a separate failing path tracked in #1286.
+    _add_hvp_case!(
+        test_cases,
+        _throw_empty_fdata_exception,
+        1.0,
+        "empty structural fdata",
+        (1.0,),
+        (value=1.0, gradient=2.0, hvp=2.0);
+        cmp=(==),
+    )
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .* x),
+        [1.0, 2.0, 3.0],
+        "HVP cache reuse",
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        (hvp=v -> 2.0 .* v,);
+        cmp=isapprox,
+        rtol=1e-10,
+    )
+    # Regression for #1193: Ref capture under a NoTangent wrapper.
+    let
+        f = _RefCaptureWrap(
+            let r = Ref(3.0);
+                x -> r[] * sum(abs2, x);
+            end,
+        )
+        x = [1.0, 2.0]
+        _add_hvp_case!(
+            test_cases,
+            f,
+            x,
+            "Ref capture",
+            ([1.0, 0.0],),
+            (hvp=[6.0, 0.0], hessian=[6.0 0.0; 0.0 6.0]);
+            cmp=isapprox,
+        )
+    end
+    let
+        @static if VERSION >= v"1.11-rc4"
+            a = [1.0, 2.0]
+            for f in (
+                t -> t[1][1]*t[2][1] + t[1][2]*t[2][2],
+                t -> t[1][1]^2*t[2][1] + t[1][2]^2*t[2][2],
+            )
+                push!(
+                    test_cases,
+                    TestCase(
+                        f,
+                        (a, a.ref.mem);
+                        name="HVP refuses shared Array Memory input",
+                        hvp=(
+                            throws=(
+                                ArgumentError,
+                                "share differentiable storage across positions",
+                            ),
+                        ),
+                    ),
+                )
+            end
+        end
+    end
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .* x),
+        [2.0, 3.0, 4.0],
+        "broadcast quadratic HVP",
+        ([1.0, 0.0, 0.0],),
+        (value=29.0, gradient=[4.0, 6.0, 8.0], hvp=[2.0, 0.0, 0.0]);
+        cmp=isapprox,
+    )
+    let
+        rosen(z) = (1-z[1])^2 + 100*(z[2]-z[1]^2)^2
+        rosen_H(z) = [2-400*(z[2]-z[1]^2)+800*z[1]^2 -400*z[1]; -400*z[1] 200.0]
+        rosen_g(z) = [-2*(1-z[1])-400*z[1]*(z[2]-z[1]^2), 200*(z[2]-z[1]^2)]
+        z = [1.2, 1.2]
+        _add_hvp_case!(
+            test_cases,
+            rosen,
+            z,
+            "Rosenbrock Float64",
+            ([1.0, 0.0],),
+            (value=rosen(z), gradient=rosen_g(z), hessian=rosen_H(z));
+            cmp=(actual, expected) -> if actual isa Number
+                isapprox(actual, expected)
+            else
+                isapprox(actual, expected; rtol=1e-10)
+            end,
+        )
+    end
+    let
+        rosen(z) = (1-z[1])^2 + 100*(z[2]-z[1]^2)^2
+        rosen_H(z) = [2-400*(z[2]-z[1]^2)+800*z[1]^2 -400*z[1]; -400*z[1] 200.0]
+        z = Float32[1.2, 1.2]
+        _add_hvp_case!(
+            test_cases,
+            rosen,
+            z,
+            "Rosenbrock Float32",
+            (Float32[1, 0],),
+            (
+                value=(type=Float32, value=rosen(z)),
+                gradient=(type=Vector{Float32},),
+                hessian=(type=Matrix{Float32}, value=rosen_H(Float64[1.2, 1.2])),
+            );
+            cmp=(actual, expected) ->
+                actual isa expected.type &&
+                (!haskey(expected, :value) || isapprox(actual, expected.value; rtol=1e-4)),
+        )
+    end
+    _add_hvp_case!(
+        test_cases,
+        x -> sum(x .^ 2),
+        [1.0, 2.0, 3.0],
+        "quadratic (diagonal Hessian)",
+        ([1.0, 0.0, 0.0],),
+        (value=14.0, gradient=[2.0, 4.0, 6.0], hessian=2I);
+        cmp=isapprox,
+    )
+    _add_hvp_case!(
+        test_cases,
+        x -> 0.0,
+        Float64[],
+        "n=0 edge case",
+        (Float64[],),
+        (value=0.0, gradient=Float64[], hessian=zeros(0, 0));
+        cmp=(==),
+    )
+    return test_cases
 end
 
 _broadcast_sin_cos_exp(x::AbstractArray{<:Real}) = sum(sin.(cos.(exp.(x))))

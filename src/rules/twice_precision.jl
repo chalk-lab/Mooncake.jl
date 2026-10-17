@@ -597,63 +597,51 @@ end
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
-    test_cases = Any[
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            _new_,
-            TwicePrecisionFloat{Float64},
-            5.0,
-            4.0,
+    test_cases = TestCase[
+        TestCase(
+            _new_, TwicePrecisionFloat{Float64}, 5.0, 4.0; perf_flag=:stability_and_allocs
         ),
-        (false, :stability_and_allocs, nothing, twiceprecision, 5.0, 4),
-        (false, :stability_and_allocs, nothing, twiceprecision, TwicePrecision(5.0), 4),
-        (false, :stability_and_allocs, nothing, Float64, TwicePrecision(5.0, 3.0)),
-        (false, :stability_and_allocs, nothing, -, TwicePrecision(5.0, 3.0)),
-        (false, :stability_and_allocs, nothing, +, TwicePrecision(5.0, 3.0), 4.0),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(twiceprecision, 5.0, 4; perf_flag=:stability_and_allocs),
+        TestCase(twiceprecision, TwicePrecision(5.0), 4; perf_flag=:stability_and_allocs),
+        TestCase(Float64, TwicePrecision(5.0, 3.0); perf_flag=:stability_and_allocs),
+        TestCase(-, TwicePrecision(5.0, 3.0); perf_flag=:stability_and_allocs),
+        TestCase(+, TwicePrecision(5.0, 3.0), 4.0; perf_flag=:stability_and_allocs),
+        TestCase(
             +,
             TwicePrecision(5.0, 3.0),
-            TwicePrecision(4.0, 5.0),
+            TwicePrecision(4.0, 5.0);
+            perf_flag=:stability_and_allocs,
         ),
-        (false, :stability_and_allocs, nothing, +, TwicePrecision(5.0, 3.0), 4),
-        (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3.0),
-        (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3),
-        (false, :stability_and_allocs, nothing, /, TwicePrecision(5.0, 1e-12), 3.0),
-        (false, :stability_and_allocs, nothing, /, TwicePrecision(5.0, 1e-12), 3),
-        (false, :stability_and_allocs, nothing, Base.splitprec, Float64, 5),
-        (false, :stability_and_allocs, nothing, Base.splitprec, Float32, 5),
-        (false, :stability_and_allocs, nothing, Base.splitprec, Float16, 5),
-        (false, :stability_and_allocs, nothing, Base.floatrange, Float64, 5, 6, 7, 8),
-        (false, :stability_and_allocs, nothing, Base._linspace, Float64, 5, 6, 7, 8),
-        (false, :allocs, nothing, Base.range_start_step_length, 5.0, 6.0, 10),
-        (false, :allocs, nothing, Base.range_start_step_length, 5.0, Float64(π), 10),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(+, TwicePrecision(5.0, 3.0), 4; perf_flag=:stability_and_allocs),
+        TestCase(*, TwicePrecision(5.0, 1e-12), 3.0; perf_flag=:stability_and_allocs),
+        TestCase(*, TwicePrecision(5.0, 1e-12), 3; perf_flag=:stability_and_allocs),
+        TestCase(/, TwicePrecision(5.0, 1e-12), 3.0; perf_flag=:stability_and_allocs),
+        TestCase(/, TwicePrecision(5.0, 1e-12), 3; perf_flag=:stability_and_allocs),
+        TestCase(Base.splitprec, Float64, 5; perf_flag=:stability_and_allocs),
+        TestCase(Base.splitprec, Float32, 5; perf_flag=:stability_and_allocs),
+        TestCase(Base.splitprec, Float16, 5; perf_flag=:stability_and_allocs),
+        TestCase(Base.floatrange, Float64, 5, 6, 7, 8; perf_flag=:stability_and_allocs),
+        TestCase(Base._linspace, Float64, 5, 6, 7, 8; perf_flag=:stability_and_allocs),
+        TestCase(Base.range_start_step_length, 5.0, 6.0, 10; perf_flag=:allocs),
+        TestCase(Base.range_start_step_length, 5.0, Float64(π), 10; perf_flag=:allocs),
+        TestCase(
             unsafe_getindex,
             StepRangeLen(TwicePrecision(-0.45), TwicePrecision(0.98), 10, 3),
-            5,
+            5;
+            perf_flag=:stability_and_allocs,
         ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
+        TestCase(
             _getindex_hiprec,
             StepRangeLen(TwicePrecision(-0.45), TwicePrecision(0.98), 10, 3),
-            5,
+            5;
+            perf_flag=:stability_and_allocs,
         ),
-        (false, :allocs, nothing, (:), -0.1, 0.99, 5.1),
-        (false, :stability_and_allocs, nothing, sum, range(-0.1, 9.9; length=51)),
-        (false, :allocs, nothing, Base.range_start_stop_length, -0.5, 11.7, 7),
-        (false, :allocs, nothing, Base.range_start_stop_length, -0.5, -11.7, 11),
-        # offset == 3 exercises the ref correction; other constructor rows have offset == 1.
-        (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
+        TestCase((:), -0.1, 0.99, 5.1; perf_flag=:allocs),
+        TestCase(sum, range(-0.1, 9.9; length=51); perf_flag=:stability_and_allocs),
+        TestCase(Base.range_start_stop_length, -0.5, 11.7, 7; perf_flag=:allocs),
+        TestCase(Base.range_start_stop_length, -0.5, -11.7, 11; perf_flag=:allocs),
+        # offset == 3 exercises the ref correction; other constructor test cases have offset == 1.
+        TestCase(Base.range_start_stop_length, -3.0, 1.0, 4; perf_flag=:allocs),
     ]
     for f in (+, *, /), P in (Float16, Float32, Float64), N in (1, 8)
         opts = (
@@ -664,18 +652,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
                 "forward TwicePrecision arithmetic requires IEEEFloat components",
             ),
         )
-        push!(test_cases, (false, :none, opts, f, TwicePrecision{P}(2, 0), big(4)))
+        push!(test_cases, TestCase(f, TwicePrecision{P}(2, 0), big(4); opts...))
     end
     for P in (Float16, Float32)
         seed = Tangent((ref=1.0, step=0.0, len=NoTangent(), offset=NoTangent()))
         opts = (
             mode=ReverseMode,
             output_tangent=seed,
-            oracle=(deriv=(NoRData(), P(1 // 1000), P(999 // 1000), NoRData()),),
+            reference=(deriv=(NoRData(), P(1 // 1000), P(999 // 1000), NoRData()),),
         )
         push!(
             test_cases,
-            (false, :allocs, opts, Base.range_start_stop_length, P(-999), P(1), 1001),
+            TestCase(
+                Base.range_start_stop_length,
+                P(-999),
+                P(1),
+                1001;
+                perf_flag=:allocs,
+                opts...,
+            ),
         )
     end
     for P in (Float16, Float32),
@@ -686,9 +681,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         opts = (
             mode=ReverseMode,
             output_tangent=seed,
-            oracle=(deriv=(NoRData(), P(0.1), P(0.1), last),),
+            reference=(deriv=(NoRData(), P(0.1), P(0.1), last),),
         )
-        push!(test_cases, (false, :allocs, opts, f, P(-999), P(1), stop))
+        push!(test_cases, TestCase(f, P(-999), P(1), stop; perf_flag=:allocs, opts...))
     end
     for P in (Float16, Float32),
         (f, b, c) in (
@@ -701,11 +696,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             seed = Tangent((ref=3.0, step=6.0, len=NoTangent(), offset=NoTangent()))
             da, db = f === Base.range_start_stop_length ? (P(1), P(2)) : (P(3), P(6))
             dc = f === (:) ? zero(P) : NoRData()
-            (mode=ReverseMode, output_tangent=seed, oracle=(deriv=(NoRData(), da, db, dc),))
+            (
+                mode=ReverseMode,
+                output_tangent=seed,
+                reference=(deriv=(NoRData(), da, db, dc),),
+            )
         else
             (mode=ReverseMode,)
         end
-        push!(test_cases, (false, :allocs, opts, f, P(1), b, c))
+        push!(test_cases, TestCase(f, P(1), b, c; perf_flag=:allocs, opts...))
     end
     for P in (Float16, Float32),
         (f, b, c) in (
@@ -717,11 +716,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         opts = if P === Float16
             ds = f === Base.range_start_stop_length ? 1.0 : 6.0
             dt = Tangent((ref=3.0, step=ds, len=NoTangent(), offset=NoTangent()))
-            (mode=ForwardMode, oracle=(deriv=dt,))
+            (mode=ForwardMode, reference=(deriv=dt,))
         else
             (mode=ForwardMode,)
         end
-        push!(test_cases, (false, :allocs, opts, f, CoDual(P(1), P(3)), CoDual(b, P(6)), c))
+        push!(
+            test_cases,
+            TestCase(f, CoDual(P(1), P(3)), CoDual(b, P(6)), c; perf_flag=:allocs, opts...),
+        )
     end
     for P in (Float16, Float32),
         (f, a, b, c) in (
@@ -743,19 +745,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             len=NoTangent(),
             offset=NoTangent(),
         ))
-        opts = (mode=ForwardMode, oracle=(deriv=dt,))
-        push!(test_cases, (false, :allocs, opts, f, CoDual(a, da), CoDual(b, db), c))
+        opts = (mode=ForwardMode, reference=(deriv=dt,))
+        push!(
+            test_cases,
+            TestCase(f, CoDual(a, da), CoDual(b, db), c; perf_flag=:allocs, opts...),
+        )
     end
     @static if VERSION >= v"1.11"
-        extra_test_cases = Any[
-            (
-                false,
-                :stability_and_allocs,
-                nothing,
+        extra_test_cases = TestCase[
+            TestCase(
                 Base._exp_allowing_twice64,
-                TwicePrecision(2.0),
+                TwicePrecision(2.0);
+                perf_flag=:stability_and_allocs,
             ),
-            (false, :stability_and_allocs, nothing, Base._log_twice64_unchecked, 3.0),
+            TestCase(Base._log_twice64_unchecked, 3.0; perf_flag=:stability_and_allocs),
         ]
         test_cases = vcat(test_cases, extra_test_cases)
     end
@@ -764,86 +767,63 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
-    test_cases = Any[
+    test_cases = TestCase[
 
         # Functionality in base/twiceprecision.jl
-        (false, :allocs, nothing, TwicePrecision{Float64}, 5.0, 0.3),
-        (
-            false,
-            :allocs,
-            nothing,
-            (x, y) -> Float64(TwicePrecision{Float64}(x, y)),
-            5.0,
-            0.3,
+        TestCase(TwicePrecision{Float64}, 5.0, 0.3; perf_flag=:allocs),
+        TestCase(
+            (x, y) -> Float64(TwicePrecision{Float64}(x, y)), 5.0, 0.3; perf_flag=:allocs
         ),
-        (false, :allocs, nothing, TwicePrecision, 5.0, 0.3),
-        (false, :allocs, nothing, (x, y) -> Float64(TwicePrecision(x, y)), 5.0, 0.3),
-        (false, :allocs, nothing, TwicePrecision{Float64}, 5.0),
-        (false, :allocs, nothing, x -> Float64(TwicePrecision{Float64}(x)), 5.0),
-        (false, :allocs, nothing, TwicePrecision, 5.0),
-        (false, :allocs, nothing, x -> Float64(TwicePrecision(x)), 5.0),
-        (false, :allocs, nothing, TwicePrecision{Float64}, 5),
-        (false, :allocs, nothing, x -> Float64(TwicePrecision{Float64}(x)), 5),
-        (false, :none, nothing, TwicePrecision{Float64}, (5, 4)),
-        (false, :none, nothing, x -> Float64(TwicePrecision{Float64}(x)), (5, 4)),
-        (false, :none, nothing, TwicePrecision{Float64}, (5, 4), 3),
-        (
-            false,
-            :none,
-            nothing,
-            (x, y) -> Float64(TwicePrecision{Float64}(x, y)),
-            (5, 4),
-            3,
-        ),
-        (false, :allocs, nothing, +, TwicePrecision(5.0), TwicePrecision(4.0)),
-        (false, :allocs, nothing, +, 5.0, TwicePrecision(4.0)),
-        (false, :allocs, nothing, +, TwicePrecision(5.0), 4.0),
-        (false, :allocs, nothing, -, TwicePrecision(5.0), TwicePrecision(4.0)),
-        (false, :allocs, nothing, -, 5.0, TwicePrecision(4.0)),
-        (false, :allocs, nothing, -, TwicePrecision(5.0), 4.0),
-        (false, :allocs, nothing, *, 3.0, TwicePrecision(5.0, 1e-12)),
-        (false, :allocs, nothing, *, 3, TwicePrecision(5.0, 1e-12)),
-        (
-            false,
-            :allocs,
-            nothing,
+        TestCase(TwicePrecision, 5.0, 0.3; perf_flag=:allocs),
+        TestCase((x, y) -> Float64(TwicePrecision(x, y)), 5.0, 0.3; perf_flag=:allocs),
+        TestCase(TwicePrecision{Float64}, 5.0; perf_flag=:allocs),
+        TestCase((x -> Float64(TwicePrecision{Float64}(x))), 5.0; perf_flag=:allocs),
+        TestCase(TwicePrecision, 5.0; perf_flag=:allocs),
+        TestCase((x -> Float64(TwicePrecision(x))), 5.0; perf_flag=:allocs),
+        TestCase(TwicePrecision{Float64}, 5; perf_flag=:allocs),
+        TestCase((x -> Float64(TwicePrecision{Float64}(x))), 5; perf_flag=:allocs),
+        TestCase(TwicePrecision{Float64}, (5, 4)),
+        TestCase((x -> Float64(TwicePrecision{Float64}(x))), (5, 4)),
+        TestCase(TwicePrecision{Float64}, (5, 4), 3),
+        TestCase((x, y) -> Float64(TwicePrecision{Float64}(x, y)), (5, 4), 3),
+        TestCase(+, TwicePrecision(5.0), TwicePrecision(4.0); perf_flag=:allocs),
+        TestCase(+, 5.0, TwicePrecision(4.0); perf_flag=:allocs),
+        TestCase(+, TwicePrecision(5.0), 4.0; perf_flag=:allocs),
+        TestCase(-, TwicePrecision(5.0), TwicePrecision(4.0); perf_flag=:allocs),
+        TestCase(-, 5.0, TwicePrecision(4.0); perf_flag=:allocs),
+        TestCase(-, TwicePrecision(5.0), 4.0; perf_flag=:allocs),
+        TestCase(*, 3.0, TwicePrecision(5.0, 1e-12); perf_flag=:allocs),
+        TestCase(*, 3, TwicePrecision(5.0, 1e-12); perf_flag=:allocs),
+        TestCase(
             getindex,
             StepRangeLen(TwicePrecision(-0.45), TwicePrecision(0.98), 10, 3),
-            2:2:6,
+            2:2:6;
+            perf_flag=:allocs,
         ),
-        (
-            false,
-            :allocs,
-            nothing,
-            +,
-            range(0.0, 5.0; length=44),
-            range(-33.0, 4.5; length=44),
+        TestCase(
+            +, range(0.0, 5.0; length=44), range(-33.0, 4.5; length=44); perf_flag=:allocs
         ),
 
         # Functionality in base/range.jl
-        (false, :allocs, nothing, range, 0.0, 5.6),
-        (false, :allocs, nothing, (lb, ub) -> range(lb, ub; length=10), -0.45, 9.5),
+        TestCase(range, 0.0, 5.6; perf_flag=:allocs),
+        TestCase((lb, ub) -> range(lb, ub; length=10), -0.45, 9.5; perf_flag=:allocs),
         # Across zero, ref jumps when offset changes. Test smooth consumed values instead
         # of finite-differencing the constructor output.
-        (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
-        (false, :allocs, nothing, (a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0),
+        TestCase((a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5; perf_flag=:allocs),
+        TestCase((a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0; perf_flag=:allocs),
         # A range ARGUMENT: its `TwicePrecision` fields have tuple Vs that are not aggregates.
-        (
-            false,
-            :none,
-            nothing,
-            (x, r) -> sum(x .* r),
-            [1.0, 2.0, 3.0],
-            range(0.0, 1.0; length=3),
-        ),
+        TestCase((x, r) -> sum(x .* r), [1.0, 2.0, 3.0], range(0.0, 1.0; length=3)),
     ]
     for (P, S) in ((Float16, Float32), (Float16, Float64), (Float32, Float64)),
         (f, deriv) in ((+, 1.5), (*, 5.0), (/, 0.1875))
 
         g = (x, y) -> Float64(f(TwicePrecision(x, zero(x)), y))
-        opts = (mode=ForwardMode, oracle=(deriv=deriv,))
+        opts = (mode=ForwardMode, reference=(deriv=deriv,))
         push!(
-            test_cases, (false, :allocs, opts, g, CoDual(P(2), P(1)), CoDual(S(4), S(0.5)))
+            test_cases,
+            TestCase(
+                g, CoDual(P(2), P(1)), CoDual(S(4), S(0.5)); perf_flag=:allocs, opts...
+            ),
         )
     end
     # Scale the low component before comparing, so losing it is an order-one error.
@@ -853,12 +833,33 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             a ->
                 Float64(f(TwicePrecision(a, a * lo), one(a)) - TwicePrecision(a, zero(a))) /
                 lo
-        opts = (mode=ForwardMode, oracle=(value=1.0, deriv=1.0))
-        push!(test_cases, (false, :allocs, opts, g, CoDual(one(P), one(P))))
+        opts = (mode=ForwardMode, reference=(value=1.0, deriv=1.0))
+        push!(test_cases, TestCase(g, CoDual(one(P), one(P)); perf_flag=:allocs, opts...))
     end
     @static if VERSION >= v"1.11"
-        push!(test_cases, (false, :allocs, nothing, Base._logrange_extra, 1.1, 3.5, 5))
-        push!(test_cases, (false, :allocs, nothing, logrange, 5.0, 10.0, 11))
+        push!(test_cases, TestCase(Base._logrange_extra, 1.1, 3.5, 5; perf_flag=:allocs))
+        push!(test_cases, TestCase(logrange, 5.0, 10.0, 11; perf_flag=:allocs))
     end
+    # Regression for #1328: TwicePrecision cotangent accumulation.
+    let
+        f(x) = abs2(typeof(x)(TwicePrecision(x)))
+        for x in (0.5f0, 0.5)
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    x;
+                    name="TwicePrecision cotangent accumulation",
+                    hvp=(
+                        check=:reference,
+                        directions=(one(x), -one(x)),
+                        reference=(value=abs2(x), gradient=2x, hvp=v -> 2v),
+                        cmp=(==),
+                    ),
+                ),
+            )
+        end
+    end
+
     return test_cases, Any[]
 end

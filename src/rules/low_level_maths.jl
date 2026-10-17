@@ -850,111 +850,112 @@ function rrule!!(
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
+    scalar_case(f, args...; kw...) = TestCase(
+        f, args...; perf_flag=:stability_and_allocs, kw...
+    )
     test_cases = vcat(
         map([Float32, Float64]) do P
-            cases = [
-                (sqrt, P(0.5)),
-                (cbrt, P(0.4)),
-                (log, P(0.1)),
-                (log10, P(0.1)),
-                (log2, P(0.15)),
-                (log1p, P(0.95)),
-                (exp, P(1.1)),
-                (exp2, P(1.12)),
-                (exp10, P(0.55)),
-                (expm1, P(-0.3)),
-                (sin, P(1.1)),
-                (cos, P(1.1)),
-                (tan, P(0.5)),
-                (sec, P(-0.4)),
-                (csc, P(0.3)),
-                (cot, P(0.1)),
-                (sind, P(181.1)),
-                (cosd, P(-181.3)),
-                (tand, P(93.5)),
-                (secd, P(33.5)),
-                (cscd, P(-0.5)),
-                (cotd, P(5.1)),
-                (sinpi, P(13.2)),
-                (cospi, P(-33.2)),
-                (asin, P(0.77)),
-                (acos, P(0.53)),
-                (atan, P(0.77)),
-                (asec, P(2.55)),
-                (acsc, P(1.03)),
-                (acot, P(101.5)),
-                (asind, P(0.23)),
-                (acosd, P(0.55)),
-                (atand, P(1.45)),
-                (asecd, P(1.1)),
-                (acscd, P(1.33)),
-                (acotd, P(0.99)),
-                (sinh, P(-3.56)),
-                (cosh, P(3.4)),
-                (tanh, P(0.25)),
-                (sech, P(0.11)),
-                (csch, P(-0.77)),
-                (coth, P(0.22)),
-                (asinh, P(1.45)),
-                (acosh, P(1.56)),
-                (atanh, P(-0.44)),
-                (asech, P(0.75)),
-                (acsch, P(0.32)),
-                (acoth, P(1.05)),
-                (sinc, P(0.36)),
-                (sincos, P(3.0)),
-                (deg2rad, P(185.4)),
-                (rad2deg, P(0.45)),
-                (mod2pi, P(0.1)),
-                (mod, P(7.5), P(2.3)),
-                (mod, P(10.2), P(3.1)),
-                # Avoid rem's jumps at integer ratios; negative inputs distinguish trunc/floor.
-                (rem, P(7.5), P(2.3)),
-                (rem, P(-7.5), P(2.3)),
-                (rem, P(7.5), P(-2.3)),
-                # `flipsign`'s second argument is not finite-differenced at zero, where it jumps;
+            return TestCase[
+                scalar_case(sqrt, P(0.5)),
+                scalar_case(cbrt, P(0.4)),
+                scalar_case(log, P(0.1)),
+                scalar_case(log10, P(0.1)),
+                scalar_case(log2, P(0.15)),
+                scalar_case(log1p, P(0.95)),
+                scalar_case(exp, P(1.1)),
+                scalar_case(exp2, P(1.12)),
+                scalar_case(exp10, P(0.55)),
+                scalar_case(expm1, P(-0.3)),
+                scalar_case(sin, P(1.1)),
+                scalar_case(cos, P(1.1)),
+                scalar_case(tan, P(0.5)),
+                scalar_case(sec, P(-0.4)),
+                scalar_case(csc, P(0.3)),
+                scalar_case(cot, P(0.1)),
+                scalar_case(sind, P(181.1)),
+                scalar_case(cosd, P(-181.3)),
+                scalar_case(tand, P(93.5)),
+                scalar_case(secd, P(33.5)),
+                scalar_case(cscd, P(-0.5)),
+                scalar_case(cotd, P(5.1)),
+                scalar_case(sinpi, P(13.2)),
+                scalar_case(cospi, P(-33.2)),
+                scalar_case(asin, P(0.77)),
+                scalar_case(acos, P(0.53)),
+                scalar_case(atan, P(0.77)),
+                scalar_case(asec, P(2.55)),
+                scalar_case(acsc, P(1.03)),
+                scalar_case(acot, P(101.5)),
+                scalar_case(asind, P(0.23)),
+                scalar_case(acosd, P(0.55)),
+                scalar_case(atand, P(1.45)),
+                scalar_case(asecd, P(1.1)),
+                scalar_case(acscd, P(1.33)),
+                scalar_case(acotd, P(0.99)),
+                scalar_case(sinh, P(-3.56)),
+                scalar_case(cosh, P(3.4)),
+                scalar_case(tanh, P(0.25)),
+                scalar_case(sech, P(0.11)),
+                scalar_case(csch, P(-0.77)),
+                scalar_case(coth, P(0.22)),
+                scalar_case(asinh, P(1.45)),
+                scalar_case(acosh, P(1.56)),
+                scalar_case(atanh, P(-0.44)),
+                scalar_case(asech, P(0.75)),
+                scalar_case(acsch, P(0.32)),
+                scalar_case(acoth, P(1.05)),
+                scalar_case(sinc, P(0.36)),
+                scalar_case(sincos, P(3.0)),
+                scalar_case(deg2rad, P(185.4)),
+                scalar_case(rad2deg, P(0.45)),
+                scalar_case(mod2pi, P(0.1)),
+                scalar_case(mod, P(7.5), P(2.3)),
+                scalar_case(mod, P(10.2), P(3.1)),
+                # Avoid rem's jumps at integer ratios; negative inputs distinguish
+                # trunc/floor.
+                scalar_case(rem, P(7.5), P(2.3)),
+                scalar_case(rem, P(-7.5), P(2.3)),
+                scalar_case(rem, P(7.5), P(-2.3)),
+                # `flipsign`'s second argument is not finite-differenced at zero, where it
+                # jumps;
                 # the `-0.0` convention is asserted by the rule, not here.
-                (flipsign, P(3.0), P(-2.0)),
-                (flipsign, P(3.0), P(2.0)),
-                (ldexp, P(1.5), 3),
-                (ldexp, P(1.5), -3),
-                # Away from exact powers of two, where both jump to the next binade and a central
+                scalar_case(flipsign, P(3.0), P(-2.0)),
+                scalar_case(flipsign, P(3.0), P(2.0)),
+                scalar_case(ldexp, P(1.5), 3),
+                scalar_case(ldexp, P(1.5), -3),
+                # Away from exact powers of two, where both jump to the next binade and a
+                # central
                 # difference straddles the discontinuity.
-                (significand, P(0.7)),
-                (significand, P(-3.3)),
-                (frexp, P(0.7)),
-                (frexp, P(-3.3)),
-                (Base.FastMath.rem_fast, P(7.5), P(2.3)),
-                (Base.FastMath.rem_fast, P(-7.5), P(2.3)),
-                (^, P(4.0), P(5.0)),
-                (atan, P(4.3), P(0.23)),
-                (hypot, P(4.0), P(5.0)),
-                (hypot, P(4.0), P(5.0), P(6.0)),
-                (log, P(2.3), P(3.76)),
-                (max, P(1.5), P(0.5)),
-                (max, P(0.45), P(1.1)),
-                (min, P(1.5), P(0.5)),
-                (min, P(0.45), P(1.1)),
-                (Base.eps, P(5.0)),
-                (nextfloat, P(0.25)),
-                (prevfloat, P(1.1)),
+                scalar_case(significand, P(0.7)),
+                scalar_case(significand, P(-3.3)),
+                scalar_case(frexp, P(0.7)),
+                scalar_case(frexp, P(-3.3)),
+                scalar_case(Base.FastMath.rem_fast, P(7.5), P(2.3)),
+                scalar_case(Base.FastMath.rem_fast, P(-7.5), P(2.3)),
+                scalar_case(^, P(4.0), P(5.0)),
+                scalar_case(atan, P(4.3), P(0.23)),
+                scalar_case(hypot, P(4.0), P(5.0)),
+                scalar_case(hypot, P(4.0), P(5.0), P(6.0)),
+                scalar_case(log, P(2.3), P(3.76)),
+                scalar_case(max, P(1.5), P(0.5)),
+                scalar_case(max, P(0.45), P(1.1)),
+                scalar_case(min, P(1.5), P(0.5)),
+                scalar_case(min, P(0.45), P(1.1)),
+                scalar_case(Base.eps, P(5.0)),
+                scalar_case(nextfloat, P(0.25)),
+                scalar_case(prevfloat, P(1.1)),
             ]
-            return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
         vec(
             map(Iterators.product([Float16, Float32, Float64], 1:5)) do (P, i)
                 x = (P(0), -P(0), P(Inf), -P(Inf), P(NaN))[i]
-                return (
-                    false,
-                    :none,
-                    (
-                        oracle=(
-                            value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))
-                        ),
-                        output_tangent=P(1),
-                    ),
+                return TestCase(
                     significand,
-                    CoDual(x, P(1)),
+                    CoDual(x, P(1));
+                    reference=(
+                        value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))
+                    ),
+                    output_tangent=P(1),
                 )
             end,
         ),
@@ -971,27 +972,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     complex(P(3), P(-4)),
                 ),
             ]
-            return map(c -> (false, :stability_and_allocs, nothing, c...), cases)
+            return [scalar_case(f, args...) for (f, args...) in cases]
         end...,
         # Forward-only primitive; seed coefficients too, at short and longer Horner folds.
         map([Float32, Float64]) do P
             return [
-                (
-                    false,
-                    :stability_and_allocs,
-                    (mode=ForwardMode,),
-                    evalpoly,
-                    P(1.7),
-                    (P(0.3), P(-1.2)),
-                ),
-                (
-                    false,
-                    :stability_and_allocs,
-                    (mode=ForwardMode,),
-                    evalpoly,
-                    P(0.6),
-                    ntuple(i -> P(i) / 3, 8),
-                ),
+                scalar_case(evalpoly, P(1.7), (P(0.3), P(-1.2)); mode=ForwardMode),
+                scalar_case(evalpoly, P(0.6), ntuple(i -> P(i) / 3, 8); mode=ForwardMode),
             ]
         end...,
         # Pin nonzero seeds where a separately materialised power of two overflows or
@@ -1012,100 +999,80 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 rvs = (NoRData(), dy, map(_ -> NoRData(), args)...)
                 output_tangent = f === frexp ? (seed, NoTangent()) : seed
                 opts = (
-                    oracle=(value=y, deriv=(fwd=fwd, rvs=rvs)),
+                    reference=(value=y, deriv=(fwd=fwd, rvs=rvs)),
                     output_tangent=output_tangent,
                 )
-                return (false, :none, opts, f, CoDual(seed, seed), args...)
+                return TestCase(f, CoDual(seed, seed), args...; opts...)
             end
         end...,
-        Any[
+        TestCase[
             let
                 x = Float16(1)
                 bx = BigFloat(x)
                 y = Float16(tan(bx))
                 dy = Float16(one(bx) + tan(bx)^2)
-                (
-                    false,
-                    :none,
-                    (
-                        oracle=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
-                        output_tangent=x,
-                    ),
+                TestCase(
                     tan,
-                    CoDual(x, x),
+                    CoDual(x, x);
+                    reference=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
+                    output_tangent=x,
                 )
             end,
-            (
-                false,
-                :none,
-                (
-                    oracle=(
-                        value=asinh(Float16(1000)),
-                        deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
-                    ),
-                    output_tangent=Float16(1),
-                ),
+            TestCase(
                 asinh,
-                CoDual(Float16(1000), Float16(1)),
-            ),
-            (
-                false,
-                :none,
-                (
-                    oracle=(
-                        value=acosh(Float16(1000)),
-                        deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
-                    ),
-                    output_tangent=Float16(1),
+                CoDual(Float16(1000), Float16(1));
+                reference=(
+                    value=asinh(Float16(1000)),
+                    deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
                 ),
+                output_tangent=Float16(1),
+            ),
+            TestCase(
                 acosh,
-                CoDual(Float16(1000), Float16(1)),
+                CoDual(Float16(1000), Float16(1));
+                reference=(
+                    value=acosh(Float16(1000)),
+                    deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
+                ),
+                output_tangent=Float16(1),
             ),
             let
                 x = 1e-200
                 d = Float64(inv(BigFloat(2) * BigFloat(x)))
-                (
-                    false,
-                    :none,
-                    (
-                        oracle=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
-                        mode=ForwardMode,
-                    ),
+                TestCase(
                     atan,
                     CoDual(x, 1.0),
-                    CoDual(x, 0.0),
+                    CoDual(x, 0.0);
+                    reference=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
+                    mode=ForwardMode,
                 )
             end,
             let
                 x = 1e-200
                 d = Float64(inv(BigFloat(2) * BigFloat(x)))
-                (
-                    false,
-                    :none,
-                    (
-                        oracle=(
-                            deriv=(NoRData(), d, -d),
-                            cmp=(a, b) ->
-                                isequal(a[1], b[1]) &&
-                                all(isapprox(a[i], b[i]; rtol=1e-14) for i in 2:3),
-                        ),
-                        output_tangent=1.0,
-                        mode=ReverseMode,
-                    ),
+                TestCase(
                     atan,
                     CoDual(x, 0.0),
-                    CoDual(x, 0.0),
+                    CoDual(x, 0.0);
+                    reference=(
+                        deriv=(NoRData(), d, -d),
+                        cmp=(a, b) ->
+                            isequal(a[1], b[1]) &&
+                            all(isapprox(a[i], b[i]; rtol=1e-14) for i in 2:3),
+                    ),
+                    output_tangent=1.0,
+                    mode=ReverseMode,
                 )
             end,
-            (false, :stability_and_allocs, nothing, tanpi, 0.1),
-            (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
-            (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
+            scalar_case(tanpi, 0.1),
+            scalar_case(Base.FastMath.pow_fast, 2.0, 3),
+            scalar_case(clamp, 0.5, 0.0, 1.0),
             # Crossed bounds select hi. Inside hi < a < lo, FD detects crediting lo even
             # if both modes make that mistake; the function is locally smooth here.
-            (false, :none, nothing, clamp, 0.5, 1.0, 0.0),
-            (false, :stability_and_allocs, nothing, sincosd, 30.0),
-            (false, :stability_and_allocs, nothing, sincospi, 0.25),
-            (false, :stability_and_allocs, nothing, modf, 1.7),
+            TestCase(clamp, 0.5, 1.0, 0.0),
+            scalar_case(sincosd, 30.0),
+            scalar_case(sincospi, 0.25),
+            scalar_case(modf, 1.7),
         ],
         map([
             (tanpi, Float16(0.5)),
@@ -1117,8 +1084,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (sec, Float16(π / 2)),
         ]) do (f, x)
             z = zero(x)
-            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
-            return (false, :none, opts, f, CoDual(x, z))
+            opts = (reference=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
+            return TestCase(f, CoDual(x, z); opts...)
         end,
         # At hypot's singular origin, FD cannot pin the zero-derivative convention.
         # Explicit seeds pin the ray; isequal distinguishes exact zero from denormals.
@@ -1126,8 +1093,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             map(Iterators.product([Float16, Float32, Float64], 1:3)) do (P, arity)
                 seeds = ntuple(_ -> CoDual(P(0), P(1)), arity)
                 rvs = (NoRData(), ntuple(_ -> P(0), arity)...)
-                opts = (oracle=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1))
-                return (false, :none, opts, hypot, seeds...)
+                opts = (
+                    reference=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1)
+                )
+                return TestCase(hypot, seeds...; opts...)
             end,
         ),
         # Strong zeros: zero seeds at nonfinite coefficients, nonfinite seeds at zero ones.
@@ -1161,8 +1130,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 [(f, x, s) for (f, x) in zero_coefficient for s in (P(NaN), P(Inf))],
             )
             return map(cases) do (f, x, s)
-                opts = (oracle=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s)
-                return (false, :none, opts, f, CoDual(x, s))
+                opts = (
+                    reference=(deriv=(fwd=P(0), rvs=(NoRData(), P(0))),), output_tangent=s
+                )
+                return TestCase(f, CoDual(x, s); opts...)
             end
         end...,
     )
@@ -1172,28 +1143,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (_rvs_guarded_scale, P(3), P(3), (NoRData(), P(3), z)),
             (Nfwd._nfwd_guarded_div, P(2), P(0.5), (NoRData(), P(0.5), -z)),
         )
-            opts = (oracle=(value=z, deriv=(fwd=expected, rvs=rvs)), output_tangent=o)
-            push!(
-                test_cases,
-                (false, :stability_and_allocs, opts, f, CoDual(z, o), CoDual(b, z)),
-            )
+            opts = (reference=(value=z, deriv=(fwd=expected, rvs=rvs)), output_tangent=o)
+            push!(test_cases, scalar_case(f, CoDual(z, o), CoDual(b, z); opts...))
         end
         for op in (muladd, fma)
             opts = (
-                oracle=(value=o, deriv=(fwd=P(3), rvs=(NoRData(), NoRData(), P(3), z, o))),
+                reference=(
+                    value=o, deriv=(fwd=P(3), rvs=(NoRData(), NoRData(), P(3), z, o))
+                ),
                 output_tangent=o,
             )
             push!(
                 test_cases,
-                (
-                    false,
-                    :stability_and_allocs,
-                    opts,
+                scalar_case(
                     Nfwd._nfwd_guarded_muladd,
                     op,
                     CoDual(z, o),
                     CoDual(P(3), z),
-                    CoDual(o, z),
+                    CoDual(o, z);
+                    opts...,
                 ),
             )
         end
@@ -1203,41 +1171,93 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         for (a, b, da, db, dy) in
             ((z, bad, z, o, z), (bad, z, o, z, z), (z, z, bad, bad, bad))
             opts = (
-                oracle=(value=z, deriv=(fwd=z, rvs=(NoRData(), z, z))), output_tangent=dy
+                reference=(value=z, deriv=(fwd=z, rvs=(NoRData(), z, z))), output_tangent=dy
             )
             push!(
                 test_cases,
-                (false, :none, opts, _rvs_guarded_scale, CoDual(a, da), CoDual(b, db)),
+                TestCase(_rvs_guarded_scale, CoDual(a, da), CoDual(b, db); opts...),
             )
             for op in (muladd, fma)
                 opts = (
-                    oracle=(value=o, deriv=(fwd=z, rvs=(NoRData(), NoRData(), z, z, dy))),
+                    reference=(
+                        value=o, deriv=(fwd=z, rvs=(NoRData(), NoRData(), z, z, dy))
+                    ),
                     output_tangent=dy,
                 )
                 push!(
                     test_cases,
-                    (
-                        false,
-                        :none,
-                        opts,
+                    TestCase(
                         Nfwd._nfwd_guarded_muladd,
                         op,
                         CoDual(a, da),
                         CoDual(b, db),
-                        CoDual(o, z),
+                        CoDual(o, z);
+                        opts...,
                     ),
                 )
             end
         end
         for (a, b, da, db) in ((z, P(3), z, bad), (bad, P(3), z, z), (z, bad, z, z))
-            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z, -z)),), output_tangent=z)
+            opts = (reference=(deriv=(fwd=z, rvs=(NoRData(), z, -z)),), output_tangent=z)
             push!(
                 test_cases,
-                (false, :none, opts, Nfwd._nfwd_guarded_div, CoDual(a, da), CoDual(b, db)),
+                TestCase(Nfwd._nfwd_guarded_div, CoDual(a, da), CoDual(b, db); opts...),
             )
         end
     end
     memory = Any[]
+    let
+        for (f, x, h) in (
+            (x -> (exp(x) - 1)^2, 0.0, 2.0),
+            (x -> sin(x)^2, 0.0, 2.0),
+            (x -> expm1(x)^2, 0.0, 2.0),
+            (x -> first(sincos(x))^2, 0.0, 2.0),
+            (x -> abs2(exp(complex(x)) - 1), 0.0, 2.0),
+            (x -> (sqrt(x) - 1)^2, 1.0, 0.5),
+            (x -> (IntrinsicsWrappers.sqrt_llvm(x) - 1)^2, 1.0, 0.5),
+            (x -> (Base.FastMath.sqrt_fast(x) - 1)^2, 1.0, 0.5),
+            (x -> hypot(x, 1.0), 0.0, 1.0),
+            (x -> x^2.0, 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, 2), 0.0, 2.0),
+            (x -> Base.FastMath.pow_fast(x, Val(2)), 0.0, 2.0),
+            (x -> (Base.FastMath.pow_fast(x, Val(2)) - 1)^2, 1.0, 8.0),
+        )
+            push!(
+                test_cases,
+                TestCase(
+                    f,
+                    x;
+                    name="scalar removable coefficients",
+                    hvp=(
+                        check=:reference,
+                        directions=(1.0,),
+                        reference=(hvp=h,),
+                        cmp=isapprox,
+                    ),
+                ),
+            )
+        end
+    end
+    for (f, x, name, direction, gradient, h) in (
+        (x -> x[1]^4.0, [2.0], "vector fourth power", [1.0], [32.0], [48.0]),
+        (x -> x^4, 2.0, "scalar fourth power", 1.0, 32.0, 48.0),
+    )
+        push!(
+            test_cases,
+            TestCase(
+                f,
+                x;
+                name,
+                hvp=(
+                    check=:reference,
+                    directions=(direction,),
+                    reference=(value=16.0, gradient=gradient, hvp=h),
+                    cmp=isapprox,
+                ),
+            ),
+        )
+    end
+
     return test_cases, memory
 end
 
@@ -1260,20 +1280,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             CoDual(2.0, 0.0),
         ),
     ]
-    test_cases = Any[(false, :none, nothing, c...) for c in cases]
+    test_cases = TestCase[TestCase(c...) for c in cases]
     for P in (Float16, Float32, Float64), T in (P, Complex{P}), M in (1, 2, 8)
         width = Val(M)
         f = (a, b) -> _fwd_guarded_scale(ntuple(_ -> a, width), b)
         a = T <: Complex ? T(1, 2) : zero(T)
         b = T <: Complex ? T(3, -4) : T(3)
         opts = (
-            oracle=(
+            reference=(
                 value=ntuple(_ -> a * b, M),
                 deriv=(fwd=ntuple(_ -> b, M), rvs=(NoRData(), M * conj(b), M * conj(a))),
             ),
             output_tangent=ntuple(_ -> one(T), M),
         )
-        push!(test_cases, (false, :none, opts, f, CoDual(a, one(T)), CoDual(b, zero(T))))
+        push!(test_cases, TestCase(f, CoDual(a, one(T)), CoDual(b, zero(T)); opts...))
         for bad in (T(Inf), T(NaN)),
             (a, b, da, db, dy) in (
                 (zero(T), bad, zero(T), one(T), zero(T)),
@@ -1284,10 +1304,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             z = zero(T)
             zs = ntuple(_ -> z, M)
             opts = (
-                oracle=(value=zs, deriv=(fwd=zs, rvs=(NoRData(), z, z))),
+                reference=(value=zs, deriv=(fwd=zs, rvs=(NoRData(), z, z))),
                 output_tangent=ntuple(_ -> dy, M),
             )
-            push!(test_cases, (false, :none, opts, f, CoDual(a, da), CoDual(b, db)))
+            push!(test_cases, TestCase(f, CoDual(a, da), CoDual(b, db); opts...))
         end
     end
     return test_cases, Any[]

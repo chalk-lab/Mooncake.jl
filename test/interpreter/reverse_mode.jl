@@ -389,8 +389,8 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
         @test rule isa Mooncake.rule_type(interp, sig; debug_mode)
     end
     # Global and argument fdata are unshared, so aliasing silently loses a contribution.
-    # Keep this bespoke: the reverse generate_test_functions driver drops the options slot
-    # rather than forwarding throws expectations to test_rule.
+    # Keep the paired aliasing/unaliased regression and its assertion count: test_rule's
+    # throws path asserts exception presence and type separately, unlike @test_throws.
     @testset "argument aliasing a differentiable global is refused" begin
         for f in (S2SGlobals.alias_read_only, S2SGlobals.alias_mutating)
             @test_throws ArgumentError Mooncake.value_and_gradient!!(
@@ -452,46 +452,13 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
         @test contains(msg, "_rrule_error_test_llvmcall")
         @test contains(msg, "Caused by:")
     end
-    @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
-                                         collect(
-        enumerate(TestResources.generate_test_functions())
-    )
-        sig = _typeof((f, x...))
-        @info "$n: $sig"
-        TestUtils._case_skip_reverse(bnds) && continue
-        mode = ReverseMode
+    test_cases = TestResources.generate_test_functions()
+    # Interpreter cases fall back to exercising the transform.
+    for (tc, name) in zip(test_cases, TestUtils._test_case_names(test_cases))
+        @info name
         TestUtils.test_rule(
-            Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false, mode
+            Xoshiro(123456), tc; mode=ReverseMode, fallbacks=(is_primitive=false,), name
         )
-        # TestUtils.test_rule(
-        #     Xoshiro(123456),
-        #     f,
-        #     x...;
-        #     perf_flag=:none,
-        #     interface_only,
-        #     is_primitive=false,
-        #     debug_mode=true,
-        # )
-
-        # interp = Mooncake.get_interpreter(ReverseMode)
-        # codual_args = map(zero_codual, (f, x...))
-        # fwds_args = map(Mooncake.to_fwds, codual_args)
-        # rule = Mooncake.build_rrule(interp, sig)
-        # out, pb!! = rule(fwds_args...)
-        # # @code_warntype optimize=true rule(codual_args...)
-        # # @code_warntype optimize=true pb!!(tangent(out), map(tangent, codual_args)...)
-
-        # primal_time = @benchmark $f($(Ref(x))[]...)
-        # s2s_time = @benchmark $rule($fwds_args...)[2]($(Mooncake.zero_rdata(primal(out))))
-
-        # display(primal_time)
-        # display(s2s_time)
-        # s2s_ratio = time(s2s_time) / time(primal_time)
-        # println("s2s ratio ratio: $(s2s_ratio)")
-
-        # f(rule, fwds_args, out) = rule(fwds_args...)[2]((Mooncake.zero_rdata(primal(out))))
-        # f(rule, fwds_args, out)
-        # @profview(run_many_times(500, f, rule, fwds_args, out))
     end
 
     @testset "integration testing for invalid global ref errors" begin
