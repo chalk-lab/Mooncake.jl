@@ -133,6 +133,14 @@ end
 
 tangent(f::Memory, ::NoRData) = f
 
+# An unassigned element, such as an empty slot of a `Dict`, has a zero tangent.
+to_cr_tangent(t::Memory{<:IEEEFloat}) = t
+function to_cr_tangent(t::Memory)
+    return map(
+        n -> isassigned(t, n) ? to_cr_tangent(t[n]) : CRC.ZeroTangent(), eachindex(t)
+    )
+end
+
 function __verify_fdata_value(::IdDict{Any,Nothing}, p::Memory{P}, f::Memory{F}) where {P,F}
     if length(p) != length(f)
         msg =
