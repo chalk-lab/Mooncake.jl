@@ -1,3 +1,5 @@
+using Mooncake: frule!!, zero_fcodual
+
 @testset "array_legacy" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:array_legacy))
 end
@@ -21,4 +23,47 @@ end
     val, grad = value_and_gradient!!(cache, f_arrayset_ptr, 3.0)
     @test val ≈ 6.0
     @test grad[2] ≈ 2.0
+end
+
+@testset "shared tangent resize refusal" begin
+    for (f, args) in (
+            (Base._growbeg!, (1,)),
+            (Base._growend!, (1,)),
+            (Base._growat!, (2, 1)),
+            (Base._deletebeg!, (1,)),
+            (Base._deleteend!, (1,)),
+            (Base._deleteat!, (2, 1)),
+            (sizehint!, (100,)),
+        ),
+        mode in (frule!!, rrule!!),
+        borrowed in (false, true)
+
+        a = [1.0, 2.0]
+        da = zeros(2)
+        alias = reshape(reshape(da, 2, 1), 2)
+        da = borrowed ? alias : da
+        dual = mode === frule!! ? Dual : CoDual
+        zero = mode === frule!! ? zero_dual : zero_fcodual
+        @test_throws r"ArgumentError:.*array.*copy.*before resizing" mode(
+            zero(f), dual(a, da), map(zero, args)...
+        )
+        @test a == [1.0, 2.0]
+        @test da == zeros(2)
+    end
+    for mode in (frule!!, rrule!!), capacity in (2, 1000), borrowed in (false, true)
+        a = [1.0, 2.0]
+        da = zeros(2)
+        sizehint!(a, borrowed ? capacity : 2)
+        sizehint!(da, capacity)
+        alias = reshape(reshape(da, 2, 1), 2)
+        dual = mode === frule!! ? Dual : CoDual
+        zero = mode === frule!! ? zero_dual : zero_fcodual
+        d = dual(a, borrowed ? alias : da)
+        if capacity == 2
+            mode(zero(sizehint!), d, zero(2))
+            @test pointer(da) == pointer(alias)
+        else
+            @test_throws ArgumentError mode(zero(sizehint!), d, zero(2))
+        end
+    end
 end

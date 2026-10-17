@@ -363,9 +363,14 @@ end
     end
 end
 
+# Alias metadata depends on identities, not differentiable values.
+@zero_derivative MinimalCtx Tuple{typeof(_prepare_aliases),Tuple,Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(_check_tangent_aliasing),NamedTuple,Tuple,Tuple}
+
 # This rule is potentially unnecessary if fixes are made elsewhere,
 # but currently fixes differentiating through zero_tangent_internal for Arrays.
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
+@zero_derivative MinimalCtx Tuple{typeof(_zero_tangents),Any}
 
 @static if VERSION < v"1.11-"
     @generated function frule!!(
