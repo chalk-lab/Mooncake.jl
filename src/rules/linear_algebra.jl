@@ -128,6 +128,30 @@ function _det_and_grad(A::AbstractMatrix{P}) where {P}
     return d, (det(U) * det(V)) .* (U * Diagonal(p) * V')
 end
 
+# For second derivatives, the forward-mode derivative of `_det_and_grad` uses the formula
+# rather than its code, whose triangular case would drop the dependence on the other entries:
+# with `G = det(A) * W` and `W = inv(A)'`, `dG = dot(G, dA) * W - det(A) * W * dA' * W`.
+# That needs `inv(A)`, so it throws at a singular `A`.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{typeof(_det_and_grad),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
+)
+function frule!!(
+    ::Dual{typeof(_det_and_grad)}, A_dA::Dual{<:DenseMatOrAdj{P}}
+) where {P<:BlasRealFloat}
+    A, dA = arrayify(A_dA)
+    d, G = _det_and_grad(A)
+    F = lu(Matrix{P}(A); check=false)
+    if !issuccess(F)
+        msg = "Mooncake cannot compute second derivatives of `det` at a singular matrix."
+        throw(ArgumentError(msg))
+    end
+    W = ldiv!(F', Matrix{P}(I, size(A)))
+    dd = dot(G, dA)
+    return Dual((d, G), (dd, dd .* W .- d .* (W * dA' * W)))
+end
+
 @is_primitive MinimalCtx Tuple{typeof(det),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
 function frule!!(
     ::Dual{typeof(det)}, A_dA::Dual{<:DenseMatOrAdj{P}}
@@ -162,6 +186,20 @@ function _check_logabsdet(s, dy)
         )
     end
     return nothing
+end
+
+# As for `_det_and_grad`: with `G = inv(A)'`, `dG = -G * dA' * G`.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{typeof(_logabsdet_and_grad),DenseMatOrAdj{P}} where {P<:BlasRealFloat},
+)
+function frule!!(
+    ::Dual{typeof(_logabsdet_and_grad)}, A_dA::Dual{<:DenseMatOrAdj{P}}
+) where {P<:BlasRealFloat}
+    A, dA = arrayify(A_dA)
+    ld, s, G = _logabsdet_and_grad(A)
+    return Dual((ld, s, G), (dot(G, dA), zero(P), -G * dA' * G))
 end
 
 @is_primitive MinimalCtx Tuple{typeof(logabsdet),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
