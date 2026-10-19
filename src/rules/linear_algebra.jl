@@ -130,8 +130,8 @@ end
 
 # For second derivatives, the forward-mode derivative of `_det_and_grad` uses the formula
 # rather than its code, whose triangular case would drop the dependence on the other entries:
-# with `G = det(A) * W` and `W = inv(A)'`, `dG = dot(G, dA) * W - det(A) * W * dA' * W`.
-# That needs `inv(A)`, so it throws at a singular `A`.
+# with `G = det(A) * W` and `W = inv(A)'`, `dG = dot(G, dA) * W - det(A) * W * dA' * W`. At a
+# singular `A` it comes from the entries of `G` instead, see `_cofactor_derivative`.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
@@ -142,14 +142,26 @@ function frule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     d, G = _det_and_grad(A)
-    F = lu(Matrix{P}(A); check=false)
-    if !issuccess(F)
-        msg = "Mooncake cannot compute second derivatives of `det` at a singular matrix."
-        throw(ArgumentError(msg))
-    end
-    W = ldiv!(F', Matrix{P}(I, size(A)))
     dd = dot(G, dA)
+    F = lu(Matrix{P}(A); check=false)
+    issuccess(F) || return Dual((d, G), (dd, _cofactor_derivative(A, dA)))
+    W = ldiv!(F', Matrix{P}(I, size(A)))
     return Dual((d, G), (dd, dd .* W .- d .* (W * dA' * W)))
+end
+
+# The derivative of `G`, the transposed adjugate, along `dA`. Its entries are the cofactors
+# `(-1)^(i + j) * det(M)`, `M` being `A` without row `i` and column `j`, so their derivatives
+# are `(-1)^(i + j) * dot(∇det(M), dM)`.
+function _cofactor_derivative(A::AbstractMatrix{P}, dA::AbstractMatrix{P}) where {P}
+    n = size(A, 1)
+    dG = zeros(P, n, n)
+    n == 1 && return dG
+    for j in 1:n, i in 1:n
+        rows, cols = [1:(i - 1); (i + 1):n], [1:(j - 1); (j + 1):n]
+        _, GM = _det_and_grad(A[rows, cols])
+        dG[i, j] = (-1)^(i + j) * dot(GM, view(dA, rows, cols))
+    end
+    return dG
 end
 
 @is_primitive MinimalCtx Tuple{typeof(det),DenseMatOrAdj{P}} where {P<:BlasRealFloat}

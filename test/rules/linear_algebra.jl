@@ -34,6 +34,22 @@
         @test g32[2] ≈ g64[2] rtol = 1e-4
         @test g32[3] ≈ g64[3] rtol = 1e-4
     end
+    # Second derivatives differentiate the rules' own code, so their triangular cases must not
+    # drop the dependence on the other entries either.
+    hess(f, x) = Mooncake.value_gradient_and_hessian!!(
+        Mooncake.prepare_hessian_cache(f, x), f, x
+    )[3][1]
+    @testset "second derivatives" begin
+        S(t) = [1.0 t[1]; t[1] 1.0]
+        @test hess(t -> first(logabsdet(S(t))), [0.0]) ≈ -2
+        @test hess(t -> logdet(S(t)), [0.0]) ≈ -2
+        @test hess(t -> det(S(t)), [0.0]) ≈ -2
+        @test hess(t -> first(logabsdet([2.0 1.0; t[1] 3.0])), [0.0]) ≈ -1 / 36
+        @test hess(t -> sum(inv(S(t))), [0.0]) ≈ 4
+        # Singular at `t = 0`, where `det` is `t^2`.
+        @test hess(t -> det([t[1] 0.0 0.0; 0.0 t[1] 0.0; 0.0 0.0 1.0]), [0.0]) ≈ 2
+        @test hess(t -> det([t[1] 1.0 0.0; 0.0 t[1] 0.0; 0.0 0.0 1.0]), [0.0]) ≈ 2
+    end
     # A badly conditioned wide `A`, whose minimum-norm solution sums to `b[1]`.
     @testset "\\, Float32, ill-conditioned wide" begin
         A = Float32[1 1 0; 1 1.0001 0]
