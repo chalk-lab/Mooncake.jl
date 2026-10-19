@@ -313,6 +313,7 @@ end
 # A pointer into tangent storage can't be cast to one whose elements have no tangent, or a
 # tangent laid out differently, e.g. from `Ptr{Float64}` to `Ptr{Int}`: storing an `Int`
 # through it would leave the tangent of the overwritten `Float64` in place.
+# Zero-sized source tangent or target pointee types, including `Cvoid`, are exempt.
 function _bitcast_tangent_ptr(::Type{Ptr{P}}, dx::Ptr{V}) where {P,V}
     if dx != C_NULL && Base.aligned_sizeof(V) > 0 && Base.aligned_sizeof(P) > 0
         _tangent_layout_mirrors(P, tangent_type(P)) || throw(ArgumentError(PTR_CAST_MSG))

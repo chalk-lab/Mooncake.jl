@@ -59,7 +59,7 @@ end
 _tangent_ptr_add(dx::Ptr, y::Integer) = dx == C_NULL ? dx : dx + y
 
 # The tangent of a value loaded or stored through a null tangent pointer. Only values without
-# a derivative can go through one.
+# a derivative, and pointers (which get a null tangent), can go through one.
 function _null_ptr_tangent(::Type{V}) where {V}
     V == NoTangent && return NoTangent()
     V <: Ptr && return V(C_NULL)
