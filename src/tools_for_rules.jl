@@ -374,6 +374,15 @@ to_cr_tangent(t::IEEEFloat) = t
 to_cr_tangent(t::Complex{<:IEEEFloat}) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
+@static if VERSION >= v"1.11-rc4"
+    # An unassigned element, such as an empty slot of a `Dict`, has a zero tangent.
+    to_cr_tangent(t::Memory{<:IEEEFloat}) = t
+    function to_cr_tangent(t::Memory)
+        return map(
+            n -> isassigned(t, n) ? to_cr_tangent(t[n]) : CRC.ZeroTangent(), eachindex(t)
+        )
+    end
+end
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
