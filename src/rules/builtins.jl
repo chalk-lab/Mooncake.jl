@@ -991,9 +991,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(applicable),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
-const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
-const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
-
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
 ) where {P}

@@ -936,3 +936,342 @@ Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode`. See
 macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
     return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode)
 end
+
+#
+# Helpers shared by the rule files and by extensions. Rule files depend on these rather
+# than on each other.
+#
+
+function _trans(flag, mat)
+    flag === 'T' && return transpose(mat)
+    flag === 'C' && return adjoint(mat)
+    flag === 'N' && return mat
+    throw(error("Unrecognised flag $flag"))
+end
+
+function tri!(A, u::Char, d::Char)
+    return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
+end
+
+const BlasRealFloat = Union{Float32,Float64}
+const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
+# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
+# its parent, and reshaping an `Array` yields an `Array`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
+
+_fields(x::Tangent) = x.fields
+_fields(x::FData) = x.data
+
+const TangentOrFData = Union{Tangent,FData}
+
+"""
+    arrayify(x::CoDual{<:AbstractArray{<:BlasFloat}})
+
+Return the primal field of `x`, and convert its fdata into an array of the same type as the
+primal. This operation is not guaranteed to be possible for all array types, but seems to be
+possible for all array types of interest so far.
+
+## Convention
+
+Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
+in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
+`Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
+for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
+helper should extract the backing store (see `_accum_sym_logdet!`).
+
+`matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
+convention.
+"""
+function arrayify(
+    x::Union{Dual{A},CoDual{A}}
+) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
+    return arrayify(primal(x), tangent(x))
+end
+function arrayify(
+    x::A, dx::A
+) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
+    (x, dx)
+end
+function arrayify(
+    x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
+) where {P<:BlasFloat}
+    _, _dx = arrayify(x.diag, _fields(dx).diag)
+    return x, Diagonal(_dx)
+end
+function arrayify(
+    x::SubArray{P,B,C,D,E}, dx::TangentOrFData
+) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
+end
+function arrayify(x::ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
+end
+function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, reinterpret(T, _dx)
+end
+function arrayify(
+    x::Tx, dx::TangentOrFData
+) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Tx(_dx)
+end
+function arrayify(
+    x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Symmetric(_dx, Symbol(x.uplo))
+end
+function arrayify(
+    x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, adjoint(_dx)
+end
+function arrayify(
+    x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, transpose(_dx)
+end
+
+@static if VERSION >= v"1.11-rc4"
+    arrayify(x::A, dx::A) where {A<:Memory{<:Union{IEEEFloat,BlasFloat}}} = (x, dx)
+end
+
+function arrayify(x::A, dx::DA) where {A,DA}
+    msg =
+        "Encountered unexpected array type in `Mooncake.arrayify`. This error is likely " *
+        "due to a call to a BLAS or LAPACK function with an array type that " *
+        "Mooncake has not been told about. A new method of `Mooncake.arrayify` is needed." *
+        " Please open an issue at " *
+        "https://github.com/chalk-lab/Mooncake.jl/issues . " *
+        "It should contain this error message and the associated stack trace.\n\n" *
+        "Array type: $A\n\nTangent/FData type: $DA."
+    return error(msg)
+end
+
+"""
+    densify_tangent(dx)
+
+Return structurally unrestricted storage in which to increment the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
+part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
+even if indexing makes the view itself non-strided, so the common case costs nothing.
+"""
+densify_tangent(dx::StridedArray) = dx
+densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
+function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    increment_densified_tangent!!(dx, dense)
+
+Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
+returned `dx` itself, the increment is already complete.
+"""
+increment_densified_tangent!!(::StridedArray, dense) = nothing
+function increment_densified_tangent!!(
+    ::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    return nothing
+end
+function increment_densified_tangent!!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function increment_densified_tangent!!(dx::Symmetric, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
+end
+
+"""
+    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
+                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+
+Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
+
+If the primal value is a vector, it is reshaped into a column matrix of size `(length(x), 1)`,
+and the associated tangent is reshaped in the same way. If the primal value is already a
+matrix, both the primal and tangent are returned unchanged.
+"""
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+    x, dx = arrayify(x_dx)
+    return reshape(x, :, 1), reshape(dx, :, 1)
+end
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+    return arrayify(x_dx)
+end
+
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+) where {P<:BlasFloat}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return (
+        view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
+        view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
+    )
+end
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+) where {A<:AbstractArray{<:BlasFloat}}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return view(x, xinds), view(dx, xinds)
+end
+
+_get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
+_get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
+_get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
+function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
+    return val(getfield(f.fields, name, inbounds))
+end
+# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
+# another struct), field access also contributes no derivative.
+_get_tangent_field(::NoTangent, _) = NoTangent()
+_get_tangent_field(::NoTangent, _, _) = NoTangent()
+
+const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
+const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
+
+function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
+    setfield!(primal(value), name, primal(x))
+    T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
+    return x
+end
+
+function lsetfield_rrule(
+    value::CoDual{P,F}, ::CoDual{Val{name}}, x::CoDual
+) where {P,F,name}
+    save = isdefined(primal(value), name)
+    old_x = save ? getfield(primal(value), name) : nothing
+    old_dx = if F == NoFData
+        NoFData()
+    else
+        save ? get_tangent_field(tangent(value), name) : nothing
+    end
+    dvalue = tangent(value)
+    pb!! = if F == NoFData
+        function __setfield!_pullback(dy)
+            old_x !== nothing && lsetfield!(primal(value), Val(name), old_x)
+            return NoRData(), NoRData(), NoRData(), dy
+        end
+    else
+        function setfield!_pullback(dy)
+            new_dx = increment!!(dy, rdata(get_tangent_field(dvalue, name)))
+            old_x !== nothing && lsetfield!(primal(value), Val(name), old_x)
+            old_x !== nothing && set_tangent_field!(dvalue, name, old_dx)
+            return NoRData(), NoRData(), NoRData(), new_dx
+        end
+    end
+    yf = if F == NoFData
+        NoFData()
+    else
+        fdata(set_tangent_field!(dvalue, name, zero_tangent(primal(x), tangent(x))))
+    end
+    y = CoDual(lsetfield!(primal(value), Val(name), primal(x)), yf)
+    return y, pb!!
+end
+
+function unexpected_foreigncall_error(name)
+    throw(
+        error(
+            "AD has hit a :($name) ccall. This should not happen. " *
+            "Please open an issue with a minimal working example in order to reproduce. ",
+            "This is true unless you have intentionally written a ccall to :$(name), ",
+            "in which case you must write a :foreigncall rule. It may not be possible ",
+            "to implement a :foreigncall rule if too much type information has been lost ",
+            "in which case your only recourse is to write a rule for whichever Julia ",
+            "function calls this one (and retains enough type information).",
+        ),
+    )
+end
+
+function _copy_dict_tangent(mt::MutableTangent)
+    t = mt.fields
+    new_fields = typeof(t)((
+        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
+    ))
+    return MutableTangent(new_fields)
+end
+
+function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    # blas_matrices must return `Xs` with the same length as blas_vectors.
+    Xs = Any[
+        randn(rng, P, p, q),
+        view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
+        view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
+        reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
+    ]
+    @static if VERSION >= v"1.11"
+        # To match Memory in blas_vectors
+        push!(Xs, randn(rng, P, p, q))
+    end
+    @assert all(X -> size(X) == (p, q), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
+end
+
+function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    Xs = map(Diagonal, blas_vectors(rng, P, p))
+    @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
+end
+
+function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        U, _, V = svd(0.1 * A + I)
+        λs = p > 1 ? collect(range(1.0, 2.0; length=p)) : [1.0]
+        A .= collect(U * Diagonal(λs) * V')
+        return A
+    end
+end
+
+function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        A .= A'A + I
+        return A
+    end
+end
+
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
+    xs = Any[
+        randn(rng, P, p),
+        view(randn(rng, P, p + 5), 3:(p + 2)),
+        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
+        reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
+    ]
+    @static if VERSION >= v"1.11"
+        push!(xs, Memory{P}(randn(rng, P, p)))
+    end
+    @assert all(x -> length(x) == p, xs)
+    @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
+    return xs
+end

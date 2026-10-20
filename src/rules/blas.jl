@@ -1400,61 +1400,6 @@ function rrule!!(
     return B_dB, trsm_adjoint
 end
 
-function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
-    # blas_matrices must return `Xs` with the same length as blas_vectors.
-    Xs = Any[
-        randn(rng, P, p, q),
-        view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
-        view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
-        reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
-    ]
-    @static if VERSION >= v"1.11"
-        # To match Memory in blas_vectors
-        push!(Xs, randn(rng, P, p, q))
-    end
-    @assert all(X -> size(X) == (p, q), Xs)
-    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
-    return Xs
-end
-
-function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
-    Xs = map(Diagonal, blas_vectors(rng, P, p))
-    @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
-    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
-    return Xs
-end
-
-function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
-    return map(blas_matrices(rng, P, p, p)) do A
-        U, _, V = svd(0.1 * A + I)
-        λs = p > 1 ? collect(range(1.0, 2.0; length=p)) : [1.0]
-        A .= collect(U * Diagonal(λs) * V')
-        return A
-    end
-end
-
-function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
-    return map(blas_matrices(rng, P, p, p)) do A
-        A .= A'A + I
-        return A
-    end
-end
-
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
-    xs = Any[
-        randn(rng, P, p),
-        view(randn(rng, P, p + 5), 3:(p + 2)),
-        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
-        reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
-    ]
-    @static if VERSION >= v"1.11"
-        push!(xs, Memory{P}(randn(rng, P, p)))
-    end
-    @assert all(x -> length(x) == p, xs)
-    @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
-    return xs
-end
-
 # BLAS tests are split by element type so that arrays for each precision can be GC'd
 # before the next precision's arrays are allocated.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})

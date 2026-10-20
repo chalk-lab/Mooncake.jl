@@ -143,17 +143,6 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     end
 end
 
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
-_get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
-function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
-    return val(getfield(f.fields, name, inbounds))
-end
-# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
-# another struct), field access also contributes no derivative.
-_get_tangent_field(::NoTangent, _) = NoTangent()
-_get_tangent_field(::NoTangent, _, _) = NoTangent()
-
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}
@@ -239,45 +228,6 @@ end
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
     return lsetfield_rrule(value, name, x)
-end
-
-function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
-    setfield!(primal(value), name, primal(x))
-    T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
-    return x
-end
-
-function lsetfield_rrule(
-    value::CoDual{P,F}, ::CoDual{Val{name}}, x::CoDual
-) where {P,F,name}
-    save = isdefined(primal(value), name)
-    old_x = save ? getfield(primal(value), name) : nothing
-    old_dx = if F == NoFData
-        NoFData()
-    else
-        save ? get_tangent_field(tangent(value), name) : nothing
-    end
-    dvalue = tangent(value)
-    pb!! = if F == NoFData
-        function __setfield!_pullback(dy)
-            old_x !== nothing && lsetfield!(primal(value), Val(name), old_x)
-            return NoRData(), NoRData(), NoRData(), dy
-        end
-    else
-        function setfield!_pullback(dy)
-            new_dx = increment!!(dy, rdata(get_tangent_field(dvalue, name)))
-            old_x !== nothing && lsetfield!(primal(value), Val(name), old_x)
-            old_x !== nothing && set_tangent_field!(dvalue, name, old_dx)
-            return NoRData(), NoRData(), NoRData(), new_dx
-        end
-    end
-    yf = if F == NoFData
-        NoFData()
-    else
-        fdata(set_tangent_field!(dvalue, name, zero_tangent(primal(x), tangent(x))))
-    end
-    y = CoDual(lsetfield!(primal(value), Val(name), primal(x)), yf)
-    return y, pb!!
 end
 
 @static if VERSION < v"1.11"
