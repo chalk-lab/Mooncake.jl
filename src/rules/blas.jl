@@ -54,6 +54,10 @@ function arrayify(
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
 end
+function arrayify(x::A, dx::A) where {T<:Union{IEEEFloat,BlasFloat},A<:Ptr{T}}
+    dx == C_NULL && throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    return x, dx
+end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
 ) where {P<:BlasFloat}

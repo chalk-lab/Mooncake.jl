@@ -39,10 +39,16 @@
             v = Union{Missing,Float64}[x]
             return GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
         end
+        function bytes_dot(x)
+            b = zeros(UInt8, 8)
+            v = [x]
+            return GC.@preserve b v BLAS.dot(1, Ptr{Float64}(pointer(b)), 1, pointer(v), 1)
+        end
         fs = [
             store_load,
             bytes_load,
             bytes_copy,
+            bytes_dot,
             mixed_load,
             offset_load,
             int_overwrite,
