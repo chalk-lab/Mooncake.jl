@@ -58,5 +58,19 @@
         @testset "$f" for f in fs
             TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
         end
+        function objptr_null_diff(x)
+            v = [("a", [x])]
+            q = GC.@preserve v unsafe_load(
+                Ptr{Ptr{Cvoid}}(pointer(v)) + fieldoffset(eltype(v), 2)
+            )
+            return (unsafe_pointer_to_objref(q)::Vector{Float64})[1]
+        end
+        TestUtils.test_rule_throws(
+            StableRNG(123),
+            objptr_null_diff,
+            1.0;
+            err=ArgumentError,
+            msg=Mooncake.NULL_TANGENT_PTR_MSG,
+        )
     end
 end
