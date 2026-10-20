@@ -954,12 +954,6 @@ function tri!(A, u::Char, d::Char)
 end
 
 const BlasRealFloat = Union{Float32,Float64}
-const BlasComplexFloat = Union{ComplexF32,ComplexF64}
-const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
-
-# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
-# its parent, and reshaping an `Array` yields an `Array`.
-const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
 
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
@@ -1055,97 +1049,6 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
-"""
-    densify_tangent(dx)
-
-Return structurally unrestricted storage in which to increment the tangent `dx`.
-
-[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
-off-structure entries are not parameters: the primal reads a constant there whatever the
-storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
-and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
-part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
-even if indexing makes the view itself non-strided, so the common case costs nothing.
-"""
-densify_tangent(dx::StridedArray) = dx
-densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
-function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
-    return zeros(eltype(dx), size(dx))
-end
-
-"""
-    increment_densified_tangent!!(dx, dense)
-
-Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
-returned `dx` itself, the increment is already complete.
-"""
-increment_densified_tangent!!(::StridedArray, dense) = nothing
-function increment_densified_tangent!!(
-    ::SubArray{T,N,A}, dense
-) where {T,N,A<:StridedArray{T}}
-    return nothing
-end
-function increment_densified_tangent!!(
-    dx::T, dense
-) where {T<:Union{UpperTriangular,LowerTriangular}}
-    parent(dx) .+= T(dense)
-    return nothing
-end
-function increment_densified_tangent!!(dx::Diagonal, dense)
-    dx.diag .+= view(dense, diagind(dense))
-    return nothing
-end
-
-# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
-# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
-# picks up both. Dropping the fold would silently halve those gradients rather than throw.
-function increment_densified_tangent!!(dx::Symmetric, dense)
-    folded = dense .+ transpose(dense)
-    folded[diagind(folded)] .= view(dense, diagind(dense))
-    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
-    return nothing
-end
-
-"""
-    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
-                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
-
-Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
-
-If the primal value is a vector, it is reshaped into a column matrix of size `(length(x), 1)`,
-and the associated tangent is reshaped in the same way. If the primal value is already a
-matrix, both the primal and tangent are returned unchanged.
-"""
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
-    x, dx = arrayify(x_dx)
-    return reshape(x, :, 1), reshape(dx, :, 1)
-end
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
-    return arrayify(x_dx)
-end
-
-function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
-) where {P<:BlasFloat}
-    x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return (
-        view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
-        view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
-    )
-end
-function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
-) where {A<:AbstractArray{<:BlasFloat}}
-    x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
-end
-
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
 _get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
@@ -1213,14 +1116,6 @@ function unexpected_foreigncall_error(name)
     )
 end
 
-function _copy_dict_tangent(mt::MutableTangent)
-    t = mt.fields
-    new_fields = typeof(t)((
-        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-    ))
-    return MutableTangent(new_fields)
-end
-
 function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
     # blas_matrices must return `Xs` with the same length as blas_vectors.
     Xs = Any[
@@ -1238,25 +1133,11 @@ function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
     return Xs
 end
 
-function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
-    Xs = map(Diagonal, blas_vectors(rng, P, p))
-    @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
-    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
-    return Xs
-end
-
 function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
     return map(blas_matrices(rng, P, p, p)) do A
         U, _, V = svd(0.1 * A + I)
         λs = p > 1 ? collect(range(1.0, 2.0; length=p)) : [1.0]
         A .= collect(U * Diagonal(λs) * V')
-        return A
-    end
-end
-
-function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
-    return map(blas_matrices(rng, P, p, p)) do A
-        A .= A'A + I
         return A
     end
 end

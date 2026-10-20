@@ -1,3 +1,10 @@
+function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        A .= A'A + I
+        return A
+    end
+end
+
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(

@@ -2,6 +2,48 @@ function blas_name(name::Symbol)
     return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
+const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+
+"""
+    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
+                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+
+Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
+
+If the primal value is a vector, it is reshaped into a column matrix of size `(length(x), 1)`,
+and the associated tangent is reshaped in the same way. If the primal value is already a
+matrix, both the primal and tangent are returned unchanged.
+"""
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+    x, dx = arrayify(x_dx)
+    return reshape(x, :, 1), reshape(dx, :, 1)
+end
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+    return arrayify(x_dx)
+end
+
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+) where {P<:BlasFloat}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return (
+        view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
+        view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
+    )
+end
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+) where {A<:AbstractArray{<:BlasFloat}}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return view(x, xinds), view(dx, xinds)
+end
+
 #
 # Utility
 #
@@ -1398,6 +1440,13 @@ function rrule!!(
     end
 
     return B_dB, trsm_adjoint
+end
+
+function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    Xs = map(Diagonal, blas_vectors(rng, P, p))
+    @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
 end
 
 # BLAS tests are split by element type so that arrays for each precision can be GC'd

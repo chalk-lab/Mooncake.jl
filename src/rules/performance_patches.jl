@@ -15,6 +15,61 @@
 #   improvement over what we currently have, and helps to prevent the addition of flakey
 #   rules which cause robustness or correctness problems.
 
+# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
+# its parent, and reshaping an `Array` yields an `Array`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
+
+"""
+    densify_tangent(dx)
+
+Return structurally unrestricted storage in which to increment the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
+part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
+even if indexing makes the view itself non-strided, so the common case costs nothing.
+"""
+densify_tangent(dx::StridedArray) = dx
+densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
+function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    increment_densified_tangent!!(dx, dense)
+
+Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
+returned `dx` itself, the increment is already complete.
+"""
+increment_densified_tangent!!(::StridedArray, dense) = nothing
+function increment_densified_tangent!!(
+    ::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    return nothing
+end
+function increment_densified_tangent!!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function increment_densified_tangent!!(dx::Symmetric, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
