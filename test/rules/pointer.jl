@@ -70,7 +70,9 @@
             objptr_null_diff,
             1.0;
             err=ArgumentError,
-            msg=Mooncake.NULL_TANGENT_PTR_MSG,
+            msg="Mooncake cannot differentiate pointer operations without matching tangent storage, " *
+                "e.g. a `Ptr{Float64}` into a `Vector{UInt8}` or a `Vector{Tuple{Int,Float64}}`, " *
+                "or casting a pointer into differentiable memory to `Ptr{Int}`.",
         )
     end
 end

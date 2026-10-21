@@ -270,10 +270,9 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
-# See `_tangent_data_ptr`.
 function _tangent_array_ptr(x::Array, dx::Array{V}) where {V}
     dx_ptr = ccall(:jl_array_ptr, Ptr{V}, (Any,), dx)
-    return bitcast(Ptr{V}, _tangent_data_ptr(dx_ptr, x, dx))
+    return bitcast(Ptr{V}, _build_tangent_ptr(dx_ptr, x, dx))
 end
 
 function frule!!(

@@ -104,7 +104,7 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function _objref_tangent(y, dx::Ptr)
     tangent_type(typeof(y)) == NoTangent && return NoTangent()
-    dx == C_NULL && throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    _check_tangent_ptr(bitcast(Ptr{tangent_type(typeof(y))}, dx), 1)
     return unsafe_pointer_to_objref(dx)
 end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
@@ -132,8 +132,8 @@ end
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
-    _check_null_copy(tangent(dest), primal(n))
-    _check_null_copy(tangent(src), primal(n))
+    _check_tangent_ptr(tangent(dest), primal(n))
+    _check_tangent_ptr(tangent(src), primal(n))
     unsafe_copyto!(primal(dest), primal(src), primal(n))
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
@@ -141,8 +141,8 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
-    _check_null_copy(tangent(dest), primal(n))
-    _check_null_copy(tangent(src), primal(n))
+    _check_tangent_ptr(tangent(dest), primal(n))
+    _check_tangent_ptr(tangent(src), primal(n))
     _n = primal(n)
 
     # Record values that will be overwritten.
