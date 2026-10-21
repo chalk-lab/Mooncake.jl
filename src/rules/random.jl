@@ -1,5 +1,3 @@
-const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
-
 # The following functions contain ccall or llvmcall which cannot be differentiated.
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
 # Raw bulk calls must throw: a byte pointer may target integer storage without tangents.

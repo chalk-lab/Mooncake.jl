@@ -374,6 +374,15 @@ to_cr_tangent(t::IEEEFloat) = t
 to_cr_tangent(t::Complex{<:IEEEFloat}) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
+@static if VERSION >= v"1.11-rc4"
+    # An unassigned element, such as an empty slot of a `Dict`, has a zero tangent.
+    to_cr_tangent(t::Memory{<:IEEEFloat}) = t
+    function to_cr_tangent(t::Memory)
+        return map(
+            n -> isassigned(t, n) ? to_cr_tangent(t[n]) : CRC.ZeroTangent(), eachindex(t)
+        )
+    end
+end
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
@@ -938,8 +947,7 @@ macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
 end
 
 #
-# Helpers shared by the rule files and by extensions. Rule files depend on these rather
-# than on each other.
+# Helpers used by several rule files.
 #
 
 function _trans(flag, mat)
@@ -952,8 +960,6 @@ end
 function tri!(A, u::Char, d::Char)
     return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
 end
-
-const BlasRealFloat = Union{Float32,Float64}
 
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
@@ -1060,9 +1066,6 @@ end
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
 
-const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
-const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
-
 function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
     setfield!(primal(value), name, primal(x))
     T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
@@ -1102,6 +1105,9 @@ function lsetfield_rrule(
     return y, pb!!
 end
 
+const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
+const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
+
 function unexpected_foreigncall_error(name)
     throw(
         error(
@@ -1114,45 +1120,4 @@ function unexpected_foreigncall_error(name)
             "function calls this one (and retains enough type information).",
         ),
     )
-end
-
-function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
-    # blas_matrices must return `Xs` with the same length as blas_vectors.
-    Xs = Any[
-        randn(rng, P, p, q),
-        view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
-        view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
-        reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
-    ]
-    @static if VERSION >= v"1.11"
-        # To match Memory in blas_vectors
-        push!(Xs, randn(rng, P, p, q))
-    end
-    @assert all(X -> size(X) == (p, q), Xs)
-    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
-    return Xs
-end
-
-function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
-    return map(blas_matrices(rng, P, p, p)) do A
-        U, _, V = svd(0.1 * A + I)
-        λs = p > 1 ? collect(range(1.0, 2.0; length=p)) : [1.0]
-        A .= collect(U * Diagonal(λs) * V')
-        return A
-    end
-end
-
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
-    xs = Any[
-        randn(rng, P, p),
-        view(randn(rng, P, p + 5), 3:(p + 2)),
-        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
-        reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
-    ]
-    @static if VERSION >= v"1.11"
-        push!(xs, Memory{P}(randn(rng, P, p)))
-    end
-    @assert all(x -> length(x) == p, xs)
-    @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
-    return xs
 end

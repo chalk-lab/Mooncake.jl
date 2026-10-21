@@ -2,7 +2,64 @@ function blas_name(name::Symbol)
     return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
+const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
+# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
+# its parent, and reshaping an `Array` yields an `Array`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
+
+"""
+    densify_tangent(dx)
+
+Return structurally unrestricted storage in which to increment the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
+part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
+even if indexing makes the view itself non-strided, so the common case costs nothing.
+"""
+densify_tangent(dx::StridedArray) = dx
+densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
+function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    increment_densified_tangent!!(dx, dense)
+
+Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
+returned `dx` itself, the increment is already complete.
+"""
+increment_densified_tangent!!(::StridedArray, dense) = nothing
+function increment_densified_tangent!!(
+    ::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    return nothing
+end
+function increment_densified_tangent!!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function increment_densified_tangent!!(dx::Symmetric, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
+end
 
 """
     matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
@@ -1442,11 +1499,59 @@ function rrule!!(
     return B_dB, trsm_adjoint
 end
 
+function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    # blas_matrices must return `Xs` with the same length as blas_vectors.
+    Xs = Any[
+        randn(rng, P, p, q),
+        view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
+        view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
+        reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
+    ]
+    @static if VERSION >= v"1.11"
+        # To match Memory in blas_vectors
+        push!(Xs, randn(rng, P, p, q))
+    end
+    @assert all(X -> size(X) == (p, q), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
+end
+
 function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
     Xs = map(Diagonal, blas_vectors(rng, P, p))
     @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
     return Xs
+end
+
+function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        U, _, V = svd(0.1 * A + I)
+        λs = p > 1 ? collect(range(1.0, 2.0; length=p)) : [1.0]
+        A .= collect(U * Diagonal(λs) * V')
+        return A
+    end
+end
+
+function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        A .= A'A + I
+        return A
+    end
+end
+
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
+    xs = Any[
+        randn(rng, P, p),
+        view(randn(rng, P, p + 5), 3:(p + 2)),
+        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
+        reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
+    ]
+    @static if VERSION >= v"1.11"
+        push!(xs, Memory{P}(randn(rng, P, p)))
+    end
+    @assert all(x -> length(x) == p, xs)
+    @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
+    return xs
 end
 
 # BLAS tests are split by element type so that arrays for each precision can be GC'd

@@ -230,14 +230,6 @@ end
     return lsetfield_rrule(value, name, x)
 end
 
-function _copy_dict_tangent(mt::MutableTangent)
-    t = mt.fields
-    new_fields = typeof(t)((
-        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-    ))
-    return MutableTangent(new_fields)
-end
-
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
