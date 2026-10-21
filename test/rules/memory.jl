@@ -22,13 +22,4 @@ end
         t = f(p)
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
-
-    @testset "to_cr_tangent" begin
-        @test Mooncake.to_cr_tangent(Memory{Float64}([1.0, 2.0])) == [1.0, 2.0]
-        @test Mooncake.to_cr_tangent(zero_tangent(Memory{Int}(undef, 2))) ==
-            [ChainRulesCore.NoTangent(), ChainRulesCore.NoTangent()]
-        t = Memory{Vector{Float64}}(undef, 2)
-        t[2] = [3.0]
-        @test Mooncake.to_cr_tangent(t) == [ChainRulesCore.ZeroTangent(), [3.0]]
-    end
 end

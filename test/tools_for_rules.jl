@@ -292,6 +292,16 @@ end
         ]
             @test Mooncake.to_cr_tangent(t) == t_cr
         end
+        @static if VERSION >= v"1.11-rc4"
+            @testset "to_cr_tangent" begin
+                @test Mooncake.to_cr_tangent(Memory{Float64}([1.0, 2.0])) == [1.0, 2.0]
+                @test Mooncake.to_cr_tangent(zero_tangent(Memory{Int}(undef, 2))) ==
+                    [ChainRulesCore.NoTangent(), ChainRulesCore.NoTangent()]
+                t = Memory{Vector{Float64}}(undef, 2)
+                t[2] = [3.0]
+                @test Mooncake.to_cr_tangent(t) == [ChainRulesCore.ZeroTangent(), [3.0]]
+            end
+        end
         @testset "mooncake_tangent($(typeof(p)), $(typeof(t)))" for (p, t) in Any[
             (5, ChainRulesCore.NoTangent()),
             (5.0, 4.0),
