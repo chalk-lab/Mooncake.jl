@@ -102,11 +102,18 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
+function _objref_tangent(y, dx::Ptr)
+    tangent_type(typeof(y)) == NoTangent && return NoTangent()
+    dx == C_NULL && throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    return unsafe_pointer_to_objref(dx)
+end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    y = unsafe_pointer_to_objref(primal(x))
+    return Dual(y, _objref_tangent(y, tangent(x)))
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    py = unsafe_pointer_to_objref(primal(x))
+    y = CoDual(py, fdata(_objref_tangent(py, tangent(x))))
     return y, NoPullback(f, x)
 end
 
@@ -515,6 +522,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             (lb=0.1, ub=150),
             x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
             _x,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (
+                function objptr_isa(x)
+                    v = ["a", "bb"]
+                    s = GC.@preserve v unsafe_pointer_to_objref(
+                        unsafe_load(Ptr{Ptr{Cvoid}}(pointer(v, 2)))
+                    )
+                    return s === v[2] ? 2x : x
+                end
+            ),
+            2.0,
         ),
         (false, :none, nothing, isassigned, randn(5), 4),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
