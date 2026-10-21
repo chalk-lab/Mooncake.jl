@@ -96,6 +96,8 @@ include("front_matter.jl")
         include(joinpath("rules", "misty_closures.jl"))
     elseif test_group == "rules/new"
         include(joinpath("rules", "new.jl"))
+    elseif test_group == "rules/pointer"
+        include(joinpath("rules", "pointer.jl"))
     elseif test_group == "rules/random"
         include(joinpath("rules", "random.jl"))
     elseif test_group == "rules/tasks"
