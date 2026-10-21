@@ -950,6 +950,8 @@ end
 # Helpers used by several rule files.
 #
 
+const BlasRealFloat = Union{Float32,Float64}
+
 function _trans(flag, mat)
     flag === 'T' && return transpose(mat)
     flag === 'C' && return adjoint(mat)

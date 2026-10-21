@@ -2,7 +2,6 @@ function blas_name(name::Symbol)
     return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
-const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
