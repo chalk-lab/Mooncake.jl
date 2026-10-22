@@ -523,10 +523,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64),
     ]
     refuses = (
-        throws=(
-            ArgumentError,
-            "Mooncake cannot differentiate pointer operations without matching tangent storage",
-        ),
+        throws=(ArgumentError, "pointer operations without matching tangent storage"),
     )
     for (make, read) in (
         (x -> Ref((1, x)), r -> r[][2]),
