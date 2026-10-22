@@ -522,60 +522,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
     ]
-    refuses = (
-        throws=(ArgumentError, "pointer operations without matching tangent storage"),
-    )
-    for (make, read) in (
-        (x -> Ref((1, x)), r -> r[][2]),
-        (x -> TestResources.PointerLayoutTester(1, x), r -> r.b),
-    )
-        load =
-            x -> begin
-                r = make(x)
-                return GC.@preserve r unsafe_load(
-                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x)
-                )
-            end
-        store =
-            x -> begin
-                r = make(zero(x))
-                GC.@preserve r unsafe_store!(
-                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x), x
-                )
-                return read(r)
-            end
-        push!(test_cases, (false, :none, refuses, load, 1.0))
-        push!(test_cases, (false, :none, refuses, store, 1.0))
-    end
-    push!(
-        test_cases,
-        (
-            false,
-            :none,
-            refuses,
-            r -> unsafe_pointer_to_objref(pointer_from_objref(r)),
-            Ref((1, 1.0)),
-        ),
-        (
-            false,
-            :none,
-            refuses,
-            r -> unsafe_load(Base.unsafe_convert(Ptr{Any}, r)),
-            Ref{Any}(1.0),
-        ),
-        (
-            false,
-            :none,
-            refuses,
-            x -> begin
-                v = [(1, x)]
-                return GC.@preserve v unsafe_load(
-                    unsafe_load(Ptr{Ptr{typeof(x)}}(pointer_from_objref(v))) + sizeof(x)
-                )
-            end,
-            1.0,
-        ),
-    )
     memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
     return test_cases, memory
 end

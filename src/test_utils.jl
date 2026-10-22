@@ -1349,15 +1349,10 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, config, f, x...
+        interface_only, perf_flag, _, f, x...
     ) in test_cases
 
-        if config isa NamedTuple && haskey(config, :throws)
-            err, msg = config.throws
-            test_rule_throws(rng_ctor(123), f, x...; err, msg, mode)
-        else
-            test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-        end
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
 

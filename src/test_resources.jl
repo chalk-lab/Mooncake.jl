@@ -57,11 +57,6 @@ end
 
 Base.:(==)(a::MutableFoo, b::MutableFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
 
-mutable struct PointerLayoutTester{A,B}
-    a::A
-    b::B
-end
-
 mutable struct NonDifferentiableFoo
     x::Int
     y::Bool
