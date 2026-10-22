@@ -120,9 +120,22 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Threads.threadid)}
 @zero_derivative MinimalCtx Tuple{typeof(typeintersect),Any,Any}
 
-function _increment_pointer!(x::Ptr{T}, y::Ptr{T}, N::Integer) where {T}
-    increment!!(unsafe_wrap(Vector{T}, x, N), unsafe_wrap(Vector{T}, y, N))
-    return x
+function _swap_array_entries!(x::Array, y::Vector, xinds)
+    @inbounds for (i, j) in enumerate(xinds)
+        if isassigned(x, j)
+            tmp = x[j]
+            if isassigned(y, i)
+                x[j] = y[i]
+            else
+                Base._unsetindex!(x, j)
+            end
+            y[i] = tmp
+        elseif isassigned(y, i)
+            x[j] = y[i]
+            Base._unsetindex!(y, i)
+        end
+    end
+    return nothing
 end
 
 # unsafe_copyto! is the only function in Julia that appears to rely on a ccall to `memmove`.
@@ -163,13 +176,18 @@ function rrule!!(
     has_tangent && unsafe_copyto!(ddest, dsrc, _n)
 
     function unsafe_copyto!_pb!!(::NoRData)
-
-        # Increment dsrc.
-        has_tangent && _increment_pointer!(dsrc, ddest, _n)
-
-        # Restore initial state.
         unsafe_copyto!(pdest, pointer(dest_copy), _n)
-        has_tangent && unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+        if has_tangent
+            ddest_array = unsafe_wrap(Vector{eltype(ddest)}, ddest, _n)
+            if max(ddest, dsrc) - min(ddest, dsrc) >= _n * Base.elsize(ddest_array)
+                increment!!(unsafe_wrap(Vector{eltype(dsrc)}, dsrc, _n), ddest_array)
+                unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+            else
+                # Overlapping ranges require restoring ddest before accumulating into dsrc.
+                _swap_array_entries!(ddest_array, ddest_copy, eachindex(ddest_copy))
+                increment!!(unsafe_wrap(Vector{eltype(dsrc)}, dsrc, _n), ddest_copy)
+            end
+        end
 
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -507,6 +525,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         return x
     end
 
+    function unsafe_copyto_overlap_tester(x, doffs, soffs, n)
+        GC.@preserve x unsafe_copyto!(pointer(x, doffs), pointer(x, soffs), n)
+        return x
+    end
+
     _a, _da = randn(5), randn(5)
     _b, _db = randn(4), randn(4)
     ptr_a, ptr_da = pointer(_a), pointer(_da)
@@ -521,6 +544,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 1, 4),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 2, 1, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 2, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 3, 1, 2),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 3, 2),
         (
             false,
             :none,
