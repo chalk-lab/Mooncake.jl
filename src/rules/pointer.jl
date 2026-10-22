@@ -114,9 +114,9 @@ Return whether a load, store or copy may go through tangent pointer `dp`; throw 
 skipping it would drop a derivative.
 
 A null tangent pointer is harmless until used, so loads, stores and copies check it at the
-access, not where it is built. A cast checks when made: once `Ptr{Float64}` becomes
-`Ptr{Int}`, its tangent is a non-null `Ptr{NoTangent}`, so a later store writes no tangent
-and passes every check.
+access, not where it is built. A cast checks when made: if `Ptr{Float64}` became
+`Ptr{Int}`, its tangent would be a non-null `Ptr{NoTangent}`, so a later store would write
+no tangent and pass every check.
 
 A non-null `dp` returns `true`. A null `dp`, from [`_build_tangent_ptr`](@ref), has no
 tangent storage behind it, so the result depends on what the access moves:
