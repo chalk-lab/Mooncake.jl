@@ -351,12 +351,6 @@ While pointers tend to be a low-level implementation detail in Julia code, you c
 In this case, you will not be able to use `Mooncake.value_and_gradient!!` as this requires the use of `zero_tangent`.
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.
 
-`pointer_from_objref` supplies a null tangent pointer when the object's tangent does not
-mirror its memory layout, for example for `Ref((1, x))`, `Ref{Any}`, or a mutable struct
-with both integer and floating-point fields. Differentiable loads and stores through
-such pointers throw. Recovering the whole object with `unsafe_pointer_to_objref` also
-throws, even when that round trip would not inspect the object's field layout.
-
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
 ```@meta
