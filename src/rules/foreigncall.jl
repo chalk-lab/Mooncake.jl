@@ -132,40 +132,44 @@ end
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
-    _check_tangent_ptr(tangent(dest), primal(n))
-    _check_tangent_ptr(tangent(src), primal(n))
+    has_tangent =
+        _check_tangent_ptr(tangent(dest), primal(n)) &
+        _check_tangent_ptr(tangent(src), primal(n))
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    has_tangent && unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
-    _check_tangent_ptr(tangent(dest), primal(n))
-    _check_tangent_ptr(tangent(src), primal(n))
+    has_tangent =
+        _check_tangent_ptr(tangent(dest), primal(n)) &
+        _check_tangent_ptr(tangent(src), primal(n))
     _n = primal(n)
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
-    ddest_copy = Vector{T}(undef, _n)
     pdest = primal(dest)
     ddest = tangent(dest)
+    # Must be an empty `Vector`, not `nothing`: a union-typed snapshot makes the pullback
+    # unstable.
+    ddest_copy = Vector{eltype(ddest)}(undef, has_tangent ? _n : 0)
     unsafe_copyto!(pointer(dest_copy), pdest, _n)
-    unsafe_copyto!(pointer(ddest_copy), ddest, _n)
+    has_tangent && unsafe_copyto!(pointer(ddest_copy), ddest, _n)
 
     # Run primal computation.
     dsrc = tangent(src)
     unsafe_copyto!(primal(dest), primal(src), _n)
-    unsafe_copyto!(tangent(dest), dsrc, _n)
+    has_tangent && unsafe_copyto!(ddest, dsrc, _n)
 
     function unsafe_copyto!_pb!!(::NoRData)
 
         # Increment dsrc.
-        _increment_pointer!(dsrc, ddest, _n)
+        has_tangent && _increment_pointer!(dsrc, ddest, _n)
 
         # Restore initial state.
         unsafe_copyto!(pdest, pointer(dest_copy), _n)
-        unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+        has_tangent && unsafe_copyto!(ddest, pointer(ddest_copy), _n)
 
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -432,6 +436,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _b, _db = randn(4), randn(4)
     ptr_a, ptr_da = pointer(_a), pointer(_da)
     ptr_b, ptr_db = pointer(_b), pointer(_db)
+    _c, _d = [1, 2], [3, 4]
 
     test_cases = Any[
         (false, :stability, nothing, Base.allocatedinline, Float64),
@@ -468,6 +473,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             CoDual(ptr_b, ptr_db),
             4,
         ),
+        (
+            true,
+            :stability,
+            nothing,
+            unsafe_copyto!,
+            CoDual(pointer(_c), Ptr{NoTangent}(C_NULL)),
+            CoDual(pointer(_d), Ptr{NoTangent}(C_NULL)),
+            2,
+        ),
         (false, :stability, nothing, deepcopy, 5.0),
         (false, :stability, nothing, deepcopy, randn(5)),
         (false, :none, nothing, deepcopy, TestResources.MutableFoo(5.0, randn(5))),
@@ -481,7 +495,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
     ]
-    memory = Any[_x, _dx, _a, _da, _b, _db]
+    memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
     return test_cases, memory
 end
 
