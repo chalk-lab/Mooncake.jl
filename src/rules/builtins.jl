@@ -160,8 +160,8 @@ end
 # Without a count, the access moves one element.
 _check_tangent_ptr(dp::Ptr) = _check_tangent_ptr(dp, 1)
 
-# A pointer value may carry a null tangent, so a null `dp` is skipped here; copies, casts
-# and `unsafe_pointer_to_objref` pass `n` to require tangent storage.
+# A pointer value may carry a null tangent, so a null `dp` is skipped here; copies, casts,
+# `unsafe_wrap` and `unsafe_pointer_to_objref` pass `n` to require tangent storage.
 _check_tangent_ptr(dp::Ptr{<:Ptr}) = dp != C_NULL
 
 """
@@ -460,8 +460,10 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         P, dx = eltype(T), tangent(x)
-        # A `Ptr{Int}` cast of a `Float64` pointer must not keep the old tangent in place;
-        # zero-size pointees skip this check, so a `Ptr{Cvoid}` detour evades it.
+        # A `Ptr{Int}` cast of a `Float64` pointer must not keep the old tangent in place.
+        # Known gaps: the check compares `P` only with its own tangent, so a `Ptr{Float32}`
+        # cast reinterprets a `Float64` tangent's bytes; zero-size pointees skip it, so a
+        # `Ptr{Cvoid}` detour evades it.
         if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
             _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
         end
