@@ -85,17 +85,26 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
+# A null tangent pointer also refuses recovering an object whose tangent layout differs.
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
 function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
+    dx = tangent(x)
+    dy = Ptr{NoTangent}(C_NULL)
+    if !(dx isa NoTangent)
+        dy = bitcast(Ptr{NoTangent}, pointer_from_objref(dx))
+        dy = _build_tangent_ptr(dy, typeof(primal(x)), typeof(dx), Val(true))
+    end
     return Dual(y, dy)
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
-    y = CoDual(
-        pointer_from_objref(primal(x)),
-        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x))),
-    )
+    dx = tangent(x)
+    dy = Ptr{NoTangent}(C_NULL)
+    if !(dx isa NoFData)
+        dy = bitcast(Ptr{NoTangent}, pointer_from_objref(dx))
+        dy = _build_tangent_ptr(dy, typeof(primal(x)), typeof(dx), Val(true))
+    end
+    y = CoDual(pointer_from_objref(primal(x)), dy)
     return y, NoPullback(f, x)
 end
 
@@ -513,6 +522,63 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
     ]
+    refuses = (
+        throws=(
+            ArgumentError,
+            "Mooncake cannot differentiate pointer operations without matching tangent storage",
+        ),
+    )
+    for (make, read) in (
+        (x -> Ref((1, x)), r -> r[][2]),
+        (x -> TestResources.PointerLayoutTester(1, x), r -> r.b),
+    )
+        load =
+            x -> begin
+                r = make(x)
+                return GC.@preserve r unsafe_load(
+                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x)
+                )
+            end
+        store =
+            x -> begin
+                r = make(zero(x))
+                GC.@preserve r unsafe_store!(
+                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x), x
+                )
+                return read(r)
+            end
+        push!(test_cases, (false, :none, refuses, load, 1.0))
+        push!(test_cases, (false, :none, refuses, store, 1.0))
+    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            refuses,
+            r -> unsafe_pointer_to_objref(pointer_from_objref(r)),
+            Ref((1, 1.0)),
+        ),
+        (
+            false,
+            :none,
+            refuses,
+            r -> unsafe_load(Base.unsafe_convert(Ptr{Any}, r)),
+            Ref{Any}(1.0),
+        ),
+        (
+            false,
+            :none,
+            refuses,
+            x -> begin
+                v = [(1, x)]
+                return GC.@preserve v unsafe_load(
+                    unsafe_load(Ptr{Ptr{typeof(x)}}(pointer_from_objref(v))) + sizeof(x)
+                )
+            end,
+            1.0,
+        ),
+    )
     memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
     return test_cases, memory
 end
@@ -569,6 +635,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             false,
             :none,
             nothing,
+            x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+            [TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0)],
+        ),
+        (
+            false,
+            :none,
+            nothing,
             (
                 function objptr_isa(x)
                     v = ["a", "bb"]
@@ -579,6 +652,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
                 end
             ),
             2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> begin
+                r = TestResources.TypeStableMutableStruct{typeof(x)}(x, 2x)
+                return GC.@preserve r unsafe_load(
+                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x)
+                )
+            end,
+            1.0,
         ),
         (false, :none, nothing, isassigned, randn(5), 4),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
@@ -621,6 +706,31 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             -1,
             Base.get_world_counter(),
         ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> begin
+                r = TestResources.NonDifferentiableFoo(1, false)
+                return GC.@preserve r (pointer_from_objref(r) != C_NULL ? 2x : x)
+            end,
+            1.0,
+        ),
     ]
+    @static if VERSION >= v"1.11.0-rc4"
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                x -> begin
+                    m = Memory{Int}(undef, 1)
+                    return GC.@preserve m (pointer_from_objref(m) != C_NULL ? 2x : x)
+                end,
+                1.0,
+            ),
+        )
+    end
     return test_cases, memory
 end

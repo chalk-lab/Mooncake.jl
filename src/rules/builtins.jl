@@ -43,7 +43,7 @@ end
 # Tangent storage must mirror primal bytes: `Memory{NoTangent}` has no storage, and
 # the tangent of `Tuple{Int,Float64}` stores only the `Float64`.
 """
-    _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T})
+    _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T}, ::Val{objref}=Val(false))
     _build_tangent_ptr(dp::Ptr, x::DenseArray{P}, dx::DenseArray{T})
 
 Return the tangent pointer that accompanies a primal pointer, or a null pointer where the
@@ -51,7 +51,8 @@ tangent memory does not mirror the primal memory.
 
 `dp` is the address in tangent memory at the primal pointer's offset, and `T` the tangent
 type of the elements it points to; `P` is the primal type the pointer reads. `x` and `dx`
-are a primal array and its tangent.
+are a primal array and its tangent. With `Val(true)`, compare the object bodies rather
+than their storage as array elements or fields.
 
 Pointer rules repeat each primal access through `dp`. Where the layouts differ, `dp`
 points at unrelated bytes or at no storage, so the access gives wrong gradients or a
@@ -79,14 +80,35 @@ _build_tangent_ptr(dp, [1.0], [0.0])                       # dp, as a Ptr{NoTang
 _build_tangent_ptr(dp, ["a"], [NoTangent()])               # null
 ```
 """
-@generated function _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T}) where {P,T}
-    function mirrors(P, T)
+@generated function _build_tangent_ptr(
+    dp::Ptr, ::Type{P}, ::Type{T}, (::Val{objref})=Val(false)
+) where {P,T,objref}
+    containers = @static if VERSION >= v"1.11.0-rc4"
+        Union{Array,Core.GenericMemory,Core.GenericMemoryRef}
+    else
+        Array
+    end
+    function mirrors(P, T, object=false)
         P === T && return true
-        inline = Base.allocatedinline(P)
-        inline == Base.allocatedinline(T) || return false
-        inline || return true  # both stored as references
-        Base.aligned_sizeof(P) == Base.aligned_sizeof(T) || return false
-        Base.aligned_sizeof(P) == 0 && return true  # e.g. `Nothing` and `NoTangent`
+        if T <: PossiblyUninitTangent
+            return Base.allocatedinline(T) && mirrors(P, fieldtype(T, :tangent), object)
+        end
+        if (object || Base.allocatedinline(P)) && P <: containers
+            return T <: containers &&
+                   Base.typename(P) === Base.typename(T) &&
+                   ndims(P) == ndims(T) &&
+                   mirrors(eltype(P), eltype(T))
+        end
+        if object
+            fieldcount(P) == 0 && return false
+            sizeof(P) == sizeof(T) || return false
+        else
+            inline = Base.allocatedinline(P)
+            inline == Base.allocatedinline(T) || return false
+            inline || return true  # both stored as references
+            Base.aligned_sizeof(P) == Base.aligned_sizeof(T) || return false
+            Base.aligned_sizeof(P) == 0 && return true  # e.g. `Nothing` and `NoTangent`
+        end
         P <: Ptr && T <: Ptr && return true
         if Base.isbitsunion(P)
             # A member without a tangent, e.g. the `Int` in `Union{Int,Float64}` or `missing`,
@@ -98,7 +120,10 @@ _build_tangent_ptr(dp, ["a"], [NoTangent()])               # null
                    all(W -> any(Q -> mirrors(Q, W), Ps), Ws)
         end
         (P isa DataType && T isa DataType) || return false
-        T <: Tangent && (T = fieldtype(T, :fields))
+        if T <: Union{Tangent,MutableTangent}
+            T = fieldtype(T, :fields)
+            Base.allocatedinline(T) || return false
+        end
         n = fieldcount(P)
         (n > 0 && n == fieldcount(T)) || return false
         for i in 1:n
@@ -107,7 +132,7 @@ _build_tangent_ptr(dp, ["a"], [NoTangent()])               # null
         end
         return true
     end
-    return mirrors(P, T) ? :(dp) : :(typeof(dp)(C_NULL))
+    return mirrors(P, T, objref) ? :(dp) : :(typeof(dp)(C_NULL))
 end
 
 # MemoryRef fields with zero-sized elements contain an offset rather than an address.
@@ -464,6 +489,7 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
         # Known gaps: the check compares `P` only with its own tangent, so a `Ptr{Float32}`
         # cast reinterprets a `Float64` tangent's bytes; zero-size pointees skip it, so a
         # `Ptr{Cvoid}` detour evades it.
+        # The skip stays: pointers without tangent storage carry non-null placeholders.
         if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
             _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
         end
