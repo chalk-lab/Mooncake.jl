@@ -34,8 +34,9 @@ decide='
     elif any($events[]; approved and .event == "reopened") then keep("reopened by an approved contributor")
     else
       # On issues a label from an approved contributor counts as a response too.
+      # Reviews and their inline comments can share a timestamp; preserve approvals.
       ([$events[] | select(approved and (.event | IN("commented", "reviewed", if $item.pr then empty else "labeled" end)))]
-        | max_by(.at)) as $feedback
+        | max_by([.at, (.event == "reviewed" and .state == "approved")])) as $feedback
       | if $feedback == null then
           if $now < $created + 14 * $day then keep("opened less than 14 days ago")
           else "close - no response from an approved contributor in 14 days" end
