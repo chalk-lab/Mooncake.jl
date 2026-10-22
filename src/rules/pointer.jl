@@ -3,10 +3,13 @@
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), _build_tangent_ptr(tangent(x), primal(y)))
+    # A null tangent must stay null: an offset one passes every check and segfaults.
+    dx = tangent(x)
+    return Dual(primal(x) + primal(y), dx == C_NULL ? dx : dx + primal(y))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), _build_tangent_ptr(tangent(x), primal(y))),
+    dx = tangent(x)
+    return CoDual(primal(x) + primal(y), dx == C_NULL ? dx : dx + primal(y)),
     NoPullback(f, x, y)
 end
 
@@ -14,31 +17,28 @@ end
 # the tangent of `Tuple{Int,Float64}` stores only the `Float64`.
 """
     _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T})
-    _build_tangent_ptr(dp::Ptr, x::DenseArray, dx::DenseArray)
-    _build_tangent_ptr(dp::Ptr, offset::Integer)
-    _build_tangent_ptr(::Type{Ptr{P}}, dp::Ptr)
+    _build_tangent_ptr(dp::Ptr, x::DenseArray{P}, dx::DenseArray{T})
 
-Build the tangent pointer for an access through primal pointer `p`; return null where the
+Return the tangent pointer that accompanies a primal pointer, or a null pointer where the
 tangent memory does not mirror the primal memory.
 
-Here `dp` is the address at `p`'s offset in tangent memory, and `x` and `dx` are a primal
-array and its tangent.
+`dp` is the address in tangent memory at the primal pointer's offset, and `T` the tangent
+type of the elements it points to; `P` is the primal type the pointer reads. `x` and `dx`
+are a primal array and its tangent.
 
 Pointer rules repeat each primal access through `dp`. Where the layouts differ, `dp`
 points at unrelated bytes or at no storage, so the access gives wrong gradients or a
 segfault. Null marks these cases while Base can still take and offset the pointer, e.g. to
 check aliasing.
 
-Tangent type `T` mirrors primal type `P` when their values occupy the same bytes, field by
-field; a bits-union member without a tangent, such as `Missing`, breaks this.
+`T` mirrors `P` when their values occupy the same bytes, field by field: `Float64` mirrors
+`Float64`, but `NoTangent` does not mirror `Int`, and a bits-union member without a
+tangent, such as `Missing`, breaks it.
 
 - Layout: `dp` if `T` mirrors `P`, else null of the same type.
-- Storage: the layout check on the element types of `x` and `dx`, as a `Ptr{NoTangent}`;
-  null for zero-size tangent elements, which have no storage (in a `MemoryRef`, `dp` is
-  then an offset, not an address).
-- Offset: `dp + offset` (in bytes); null stays null.
-- Cast: `dp` as a `Ptr{tangent_type(P)}`; throws an `ArgumentError` if `dp` is non-null
-  and `tangent_type(P)` does not mirror `P`, unless `P` or `dp`'s pointee is zero-size.
+- Storage: the layout check on `P` and `T`, as a `Ptr{NoTangent}`; null for zero-size
+  tangent elements, which have no storage (in a `MemoryRef`, `dp` is then an offset, not
+  an address).
 
 # Examples
 
@@ -50,14 +50,7 @@ _build_tangent_ptr(dp, Tuple{Int,Float64}, Tuple{NoTangent,Float64})  # null: 16
 _build_tangent_ptr(dp, Union{Missing,Float64}, Union{NoTangent,Float64})  # null
 _build_tangent_ptr(dp, [1.0], [0.0])                       # dp, as a Ptr{NoTangent}
 _build_tangent_ptr(dp, ["a"], [NoTangent()])               # null
-_build_tangent_ptr(Ptr{Float64}(C_NULL), 8)                # null
-_build_tangent_ptr(Ptr{Int}, dp)                           # throws: tangent `NoTangent`
 ```
-
-Known gaps: the cast compares `P` only with its own tangent, never with the memory `dp`
-points into, and skips zero-size pointees. So casting a `Float64` tangent pointer to
-`Ptr{Float32}` reinterprets its bytes, and a store through a `Ptr{Int}` reached via
-`Ptr{Cvoid}` leaves the old tangent in place.
 """
 @generated function _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T}) where {P,T}
     function mirrors(P, T)
@@ -96,54 +89,35 @@ function _build_tangent_ptr(dp::Ptr, x::DenseArray{P}, dx::DenseArray{T}) where 
     return _build_tangent_ptr(bitcast(Ptr{NoTangent}, dp), P, T)
 end
 
-_build_tangent_ptr(dp::Ptr, offset::Integer) = dp == C_NULL ? dp : dp + offset
+@doc """
+    _check_tangent_ptr(dp::Ptr{T}, n::Integer)
+    _check_tangent_ptr(dp::Ptr{T})
+    _check_tangent_ptr(dp::Ptr{<:Ptr})
 
-# Casting to `Ptr{Int}` must not leave an overwritten `Float64`'s tangent in place.
-function _build_tangent_ptr(::Type{Ptr{P}}, dp::Ptr{T}) where {P,T}
-    if dp != C_NULL && Base.aligned_sizeof(T) > 0 && Base.aligned_sizeof(P) > 0
-        _check_tangent_ptr(_build_tangent_ptr(dp, P, tangent_type(P)), 1)
-    end
-    return bitcast(Ptr{tangent_type(P)}, dp)
-end
+Return `true` if a load, store or copy may go through tangent pointer `dp`, `false` if it
+can safely be skipped.
 
-"""
-    _check_tangent_ptr(dp::Ptr)
-    _check_tangent_ptr(dp::Ptr, n::Integer)
+`T` is the tangent type of the elements `dp` points to: `Float64` for a `Float64` array,
+`NoTangent` for the tangent memory of a `Vector{Int}`, and itself a `Ptr` when the
+elements are pointers, as in `Ptr{Ptr{Float64}}`. `n` is the number of elements the access
+moves; without it, one.
 
-Return whether a load, store or copy may go through tangent pointer `dp`; throw where
-skipping it would drop a derivative.
-
-A null tangent pointer is harmless until used, so loads, stores and copies check it at the
-access, not where it is built. A cast checks when made: if `Ptr{Float64}` became
-`Ptr{Int}`, its tangent would be a non-null `Ptr{NoTangent}`, so a later store would write
-no tangent and pass every check.
-
-A non-null `dp` returns `true`. A null `dp`, from [`_build_tangent_ptr`](@ref), has no
-tangent storage behind it, so the result depends on what the access moves:
-
-- `n` elements of `NoTangent`, or `n <= 0`: `false`, as nothing differentiable is lost;
-- one pointer value, `dp::Ptr{<:Ptr}` without `n`: `false`, as a pointer value may carry
-  a null tangent;
-- anything else, including `n` pointer values: throws an `ArgumentError`.
-
-Without `n`, a `dp` that is not a `Ptr{<:Ptr}` is checked as one element. Pass `n` wherever
-the access needs real tangent storage, as copies, casts and `unsafe_pointer_to_objref` do:
-a null `Ptr{<:Ptr}` then throws instead of returning `false`.
+A non-null `dp` returns `true`. A null `dp` means no tangent storage lies behind the
+primal pointer (see [`_build_tangent_ptr`](@ref)), so skipping the access is safe only if
+it moves no derivative, which `T` and `n` decide: `T == NoTangent`, `n <= 0`, or a single
+pointer value (`T <: Ptr`, no `n`), since a pointer's own tangent may be null. These
+return `false`; anything else throws an `ArgumentError` rather than drop a derivative.
 
 # Examples
 
-With `dp` a non-null tangent pointer and `dv` a tangent:
-
 ```julia
-_check_tangent_ptr(dp, 3)                         # true
-_check_tangent_ptr(Ptr{NoTangent}(C_NULL), 3)     # false: no derivative
-_check_tangent_ptr(Ptr{Float64}(C_NULL), 0)       # false: empty copy
-_check_tangent_ptr(Ptr{Ptr{Float64}}(C_NULL))     # false: one pointer value
-_check_tangent_ptr(Ptr{Ptr{Float64}}(C_NULL), 1)  # throws
+_check_tangent_ptr(Ptr{NoTangent}(C_NULL), 3)     # false: skip
+_check_tangent_ptr(Ptr{Ptr{Float64}}(C_NULL))     # false: skip
 _check_tangent_ptr(Ptr{Float64}(C_NULL))          # throws
 _check_tangent_ptr(dp) && unsafe_store!(dp, dv)   # guarded store
 ```
-"""
+""" _check_tangent_ptr
+# Throws where `false` would make the caller skip an access that carries a derivative.
 function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     dp != C_NULL && return true
     (T == NoTangent || n <= 0) && return false
@@ -156,9 +130,11 @@ function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     )
 end
 
+# Without a count, the access moves one element.
 _check_tangent_ptr(dp::Ptr) = _check_tangent_ptr(dp, 1)
 
-# Individual pointer values can carry a null tangent; copying pointer storage cannot.
+# A pointer value may carry a null tangent, so a null `dp` is skipped here; copies, casts
+# and `unsafe_pointer_to_objref` pass `n` to require tangent storage.
 _check_tangent_ptr(dp::Ptr{<:Ptr}) = dp != C_NULL
 
 #! format: off

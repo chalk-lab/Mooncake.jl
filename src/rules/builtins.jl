@@ -335,7 +335,13 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = _build_tangent_ptr(T, tangent(x))
+        P, dx = eltype(T), tangent(x)
+        # A `Ptr{Int}` cast of a `Float64` pointer must not keep the old tangent in place;
+        # zero-size pointees skip this check, so a `Ptr{Cvoid}` detour evades it.
+        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
+            _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
+        end
+        dv = bitcast(Ptr{tangent_type(P)}, dx)
     else
         dv = NoTangent()
     end
@@ -354,7 +360,11 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = _build_tangent_ptr(T, tangent(x))
+        P, dx = eltype(T), tangent(x)
+        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
+            _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
+        end
+        dv = bitcast(Ptr{tangent_type(P)}, dx)
     elseif T <: Ptr && _x isa Union{Int,UInt}
         int2ptr_err_msg =
             "It is not permissible to bitcast from an Int/UInt type to a Ptr type during AD, as " *
