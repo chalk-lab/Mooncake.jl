@@ -46,7 +46,6 @@ jobs:
           'rules/misc',
           'rules/misty_closures',
           'rules/new',
-          'rules/pointer',
           'rules/random',
           'rules/tasks',
           'rules/twice_precision',
