@@ -1,8 +1,5 @@
 # How we follow up on issues and pull requests
 
-This policy applies to issues and pull requests opened on or after
-**October 22, 2026 (UTC)**. Older items are exempt.
-
 Mooncake is maintained part time by a small team. Our aim is a solid package that
 serves almost all users and use cases, with a careful trade-off between complexity
 and features. We want the list of open issues and pull requests to be a fair picture
@@ -43,10 +40,3 @@ If you need more time, that is fine. On a reviewed pull request, just say so in 
 comment; that counts as a reply. Otherwise, ask in a comment and an approved
 contributor can add the `keep-open` label, which tells the bot to leave it alone for
 as long as the label stays on. If it was already closed, they can reopen it instead.
-
-## Testing the bot
-
-Run `python3 .github/triage/test_triage.py` from the repository root on Linux
-with Bash, GNU date, and jq installed. These tests run the script with a fixed
-clock and a mocked GitHub CLI; they do not access GitHub or change issues or PRs.
-The workflow runs them before each preview or apply run.
