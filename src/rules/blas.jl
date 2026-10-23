@@ -206,8 +206,21 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
+    s = if x isa AbstractVector
+        stride(x, 1)
+    elseif all(d -> size(x, d) == 1 || stride(x, d) == prod(size(x)[1:(d - 1)]), 1:ndims(x))
+        1
+    else
+        0
+    end
+    s > 0 && incx > 0 && incx % s == 0 || throw(
+        ArgumentError(
+            "BLAS increment $incx must be positive and a multiple of the array stride ($s)",
+        ),
+    )
+    step = incx ÷ s
+    inds = 1:step:(1 + (n - 1) * step)
+    return view(x, inds), view(dx, inds)
 end
 
 #
@@ -1777,6 +1790,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
+            (
+                false,
+                :none,
+                (unsafe_perturb=true,),
+                BLAS.nrm2,
+                2,
+                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
+                2,
+            ),
+            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpy!,
+                2,
+                P(2),
+                view(P[3, 9, 4, 9], 1:2:4),
+                2,
+                ones(P, 2),
+                1,
+            ),
+        ],
         [
             (
                 false,
