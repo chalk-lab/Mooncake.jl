@@ -216,7 +216,7 @@ end
 
 function __create_coduals(args)
     try
-        return tuple_map(zero_codual, args)
+        return tuple_map(CoDual, args, _zero_tangents(args))
     catch e
         if e isa StackOverflowError
             error(
@@ -273,9 +273,9 @@ end
 # Internal helper cache types in this file:
 # - `NfwdCache`: internal nfwd helper cache stored inside `ForwardCache` when the
 #   prepared forward cache can use packed NDual execution.
-# All seven parameters are load-bearing: they keep the prepared reverse cache concrete
+# All eight parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS,TA}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
@@ -291,6 +291,7 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     input_specs::TIS
     # Top-level type/size signature for y = f(x...).
     output_spec::TOS
+    aliases::TA
 end
 
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
@@ -647,6 +648,13 @@ Returns a cache used with [`value_and_pullback!!`](@ref). See that function for 
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+
 !!! note
     Calls `f(x...)` once during cache preparation.
 """
@@ -663,7 +671,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(
         interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
     )
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
     # Run reverse-pass in order to reset stacks + state.
@@ -695,9 +703,19 @@ The API guarantees that tangents are initialized at zero before the first autodi
             zero_tangent(primal(y)),
             input_specs,
             output_spec,
+            _prepare_aliases(tangents, fx),
         )
     else
-        return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
+        return Cache(
+            rule,
+            y_cache,
+            tangents,
+            nothing,
+            nothing,
+            input_specs,
+            output_spec,
+            _prepare_aliases(tangents, fx),
+        )
     end
 end
 
@@ -727,6 +745,13 @@ will return both to their original state as part of the process of computing the
     `x` must be of the same size and shape as those used to construct the `cache`. This is
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
+
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -769,6 +794,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
+    _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -792,13 +818,20 @@ Returns a cache used with [`value_and_gradient!!`](@ref). See that function for 
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
+
 !!! note
     Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
     config.empty_cache && empty_mooncake_caches!()
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
@@ -817,9 +850,27 @@ The API guarantees that tangents are initialized at zero before the first autodi
     end
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
-        return Cache(rule, nothing, tangents, dests, nothing, input_specs, output_spec)
+        return Cache(
+            rule,
+            nothing,
+            tangents,
+            dests,
+            nothing,
+            input_specs,
+            output_spec,
+            _prepare_aliases(tangents, fx),
+        )
     else
-        return Cache(rule, nothing, tangents, nothing, nothing, input_specs, output_spec)
+        return Cache(
+            rule,
+            nothing,
+            tangents,
+            nothing,
+            nothing,
+            input_specs,
+            output_spec,
+            _prepare_aliases(tangents, fx),
+        )
     end
 end
 
@@ -842,6 +893,13 @@ will return both to their original state as part of the process of computing the
     `x` must be of the same size and shape as those used to construct the `cache`. This is
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
+
+Reuse must preserve the input alias relationships recorded during preparation. The guard
+checks mutable inputs and leaves nested in tuples and named tuples, including object
+identity, backing storage sharing, and (on Julia 1.11+) array offsets in `Memory`.
+A mismatch raises `PreparedCacheError`. Struct fields, array elements, and other
+variable-length containers are not traversed: callers must preserve their types, shapes,
+and aliasing too, or prepare a separate cache. See [Known Limitations](@ref).
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -883,6 +941,7 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
+    _check_tangent_aliasing(cache.aliases, getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2852,4 +2911,234 @@ end
 function value_and_derivative!!(cache::ForwardCache)
     _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
+end
+
+# Share one seeding cache across arguments to preserve reverse fdata aliasing and count
+# repeated storage once in `tangent_dim`. `_to_friendly` shares the conversion cache too.
+@inline function _zero_tangents(fx::Tuple)
+    c = _friendly_cache(fx)
+    return tuple_map(x -> zero_tangent_internal(x, c), fx)
+end
+
+struct PreparedCacheError <: Exception
+    msg::String
+end
+
+function Base.showerror(io::IO, err::PreparedCacheError)
+    _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
+end
+
+function _throw_prepared_cache_aliasing_error(
+    li::String, lj::String, aliased_now::Bool, relation::String="storage"
+)
+    what = if aliased_now
+        "share one $relation now but were separate"
+    else
+        "are separate now but shared one $relation"
+    end
+    throw(
+        PreparedCacheError(
+            "Cached autodiff call has an aliasing mismatch: $li and $lj $what when the cache " *
+            "was prepared.\nA prepared cache holds one tangent buffer per argument, so the " *
+            "aliasing among arguments is part of the shape it was prepared for: reusing it with " *
+            "different aliasing writes into the wrong buffers and silently returns the wrong " *
+            "answer. Prepare a separate cache for this argument aliasing.",
+        ),
+    )
+end
+"""
+    _mutable_tangent_paths(T::Type)
+
+Field paths from a tangent of type `T` to the mutable objects reachable through immutable
+fixed-arity containers, as tuples of field indices (`()` when `T` is itself mutable). Only `Tuple`
+and `NamedTuple` are walked, because their tangents mirror the primal element-wise, so one path
+indexes both. The walk is complete: a truncated one silently accepts calls whose aliasing differs
+from the prepared shape past the cut, which is a wrong gradient rather than a missed diagnostic.
+"""
+function _mutable_tangent_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
+    if Base.ismutabletype(T)
+        push!(out, path)
+    elseif (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
+        for (k, FT) in enumerate(fieldtypes(T))
+            _mutable_tangent_paths(FT, (path..., k), out)
+        end
+    end
+    return out
+end
+
+# `tangents[i][p1][p2]...` as an expression, and the same position as a label for the error.
+_path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
+function _alias_label(i::Int, path)
+    return (i == 1 ? "`f" : "`x$(i - 1)") * prod(k -> "[$k]", path; init="") * "`"
+end
+
+# Use the same storage identity for primals and tangents: an Array and its backing
+# Memory are distinct objects but share accumulation storage, as do reshaped arrays.
+@inline _storage_id(@nospecialize(x)) = x
+@inline _storage_offset(@nospecialize(x)) = 0
+@static if VERSION >= v"1.11-rc4"
+    @inline _storage_id(x::Array) = getfield(x, :ref).mem
+    @inline _storage_offset(x::Array) = Core.memoryrefoffset(getfield(x, :ref))
+    @inline _storage_id(x::Memory) = x
+else
+    @inline _storage_id(x::Array) = Base.dataids(x)
+end
+@inline _shares_storage(@nospecialize(x), @nospecialize(y)) =
+    _storage_id(x) === _storage_id(y)
+
+# The positions both aliasing emitters compare, as `(argument index, path)`. `leafwise` walks into
+# immutable containers for the tangent check; the primal check takes top-level mutables only.
+# Shared so the two cannot drift apart in what they enumerate.
+function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
+    leaves = Tuple{Int,Any}[]
+    for (i, P) in enumerate(T.parameters)
+        if leafwise
+            for path in _mutable_tangent_paths(P)
+                push!(leaves, (i, path))
+            end
+        elseif Base.ismutabletype(P)
+            push!(leaves, (i, ()))
+        end
+    end
+    return leaves
+end
+
+# Snapshot primal storage sharing independently of tangent seeding. In particular, legacy
+# array tangents can have distinct headers over the same storage.
+@generated function _prepare_aliases(tangents::Tuple, fx::Tuple)
+    leaves = _aliasable_positions(tangents, true)
+    fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
+    ids = Expr(
+        :tuple,
+        (
+            :(
+                let object = get!(objects, primals[$k], $k)
+                    (
+                        object,
+                        _alias_storage_index!(storage, primals[$k], object),
+                        _storage_offset(primals[$k]),
+                    )
+                end
+            ) for k in eachindex(leaves)
+        )...,
+    )
+    workspace =
+        length(leaves) * (length(leaves) - 1) ÷ 2 > 256 ? :((objects, storage)) : :(nothing)
+    return quote
+        primals = $fs
+        objects = IdDict{Any,Int}()
+        storage = VERSION >= v"1.11-rc4" ? IdDict{Any,Int}() : Dict{UInt,Int}()
+        partition = $ids
+        _empty_alias_map!(objects)
+        _empty_alias_map!(storage)
+        (partition=partition, workspace=($workspace))
+    end
+end
+
+# Tuple and NamedTuple leaves are checked; struct fields and array elements remain unchecked.
+# See `known_limitations.md` for the caller's responsibilities.
+function _alias_checks(@nospecialize(tangents::Type))
+    leaves = _aliasable_positions(tangents, true)
+    n = length(leaves)
+    if n * (n - 1) ÷ 2 > 256
+        fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
+        labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
+        return :(_check_alias_partition(aliases, $fs, $labels, workspace))
+    end
+    checks = Expr(:block)
+    for a in 1:n
+        i, pi = leaves[a]
+        fi, li = _path_expr(:fx, i, pi), _alias_label(i, pi)
+        for b in (a + 1):n
+            j, pj = leaves[b]
+            fj, lj = _path_expr(:fx, j, pj), _alias_label(j, pj)
+            push!(
+                checks.args,
+                quote
+                    same_object = $fi === $fj
+                    same_object == (aliases[$a][1] == aliases[$b][1]) ||
+                        _throw_prepared_cache_aliasing_error(
+                            $li, $lj, same_object, "object"
+                        )
+                    same_storage = _shares_storage($fi, $fj)
+                    same_storage == (aliases[$a][2] == aliases[$b][2]) ||
+                        _throw_prepared_cache_aliasing_error($li, $lj, same_storage)
+                    same_storage && _check_alias_offset(
+                        aliases[$a][3] - aliases[$b][3], $fi, $fj, $li, $lj
+                    )
+                end,
+            )
+        end
+    end
+    return checks
+end
+
+# Only relative offsets within a shared storage group constrain cache reuse.
+@inline function _check_alias_offset(offset::Int, a, b, la::String, lb::String)
+    offset == _storage_offset(a) - _storage_offset(b) || throw(
+        PreparedCacheError(
+            "Cached autodiff call has a relative storage offset mismatch between $la and $lb. " *
+            "Prepare a separate cache for these array offsets.",
+        ),
+    )
+    return nothing
+end
+
+# `empty!(::IdDict)` discards its table capacity (and allocates on Julia 1.11+).
+# Clear references in place so successful and rejected checks both reuse the table.
+function _empty_alias_map!(d::IdDict)
+    for i in eachindex(d.ht)
+        @inbounds Base._unsetindex!(d.ht, i)
+    end
+    d.count = d.ndel = 0
+    return d
+end
+_empty_alias_map!(d::Dict) = empty!(d)
+
+# A typed address map avoids boxing legacy data pointers on the wide-signature path.
+@inline _alias_storage_index!(storage::IdDict, x, object::Int) = get!(
+    storage, _storage_id(x), object
+)
+@inline _alias_storage_index!(::Dict{UInt,Int}, x, object::Int) = object
+@inline _alias_storage_index!(storage::Dict{UInt,Int}, x::Array, object::Int) = get!(
+    storage, only(Base.dataids(x)), object
+)
+
+@noinline function _check_alias_partition(
+    aliases::Tuple, primals::Tuple, labels::Tuple, workspace
+)
+    objects, storage = workspace
+    try
+        for k in eachindex(primals)
+            object = get!(objects, primals[k], k)
+            buffer = _alias_storage_index!(storage, primals[k], object)
+            for (f, expected, relation) in
+                ((object, aliases[k][1], "object"), (buffer, aliases[k][2], "storage"))
+                f == expected || _throw_prepared_cache_aliasing_error(
+                    labels[min(f, expected)], labels[k], f < expected, relation
+                )
+            end
+            buffer == k || _check_alias_offset(
+                aliases[k][3] - aliases[buffer][3],
+                primals[k],
+                primals[buffer],
+                labels[k],
+                labels[buffer],
+            )
+        end
+    finally
+        _empty_alias_map!(objects)
+        _empty_alias_map!(storage)
+    end
+    return nothing
+end
+
+@generated function _check_tangent_aliasing(state::NamedTuple, tangents::Tuple, fx::Tuple)
+    return Expr(
+        :block,
+        :(aliases = state.partition),
+        :(workspace = state.workspace),
+        _alias_checks(tangents),
+        :(return nothing),
+    )
 end
