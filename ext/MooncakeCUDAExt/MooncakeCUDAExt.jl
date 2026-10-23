@@ -26,10 +26,12 @@ using CUDA.CUDACore:
     capture_status,
     hasfieldcount
 using CUDA: CUDACore
+using CUDA: cuRAND
 using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: derive, unsafe_free!
+using CUDA.CUDACore: GPUArrays
 using Base.Broadcast: Broadcasted
 # Statistics is a weakdep triggering this extension alongside CUDA; always loaded
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
@@ -95,6 +97,7 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose
@@ -434,6 +437,7 @@ _register_cudataref_internal_types!()
 # task_local_state!() is the root entry point: all library handle() functions and
 # active_state() call it to retrieve the per-task device/context/stream state.
 @zero_derivative MinimalCtx Tuple{typeof(task_local_state!)}
+@zero_derivative MinimalCtx Tuple{typeof(cuRAND.gpuarrays_rng)}
 # active_state() wraps task_local_state!() and returns a NamedTuple{device,context,stream,
 # math_mode}.  Registering it separately covers call sites that bypass task_local_state!.
 @zero_derivative MinimalCtx Tuple{typeof(active_state)}

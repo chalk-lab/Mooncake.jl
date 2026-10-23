@@ -54,18 +54,16 @@ function rrule!!(
     x::CoDual{P,P},
 ) where {P<:DenseFloatArray}
     px, dx = primal(x), tangent(x)
-    px_copy = copy(px)
-    dx_copy = copy(dx)
+    old_x, old_dx = copy(px), copy(dx)
     rand!(primal(rng), primal(sampler), px)
     fill!(dx, zero(eltype(P)))
-    rng_rdata = zero_rdata(primal(rng))
-    sampler_rdata = zero_rdata(primal(sampler))
-    function rand!_pb!!(::NoRData)
-        copyto!(px, px_copy)
-        copyto!(dx, dx_copy)
+    rng_rdata, sampler_rdata = zero_rdata(primal(rng)), zero_rdata(primal(sampler))
+    function rand_pb!!(::NoRData)
+        copyto!(px, old_x)
+        copyto!(dx, old_dx)
         return NoRData(), rng_rdata, sampler_rdata, NoRData()
     end
-    return x, rand!_pb!!
+    return x, rand_pb!!
 end
 
 # The rules below exist purely to work around performance limitations of Mooncake.jl: the

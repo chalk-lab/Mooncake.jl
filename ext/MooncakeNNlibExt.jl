@@ -219,11 +219,12 @@ end
 # At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
 # from `rng` regardless. The `===` is checked, not assumed, because if that fast path ever
 # allocates, returning the input would alias where the primal does not.
+# `p::Real`, not `IEEEFloat`: an `Int`, `Bool` or `Rational` `p` would fail inside NNlib.
 @is_primitive MinimalCtx ReverseMode Tuple{
-    typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+    typeof(dropout),AbstractRNG,SupportedArray{P,N},Real
 } where {P<:IEEEFloat,N}
 @is_primitive MinimalCtx ReverseMode Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+    typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},Real
 } where {P<:IEEEFloat,N}
 
 # ChainRules called here rather than through `Mooncake.rrule_wrapper`, which adds the cotangent
@@ -233,13 +234,15 @@ function Mooncake.rrule!!(
     f::CoDual{typeof(dropout)},
     rng::CoDual{<:AbstractRNG},
     x::CoDual{<:SupportedArray{P,N}},
-    p::CoDual{P},
+    p::CoDual{<:Real},
 ) where {P<:IEEEFloat,N}
+    0 <= primal(p) <= 1 || throw(ArgumentError("dropout expects a probability 0 <= p <= 1"))
     if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p)) === primal(x)
         return x, NoPullback(f, rng, x, p)
     end
     px, dx = arrayify(x)
-    y, cr_pb = CRC.rrule(dropout, primal(rng), px, primal(p))
+    # Match NNlib's conversion before scaling; ChainRules otherwise scales at p's precision.
+    y, cr_pb = CRC.rrule(dropout, primal(rng), px, convert(P, primal(p)))
     res = zero_fcodual(y)
     dp = Mooncake.zero_rdata(primal(p))
     function dropout_pb!!(::NoRData)
@@ -255,14 +258,15 @@ function Mooncake.rrule!!(
     f::CoDual{typeof(dropout)},
     rng::CoDual{<:AbstractRNG},
     x::CoDual{<:SupportedArray{P,N}},
-    p::CoDual{P},
+    p::CoDual{<:Real},
 ) where {P<:IEEEFloat,N}
+    0 <= primal(p) <= 1 || throw(ArgumentError("dropout expects a probability 0 <= p <= 1"))
     pkw = primal(kw)
     if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p); pkw...) === primal(x)
         return x, NoPullback(kwcall, kw, f, rng, x, p)
     end
     px, dx = arrayify(x)
-    y, cr_pb = Core.kwcall(pkw, CRC.rrule, dropout, primal(rng), px, primal(p))
+    y, cr_pb = Core.kwcall(pkw, CRC.rrule, dropout, primal(rng), px, convert(P, primal(p)))
     res = zero_fcodual(y)
     kw_rdata = Mooncake.zero_rdata(pkw)
     dp = Mooncake.zero_rdata(primal(p))
