@@ -90,7 +90,7 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
 
     # Compute pullback using Seth's method.
     _dF = tril(L'dL, -1) + UpperTriangular(dU * U')
-    dA .= (inv(L') * _dF * inv(U'))[invperm(p), :]
+    dA .= _rvs_zero.((inv(L') * _dF * inv(U'))[invperm(p), :], all(iszero, dA))
 
     # Restore initial state.
     A .= A_copy
@@ -159,15 +159,16 @@ function rrule!!(
     trtrs!(uplo, trans, diag, A, B)
 
     function trtrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
 
         # Compute cotangent of B.
-        LAPACK.trtrs!(uplo, trans == 'N' ? 'T' : 'N', diag, A, dB)
+        _rvs_blas!(LAPACK.trtrs!, zero_seed, uplo, trans == 'N' ? 'T' : 'N', diag, A, dB)
 
         # Compute cotangent of A.
         if trans == 'N'
-            dA .-= tri!(dB * B', uplo, diag)
+            dA .-= _rvs_zero.(tri!(dB * B', uplo, diag), zero_seed)
         else
-            dA .-= tri!(B * dB', uplo, diag)
+            dA .-= _rvs_zero.(tri!(B * dB', uplo, diag), zero_seed)
         end
 
         # Restore initial state.
@@ -265,15 +266,16 @@ function rrule!!(
     end
 
     function getrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
         if trans == 'N'
 
             # Run pullback for inv(U) * B.
-            LAPACK.trtrs!('U', 'T', 'N', A, dB)
-            dA .-= tri!(dB * B', 'U', 'N')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'U', 'T', 'N', A, dB)
+            dA .-= _rvs_zero.(tri!(dB * B', 'U', 'N'), zero_seed)
 
             # Run pullback for inv(L) * B.
-            LAPACK.trtrs!('L', 'T', 'U', A, dB)
-            dA .-= tri!(dB * B1', 'L', 'U')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'L', 'T', 'U', A, dB)
+            dA .-= _rvs_zero.(tri!(dB * B1', 'L', 'U'), zero_seed)
 
             # Undo permutation.
             dB .= dB[ip, :]
@@ -284,12 +286,12 @@ function rrule!!(
             B .= B[p, :]
 
             # Run pullback for inv(L^T) * B.
-            LAPACK.trtrs!('L', 'N', 'U', A, dB)
-            dA .-= tri!(B * dB', 'L', 'U')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'L', 'N', 'U', A, dB)
+            dA .-= _rvs_zero.(tri!(B * dB', 'L', 'U'), zero_seed)
 
             # Run pullback for inv(U^T) * B.
-            LAPACK.trtrs!('U', 'N', 'N', A, dB)
-            dA .-= tri!(B1 * dB', 'U', 'N')
+            _rvs_blas!(LAPACK.trtrs!, zero_seed, 'U', 'N', 'N', A, dB)
+            dA .-= _rvs_zero.(tri!(B1 * dB', 'U', 'N'), zero_seed)
         end
 
         # Restore initial state.
@@ -344,6 +346,7 @@ function rrule!!(
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
 
     function getri_pb!!(::NoRData)
+        zero_seed = all(iszero, dA)
         # Pivot.
         A .= A[:, p]
         dA .= dA[:, p]
@@ -351,7 +354,7 @@ function rrule!!(
         # Cotangent w.r.t. L.
         dL = -(A' * dA) / UnitLowerTriangular(A_copy)'
         dU = -(UpperTriangular(A_copy)' \ (dA * A'))
-        dA .= tri!(dL, 'L', 'U') .+ tri!(dU, 'U', 'N')
+        dA .= _rvs_zero.(tri!(dL, 'L', 'U') .+ tri!(dU, 'U', 'N'), zero_seed)
 
         # Restore initial state.
         A .= A_copy
@@ -408,6 +411,7 @@ function rrule!!(
     _, info = potrf!(uplo, A)
 
     function potrf_pb!!(::NoRData)
+        zero_seed = all(iszero, dA)
         dA2 = dA
 
         # Compute cotangents.
@@ -418,14 +422,14 @@ function rrule!!(
             tmp = dA2'L
             tmp .*= E'
             B = rdiv!(ldiv!(L', tmp), L)
-            dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
+            dA .= _rvs_zero.(__sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1), zero_seed)
         else
             E = UpperTriangular(__E(P, N))
             U = UpperTriangular(A)
             tmp = U * dA2'
             tmp .*= E'
             B = rdiv!(ldiv!(U, tmp), U')
-            dA .= __sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1)
+            dA .= _rvs_zero.(__sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1), zero_seed)
         end
 
         # Restore initial state.
@@ -511,16 +515,21 @@ function rrule!!(
     potrs!(uplo, A, B)
 
     function potrs_pb!!(::NoRData)
+        zero_seed = all(iszero, dB)
 
         # Compute cotangents.
         if uplo == 'L'
             tmp = __sym!(B_copy * dB') / LowerTriangular(A)'
-            dA .-= 2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp))
-            LinearAlgebra.LAPACK.potrs!('L', A, dB)
+            dA .-= _rvs_zero.(
+                2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp)), zero_seed
+            )
+            _rvs_blas!(LinearAlgebra.LAPACK.potrs!, zero_seed, 'L', A, dB)
         else
             tmp = UpperTriangular(A)' \ __sym!(B_copy * dB')
-            dA .-= 2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)')
-            LinearAlgebra.LAPACK.potrs!('U', A, dB)
+            dA .-= _rvs_zero.(
+                2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)'), zero_seed
+            )
+            _rvs_blas!(LinearAlgebra.LAPACK.potrs!, zero_seed, 'U', A, dB)
         end
 
         # Restore initial state.
@@ -676,15 +685,15 @@ function _accum_sym_logdet!(
     if uplo == 'U'
         @inbounds for j in 1:n
             for i in 1:(j - 1)
-                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+                ddata[i, j] += 2 * _rvs_mul(Sinv[i, j], ȳ)
             end
-            ddata[j, j] += ȳ * Sinv[j, j]
+            ddata[j, j] += _rvs_mul(Sinv[j, j], ȳ)
         end
     else
         @inbounds for j in 1:n
-            ddata[j, j] += ȳ * Sinv[j, j]
+            ddata[j, j] += _rvs_mul(Sinv[j, j], ȳ)
             for i in (j + 1):n
-                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+                ddata[i, j] += 2 * _rvs_mul(Sinv[i, j], ȳ)
             end
         end
     end
@@ -770,7 +779,7 @@ function rrule!!(
     function det_sym_pb!!(ȳ::P)
         # Zero gradient for singular S (approximate; see frule!! for details).
         isnothing(Sinv) && return NoRData(), NoRData()
-        _accum_sym_logdet!(ddata, Sinv, ȳ * d)
+        _accum_sym_logdet!(ddata, Sinv, _rvs_mul(d, ȳ))
         return NoRData(), NoRData()
     end
     return CoDual(d, NoFData()), det_sym_pb!!
@@ -971,6 +980,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
+    test_cases = [
+        test_cases;
+        [(
+            false,
+            :none,
+            (mode=ReverseMode, oracle=TestResources.zero_pullback_oracle),
+            LAPACK.trtrs!,
+            'U',
+            'N',
+            'N',
+            fill(NaN, 1, 1),
+            ones(1, 1),
+        )]
+    ]
     memory = Any[]
     return test_cases, memory
 end

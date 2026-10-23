@@ -31,6 +31,15 @@ function primal_oracle(expected)
     end
 end
 
+function zero_pullback_oracle(_, f, args...)
+    slots = map(Mooncake.zero_fcodual, (f, args...))
+    out, pb = Mooncake.rrule!!(slots...)
+    pb(Mooncake.zero_rdata(primal(out)))
+    return all(
+        s -> !(primal(s) isa AbstractArray) || all(iszero, Mooncake.arrayify(s)[2]), slots
+    )
+end
+
 function gradient_oracle(expected)
     return function (_, f, x...)
         cache = Mooncake.prepare_gradient_cache(f, x...)
