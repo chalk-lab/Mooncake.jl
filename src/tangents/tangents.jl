@@ -1500,6 +1500,12 @@ function friendly_tangent_cache_internal(x::P) where {P}
     return FriendlyTangentCache{AsRaw}(nothing)
 end
 
+# Types have no tangent (tangent_type(Type) == NoTangent), so stop the recursion here.
+# Without this overload the generic method descends from a DataType into its Core.TypeName,
+# whose fields lead back to itself, causing a StackOverflowError at prepare time when a
+# function captures a type (e.g. a closure over T). See #1400.
+friendly_tangent_cache(::Type) = FriendlyTangentCache{AsRaw}(nothing)
+
 # Mutable collections: reconstruct as the primal container type.
 function friendly_tangent_cache(x::AbstractDict)
     FriendlyTangentCache{AsPrimal}(_copy_output(x))

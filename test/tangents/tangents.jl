@@ -410,6 +410,30 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.friendly_tangent_cache(A) isa
             Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
     end
+
+    @testset "friendly_tangent_cache captured Type (#1400)" begin
+        @test Mooncake.friendly_tangent_cache(Float32) isa
+            Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
+
+        mk() = (T=Float32; x -> sum(x) * one(T))
+        x = rand(Float32, 3)
+        config = Mooncake.Config(; friendly_tangents=true)
+        _, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(mk(), x; config), mk(), x
+        )
+        @test g[1] == (; T=NoTangent())
+        @test g[2] ≈ ones(Float32, 3)
+
+        struct G1400{T}
+            t::Type{T}
+        end
+        (g1400::G1400)(x) = sum(x) * one(g1400.t)
+        _, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(G1400(Float32), x; config), G1400(Float32), x
+        )
+        @test g[1] == (; t=NoTangent())
+        @test g[2] ≈ ones(Float32, 3)
+    end
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything
