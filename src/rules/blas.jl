@@ -52,10 +52,7 @@ end
 function arrayify(
     x::A, dx::A
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
-    (x, dx)
-end
-function arrayify(x::A, dx::A) where {T<:Union{IEEEFloat,BlasFloat},A<:Ptr{T}}
-    _check_tangent_ptr(dx)
+    dx isa Ptr && _check_tangent_ptr(dx)
     return x, dx
 end
 function arrayify(
