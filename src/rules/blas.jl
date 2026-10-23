@@ -219,6 +219,35 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
+# The zero branch must retain coefficient directions under forward-over-reverse.
+_rvs_mul(x::T, y::T) where {T<:BlasFloat} = ifelse(iszero(y), zero(T), x * y)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_mul),T,T} where {T<:BlasFloat}
+function frule!!(::Dual{typeof(_rvs_mul)}, x::Dual{T}, y::Dual{T}) where {T<:BlasFloat}
+    a, da = extract(x)
+    b, db = extract(y)
+    return Dual(_rvs_mul(a, b), _rvs_mul(a, db) + _rvs_mul(da, b))
+end
+
+@inline function _rvs_guarded_dot(y, dy)
+    s = zero(promote_type(eltype(y), eltype(dy)))
+    @inbounds @simd for i in eachindex(y, dy)
+        s += _rvs_mul(y[i]', dy[i])
+    end
+    return s
+end
+
+function _rvs_guarded_dot(A::AbstractMatrix, x::AbstractVector, dy::AbstractVector)
+    s = zero(promote_type(eltype(A), eltype(x), eltype(dy)))
+    @inbounds for j in axes(A, 2)
+        t = zero(s)
+        @simd for i in axes(A, 1)
+            t += _rvs_mul(A[i, j]', dy[i])
+        end
+        s += _rvs_mul(x[j]', t)
+    end
+    return s
+end
+
 #
 # LEVEL 1
 #
@@ -449,7 +478,7 @@ function rrule!!(
         X .= X_copy
 
         # Compute gradient w.r.t. scaling.
-        ∇a = dot(X, dX)
+        ∇a = _rvs_guarded_dot(X, dX)
 
         # Compute gradient w.r.t. DX.
         BLAS.scal!(a', dX)
@@ -533,7 +562,7 @@ function rrule!!(
 
         # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
         # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
-        ∇a = dot(X, dY)
+        ∇a = _rvs_guarded_dot(X, dY)
         dX .+= a' .* dY
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
@@ -649,14 +678,17 @@ end
         # Increment fdata.
         if trans == 'N'
             dalpha = dot(dy, A, x)'
+            isnan(dalpha) && (dalpha = _rvs_guarded_dot(A, x, dy))
             dA .+= alpha' .* dy .* x'
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
             dalpha = dot(dy, A', x)'
+            isnan(dalpha) && (dalpha = _rvs_guarded_dot(A', x, dy))
             dA .+= alpha .* x .* dy'
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
             dalpha = dot(dy, transpose(A), x)'
+            isnan(dalpha) && (dalpha = _rvs_guarded_dot(transpose(A), x, dy))
             dA .+= alpha' .* conj.(x) .* transpose(dy)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
@@ -664,7 +696,7 @@ end
             BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
             conj!(dx)
         end
-        dbeta = dot(y_copy, dy)
+        dbeta = _rvs_guarded_dot(y_copy, dy)
         dy .*= beta'
 
         # Restore primal.
@@ -754,7 +786,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             # dα = <dy, Ax>'
             if (α == 1 && β == 0)
                 # Don't recompute Ax, it's already in y.
-                dα = dot(dy, y)'
+                dα = _rvs_guarded_dot(y, dy)
                 BLAS.copyto!(y, y_copy)
             else
                 # Reset y.
@@ -762,7 +794,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
                 # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
                 BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
-                dα = dot(dy, y_copy)'
+                dα = _rvs_guarded_dot(y_copy, dy)
             end
 
             # gradient w.r.t. A.
@@ -792,7 +824,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             end
 
             # gradient w.r.t. beta.
-            dβ = dot(y, dy)
+            dβ = _rvs_guarded_dot(y, dy)
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -1096,13 +1128,14 @@ end
 
     function gemm!_pb!!(::NoRData)
         # gradient wrt alpha
-        da = (a == 1 && b == 0) ? dot(p_C, dC) : dot(tmp_ref[], dC)
+        da =
+            (a == 1 && b == 0) ? _rvs_guarded_dot(p_C, dC) : _rvs_guarded_dot(tmp_ref[], dC)
 
         # Restore state
         BLAS.copyto!(p_C, p_C_copy)
 
         # gradient wrt beta
-        db = dot(p_C, dC)
+        db = _rvs_guarded_dot(p_C, dC)
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1239,7 +1272,11 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
-            dα = (α == 1 && β == 0) ? dot(C, dC) : dot(tmp_ref[], dC)
+            dα = if (α == 1 && β == 0)
+                _rvs_guarded_dot(C, dC)
+            else
+                _rvs_guarded_dot(tmp_ref[], dC)
+            end
 
             BLAS.copyto!(C, C_copy)
 
@@ -1262,7 +1299,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.$fname(s, ul, α', $(isherm ? :A : :(conj(A))), dC, one(T), dB)
 
             # gradient w.r.t. beta.
-            dβ = dot(C, dC)
+            dβ = _rvs_guarded_dot(C, dC)
 
             # gradient w.r.t. C.
             dC .*= β'
@@ -1361,9 +1398,9 @@ for (fname, elty, relty) in (
             $(isherm ? :(real_diag!(dC)) : :())
 
             B = uplo == 'U' ? triu(dC) : tril(dC)
-            ∇β = dot(C, B)
+            ∇β = _rvs_guarded_dot(C, B)
             $(isherm ? :(∇β = real(∇β)) : :())
-            ∇α = dot(
+            ∇α = _rvs_guarded_dot(
                 if trans == 'N'
                     A * $(isherm ? adjoint : transpose)(A)
                 else
@@ -1458,7 +1495,7 @@ function rrule!!(
     function trmm_adjoint(::NoRData)
 
         # Compute α gradient.
-        ∇α = dot(B, dB) / α'
+        ∇α = _rvs_guarded_dot(B, dB) / α'
 
         # Restore initial state.
         B .= B_copy
@@ -1570,7 +1607,7 @@ function rrule!!(
 
     function trsm_adjoint(::NoRData)
         # Compute α gradient.
-        ∇α = dot(B, dB) / α'
+        ∇α = _rvs_guarded_dot(B, dB) / α'
 
         # Increment cotangents.
         if side == 'L'
@@ -1675,6 +1712,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (
+                false,
+                :none,
+                (mode=ReverseMode, oracle=TestResources.gradient_oracle((P(3),))),
+                a -> (y=zeros(P, 2); axpy!(a, P[NaN, 3], y); real(y[2])),
+                P(2),
+            ),
+            (
+                false,
+                :none,
+                (mode=ReverseMode, oracle=TestResources.gradient_oracle((P(2),))),
+                b -> (
+                    y=P[NaN, 2];
+                    BLAS.gemv!('N', P(1), ones(P, 2, 2), ones(P, 2), b, y);
+                    real(y[2])
+                ),
+                P(2),
+            ),
+        ],
         [
             (
                 false,
