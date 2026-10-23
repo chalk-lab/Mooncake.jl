@@ -24,6 +24,24 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function gradient_oracle(expected)
+    return function (_, f, x...)
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        _, actual = Mooncake.value_and_gradient!!(cache, f, x...)
+        return Mooncake.TestUtils.has_equal_data(actual[2:end], expected)
+    end
+end
+
+function jvp_oracle(directions, expected)
+    return function (_, f, x...)
+        rule = Mooncake.build_frule(f, x...)
+        _, actual = Mooncake.value_and_derivative!!(
+            rule, (f, Mooncake.NoTangent()), map(tuple, x, directions)...
+        )
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
 #
 # Types used for testing purposes
 #
