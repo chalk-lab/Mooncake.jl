@@ -794,11 +794,7 @@ function frule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dx = tangent(x)
-    dy = if wants_offset
-        _build_tangent_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem)
-    else
-        dx.mem
-    end
+    dy = wants_offset ? _build_tangent_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -809,11 +805,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = if wants_offset
-        _build_tangent_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem)
-    else
-        x.dx.mem
-    end
+    dy = wants_offset ? _build_tangent_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
