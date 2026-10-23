@@ -438,6 +438,7 @@ end
     old_tangent =
         _check_tangent_ptr(dp) ? atomic_pointerref(dp, :monotonic) : _null_tangent(dp)
     function atomic_pointerset_pullback!!(::NoRData)
+        # The entry check threw for a null `dp` needing storage, so nullness suffices here.
         dx_r = dp != C_NULL ? atomic_pointerref(dp, :monotonic) : old_tangent
         atomic_pointerset(_p, old_value, :monotonic)
         dp != C_NULL && atomic_pointerset(dp, old_tangent, :monotonic)
@@ -868,6 +869,7 @@ end
     dp = tangent(p)
     old_tangent = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : _null_tangent(dp)
     function pointerset_pullback!!(::NoRData)
+        # The entry check threw for a null `dp` needing storage, so nullness suffices here.
         dx_r = dp != C_NULL ? pointerref(dp, _idx, _z) : old_tangent
         pointerset(_p, old_value, _idx, _z)
         dp != C_NULL && pointerset(dp, old_tangent, _idx, _z)
