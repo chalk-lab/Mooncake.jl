@@ -204,8 +204,25 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
+    s = if x isa AbstractVector
+        stride(x, 1)
+    elseif all(d -> size(x, d) == 1 || stride(x, d) == prod(size(x)[1:(d - 1)]), 1:ndims(x))
+        1
+    else
+        throw(
+            ArgumentError(
+                "BLAS rule does not support non-contiguous multidimensional array operands",
+            ),
+        )
+    end
+    s > 0 && incx > 0 && incx % s == 0 || throw(
+        ArgumentError(
+            "BLAS increment $incx must be positive and a multiple of the array stride ($s)",
+        ),
+    )
+    step = incx ÷ s
+    inds = 1:step:(1 + (n - 1) * step)
+    return view(x, inds), view(dx, inds)
 end
 
 #
@@ -1693,6 +1710,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
+            (
+                false,
+                :none,
+                (lb=1e-3, ub=50.0, unsafe_perturb=true),
+                BLAS.nrm2,
+                2,
+                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
+                2,
+            ),
+            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpy!,
+                2,
+                P(2),
+                view(P[3, 9, 4, 9], 1:2:4),
+                2,
+                ones(P, 2),
+                1,
+            ),
+        ],
         [(
             true,
             :none,
@@ -2188,7 +2230,31 @@ end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    return Any[], Any[]
+    test_cases = Any[]
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (
+                oracle=(mode, f, args...) -> begin
+                    TestUtils.test_rule_throws(
+                        rng_ctor(123),
+                        f,
+                        args...;
+                        mode,
+                        msg="non-contiguous multidimensional array operands",
+                    )
+                    true
+                end,
+            ),
+            BLAS.nrm2,
+            4,
+            view(ones(6, 7), 1:3, 2:5),
+            1,
+        ),
+    )
+    return test_cases, Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     test_cases = Any[
