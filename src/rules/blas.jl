@@ -802,6 +802,9 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(y, dy)
+            # Reusing y adds α/β directions to dα in forward-over-reverse; remove them.
+            (α == 1 && β == 0) &&
+                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -1112,6 +1115,8 @@ end
 
         # gradient wrt beta
         db = dot(p_C, dC)
+        # Reusing p_C adds a/b directions to da in forward-over-reverse; remove them.
+        (a == 1 && b == 0) && (da -= _guarded_mul(db, b') + _guarded_mul(da, a' - one(T)))
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1254,7 +1259,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
-            dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
+            dA_tmp =
+                s == 'L' ? BLAS.gemm('N', 'C', α', dC, B) : BLAS.gemm('C', 'N', α', B, dC)
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1272,6 +1278,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(C, dC)
+            # Reusing C adds α/β directions to dα in forward-over-reverse; remove them.
+            (α == 1 && β == 0) &&
+                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
 
             # gradient w.r.t. C.
             dC .*= β'
@@ -2065,6 +2074,47 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    for (f, flags) in (
+            (BLAS.gemm!, ('N', 'N')),
+            (BLAS.symm!, ('L', 'U')),
+            (BLAS.symm!, ('R', 'U')),
+            (BLAS.hemm!, ('L', 'U')),
+            (BLAS.hemm!, ('R', 'U')),
+            (BLAS.symv!, ('U',)),
+        ),
+        n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
+
+        P <: BlasRealFloat && f === BLAS.hemm! && continue
+        p = zero(P)
+        dims = f === BLAS.symv! ? (n,) : (n, n)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.hvp_oracle([
+                        30.0n^4 + 6n^3, 14.0n^4 + 2n^3, 8.0n^3 + 2n^2
+                    ]),
+                ),
+                x -> sum(
+                    abs2,
+                    f(
+                        flags...,
+                        oftype(p, x[1]),
+                        fill(oftype(p, x[2]), n, n),
+                        ones(typeof(p), dims),
+                        oftype(p, x[3]),
+                        ones(typeof(p), dims),
+                    ),
+                ),
+                [1.0, 3.0, 0.0],
+            ),
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end

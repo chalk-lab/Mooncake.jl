@@ -31,6 +31,14 @@ function primal_oracle(expected)
     end
 end
 
+function hvp_oracle(expected)
+    return function (_, f, x)
+        cache = Mooncake.prepare_hvp_cache(f, x)
+        _, _, actual = Mooncake.value_and_hvp!!(cache, f, ones(eltype(x), size(x)), x)
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
 function gradient_oracle(expected)
     return function (_, f, x...)
         cache = Mooncake.prepare_gradient_cache(f, x...)
