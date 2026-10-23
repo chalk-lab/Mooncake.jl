@@ -186,6 +186,8 @@ function _check_tangent_ptr(dp::Ptr{T}) where {T}
     return T <: Ptr ? dp != C_NULL : _check_tangent_ptr(dp, 1)
 end
 
+_null_tangent(::Ptr{T}) where {T} = T == NoTangent ? NoTangent() : T(C_NULL)
+
 """
     module IntrinsicsWrappers
 
@@ -236,6 +238,7 @@ import ..Mooncake:
     rrule!!,
     _build_tangent_ptr,
     _check_tangent_ptr,
+    _null_tangent,
     frule!!,
     CoDual,
     Dual,
@@ -396,11 +399,7 @@ end
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
     a = atomic_pointerref(primal(x), primal(order))
     dx = tangent(x)
-    da = if _check_tangent_ptr(dx)
-        atomic_pointerref(dx, primal(order))
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? atomic_pointerref(dx, primal(order)) : _null_tangent(dx)
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
@@ -410,11 +409,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = atomic_pointerref(_x, _order)
-    da = if _check_tangent_ptr(dx)
-        atomic_pointerref(dx, :monotonic)
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? atomic_pointerref(dx, :monotonic) : _null_tangent(dx)
     a = CoDual(a, fdata(da))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
@@ -445,11 +440,8 @@ end
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
     dp = tangent(p)
-    old_tangent = if _check_tangent_ptr(dp)
-        atomic_pointerref(dp, :monotonic)
-    else
-        eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
-    end
+    old_tangent =
+        _check_tangent_ptr(dp) ? atomic_pointerref(dp, :monotonic) : _null_tangent(dp)
     function atomic_pointerset_pullback!!(::NoRData)
         dx_r = dp != C_NULL ? atomic_pointerref(dp, :monotonic) : old_tangent
         atomic_pointerset(_p, old_value, :monotonic)
@@ -844,11 +836,7 @@ end
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
     dx = tangent(x)
-    da = if _check_tangent_ptr(dx)
-        pointerref(dx, primal(y), primal(z))
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? pointerref(dx, primal(y), primal(z)) : _null_tangent(dx)
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -857,11 +845,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _z = primal(z)
     dx = tangent(x)
     a = pointerref(_x, _y, _z)
-    da = if _check_tangent_ptr(dx)
-        pointerref(dx, _y, _z)
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? pointerref(dx, _y, _z) : _null_tangent(dx)
     a = CoDual(a, fdata(da))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
@@ -887,11 +871,7 @@ end
     _z = primal(z)
     old_value = pointerref(_p, _idx, _z)
     dp = tangent(p)
-    old_tangent = if _check_tangent_ptr(dp)
-        pointerref(dp, _idx, _z)
-    else
-        eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
-    end
+    old_tangent = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : _null_tangent(dp)
     function pointerset_pullback!!(::NoRData)
         dx_r = dp != C_NULL ? pointerref(dp, _idx, _z) : old_tangent
         pointerset(_p, old_value, _idx, _z)
