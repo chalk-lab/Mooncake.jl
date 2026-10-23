@@ -229,7 +229,7 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
 
     # Extract data.
-    trans = _trans.x
+    trans = _blas_flag(_trans)
     A, dA = arrayify(_A)
     ipiv = _ipiv.x
     B, dB = arrayify(_B)
@@ -556,8 +556,9 @@ end
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
 
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        uplo = _blas_flag(_uplo)
+        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(dB, dA, uplo)
         return B_dB
     end
     function rrule!!(
@@ -568,7 +569,7 @@ end
     ) where {P<:BlasFloat}
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
-        uplo = primal(_uplo)
+        uplo = _blas_flag(_uplo)
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
@@ -835,6 +836,29 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     bools = [false, true]
     uplos = ['U', 'L', 'N']
     test_cases = vcat(
+        [(
+            false,
+            :none,
+            (mode=ReverseMode, throws=(err=ArgumentError, msg="lowercase")),
+            LAPACK.getrs!,
+            'n',
+            ones(2, 2),
+            [1, 2],
+            ones(2),
+        )],
+        (@static if VERSION > v"1.11-"
+            [(
+                false,
+                :none,
+                (throws=(err=ArgumentError, msg="lowercase"),),
+                LAPACK.lacpy!,
+                zeros(2, 2),
+                ones(2, 2),
+                'u',
+            )]
+        else
+            []
+        end),
 
         # getrf!
         map_prod(Ps) do (P,)
