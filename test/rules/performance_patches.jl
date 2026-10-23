@@ -28,4 +28,39 @@
             rtol=5e-2,
         )
     end
+
+    @testset "disjoint batch slices: $wrap, $side" for wrap in
+                                                       (identity, transpose, adjoint),
+        side in (:A, :B)
+
+        X = fill(P(0.25), 2, 2, 2)
+        B = fill(P(0.5), 2, 2)
+        function f(X, B)
+            C, V = view(X,:,:,1), wrap(view(X,:,:,2))
+            return side === :A ? mul!(C, V, B, true, false) : mul!(C, B, V, true, false)
+        end
+        TestUtils.test_rule(
+            StableRNG(123), f, X, B; is_primitive=false, atol=5e-2, rtol=5e-2
+        )
+    end
+
+    @testset "aliased mul! destination" begin
+        A = ones(P, 4, 4)
+        B = copy(A)
+        V = view(reshape(A, 4, 4, 1),:,:,1)
+        for (C, X, Y) in ((A, A, B), (B, A, B), (V, transpose(V), B), (V, B, adjoint(V)))
+            TestUtils.test_rule_throws(
+                StableRNG(123),
+                mul!,
+                C,
+                X,
+                Y,
+                true,
+                false;
+                err=ArgumentError,
+                msg="output matrix must not be aliased with input matrix",
+            )
+        end
+    end
+
 end

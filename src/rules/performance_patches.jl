@@ -122,6 +122,10 @@ function frule!!(
     pC, dC = arrayify(C)
     pA, dA = arrayify(A)
     pB, dB = arrayify(B)
+    (
+        Base.mightalias(pC, pA isa Union{Transpose,Adjoint} ? parent(pA) : pA) ||
+        Base.mightalias(pC, pB isa Union{Transpose,Adjoint} ? parent(pB) : pB)
+    ) && throw(ArgumentError("output matrix must not be aliased with input matrix"))
     a, b = primal(alpha), primal(beta)
     mul!(dC, dA, pB, a, b)
     mul!(dC, pA, dB, a, one(P))
@@ -141,6 +145,10 @@ function rrule!!(
     pC, dC = arrayify(C)
     pA, dA = arrayify(A)
     pB, dB = arrayify(B)
+    (
+        Base.mightalias(pC, pA isa Union{Transpose,Adjoint} ? parent(pA) : pA) ||
+        Base.mightalias(pC, pB isa Union{Transpose,Adjoint} ? parent(pB) : pB)
+    ) && throw(ArgumentError("output matrix must not be aliased with input matrix"))
     a, b = primal(alpha), primal(beta)
     old_C = copy(pC)
     AB = a isa P ? pA * pB : nothing
