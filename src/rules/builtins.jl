@@ -451,17 +451,16 @@ end
         eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
     end
     function atomic_pointerset_pullback!!(::NoRData)
-        dx_r = _check_tangent_ptr(dp) ? atomic_pointerref(dp, :monotonic) : old_tangent
+        dx_r = dp != C_NULL ? atomic_pointerref(dp, :monotonic) : old_tangent
         atomic_pointerset(_p, old_value, :monotonic)
-        _check_tangent_ptr(dp) && atomic_pointerset(dp, old_tangent, :monotonic)
+        dp != C_NULL && atomic_pointerset(dp, old_tangent, :monotonic)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
 
     atomic_pointerset(_p, primal(x), _order)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _check_tangent_ptr(dp) &&
-        atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
+    dp != C_NULL && atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -894,16 +893,16 @@ end
         eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
     end
     function pointerset_pullback!!(::NoRData)
-        dx_r = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : old_tangent
+        dx_r = dp != C_NULL ? pointerref(dp, _idx, _z) : old_tangent
         pointerset(_p, old_value, _idx, _z)
-        _check_tangent_ptr(dp) && pointerset(dp, old_tangent, _idx, _z)
+        dp != C_NULL && pointerset(dp, old_tangent, _idx, _z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
 
     pointerset(_p, primal(x), _idx, _z)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _check_tangent_ptr(dp) && pointerset(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
+    dp != C_NULL && pointerset(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
     return p, pointerset_pullback!!
 end
 
