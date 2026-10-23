@@ -40,8 +40,6 @@ function Base.showerror(io::IO, err::MissingRuleForBuiltinException)
     return _print_boxed_error(io, split(err.msg, '\n'))
 end
 
-# Tangent storage must mirror primal bytes: `Memory{NoTangent}` has no storage, and
-# the tangent of `Tuple{Int,Float64}` stores only the `Float64`.
 """
     _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T}, ::Val{objref}=Val(false))
     _build_tangent_ptr(dp::Ptr, x::DenseArray{P}, dx::DenseArray{T})
@@ -168,7 +166,6 @@ _check_tangent_ptr(Ptr{Float64}(C_NULL))          # throws
 _check_tangent_ptr(dp) && unsafe_store!(dp, dv)   # guarded store
 ```
 """ _check_tangent_ptr
-# Throws where `false` would make the caller skip an access that carries a derivative.
 function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     dp != C_NULL && return true
     (T == NoTangent || n <= 0) && return false
@@ -392,8 +389,6 @@ end
 # atomic_pointermodify
 # atomic_pointerreplace
 
-# Null loads yield `NoTangent` or a null pointer; null stores skip those tangents.
-# Other tangents require storage, so the guard throws before access.
 # Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 @intrinsic atomic_pointerref
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
