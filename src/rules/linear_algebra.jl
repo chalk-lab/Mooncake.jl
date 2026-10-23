@@ -288,7 +288,7 @@ function frule!!(
     ::Dual{typeof(\)}, A_dA::Dual{<:DenseMatOrAdj{P}}, B_dB::Dual{<:DenseVecOrMatArg{P}}
 ) where {P<:BlasRealFloat}
     A, dA = map(_dense, arrayify(A_dA))
-    B, dB = map(_as_matrix, arrayify(B_dB))
+    B, dB = matrixify(B_dB)
     m, n = size(A)
     size(B, 1) == m ||
         throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
@@ -309,10 +309,7 @@ function frule!!(
     return Dual(_like(primal(B_dB), X), _like(primal(B_dB), dX))
 end
 
-# A vector right-hand side is solved as a one-column matrix, sharing memory, as
-# matrix-vector products are not type-stable on Julia 1.10.
-_as_matrix(x::AbstractVector) = reshape(x, :, 1)
-_as_matrix(x::AbstractMatrix) = x
+# Undo `matrixify(B_dB)`, which avoids type-unstable matrix-vector products on Julia 1.10.
 _like(::AbstractVector, X::Matrix) = vec(X)
 _like(::AbstractMatrix, X::Matrix) = X
 function rrule!!(
@@ -322,7 +319,7 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     A = _dense(A)
-    B, dB = map(_as_matrix, arrayify(B_dB))
+    B, dB = matrixify(B_dB)
     m, n = size(A)
     size(B, 1) == m ||
         throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
