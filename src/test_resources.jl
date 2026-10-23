@@ -145,6 +145,23 @@ function structured_rule_cases(f)
     return cases
 end
 
+function cuda_tangent_cases(array)
+    x = array(fill(complex(Inf, 0.0), 1, 1))
+    check = (_, f, args...) -> isequal(Array(f(args...)), fill(complex(Inf, 0.0), 1, 1))
+    return [
+        (false, :none, (oracle=check,), Mooncake._add_to_primal, x, zero(x), true),
+        (false, :none, (oracle=check,), Mooncake._scale, 1.0, x),
+        (
+            false,
+            :none,
+            (oracle=(_, f, args...)->f(args...) === Inf,),
+            Mooncake._dot,
+            vec(x),
+            array(ones(ComplexF64, 1)),
+        ),
+    ]
+end
+
 function gradient_oracle(expected)
     return function (_, f, x...)
         cache = Mooncake.prepare_gradient_cache(f, x...)
