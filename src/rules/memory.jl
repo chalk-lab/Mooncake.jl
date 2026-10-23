@@ -697,7 +697,7 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    dy = if ptr_or_offset.dx == C_NULL  # see `_tangent_data_ptr`
+    dy = if ptr_or_offset.dx == C_NULL  # zero-sized or non-mirroring tangent storage
         Core.memoryrefnew(memoryref(mem.dx), Base.memoryrefoffset(y), false)
     else
         _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
@@ -769,7 +769,7 @@ function frule!!(
     dy = if wants_length
         NoTangent()
     else
-        _tangent_data_ptr(tangent(x).ptr, primal(x), tangent(x))
+        _build_tangent_ptr(tangent(x).ptr, primal(x), tangent(x))
     end
     return Dual(y, dy)
 end
@@ -781,7 +781,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : _tangent_data_ptr(x.dx.ptr, x.x, x.dx)
+    dy = wants_length ? NoFData() : _build_tangent_ptr(x.dx.ptr, x.x, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -794,7 +794,11 @@ function frule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dx = tangent(x)
-    dy = wants_offset ? _tangent_data_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
+    dy = if wants_offset
+        _build_tangent_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem)
+    else
+        dx.mem
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -805,7 +809,11 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? _tangent_data_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
+    dy = if wants_offset
+        _build_tangent_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem)
+    else
+        x.dx.mem
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 

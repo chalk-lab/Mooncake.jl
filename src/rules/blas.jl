@@ -55,7 +55,7 @@ function arrayify(
     (x, dx)
 end
 function arrayify(x::A, dx::A) where {T<:Union{IEEEFloat,BlasFloat},A<:Ptr{T}}
-    dx == C_NULL && throw(ArgumentError(NULL_TANGENT_PTR_MSG))
+    _check_tangent_ptr(dx)
     return x, dx
 end
 function arrayify(

@@ -270,10 +270,9 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
-# See `_tangent_data_ptr`.
 function _tangent_array_ptr(x::Array, dx::Array{V}) where {V}
     dx_ptr = ccall(:jl_array_ptr, Ptr{V}, (Any,), dx)
-    return bitcast(Ptr{V}, _tangent_data_ptr(dx_ptr, x, dx))
+    return bitcast(Ptr{V}, _build_tangent_ptr(dx_ptr, x, dx))
 end
 
 function frule!!(
@@ -345,21 +344,19 @@ function rrule!!(
     unsafe_copyto!(tangent(dest), _doffs, dsrc, _soffs, _n)
 
     function unsafe_copyto_pb!!(::NoRData)
+        unsafe_copyto!(pdest, first(dest_idx), dest_copy, 1, _n)
+        dptr, sptr = pointer(ddest, first(dest_idx)), pointer(dsrc, _soffs)
+        overlap = max(dptr, sptr) - min(dptr, sptr) < _n * Base.elsize(ddest)
+        # Overlapping ranges require restoring ddest before accumulating into dsrc.
+        overlap && _swap_array_entries!(ddest, ddest_copy, dest_idx)
 
-        # Increment dsrc.
         src_idx = _soffs:(_soffs + _n - 1)
-        @inbounds for (s, d) in zip(src_idx, dest_idx)
+        @inbounds for (i, s) in enumerate(src_idx)
             if isassigned(dsrc, s)
-                dsrc[s] = increment!!(dsrc[s], ddest[d])
+                dsrc[s] = increment!!(dsrc[s], overlap ? ddest_copy[i] : ddest[dest_idx[i]])
             end
         end
-
-        # Restore initial state.
-        @inbounds for n in eachindex(dest_copy)
-            isassigned(dest_copy, n) || continue
-            pdest[dest_idx[n]] = dest_copy[n]
-            ddest[dest_idx[n]] = ddest_copy[n]
-        end
+        overlap || unsafe_copyto!(ddest, first(dest_idx), ddest_copy, 1, _n)
 
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -666,16 +663,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
-    test_cases = Any[(
-        false,
-        :none,
-        nothing,
-        Base._unsafe_copyto!,
-        fill!(Matrix{Real}(undef, 5, 4), 1.0),
-        3,
-        randn(10),
-        2,
-        4,
-    ),]
+    unsafe_copyto_overlap_tester(x, doffs, soffs, n) = unsafe_copyto!(x, doffs, x, soffs, n)
+    test_cases = Any[
+        (
+            false,
+            :none,
+            nothing,
+            Base._unsafe_copyto!,
+            fill!(Matrix{Real}(undef, 5, 4), 1.0),
+            3,
+            randn(10),
+            2,
+            4,
+        ),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 1, 4),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 2, 1, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 2, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 3, 1, 2),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 3, 2),
+    ]
     return test_cases, Any[]
 end
