@@ -81,21 +81,6 @@ const BFloatStorage = Union{
 }
 const BFloatMatrix = Union{BFloatStorage,Adjoint{P,<:BFloatStorage},Transpose{P,<:BFloatStorage}}
 
-Mooncake.arrayify(x::Array{P}, dx::Array{P}) = (x, dx)
-function Mooncake.arrayify(
-    x::SubArray{P,N,A,I,L}, dx::Mooncake.TangentOrFData
-) where {N,A<:Array{P},I,L}
-    dp = Mooncake._fields(dx).parent
-    return x, SubArray{P,N,typeof(dp),I,L}(dp, x.indices, x.offset1, x.stride1)
-end
-function Mooncake.arrayify(
-    x::Union{Adjoint{P,<:BFloatStorage},Transpose{P,<:BFloatStorage}},
-    dx::Mooncake.TangentOrFData,
-)
-    _, dp = Mooncake.arrayify(parent(x), Mooncake._fields(dx).parent)
-    return x, x isa Adjoint ? adjoint(dp) : transpose(dp)
-end
-
 # Scalar reverse-mode tapes store every multiply-add; matrix pullbacks need only the inputs.
 Mooncake.@is_primitive(
     MinimalCtx,
