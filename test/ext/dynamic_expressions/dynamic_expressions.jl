@@ -1,11 +1,10 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "DynamicExpressions")
 
 using Mooncake
 using Mooncake: Mooncake, prepare_gradient_cache, value_and_gradient!!
 using Mooncake.TestUtils
-using Mooncake.TestUtils: test_rule, test_data
+using Mooncake.TestUtils: test_rule, test_data, has_equal_data
 using DynamicExpressions
 using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
@@ -17,6 +16,18 @@ using AllocCheck: AllocCheck
 using Test
 
 @testset "test_data on key types" begin
+    for N in (Node, GraphNode)
+        a, b = N{Float64}(; val=1.0), N{Float64}(; val=1.00001)
+        x, y = N{Float64}(; op=1, children=(a,)), N{Float64}(; op=1, children=(b,))
+        @test !has_equal_data(x, y)
+        @test has_equal_data(x, y; float_precision=Float32)
+        @test !has_equal_data(x, y; float_precision=Float32, exact_floats=true)
+        @test !has_equal_data(x, N{Float64}(; op=2, children=(a,)))
+        @test !has_equal_data(a, N{Float64}(; feature=1))
+        @test has_equal_data(
+            N{Float64}(; op=1, children=(a, a)), N{Float64}(; op=1, children=(a, copy(a)))
+        ) == (N === Node)
+    end
     let
         test_data(StableRNG(0), Nullable{Float64}(true, 1.0))
         test_data(StableRNG(0), Nullable{Float64}(false, 1.0))
