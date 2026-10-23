@@ -92,6 +92,87 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
+@static if isdefined(Core, :BFloat16)
+    const NonBlasFloat = Union{Float16,Core.BFloat16}
+else
+    const NonBlasFloat = Float16
+end
+
+const NonBlasStorage{P} = Union{
+    Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
+}
+const NonBlasMatrix{P} = Union{
+    NonBlasStorage{P},Adjoint{P,<:NonBlasStorage{P}},Transpose{P,<:NonBlasStorage{P}}
+}
+
+# Scalar reverse-mode tapes store every multiply-add; matrix pullbacks need only the inputs.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(mul!),
+        NonBlasStorage{P},
+        NonBlasMatrix{P},
+        NonBlasMatrix{P},
+        Union{Bool,P},
+        Union{Bool,P},
+    } where {P<:NonBlasFloat},
+)
+function frule!!(
+    ::Dual{typeof(mul!)},
+    C::Dual{<:NonBlasStorage{P}},
+    A::Dual{<:NonBlasMatrix{P}},
+    B::Dual{<:NonBlasMatrix{P}},
+    alpha::Dual{<:Union{Bool,P}},
+    beta::Dual{<:Union{Bool,P}},
+) where {P<:NonBlasFloat}
+    pC, dC = arrayify(C)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    a, b = primal(alpha), primal(beta)
+    mul!(dC, dA, pB, a, b)
+    mul!(dC, pA, dB, a, one(P))
+    a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), one(P))
+    b isa P && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
+    mul!(pC, pA, pB, a, b)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(mul!)},
+    C::CoDual{<:NonBlasStorage{P}},
+    A::CoDual{<:NonBlasMatrix{P}},
+    B::CoDual{<:NonBlasMatrix{P}},
+    alpha::CoDual{<:Union{Bool,P}},
+    beta::CoDual{<:Union{Bool,P}},
+) where {P<:NonBlasFloat}
+    pC, dC = arrayify(C)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    a, b = primal(alpha), primal(beta)
+    old_C = copy(pC)
+    AB = a isa P ? pA * pB : nothing
+    mul!(pC, pA, pB, a, b)
+    function mul!_pb(::NoRData)
+        da = if a isa Bool
+            NoRData()
+        else
+            P(mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, AB; init=zero(Float32)))
+        end
+        db = if b isa Bool
+            NoRData()
+        else
+            P(mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, old_C; init=zero(Float32)))
+        end
+        if !iszero(a)
+            mul!(dA, dC, transpose(pB), a, one(P))
+            mul!(dB, transpose(pA), dC, a, one(P))
+        end
+        copyto!(pC, old_C)
+        iszero(b) ? fill!(dC, zero(P)) : (dC .*= b)
+        return NoRData(), NoRData(), NoRData(), NoRData(), da, db
+    end
+    return C, mul!_pb
+end
+
 # Differentiating the generic implementation element by element costs more than the rules
 # either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
 @is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
@@ -218,7 +299,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     sum_sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
-
+        Any[],
         # sum(x)
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -262,6 +343,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
     )
+    P = Float16
+    A = P[0.2 0.3; 0.4 0.5]
+    B = P[0.3 0.4; 0.5 0.6]
+    for (C, X, Y, a, b) in (
+        (zeros(P, 2, 2), A, A, true, false),
+        (ones(P, 2, 2), A, B, false, true),
+        (zeros(P, 2, 2), transpose(A), adjoint(B), true, false),
+        (ones(P, 2, 2), A, B, P(0.5), zero(P)),
+    )
+        push!(test_cases, (true, :none, nothing, mul!, C, X, Y, a, b))
+    end
+    for (wrap_a, wrap_b) in
+        ((identity, transpose), (transpose, adjoint), (adjoint, identity))
+        X = wrap_a(view(reshape(copy(A), 2, 2, 1),:,:,1))
+        Y = wrap_b(view(reshape(copy(B), 2, 2, 1),:,:,1))
+        C = view(fill(P(0.1), 2, 2, 1),:,:,1)
+        push!(test_cases, (true, :none, nothing, mul!, C, X, Y, P(0.5), P(0.25)))
+    end
     memory = Any[]
     return test_cases, memory
 end

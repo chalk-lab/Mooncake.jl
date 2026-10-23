@@ -1,7 +1,6 @@
 module MooncakeBFloat16sExt
 
 using Mooncake
-using LinearAlgebra: mul!, Adjoint, Transpose
 using Random: AbstractRNG
 
 #! format: off
@@ -75,68 +74,6 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 @foldable can_produce_zero_rdata_from_type(::Type{P}) = true
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
-
-const BFloatStorage = Union{
-    Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
-}
-const BFloatMatrix = Union{BFloatStorage,Adjoint{P,<:BFloatStorage},Transpose{P,<:BFloatStorage}}
-
-# Scalar reverse-mode tapes store every multiply-add; matrix pullbacks need only the inputs.
-Mooncake.@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(mul!),BFloatStorage,BFloatMatrix,BFloatMatrix,Union{Bool,P},Union{Bool,P}},
-)
-function Mooncake.frule!!(
-    ::Dual{typeof(mul!)},
-    C::Dual{<:BFloatStorage},
-    A::Dual{<:BFloatMatrix},
-    B::Dual{<:BFloatMatrix},
-    alpha::Dual{<:Union{Bool,P}},
-    beta::Dual{<:Union{Bool,P}},
-)
-    pC, dC = Mooncake.arrayify(primal(C), tangent(C))
-    pA, dA = Mooncake.arrayify(primal(A), tangent(A))
-    pB, dB = Mooncake.arrayify(primal(B), tangent(B))
-    a, b = primal(alpha), primal(beta)
-    mul!(dC, dA, pB, a, b)
-    mul!(dC, pA, dB, a, true)
-    a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), true)
-    b isa P && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
-    mul!(pC, pA, pB, a, b)
-    return C
-end
-function Mooncake.rrule!!(
-    ::CoDual{typeof(mul!)},
-    C::CoDual{<:BFloatStorage},
-    A::CoDual{<:BFloatMatrix},
-    B::CoDual{<:BFloatMatrix},
-    alpha::CoDual{<:Union{Bool,P}},
-    beta::CoDual{<:Union{Bool,P}},
-)
-    pC, dC = Mooncake.arrayify(primal(C), tangent(C))
-    pA, dA = Mooncake.arrayify(primal(A), tangent(A))
-    pB, dB = Mooncake.arrayify(primal(B), tangent(B))
-    a, b = primal(alpha), primal(beta)
-    old_C = copy(pC)
-    AB = a isa P ? pA * pB : nothing
-    mul!(pC, pA, pB, a, b)
-    function mul!_pb(::NoRData)
-        da = a isa Bool ? NoRData() : P(
-            mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, AB; init=0f0)
-        )
-        db = b isa Bool ? NoRData() : P(
-            mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, old_C; init=0f0)
-        )
-        if !iszero(a)
-            mul!(dA, dC, transpose(pB), a, true)
-            mul!(dB, transpose(pA), dC, a, true)
-        end
-        copyto!(pC, old_C)
-        iszero(b) ? fill!(dC, zero(P)) : (dC .*= b)
-        return NoRData(), NoRData(), NoRData(), NoRData(), da, db
-    end
-    return C, mul!_pb
-end
 
 # Conversions
 
