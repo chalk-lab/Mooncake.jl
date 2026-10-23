@@ -425,7 +425,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         return cases
     end
     # Non-square \ (least squares and minimum norm). Finite differences are too inaccurate for
-    # Float32 here; test/rules/linear_algebra.jl compares it with Float64 instead.
+    # Float32 here, so those cases only check the interface.
     ldiv_cases = map_prod([(5, 3), (3, 5)], Ps) do ((m, n), P)
         return Any[
             (P == Float32, :stability, nothing, \, randn(rng, P, m, n), randn(rng, P, m)),
