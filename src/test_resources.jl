@@ -48,10 +48,44 @@ function hvp_oracle(expected)
     end
 end
 
+function structured_output_cases(f)
+    return [
+        (
+            false,
+            :none,
+            (;),
+            f,
+            view(UnitUpperTriangular(zeros(2, 2)), 1:1, 2:2),
+            ones(1, 1),
+        ),
+        (
+            false,
+            :none,
+            (;),
+            f,
+            view(UnitLowerTriangular(zeros(2, 2)), 2:2, 1:1),
+            ones(1, 1),
+        ),
+    ]
+end
+
 function structured_rule_cases(f)
     cases = Any[]
     for W in (UnitUpperTriangular, UnitLowerTriangular)
         x = W([0.2 0.3; 0.4 0.5])
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (
+                    mode=Mooncake.ForwardMode,
+                    oracle=jvp_oracle((Mooncake.zero_tangent(x),), 0.0),
+                ),
+                f,
+                x,
+            ),
+        )
         for y in (
             x,
             view(x, [2, 1, 2], [2, 1]),

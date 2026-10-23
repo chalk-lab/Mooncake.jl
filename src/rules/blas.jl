@@ -35,7 +35,7 @@ possible for all array types of interest so far.
 
 ## Convention
 
-Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
+Except for unit-triangular forward tangents, which are strict-triangle copies, the tangent is wrapped
 in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
 `Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
 for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
@@ -82,6 +82,8 @@ function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
+    dx isa Tangent && x isa UnitUpperTriangular && return x, triu(_dx, 1)
+    dx isa Tangent && x isa UnitLowerTriangular && return x, tril(_dx, -1)
     return x, Tx(_dx)
 end
 function arrayify(

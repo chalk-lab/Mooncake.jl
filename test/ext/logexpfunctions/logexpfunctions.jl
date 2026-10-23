@@ -15,6 +15,12 @@ sr(n::Int) = StableRNG(n)
     test_rule(sr(123), f, args...; interface_only, perf_flag, opts...)
 end
 
+@testset "structured output" for row in
+                                 Mooncake.TestResources.structured_output_cases(logsumexp!)
+    interface_only, perf_flag, opts, f, args... = row
+    test_rule(sr(123), f, args...; interface_only, perf_flag, opts...)
+end
+
 @testset "logexpfunctions" begin
     @testset for (perf_flag, is_primitive, f, x...) in vcat(
         map([Float64, Float32]) do P
