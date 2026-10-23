@@ -1,8 +1,5 @@
 # How we follow up on issues and pull requests
 
-> **Not active yet.** The triage bot currently only previews what it would do; it
-> does not post comments or close anything.
-
 Mooncake is maintained part time by a small team. Our aim is a solid package that
 serves almost all users and use cases, with a careful trade-off between complexity
 and features. We want the list of open issues and pull requests to be a fair picture
