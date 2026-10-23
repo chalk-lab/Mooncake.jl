@@ -1500,6 +1500,9 @@ function friendly_tangent_cache_internal(x::P) where {P}
     return FriendlyTangentCache{AsRaw}(nothing)
 end
 
+# Stop at types: recursing from a DataType into its Core.TypeName never terminates.
+friendly_tangent_cache(::Type) = FriendlyTangentCache{AsRaw}(nothing)
+
 # Mutable collections: reconstruct as the primal container type.
 function friendly_tangent_cache(x::AbstractDict)
     FriendlyTangentCache{AsPrimal}(_copy_output(x))
