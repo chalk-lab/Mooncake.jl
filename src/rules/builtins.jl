@@ -456,7 +456,7 @@ end
 
 @intrinsic bitcast
 function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
-    if T <: IEEEFloat
+    if !(T <: Ptr) && tangent_type(T) !== NoTangent
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
             "this risks dropping tangents, and therefore risks silently giving the wrong " *
@@ -484,7 +484,7 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     return Dual(v, dv)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
-    if T <: IEEEFloat
+    if !(T <: Ptr) && tangent_type(T) !== NoTangent
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
             "this risks dropping tangents, and therefore risks silently giving the wrong " *

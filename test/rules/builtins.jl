@@ -78,6 +78,16 @@ foo_throws(e) = throw(e)
     )
 
     @testset "Disable bitcast to differentiable type, or bitcast from Int/UInt to Ptr" begin
+        @static if isdefined(Core, :BFloat16)
+            TestUtils.test_rule_throws(
+                StableRNG(123),
+                IntrinsicsWrappers.bitcast,
+                Core.BFloat16,
+                UInt16(0);
+                err=ArgumentError,
+                msg="It is not permissible to bitcast to a differentiable type during AD",
+            )
+        end
         @test_throws(
             ArgumentError,
             rrule!!(zero_fcodual(bitcast), zero_fcodual(Float64), zero_fcodual(5))
