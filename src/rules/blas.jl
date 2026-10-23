@@ -34,7 +34,8 @@ possible for all array types of interest so far.
 
 ## Convention
 
-Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
+Except for unit-triangular forward tangents, which use lazy strict-triangle projections,
+the tangent is wrapped
 in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
 `Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
 for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
@@ -76,10 +77,46 @@ function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Bla
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, reinterpret(T, _dx)
 end
+struct StrictTriangle{T,A<:AbstractMatrix{T},U} <: AbstractMatrix{T}
+    data::A
+end
+function StrictTriangle(a::AbstractMatrix{T}, ::Val{U}) where {T,U}
+    StrictTriangle{T,typeof(a),U}(a)
+end
+Base.size(a::StrictTriangle) = size(a.data)
+Base.dataids(a::StrictTriangle) = Base.dataids(a.data)
+function Base.unaliascopy(a::StrictTriangle{T,A,U}) where {T,A,U}
+    return StrictTriangle(Base.unaliascopy(a.data), Val(U))
+end
+Base.@propagate_inbounds function Base.getindex(
+    a::StrictTriangle{T,A,U}, i::Int, j::Int
+) where {T,A,U}
+    @boundscheck checkbounds(a, i, j)
+    return (U ? i < j : i > j) ? a.data[i, j] : zero(T)
+end
+# Keep the throw out of line: inlined into `setindex!`, it boxes callers' temporary views.
+@noinline function _strict_triangle_write_error()
+    throw(ArgumentError("cannot write a nonzero direction outside the strict triangle"))
+end
+Base.@propagate_inbounds function Base.setindex!(
+    a::StrictTriangle{T,A,U}, v, i::Int, j::Int
+) where {T,A,U}
+    @boundscheck checkbounds(a, i, j)
+    if U ? i < j : i > j
+        a.data[i, j] = v
+    else
+        iszero(v) || _strict_triangle_write_error()
+    end
+    return a
+end
+
 function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
+    # increment_densified_tangent!! needs the unit wrapper; Tangent reads a zero diagonal.
+    dx isa Tangent && x isa UnitUpperTriangular && return x, StrictTriangle(_dx, Val(true))
+    dx isa Tangent && x isa UnitLowerTriangular && return x, StrictTriangle(_dx, Val(false))
     return x, Tx(_dx)
 end
 function arrayify(
@@ -2284,7 +2321,15 @@ end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    test_cases = Any[]
+    test_cases = Any[
+        (
+            false,
+            :none,
+            (oracle=(_, f, A) -> f(A) == (U ? [0 1; 0 0] : [0 0; 1 0]),),
+            A -> copyto!(A, StrictTriangle(A, Val(U))),
+            ones(2, 2),
+        ) for U in (true, false)
+    ]
     push!(
         test_cases,
         (
