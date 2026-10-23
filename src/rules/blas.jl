@@ -217,6 +217,17 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
+# The zero branch must retain coefficient directions under forward-over-reverse.
+_guarded_mul(x::T, coef::T) where {T<:BlasFloat} = ifelse(iszero(coef), zero(T), x * coef)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_guarded_mul),T,T} where {T<:BlasFloat}
+function frule!!(
+    ::Dual{typeof(_guarded_mul)}, x::Dual{T}, coef::Dual{T}
+) where {T<:BlasFloat}
+    a, da = extract(x)
+    b, db = extract(coef)
+    return Dual(_guarded_mul(a, b), _guarded_mul(a, db) + _guarded_mul(da, b))
+end
+
 #
 # LEVEL 1
 #
@@ -1089,7 +1100,7 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
+        p_C .= a .* tmp .+ _guarded_mul.(p_C, b)
     end
 
     function gemm!_pb!!(::NoRData)
@@ -1233,7 +1244,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         else
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
             tmp_ref[] = tmp
-            C .= α .* tmp .+ β .* C
+            C .= α .* tmp .+ _guarded_mul.(C, β)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -1673,6 +1684,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (
+                true,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.primal_oracle(fill(P(4), 2, 2)),
+                ),
+                f,
+                flags...,
+                P(2),
+                ones(P, 2, 2),
+                ones(P, 2, 2),
+                P(0),
+                fill(P(NaN), 2, 2),
+            ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
+        ],
         [
             (
                 false,
