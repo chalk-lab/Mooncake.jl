@@ -573,9 +573,10 @@ end
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
         # fill dB with zeros in the copied region
-        zero_tri!(dB, uplo)
+        dA === dB || zero_tri!(dB, uplo)
 
         function lacpy_pb!!(::NoRData)
+            dA === dB && return ntuple(_ -> NoRData(), 4)
             if uplo == 'U'
                 dA .+= UpperTriangular(dB)
             elseif uplo == 'L'
@@ -994,6 +995,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             ones(1, 1),
         )]
     ]
+    @static if VERSION > v"1.11-"
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (is_primitive=false,),
+                A -> sum(LAPACK.lacpy!(A, A, 'U')),
+                ones(2, 2),
+            ),
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end
