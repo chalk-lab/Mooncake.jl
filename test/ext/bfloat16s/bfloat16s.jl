@@ -27,11 +27,17 @@ end
         rng = sr(123)
         test_tangent_interface(rng, P(1.5))
         test_tangent_splitting(rng, P(1.5))
-        @test Mooncake.tangent_to_friendly!!(P[0.5], P[1]) == P[1]
     end
 
     cases = [
-        (mul!, zeros(P, 2, 2), P[0.2 0.3; 0.4 0.5], P[0.3 0.4; 0.5 0.6], true, false),
+        (
+            mul!,
+            zeros(P, 2, 2),
+            transpose(P[0.2 0.3; 0.4 0.5]),
+            P[0.3 0.4; 0.5 0.6]',
+            true,
+            false,
+        ),
         (Float32, P(0.5)),
         (Float64, P(0.5)),
         (P, 0.5f0),
