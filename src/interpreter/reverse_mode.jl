@@ -2086,9 +2086,10 @@ function build_derived_rrule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :reverse))
-        if haskey(interp.oc_cache, oc_cache_key)
-            return _copy(interp.oc_cache[oc_cache_key])
+        oc_cache_key = rule_cache_key(interp, sig_or_mi, debug_mode, :reverse)
+        cached = cached_rule(interp, oc_cache_key)
+        if cached !== nothing
+            return copy_rule_at(interp, cached)
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = try
@@ -2115,6 +2116,7 @@ function build_derived_rrule(
             raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
+            register_rule_root!(interp, oc_cache_key, sig_or_mi)
             return rule
         end
     catch e
@@ -2789,7 +2791,9 @@ function DynamicDerivedRule(debug_mode::Bool, world::UInt)
     return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
+function _copy(x::P) where {P<:DynamicDerivedRule}
+    P(Dict{Any,Any}(), x.debug_mode, pinned_world(x.world))
+end
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
@@ -2890,7 +2894,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     end
 end
 
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
+_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, pinned_world(x.world))
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
