@@ -89,10 +89,10 @@ const DenseVecOrMatArg{P} = Union{Vector{P},SubArray{P,1,<:Array{P}},DenseMatOrA
 
 # The factorization LinearAlgebra uses for a square `A`, so that the value and the gradient
 # need only one.
-function _square_factor(A; check)
+function _square_factor(A)
     istriu(A) && return UpperTriangular(A)
     istril(A) && return LowerTriangular(A)
-    return lu(A; check)
+    return lu(A; check=false)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(inv),DenseMat{P}} where {P<:BlasRealFloat}
@@ -118,7 +118,7 @@ end
 # zero, subnormal or infinite that product is undefined, overflows or loses precision, though
 # the adjugate is finite (and nonzero at rank n - 1), so it then comes from the SVD.
 function _det_and_grad(A::AbstractMatrix{P}) where {P}
-    F = _square_factor(A; check=false)
+    F = _square_factor(A)
     d = det(F)
     if (isfinite(d) && !iszero(d) && !issubnormal(d)) || !all(isfinite, A)
         return d, rmul!(ldiv!(F', Matrix{P}(I, size(A))), d)
@@ -187,17 +187,13 @@ end
 # `logabsdet(A)` and the gradient of its first output, `inv(A)'`. That gradient is unbounded
 # at a singular `A`, so the rules throw there if a derivative is needed.
 function _logabsdet_and_grad(A::AbstractMatrix{P}) where {P}
-    F = _square_factor(A; check=false)
+    F = _square_factor(A)
     ld, s = logabsdet(F)
     return ld, s, iszero(s) ? zeros(P, size(A)) : ldiv!(F', Matrix{P}(I, size(A)))
 end
 function _check_logabsdet(s, dy)
-    if iszero(s) && !iszero(dy)
-        throw(
-            ArgumentError("Mooncake cannot differentiate `logabsdet` of a singular matrix.")
-        )
-    end
-    return nothing
+    (iszero(s) && !iszero(dy)) || return nothing
+    throw(ArgumentError("Mooncake cannot differentiate `logabsdet` of a singular matrix."))
 end
 
 # As for `_det_and_grad`: with `G = inv(A)'`, `dG = -G * dA' * G`.
@@ -288,7 +284,7 @@ function frule!!(
     ::Dual{typeof(\)}, A_dA::Dual{<:DenseMatOrAdj{P}}, B_dB::Dual{<:DenseVecOrMatArg{P}}
 ) where {P<:BlasRealFloat}
     A, dA = map(_dense, arrayify(A_dA))
-    B, dB = map(_as_matrix, arrayify(B_dB))
+    B, dB = matrixify(B_dB)
     m, n = size(A)
     size(B, 1) == m ||
         throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
@@ -309,10 +305,7 @@ function frule!!(
     return Dual(_like(primal(B_dB), X), _like(primal(B_dB), dX))
 end
 
-# A vector right-hand side is solved as a one-column matrix, sharing memory, as
-# matrix-vector products are not type-stable on Julia 1.10.
-_as_matrix(x::AbstractVector) = reshape(x, :, 1)
-_as_matrix(x::AbstractMatrix) = x
+# Undo `matrixify(B_dB)`, which avoids type-unstable matrix-vector products on Julia 1.10.
 _like(::AbstractVector, X::Matrix) = vec(X)
 _like(::AbstractMatrix, X::Matrix) = X
 function rrule!!(
@@ -322,7 +315,7 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
     A, dA = arrayify(A_dA)
     A = _dense(A)
-    B, dB = map(_as_matrix, arrayify(B_dB))
+    B, dB = matrixify(B_dB)
     m, n = size(A)
     size(B, 1) == m ||
         throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
@@ -400,7 +393,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             invertible_blas_matrices(rng, P, N),
             [U, collect(U'), Matrix{P}(Diagonal(U))],
         )
-        # For Float32 det, finite differences are too inaccurate (see the Symmetric cases).
+        # Float32 det finite differences are inaccurate;
+        # see the Symmetric `det` cases in src/rules/lapack.jl.
         cases = Any[]
         for A in As
             push!(cases, (false, :stability, nothing, inv, A))
@@ -427,16 +421,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     # Non-square \ (least squares and minimum norm). Finite differences are too inaccurate for
     # Float32 here, so those cases only check the interface.
     ldiv_cases = map_prod([(5, 3), (3, 5)], Ps) do ((m, n), P)
+        flags = (P == Float32, :stability, nothing)
         return Any[
-            (P == Float32, :stability, nothing, \, randn(rng, P, m, n), randn(rng, P, m)),
-            (
-                P == Float32,
-                :stability,
-                nothing,
-                \,
-                randn(rng, P, m, n),
-                randn(rng, P, m, 2),
-            ),
+            (flags..., \, randn(rng, P, m, n), randn(rng, P, m, k...)) for k in ((), (2,))
         ]
     end
     test_cases = vcat(
