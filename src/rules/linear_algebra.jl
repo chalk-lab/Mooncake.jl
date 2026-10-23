@@ -192,12 +192,8 @@ function _logabsdet_and_grad(A::AbstractMatrix{P}) where {P}
     return ld, s, iszero(s) ? zeros(P, size(A)) : ldiv!(F', Matrix{P}(I, size(A)))
 end
 function _check_logabsdet(s, dy)
-    if iszero(s) && !iszero(dy)
-        throw(
-            ArgumentError("Mooncake cannot differentiate `logabsdet` of a singular matrix.")
-        )
-    end
-    return nothing
+    (iszero(s) && !iszero(dy)) || return nothing
+    throw(ArgumentError("Mooncake cannot differentiate `logabsdet` of a singular matrix."))
 end
 
 # As for `_det_and_grad`: with `G = inv(A)'`, `dG = -G * dA' * G`.
@@ -397,7 +393,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             invertible_blas_matrices(rng, P, N),
             [U, collect(U'), Matrix{P}(Diagonal(U))],
         )
-        # For Float32 det, finite differences are too inaccurate (see the Symmetric cases).
+        # Float32 det finite differences are inaccurate;
+        # see the Symmetric `det` cases in src/rules/lapack.jl.
         cases = Any[]
         for A in As
             push!(cases, (false, :stability, nothing, inv, A))
@@ -424,16 +421,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     # Non-square \ (least squares and minimum norm). Finite differences are too inaccurate for
     # Float32 here, so those cases only check the interface.
     ldiv_cases = map_prod([(5, 3), (3, 5)], Ps) do ((m, n), P)
+        flags = (P == Float32, :stability, nothing)
         return Any[
-            (P == Float32, :stability, nothing, \, randn(rng, P, m, n), randn(rng, P, m)),
-            (
-                P == Float32,
-                :stability,
-                nothing,
-                \,
-                randn(rng, P, m, n),
-                randn(rng, P, m, 2),
-            ),
+            (flags..., \, randn(rng, P, m, n), randn(rng, P, m, k...)) for k in ((), (2,))
         ]
     end
     test_cases = vcat(
