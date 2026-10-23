@@ -39,6 +39,28 @@ function hvp_oracle(expected)
     end
 end
 
+function structured_rule_cases(f)
+    cases = Any[]
+    for W in (UnitUpperTriangular, UnitLowerTriangular)
+        x = W([0.2 0.3; 0.4 0.5])
+        for y in (
+            x,
+            view(x, [2, 1, 2], [2, 1]),
+            reshape(x, 4),
+            Adjoint(view(x, :, :)),
+            Diagonal(reshape(x, 4)),
+        )
+            push!(cases, (false, :none, (mode=Mooncake.ReverseMode,), f, y))
+        end
+    end
+    push!(cases, (false, :none, (;), f, Hermitian([1.0 2.0; 3.0 4.0])))
+    push!(
+        cases,
+        (false, :none, (;), f, UpperTriangular(view([0.2 0.3 9.0; 0.4 0.5 9.0], :, 1:2))),
+    )
+    return cases
+end
+
 function gradient_oracle(expected)
     return function (_, f, x...)
         cache = Mooncake.prepare_gradient_cache(f, x...)

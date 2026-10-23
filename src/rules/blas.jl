@@ -89,6 +89,12 @@ function arrayify(
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
 function arrayify(
+    x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:IEEEFloat}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Hermitian(_dx, Symbol(x.uplo))
+end
+function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
 ) where {T<:Union{BlasFloat,HalfFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
@@ -131,7 +137,21 @@ even if indexing makes the view itself non-strided, so the common case costs not
 """
 densify_tangent(dx::StridedArray) = dx
 densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
-function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+function densify_tangent(
+    dx::Union{
+        UpperTriangular,
+        LowerTriangular,
+        UnitUpperTriangular,
+        UnitLowerTriangular,
+        Diagonal,
+        Symmetric,
+        Hermitian,
+        Adjoint,
+        Transpose,
+        SubArray,
+        ReshapedArray,
+    },
+)
     return zeros(eltype(dx), size(dx))
 end
 
@@ -139,29 +159,63 @@ end
     increment_densified_tangent!!(dx, dense)
 
 Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
-returned `dx` itself, the increment is already complete.
+returned `dx` itself, the increment is already complete. The projection may overwrite `dense`.
 """
-increment_densified_tangent!!(::StridedArray, dense) = nothing
-function increment_densified_tangent!!(
-    ::SubArray{T,N,A}, dense
-) where {T,N,A<:StridedArray{T}}
-    return nothing
+function increment_densified_tangent!!(dx::StridedArray, dense)
+    (dx === dense || (dx .+= dense); nothing)
 end
 function increment_densified_tangent!!(
-    dx::T, dense
-) where {T<:Union{UpperTriangular,LowerTriangular}}
-    parent(dx) .+= T(dense)
+    dx::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    dx === dense || (dx .+= dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::UpperTriangular, dense)
+    increment_densified_tangent!!(parent(dx), triu!(dense, 0))
+    return nothing
+end
+function increment_densified_tangent!!(dx::LowerTriangular, dense)
+    increment_densified_tangent!!(parent(dx), tril!(dense, 0))
     return nothing
 end
 function increment_densified_tangent!!(dx::Diagonal, dense)
-    dx.diag .+= view(dense, diagind(dense))
+    increment_densified_tangent!!(dx.diag, view(dense, diagind(dense)))
     return nothing
 end
 
-# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
-# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
-# picks up both. Dropping the fold would silently halve those gradients rather than throw.
-function increment_densified_tangent!!(dx::Symmetric, dense)
+function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
+    increment_densified_tangent!!(parent(dx), triu!(dense, 1))
+    return nothing
+end
+function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
+    increment_densified_tangent!!(parent(dx), tril!(dense, -1))
+    return nothing
+end
+function increment_densified_tangent!!(dx::Adjoint, dense)
+    increment_densified_tangent!!(parent(dx), adjoint(dense))
+    return nothing
+end
+function increment_densified_tangent!!(dx::Transpose, dense)
+    increment_densified_tangent!!(parent(dx), transpose(dense))
+    return nothing
+end
+function increment_densified_tangent!!(dx::ReshapedArray, dense)
+    increment_densified_tangent!!(parent(dx), reshape(dense, size(parent(dx))))
+    return nothing
+end
+function increment_densified_tangent!!(dx::SubArray, dense)
+    p = densify_tangent(parent(dx))
+    v = view(p, parentindices(dx)...)
+    for i in eachindex(v, dense)
+        v[i] += dense[i]
+    end
+    increment_densified_tangent!!(parent(dx), p)
+    return nothing
+end
+
+# Real symmetric wrappers read each off-diagonal entry twice; the pullback must fold
+# both contributions into the stored triangle.
+function increment_densified_tangent!!(dx::Union{Symmetric,Hermitian{<:Real}}, dense)
     folded = dense .+ transpose(dense)
     folded[diagind(folded)] .= view(dense, diagind(dense))
     parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
