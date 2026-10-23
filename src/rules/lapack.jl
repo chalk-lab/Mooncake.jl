@@ -563,10 +563,12 @@ end
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
-        # fill dB with zeros in the copied region
-        zero_tri!(dB, uplo)
+        # Only exact self-copy is handled; partially overlapping views are not.
+        # Clear cotangents in the overwritten region unless the copy is an identity.
+        dA === dB || zero_tri!(dB, uplo)
 
         function lacpy_pb!!(::NoRData)
+            dA === dB && return ntuple(_ -> NoRData(), 4)
             if uplo == 'U'
                 dA .+= UpperTriangular(dB)
             elseif uplo == 'L'
@@ -971,6 +973,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
+    @static if VERSION > v"1.11-"
+        test_cases = vcat(
+            test_cases,
+            [(
+                false,
+                :none,
+                (lb=1e-3, ub=50.0, is_primitive=false),
+                A -> sum(LAPACK.lacpy!(A, A, 'U')),
+                ones(2, 2),
+            )],
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end
