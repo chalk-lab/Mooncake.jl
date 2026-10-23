@@ -24,6 +24,13 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function primal_oracle(expected)
+    return function (_, f, args...)
+        out, _ = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (f, args...))...)
+        return Mooncake.TestUtils.has_equal_data(primal(out), expected)
+    end
+end
+
 function gradient_oracle(expected)
     return function (_, f, x...)
         cache = Mooncake.prepare_gradient_cache(f, x...)

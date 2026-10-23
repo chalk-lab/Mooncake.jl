@@ -1123,7 +1123,7 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
+        p_C .= a .* tmp .+ _rvs_mul.(p_C, b)
     end
 
     function gemm!_pb!!(::NoRData)
@@ -1268,7 +1268,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         else
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
             tmp_ref[] = tmp
-            C .= α .* tmp .+ β .* C
+            C .= α .* tmp .+ _rvs_mul.(C, β)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -1712,6 +1712,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (
+                true,
+                :none,
+                (mode=ReverseMode, oracle=TestResources.primal_oracle(fill(P(4), 2, 2))),
+                f,
+                flags...,
+                P(2),
+                ones(P, 2, 2),
+                ones(P, 2, 2),
+                P(0),
+                fill(P(NaN), 2, 2),
+            ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
+        ],
         [
             (
                 false,
