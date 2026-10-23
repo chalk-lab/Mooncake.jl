@@ -373,9 +373,9 @@ function frule!!(
     dy = zero(y)
     @inbounds for i in eachindex(X)
         xi = X[i] * r
-        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
+        dy += real(xi' * dX[i])
     end
-    return Dual(y, dy / 2(y * r))
+    return Dual(y, iszero(y) ? zero(y) : dy / (y * r))
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
@@ -386,7 +386,8 @@ function rrule!!(
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
-        dX .+= X .* (dy / y)
+        # Choose the zero subgradient at the zero vector.
+        iszero(y) || (dX .+= X .* (dy / y))
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
@@ -1672,6 +1673,32 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.gradient_oracle((zeros(P, 32),)),
+                ),
+                norm,
+                zeros(P, 32),
+            ),
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ForwardMode,
+                    oracle=TestResources.jvp_oracle((ones(P, 32),), zero(real(P))),
+                ),
+                norm,
+                zeros(P, 32),
+            ),
+        ],
 
         #
         # BLAS LEVEL 1
