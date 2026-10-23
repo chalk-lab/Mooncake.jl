@@ -8,6 +8,7 @@
         (ones(P, 2, 2), A, B, false, true),
         (zeros(P, 2, 2), transpose(A), adjoint(B), true, false),
         (ones(P, 2, 2), A, B, P(0.5), zero(P)),
+        (zeros(P, 2, 2), A, B, P(0.5), zero(P)),
         (ones(P, 2, 2), A, B, true, P(0.25)),
         (ones(P, 2, 2), A, B, P(0.5), true),
     ]
@@ -23,10 +24,32 @@
             StableRNG(123),
             mul!,
             xs...;
+            interface_only=xs[end] isa P && iszero(xs[end]) && !iszero(xs[1]),
             is_primitive=true,
             atol=5e-2,
             rtol=5e-2,
         )
+    end
+
+    # β == 0 leaves C unread, so dβ = 0 even when finite differences disagree.
+    @testset "zero beta ignores destination $c" for c in (P(1), P(NaN))
+        C = fill(c, 1, 1)
+        A, B = ones(P, 1, 1), ones(P, 1, 1)
+        result = Mooncake.frule!!(
+            zero_dual(mul!),
+            Dual(copy(C), copy(C)),
+            zero_dual(A),
+            zero_dual(B),
+            zero_dual(one(P)),
+            Dual(zero(P), one(P)),
+        )
+        @test primal(result) == ones(P, 1, 1)
+        @test iszero(only(tangent(result)))
+        result, pb = rrule!!(map(zero_fcodual, (mul!, C, A, B, one(P), zero(P)))...)
+        fill!(tangent(result), one(P))
+        @test last(pb(NoRData())) === zero(P)
+        @test iszero(only(tangent(result)))
+        @test isequal(only(C), c)
     end
 
     @testset "disjoint batch slices: $wrap, $side" for wrap in

@@ -130,7 +130,7 @@ function frule!!(
     mul!(dC, dA, pB, a, b)
     mul!(dC, pA, dB, a, one(P))
     a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), one(P))
-    b isa P && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
+    b isa P && !iszero(b) && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
     mul!(pC, pA, pB, a, b)
     return C
 end
@@ -161,6 +161,8 @@ function rrule!!(
         end
         db = if b isa Bool
             NoRData()
+        elseif iszero(b)
+            zero(P)
         else
             P(mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, old_C; init=zero(Float32)))
         end
