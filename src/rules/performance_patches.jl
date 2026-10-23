@@ -157,14 +157,14 @@ function rrule!!(
         da = if a isa Bool
             NoRData()
         else
-            P(mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, AB; init=zero(Float32)))
+            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, AB); init=0.0f0))
         end
         db = if b isa Bool
             NoRData()
         elseif iszero(b)
             zero(P)
         else
-            P(mapreduce((x, y) -> Float32(x) * Float32(y), +, dC, old_C; init=zero(Float32)))
+            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, old_C); init=0.0f0))
         end
         if !iszero(a)
             mul!(dA, dC, transpose(pB), a, one(P))

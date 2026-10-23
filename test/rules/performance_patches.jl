@@ -86,4 +86,12 @@
         end
     end
 
+    @testset "Float16 mul! pullback allocations" begin
+        P = Float16
+        C, A, B = ones(P, 64, 64), ones(P, 64, 64), ones(P, 64, 64)
+        # α=0 isolates the scalar reductions from allocations in the generic mul! kernel.
+        _, pb = rrule!!(map(zero_fcodual, (mul!, C, A, B, zero(P), P(0.25)))...)
+        pb(NoRData())
+        @test TestUtils.count_allocs(pb, NoRData()) == 0
+    end
 end
