@@ -196,6 +196,11 @@ Determine if two objects `x` and `y` have equivalent data. If `equal_undefs`
 is `true`, undefined elements in arrays or unassigned fields in structs are 
 considered equal.
 
+By default, floating-point components are compared approximately, with matching NaNs
+considered equal. This is not bitwise equality: NaN payloads and the sign of zero need not
+match. Complex numbers are compared componentwise, so a NaN in one component does not hide
+changes in the other.
+
 The main logic is implemented in `has_equal_data_internal`, which is a recursive function
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
@@ -1346,29 +1351,33 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
         Mooncake.hand_written_rule_test_cases(rng_ctor, v)
     end
-    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
-    # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
-    ) in test_cases
-
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-    end
+    return _run_rule_test_cases(rng_ctor, test_cases, memory, mode; is_primitive=true)
 end
 
 function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
         Mooncake.derived_rule_test_cases(rng_ctor, v)
     end
+    return _run_rule_test_cases(rng_ctor, test_cases, memory, mode; is_primitive=false)
+end
+
+function _run_rule_test_cases(rng_ctor, test_cases, memory, mode; is_primitive)
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+    GC.@preserve memory @testset "$mode, $f, $(_typeof(x))" for (
+        interface_only, perf_flag, options, f, x...
     ) in test_cases
 
-        test_rule(
-            rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
-        )
+        options isa NamedTuple &&
+            haskey(options, :mode) &&
+            options.mode !== mode &&
+            continue
+        if options isa NamedTuple && haskey(options, :throws)
+            err, msg = options.throws
+            test_rule_throws(rng_ctor(123), f, x...; err, msg, mode)
+        else
+            test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive, mode)
+        end
     end
 end
 

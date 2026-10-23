@@ -194,6 +194,50 @@ end
 end
 
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "BLAS zero cotangents with live perturbations" begin
+        fscal(a) = (BLAS.scal!(1, a, [2.0], 1)[1] - 2.0)^2
+        fgemv(a) = (BLAS.gemv!('N', a, ones(1, 1), ones(1), 0.0, zeros(1))[1] - 1.0)^2
+        for (f, h) in ((fscal, 8.0), (fgemv, 2.0))
+            cache = prepare_hvp_cache(f, 1.0)
+            @test value_and_hvp!!(cache, f, 1.0, 1.0) == (0.0, 0.0, h)
+        end
+    end
+
+    @testset "zero seed value with a live seed direction" begin
+        function f(a)
+            B = fill(a, 2, 2)
+            BLAS.gemm!('N', 'N', 1.0, fill(NaN, 2, 2), B, 0.0, zeros(2, 2))
+            C = BLAS.gemm!('N', 'N', 1.0, ones(2, 2), B, 0.0, zeros(2, 2))
+            return (C[1, 1] - 2.0)^2
+        end
+        cache = prepare_hvp_cache(f, 1.0)
+        @test value_and_hvp!!(cache, f, 1.0, 1.0) == (0.0, 0.0, 8.0)
+    end
+
+    @testset "BLAS zero coefficients with live perturbations" begin
+        fgemm(b) = only(BLAS.gemm!('N', 'N', 2.0, ones(1, 1), ones(1, 1), b, ones(1, 1)))^2
+        fsymm(a) = only(BLAS.symm!('L', 'U', a, ones(1, 1), ones(1, 1), 1.0, ones(1, 1)))^2
+        fhemm(a) =
+            real(
+                only(
+                    BLAS.hemm!(
+                        'L',
+                        'U',
+                        complex(a),
+                        ones(ComplexF64, 1, 1),
+                        ones(ComplexF64, 1, 1),
+                        1.0 + 0im,
+                        ones(ComplexF64, 1, 1),
+                    ),
+                ),
+            )^2
+        for (f, value, gradient) in
+            ((fgemm, 4.0, 4.0), (fsymm, 1.0, 2.0), (fhemm, 1.0, 2.0))
+            cache = prepare_hvp_cache(f, 0.0)
+            @test value_and_hvp!!(cache, f, 1.0, 0.0) == (value, gradient, 2.0)
+        end
+    end
+
     @testset "TwicePrecision cotangent accumulation (#1328)" begin
         f(x) = abs2(typeof(x)(TwicePrecision(x)))
         for x in (0.5f0, 0.5)
@@ -310,4 +354,125 @@ end
     end
 
     @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
+end
+
+@testset "BLAS coefficient HVPs" begin
+    # First-order registry checks cannot detect lost perturbations in a pullback.
+    for (op, p, flags, a) in (
+        (BLAS.axpy!, 1.0, (), 0.0),
+        (BLAS.gemv!, 1.0, ('N',), 0.0),
+        (BLAS.gemm!, 1.0, ('N', 'N'), 1.0),
+        (BLAS.symm!, 1.0, ('L', 'U'), 1.0),
+        (BLAS.symv!, 1.0, ('U',), 1.0),
+        (BLAS.hemm!, 1.0 + 0im, ('L', 'U'), 1.0),
+        (BLAS.hemv!, 1.0 + 0im, ('U',), 1.0),
+        (BLAS.trmm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+        (BLAS.trsm!, 1.0, ('L', 'U', 'N', 'N'), 0.0),
+    )
+        function f(x)
+            A = fill(oftype(p, x[2]), 1, 1)
+            dims = op in (BLAS.gemv!, BLAS.symv!, BLAS.hemv!) ? (1,) : (1, 1)
+            args = if op === BLAS.axpy!
+                (1, x[1], [x[2]], 1, [x[3]], 1)
+            elseif op in (BLAS.trmm!, BLAS.trsm!)
+                (oftype(p, x[1]), A, fill(p, dims))
+            else
+                (oftype(p, x[1]), A, fill(p, dims), oftype(p, x[3]), fill(p, dims))
+            end
+            return sum(abs2, op(flags..., args...))
+        end
+        @testset "$op" begin
+            x, v = [a, 3.0, 0.0], ones(3)
+            cache = Mooncake.prepare_gradient_cache(f, x)
+            grad(z) = copy(Mooncake.value_and_gradient!!(cache, f, z)[2][2])
+            fd = (grad(x + 1e-5v) - grad(x - 1e-5v)) / 2e-5
+            h = Mooncake.value_and_hvp!!(Mooncake.prepare_hvp_cache(f, x), f, v, x)[3]
+            @test h ≈ fd rtol=1e-7 atol=1e-7
+        end
+    end
+end
+
+@testset "zero alpha extreme HVP" for (A, B, seed, da) in (
+    (1e-200, 1e200, 1e200, 1e-300), (1e-100, 1e-200, 1e-200, 1e300)
+)
+    f(x) =
+        seed *
+        only(BLAS.gemm!('N', 'N', x[1], fill(x[2], 1, 1), fill(B, 1, 1), 0.0, zeros(1, 1)))
+    x = [0.0, A]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [da, 0.0], x)[3]
+    @test isequal(h[2], only(da * fill(seed, 1, 1) * fill(B, 1, 1)))
+end
+
+@testset "zero alpha coefficient direction HVP" for (big, small) in
+                                                    ((1e200, 1e-200), (1e-200, 1e200))
+    f(x) =
+        small * only(
+            BLAS.gemm!('N', 'N', x[1], fill(big, 1, 1), fill(x[2], 1, 1), 0.0, zeros(1, 1))
+        )
+    x = [0.0, small]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [big, 0.0], x)[3]
+    @test isequal(h, [0.0, big])
+end
+
+@testset "nonzero alpha extreme HVP" for unit in (1.0, 1.0 + 0.0im),
+    (a, seed) in ((1e200, 1e-200), (1e-200, 1e200))
+
+    function f(x)
+        A = fill(oftype(unit, x[1]), 1, 1)
+        B = fill(oftype(unit, x[2]), 1, 1)
+        C = fill(zero(unit), 1, 1)
+        return seed * real(only(BLAS.gemm!('N', 'N', oftype(unit, a), A, B, zero(unit), C)))
+    end
+    x = [1e-200, 1e-200]
+    value, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, [a, 0.0], x)
+    @test isfinite(value)
+    @test h ≈ [0.0, a]
+end
+
+@testset "mixed extreme HVP directions" begin
+    f(x) =
+        x[4] * only(
+            BLAS.gemm!('N', 'N', x[1], fill(x[2], 1, 1), fill(x[3], 1, 1), 0.0, zeros(1, 1))
+        )
+    x = [2.0, 1.0, 1.0, 1.0]
+    v = [1e308, 0.0, -5e307, 5e307]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
+    @test isequal(h, [0.0, 1e308, Inf, 0.0])
+end
+
+@testset "vector mixed extreme HVP directions" for unit in (1.0, 1.0 + 0im, 1.0 + 1im),
+    sign in (1.0, -1.0)
+
+    f(x) =
+        x[4] * real(
+            only(
+                BLAS.gemv!(
+                    'N',
+                    unit * x[1],
+                    fill(unit * x[2], 1, 1),
+                    [unit * x[3]],
+                    zero(unit),
+                    zeros(typeof(unit), 1),
+                ),
+            ),
+        )
+    x = [2.0, 1.0, 2.0, 1.0]
+    v = sign .* [1e308, 0.0, 0.0, -5e307]
+    h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)[3]
+    # The reference pullback uses a plain broadcast for dA. Keep its BLAS calls too:
+    # their complex overflow/accumulation order depends on the platform.
+    project(z) = real(unit) * real(z) + imag(unit) * imag(z)
+    function reference_gradient(x)
+        a, A, b = unit * x[1], fill(unit * x[2], 1, 1), [unit * x[3]]
+        seed = [oftype(unit, x[4])]
+        da = sum(conj.(BLAS.gemv('N', one(unit), A, b)) .* seed)
+        dA = only(a' .* seed .* b')
+        db = only(BLAS.gemv('C', a', A, seed))
+        ds = real(only(BLAS.gemv('N', a, A, b)))
+        return [project(da), project(dA), project(db), ds]
+    end
+    expected = tangent(
+        build_frule(reference_gradient, x)(zero_dual(reference_gradient), Dual(x, v))
+    )
+    @test isequal(h, expected)
 end
