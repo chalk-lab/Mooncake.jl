@@ -144,7 +144,6 @@ end
 @doc """
     _check_tangent_ptr(dp::Ptr{T}, n::Integer)
     _check_tangent_ptr(dp::Ptr{T})
-    _check_tangent_ptr(dp::Ptr{<:Ptr})
 
 Return `true` if a load, store or copy may go through tangent pointer `dp`, `false` if it
 can safely be skipped.
@@ -182,12 +181,10 @@ function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     )
 end
 
-# Without a count, the access moves one element.
-_check_tangent_ptr(dp::Ptr) = _check_tangent_ptr(dp, 1)
-
-# A pointer value may carry a null tangent, so a null `dp` is skipped here; copies, casts,
-# `unsafe_wrap` and `unsafe_pointer_to_objref` pass `n` to require tangent storage.
-_check_tangent_ptr(dp::Ptr{<:Ptr}) = dp != C_NULL
+# A pointer value may carry a null tangent; counted accesses still require storage.
+function _check_tangent_ptr(dp::Ptr{T}) where {T}
+    return T <: Ptr ? dp != C_NULL : _check_tangent_ptr(dp, 1)
+end
 
 """
     module IntrinsicsWrappers
