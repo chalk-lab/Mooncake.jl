@@ -857,6 +857,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = _rvs_guarded_dot(y, dy)
+            (α == 1 && β == 0) && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. y.
             dy .= _rvs_zero.(_rvs_mul.(dy, β'), all(iszero, dy))
@@ -1172,6 +1173,8 @@ end
 
         # gradient wrt beta
         db = _rvs_guarded_dot(p_C, dC)
+        # Remove coefficient directions from the reused unscaled product.
+        (a == 1 && b == 0) && (da -= _rvs_mul(db, b') + _rvs_mul(da, a' - one(T)))
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1347,6 +1350,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = _rvs_guarded_dot(C, dC)
+            (α == 1 && β == 0) && (dα -= _rvs_mul(dβ, β') + _rvs_mul(dα, α' - one(T)))
 
             # gradient w.r.t. C.
             dC .= _rvs_zero.(_rvs_mul.(dC, β'), all(iszero, dC))
@@ -2186,6 +2190,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    for (f, flags) in
+        ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')), (BLAS.symv!, ('U',)))
+        dims = f === BLAS.symv! ? (1,) : (1, 1)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ReverseMode, oracle=TestResources.hvp_oracle([36.0, 16.0, 10.0])),
+                x -> sum(
+                    abs2,
+                    f(
+                        flags...,
+                        P(x[1]),
+                        fill(P(x[2]), 1, 1),
+                        ones(P, dims),
+                        P(x[3]),
+                        ones(P, dims),
+                    ),
+                ),
+                [1.0, 3.0, 0.0],
+            ),
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end
