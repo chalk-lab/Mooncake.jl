@@ -9,6 +9,13 @@ function _trans(flag, mat)
     throw(error("Unrecognised flag $flag"))
 end
 
+function _blas_flag(x)
+    flag = primal(x)
+    'a' <= flag <= 'z' &&
+        throw(ArgumentError("lowercase BLAS/LAPACK flag '$flag' is unsupported"))
+    return flag
+end
+
 function tri!(A, u::Char, d::Char)
     return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
 end
@@ -684,7 +691,7 @@ end
     α, dα = extract(alpha)
     β, dβ = extract(beta)
 
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+    _gemv!_frule_core!(_blas_flag(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
     return y_dy
 end
@@ -731,7 +738,7 @@ end
 ) where {P<:BlasFloat}
 
     # Pull out primals and tangents (the latter only where necessary).
-    trans = _tA.x
+    trans = _blas_flag(_tA)
     alpha = _alpha.x
     A, dA = matrixify(_A)
     x, dx = arrayify(_x)
@@ -940,8 +947,8 @@ function frule!!(
 ) where {T<:BlasFloat}
     # Extract primals.
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -971,8 +978,8 @@ function rrule!!(
 
     # Extract primals.
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     x_copy = copy(x)
@@ -1049,8 +1056,8 @@ function frule!!(
     x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -1076,8 +1083,8 @@ function rrule!!(
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -1155,8 +1162,8 @@ end
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _blas_flag(transA)
+    tB = _blas_flag(transB)
     α, dα = extract(alpha)
     β, dβ = extract(beta)
     A, dA = matrixify(A_dA)
@@ -1194,8 +1201,8 @@ end
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _blas_flag(transA)
+    tB = _blas_flag(transB)
     a = primal(alpha)
     b = primal(beta)
     p_A, dA = matrixify(A)
@@ -1303,7 +1310,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        s = primal(side)
+        s = _blas_flag(side)
         ul = primal(uplo)
         α, dα = extract(alpha)
         β, dβ = extract(beta)
@@ -1339,7 +1346,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        s = primal(side)
+        s = _blas_flag(side)
         ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
@@ -1436,7 +1443,7 @@ for (fname, elty, relty) in (
 
         # Extract values from pairs.
         uplo = primal(_uplo)
-        t = primal(_t)
+        t = _blas_flag(_t)
         α, dα = extract(α_dα)
         A, dA = matrixify(A_dA)
         β, dβ = extract(β_dβ)
@@ -1469,7 +1476,7 @@ for (fname, elty, relty) in (
 
         # Extract values from pairs.
         uplo = primal(_uplo)
-        trans = primal(_t)
+        trans = _blas_flag(_t)
         α = primal(α_dα)
         A, dA = matrixify(A_dA)
         β = primal(β_dβ)
@@ -1535,10 +1542,10 @@ function frule!!(
 ) where {P<:BlasFloat}
 
     # Extract data.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
+    ta = _blas_flag(_ta)
+    diag = _blas_flag(_diag)
     α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1569,10 +1576,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract values.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    tA = primal(_ta)
-    diag = primal(_diag)
+    tA = _blas_flag(_ta)
+    diag = _blas_flag(_diag)
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1641,10 +1648,10 @@ function frule!!(
 ) where {P<:BlasFloat}
 
     # Extract parameters.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    trans = _blas_flag(_t)
+    diag = _blas_flag(_diag)
     α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1680,10 +1687,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract parameters.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    trans = _blas_flag(_t)
+    diag = _blas_flag(_diag)
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
