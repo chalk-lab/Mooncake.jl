@@ -419,6 +419,7 @@ end
         # copy(CuArray) → copyto! → unsafe_copyto! — exercises the unsafe_copyto! rule.
         _copy_sum(x) = sum(copy(x))
         _copy_sum_cx(x) = real(sum(copy(x)))
+        _copy_overlap(x, doffs, soffs, n) = unsafe_copyto!(x, doffs, x, soffs, n)
         # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
         # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
         # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
@@ -1264,6 +1265,7 @@ end
             (false, :none, true, unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
             # Sub-range copy: only elements 2..5 of dest are overwritten; rest unchanged.
             (false, :none, true, unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
+            (false, :none, false, _copy_overlap, _rand(rng, 4), 1, 1, 4),
             # Complex full-array copy.
             (
                 false,
