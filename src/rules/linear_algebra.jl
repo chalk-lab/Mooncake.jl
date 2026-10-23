@@ -89,10 +89,10 @@ const DenseVecOrMatArg{P} = Union{Vector{P},SubArray{P,1,<:Array{P}},DenseMatOrA
 
 # The factorization LinearAlgebra uses for a square `A`, so that the value and the gradient
 # need only one.
-function _square_factor(A; check)
+function _square_factor(A)
     istriu(A) && return UpperTriangular(A)
     istril(A) && return LowerTriangular(A)
-    return lu(A; check)
+    return lu(A; check=false)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(inv),DenseMat{P}} where {P<:BlasRealFloat}
@@ -118,7 +118,7 @@ end
 # zero, subnormal or infinite that product is undefined, overflows or loses precision, though
 # the adjugate is finite (and nonzero at rank n - 1), so it then comes from the SVD.
 function _det_and_grad(A::AbstractMatrix{P}) where {P}
-    F = _square_factor(A; check=false)
+    F = _square_factor(A)
     d = det(F)
     if (isfinite(d) && !iszero(d) && !issubnormal(d)) || !all(isfinite, A)
         return d, rmul!(ldiv!(F', Matrix{P}(I, size(A))), d)
@@ -187,7 +187,7 @@ end
 # `logabsdet(A)` and the gradient of its first output, `inv(A)'`. That gradient is unbounded
 # at a singular `A`, so the rules throw there if a derivative is needed.
 function _logabsdet_and_grad(A::AbstractMatrix{P}) where {P}
-    F = _square_factor(A; check=false)
+    F = _square_factor(A)
     ld, s = logabsdet(F)
     return ld, s, iszero(s) ? zeros(P, size(A)) : ldiv!(F', Matrix{P}(I, size(A)))
 end
