@@ -248,6 +248,33 @@ function _rvs_guarded_dot(A::AbstractMatrix, x::AbstractVector, dy::AbstractVect
     return s
 end
 
+# Mask the value without discarding a live direction through a zero coefficient.
+_rvs_zero(x::BlasFloat, inactive::Bool) = ifelse(inactive, zero(x), x)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_zero),BlasFloat,Bool}
+function frule!!(::Dual{typeof(_rvs_zero)}, x::Dual, inactive::Dual{Bool})
+    return Dual(_rvs_zero(primal(x), primal(inactive)), tangent(x))
+end
+
+@inline function _rvs_blas!(f::F, inactive::Bool, args::Vararg{Any,N}) where {F,N}
+    inactive || f(args...)
+    return last(args)
+end
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_rvs_blas!),Any,Bool,Vararg}
+function frule!!(
+    ::Dual{typeof(_rvs_blas!)}, f::Dual, inactive::Dual{Bool}, args::Vararg{Dual,N}
+) where {N}
+    out = last(args)
+    saved = primal(inactive) ? copy(primal(out)) : nothing
+    frule!!(f, args...)
+    saved === nothing || copyto!(primal(out), saved)
+    return out
+end
+
+@inline function _rvs_gemm!(tA, tB, a, A, B, C)
+    inactive = iszero(a)
+    return _rvs_blas!(BLAS.gemm!, inactive, tA, tB, a, A, B, one(eltype(C)), C)
+end
+
 #
 # LEVEL 1
 #
@@ -481,7 +508,7 @@ function rrule!!(
         ∇a = _rvs_guarded_dot(X, dX)
 
         # Compute gradient w.r.t. DX.
-        BLAS.scal!(a', dX)
+        dX .= _rvs_mul.(dX, a')
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
@@ -563,7 +590,7 @@ function rrule!!(
         # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
         # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
         ∇a = _rvs_guarded_dot(X, dY)
-        dX .+= a' .* dY
+        dX .+= _rvs_mul.(dY, a')
 
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -679,17 +706,17 @@ end
         if trans == 'N'
             dalpha = dot(dy, A, x)'
             isnan(dalpha) && (dalpha = _rvs_guarded_dot(A, x, dy))
-            dA .+= alpha' .* dy .* x'
+            dA .+= _rvs_zero.(alpha' .* dy .* x', iszero(alpha))
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
             dalpha = dot(dy, A', x)'
             isnan(dalpha) && (dalpha = _rvs_guarded_dot(A', x, dy))
-            dA .+= alpha .* x .* dy'
+            dA .+= _rvs_zero.(alpha .* x .* dy', iszero(alpha))
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
             dalpha = dot(dy, transpose(A), x)'
             isnan(dalpha) && (dalpha = _rvs_guarded_dot(transpose(A), x, dy))
-            dA .+= alpha' .* conj.(x) .* transpose(dy)
+            dA .+= _rvs_zero.(alpha' .* conj.(x) .* transpose(dy), iszero(alpha))
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
             conj!(dx)
@@ -697,7 +724,7 @@ end
             conj!(dx)
         end
         dbeta = _rvs_guarded_dot(y_copy, dy)
-        dy .*= beta'
+        dy .= _rvs_mul.(dy, beta')
 
         # Restore primal.
         copyto!(y, y_copy)
@@ -800,6 +827,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
             dA_tmp = α' * dy * x'
+            dA_tmp .= _rvs_zero.(dA_tmp, iszero(α))
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -827,7 +855,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             dβ = _rvs_guarded_dot(y, dy)
 
             # gradient w.r.t. y.
-            BLAS.scal!(β', dy)
+            dy .= _rvs_mul.(dy, β')
 
             return (NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData())
         end
@@ -1143,18 +1171,18 @@ end
             # A not transposed: C = a*A*op(B) + b*C
             # dA += a' * dC * op(B)'
             Bherm = tB == 'T' ? conj(p_B) : p_B
-            BLAS.gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, one(T), dA)
+            _rvs_gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, dA)
         elseif tA == 'C'
             # A conjugate transposed: C = a*A'*op(B) + b*C
             # dA += a * op(B) * dC'
-            BLAS.gemm!(tB, 'C', a, p_B, dC, one(T), dA)
+            _rvs_gemm!(tB, 'C', a, p_B, dC, dA)
         else  # tA == 'T'
             # A transposed (complex): C = a*A^T*op(B) + b*C
             # dA += conj(a) * conj(op(B)) * transpose(dC)
             if tB == 'N'
-                BLAS.gemm!('N', 'T', a', conj(p_B), dC, one(T), dA)
+                _rvs_gemm!('N', 'T', a', conj(p_B), dC, dA)
             else
-                BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
+                _rvs_gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, dA)
             end
         end
 
@@ -1162,23 +1190,23 @@ end
             # B not transposed: C = a*op(A)*B + b*C
             # dB += a' * op(A)' * dC
             Aherm = tA == 'T' ? conj(p_A) : p_A
-            BLAS.gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, one(T), dB)
+            _rvs_gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, dB)
         elseif tB == 'C'
             # B conjugate transposed: C = a*op(A)*B' + b*C
             # dB += a * dC' * op(A)
-            BLAS.gemm!('C', tA, a, dC, p_A, one(T), dB)
+            _rvs_gemm!('C', tA, a, dC, p_A, dB)
         else  # tB == 'T'
             # B transposed (complex): C = a*op(A)*B^T + b*C
             # dB += conj(a) * transpose(dC) * conj(op(A))
             if tA == 'N'
-                BLAS.gemm!('T', 'N', a', dC, conj(p_A), one(T), dB)
+                _rvs_gemm!('T', 'N', a', dC, conj(p_A), dB)
             else
-                BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
+                _rvs_gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, dB)
             end
         end
 
         # Propagate gradient through beta
-        dC .*= b'
+        dC .= _rvs_mul.(dC, b')
 
         return (NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData())
     end
@@ -1283,6 +1311,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
             dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
+            dA_tmp .= _rvs_zero.(dA_tmp, iszero(α))
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1302,7 +1331,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             dβ = _rvs_guarded_dot(C, dC)
 
             # gradient w.r.t. C.
-            dC .*= β'
+            dC .= _rvs_mul.(dC, β')
 
             return (
                 NoRData(), NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData()
@@ -1412,8 +1441,8 @@ for (fname, elty, relty) in (
 
             M1 = B + $(isherm ? adjoint : transpose)(B)
             M2 = $(isherm ? :A : :(conj(A)))
-            dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
-            dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
+            dA .+= _rvs_mul.(trans == 'N' ? M1 * M2 : M2 * M1, $elty(α'))
+            dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ _rvs_mul.(B, $elty(β'))
 
             return (NoRData(), NoRData(), NoRData(), ∇α, NoRData(), ∇β, NoRData())
         end
@@ -1503,19 +1532,19 @@ function rrule!!(
         # Increment gradients.
         if side == 'L'
             if tA == 'T' && P <: BlasComplexFloat
-                dA .+= α' .* tri!(conj(B) * transpose(dB), uplo, diag)
+                dA .+= _rvs_mul.(tri!(conj(B) * transpose(dB), uplo, diag), α')
             elseif tA == 'N'
-                dA .+= α' .* tri!(dB * B', uplo, diag)
+                dA .+= _rvs_mul.(tri!(dB * B', uplo, diag), α')
             else
-                dA .+= α .* tri!(B * dB', uplo, diag)
+                dA .+= _rvs_mul.(tri!(B * dB', uplo, diag), α)
             end
         else
             if tA == 'T' && P <: BlasComplexFloat
-                dA .+= α' .* tri!(transpose(dB) * conj(B), uplo, diag)
+                dA .+= _rvs_mul.(tri!(transpose(dB) * conj(B), uplo, diag), α')
             elseif tA == 'N'
-                dA .+= α' .* tri!(B' * dB, uplo, diag)
+                dA .+= _rvs_mul.(tri!(B' * dB, uplo, diag), α')
             else
-                dA .+= α .* tri!(dB' * B, uplo, diag)
+                dA .+= _rvs_mul.(tri!(dB' * B, uplo, diag), α)
             end
         end
 
@@ -1712,6 +1741,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
 
     test_cases = vcat(
+        [(
+            false,
+            :none,
+            (mode=ReverseMode, oracle=TestResources.gradient_oracle((zeros(P, 2, 2),))),
+            A -> real(sum(mul!(zeros(P, 2), A, P[NaN, 1], P(0), P(1)))),
+            ones(P, 2, 2),
+        )],
         [(
             true,
             :none,
