@@ -24,6 +24,117 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function primal_oracle(expected)
+    return function (_, f, args...)
+        out, _ = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (f, args...))...)
+        return Mooncake.TestUtils.has_equal_data(primal(out), expected)
+    end
+end
+
+function zero_pullback_oracle(_, f, args...)
+    slots = map(Mooncake.zero_fcodual, (f, args...))
+    out, pb = Mooncake.rrule!!(slots...)
+    pb(Mooncake.zero_rdata(primal(out)))
+    return all(
+        s -> !(primal(s) isa AbstractArray) || all(iszero, Mooncake.arrayify(s)[2]), slots
+    )
+end
+
+function hvp_oracle(expected)
+    return function (_, f, x)
+        cache = Mooncake.prepare_hvp_cache(f, x)
+        _, _, actual = Mooncake.value_and_hvp!!(cache, f, ones(eltype(x), size(x)), x)
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
+function structured_output_cases(f)
+    return [
+        (
+            false,
+            :none,
+            (;),
+            f,
+            view(UnitUpperTriangular(zeros(2, 2)), 1:1, 2:2),
+            ones(1, 1),
+        ),
+        (
+            false,
+            :none,
+            (;),
+            f,
+            view(UnitLowerTriangular(zeros(2, 2)), 2:2, 1:1),
+            ones(1, 1),
+        ),
+    ]
+end
+
+function structured_rule_cases(f)
+    cases = Any[]
+    for W in (UnitUpperTriangular, UnitLowerTriangular)
+        x = W([0.2 0.3; 0.4 0.5])
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (
+                    mode=Mooncake.ForwardMode,
+                    oracle=jvp_oracle((Mooncake.zero_tangent(x),), 0.0),
+                ),
+                f,
+                x,
+            ),
+        )
+        for y in (
+            x,
+            view(x, [2, 1, 2], [2, 1]),
+            reshape(x, 4),
+            Adjoint(view(x, :, :)),
+            Diagonal(reshape(x, 4)),
+        )
+            push!(cases, (false, :none, (mode=Mooncake.ReverseMode,), f, y))
+        end
+    end
+    push!(cases, (false, :none, (;), f, Hermitian([1.0 2.0; 3.0 4.0])))
+    return cases
+end
+
+function cuda_tangent_cases(array)
+    x = array(fill(complex(Inf, 0.0), 1, 1))
+    check = (_, f, args...) -> isequal(Array(f(args...)), fill(complex(Inf, 0.0), 1, 1))
+    return [
+        (false, :none, (oracle=check,), Mooncake._add_to_primal, x, zero(x), true),
+        (false, :none, (oracle=check,), Mooncake._scale, 1.0, x),
+        (
+            false,
+            :none,
+            (oracle=(_, f, args...)->f(args...) === Inf,),
+            Mooncake._dot,
+            vec(x),
+            array(ones(ComplexF64, 1)),
+        ),
+    ]
+end
+
+function gradient_oracle(expected)
+    return function (_, f, x...)
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        _, actual = Mooncake.value_and_gradient!!(cache, f, x...)
+        return Mooncake.TestUtils.has_equal_data(actual[2:end], expected)
+    end
+end
+
+function jvp_oracle(directions, expected)
+    return function (_, f, x...)
+        rule = Mooncake.build_frule(f, x...)
+        _, actual = Mooncake.value_and_derivative!!(
+            rule, (f, Mooncake.NoTangent()), map(tuple, x, directions)...
+        )
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
 #
 # Types used for testing purposes
 #

@@ -335,6 +335,17 @@ function combine_results(result, tag, _range, default_range)
     )
 end
 
+function benchmark_test_case_data(test_cases, memory)
+    test_cases = filter(x -> !hasproperty(x[3], :throws), test_cases)
+    ranges = map(test_cases) do x
+        options = x[3]
+        hasproperty(options, :lb) && hasproperty(options, :ub) || return nothing
+        return (lb=options.lb, ub=options.ub)
+    end
+    tags = fill(nothing, length(test_cases))
+    return map(x -> x[4:end], test_cases), memory, ranges, tags
+end
+
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
@@ -348,20 +359,14 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :misc,
         :new,
     ]) do s
-        test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
-        ranges = map(x -> x[3], test_cases)
-        tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return benchmark_test_case_data(hand_written_rule_test_cases(rng_ctor, Val(s))...)
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03; retries=5)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
-        test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
-        ranges = map(x -> x[3], test_cases)
-        tags = fill(nothing, length(test_cases))
-        return map(x -> x[4:end], test_cases), memory, ranges, tags
+        return benchmark_test_case_data(derived_rule_test_cases(rng_ctor, Val(s))...)
     end
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
