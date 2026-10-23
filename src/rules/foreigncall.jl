@@ -85,37 +85,66 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
+# A null tangent pointer also refuses recovering an object whose tangent layout differs.
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
 function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
+    dx = tangent(x)
+    dy = Ptr{NoTangent}(C_NULL)
+    if !(dx isa NoTangent)
+        dy = bitcast(Ptr{NoTangent}, pointer_from_objref(dx))
+        dy = _build_tangent_ptr(dy, typeof(primal(x)), typeof(dx), Val(true))
+    end
     return Dual(y, dy)
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
-    y = CoDual(
-        pointer_from_objref(primal(x)),
-        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x))),
-    )
+    dx = tangent(x)
+    dy = Ptr{NoTangent}(C_NULL)
+    if !(dx isa NoFData)
+        dy = bitcast(Ptr{NoTangent}, pointer_from_objref(dx))
+        dy = _build_tangent_ptr(dy, typeof(primal(x)), typeof(dx), Val(true))
+    end
+    y = CoDual(pointer_from_objref(primal(x)), dy)
     return y, NoPullback(f, x)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
+function _objref_tangent(y, dx::Ptr)
+    tangent_type(typeof(y)) == NoTangent && return NoTangent()
+    _check_tangent_ptr(bitcast(Ptr{tangent_type(typeof(y))}, dx), 1)
+    return unsafe_pointer_to_objref(dx)
+end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    y = unsafe_pointer_to_objref(primal(x))
+    return Dual(y, _objref_tangent(y, tangent(x)))
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    py = unsafe_pointer_to_objref(primal(x))
+    y = CoDual(py, fdata(_objref_tangent(py, tangent(x))))
     return y, NoPullback(f, x)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(Threads.threadid)}
 @zero_derivative MinimalCtx Tuple{typeof(typeintersect),Any,Any}
 
-function _increment_pointer!(x::Ptr{T}, y::Ptr{T}, N::Integer) where {T}
-    increment!!(unsafe_wrap(Vector{T}, x, N), unsafe_wrap(Vector{T}, y, N))
-    return x
+function _swap_array_entries!(x::Array, y::Vector, xinds)
+    @inbounds for (i, j) in enumerate(xinds)
+        if isassigned(x, j)
+            tmp = x[j]
+            if isassigned(y, i)
+                x[j] = y[i]
+            else
+                Base._unsetindex!(x, j)
+            end
+            y[i] = tmp
+        elseif isassigned(y, i)
+            x[j] = y[i]
+            Base._unsetindex!(y, i)
+        end
+    end
+    return nothing
 end
 
 # unsafe_copyto! is the only function in Julia that appears to rely on a ccall to `memmove`.
@@ -125,36 +154,49 @@ end
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
+    has_tangent =
+        _check_tangent_ptr(tangent(dest), primal(n)) &
+        _check_tangent_ptr(tangent(src), primal(n))
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    has_tangent && unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
+    has_tangent =
+        _check_tangent_ptr(tangent(dest), primal(n)) &
+        _check_tangent_ptr(tangent(src), primal(n))
     _n = primal(n)
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
-    ddest_copy = Vector{T}(undef, _n)
     pdest = primal(dest)
     ddest = tangent(dest)
+    # Must be an empty `Vector`, not `nothing`: a union-typed snapshot makes the pullback
+    # unstable.
+    ddest_copy = Vector{eltype(ddest)}(undef, has_tangent ? _n : 0)
     unsafe_copyto!(pointer(dest_copy), pdest, _n)
-    unsafe_copyto!(pointer(ddest_copy), ddest, _n)
+    has_tangent && unsafe_copyto!(pointer(ddest_copy), ddest, _n)
 
     # Run primal computation.
     dsrc = tangent(src)
     unsafe_copyto!(primal(dest), primal(src), _n)
-    unsafe_copyto!(tangent(dest), dsrc, _n)
+    has_tangent && unsafe_copyto!(ddest, dsrc, _n)
 
     function unsafe_copyto!_pb!!(::NoRData)
-
-        # Increment dsrc.
-        _increment_pointer!(dsrc, ddest, _n)
-
-        # Restore initial state.
         unsafe_copyto!(pdest, pointer(dest_copy), _n)
-        unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+        if has_tangent
+            ddest_array = unsafe_wrap(Vector{eltype(ddest)}, ddest, _n)
+            if max(ddest, dsrc) - min(ddest, dsrc) >= _n * Base.elsize(ddest_array)
+                increment!!(unsafe_wrap(Vector{eltype(dsrc)}, dsrc, _n), ddest_array)
+                unsafe_copyto!(ddest, pointer(ddest_copy), _n)
+            else
+                # Overlapping ranges require restoring ddest before accumulating into dsrc.
+                _swap_array_entries!(ddest_array, ddest_copy, eachindex(ddest_copy))
+                increment!!(unsafe_wrap(Vector{eltype(dsrc)}, dsrc, _n), ddest_copy)
+            end
+        end
 
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -421,6 +463,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _b, _db = randn(4), randn(4)
     ptr_a, ptr_da = pointer(_a), pointer(_da)
     ptr_b, ptr_db = pointer(_b), pointer(_db)
+    _c, _d = [1, 2], [3, 4]
 
     test_cases = Any[
         (false, :stability, nothing, Base.allocatedinline, Float64),
@@ -457,6 +500,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             CoDual(ptr_b, ptr_db),
             4,
         ),
+        (
+            true,
+            :stability,
+            nothing,
+            unsafe_copyto!,
+            CoDual(pointer(_c), Ptr{NoTangent}(C_NULL)),
+            CoDual(pointer(_d), Ptr{NoTangent}(C_NULL)),
+            2,
+        ),
         (false, :stability, nothing, deepcopy, 5.0),
         (false, :stability, nothing, deepcopy, randn(5)),
         (false, :none, nothing, deepcopy, TestResources.MutableFoo(5.0, randn(5))),
@@ -470,7 +522,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
     ]
-    memory = Any[_x, _dx, _a, _da, _b, _db]
+    memory = Any[_x, _dx, _a, _da, _b, _db, _c, _d]
     return test_cases, memory
 end
 
@@ -479,6 +531,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
 
     function unsafe_copyto_tester(x::Vector{T}, y::Vector{T}, n::Int) where {T}
         GC.@preserve x y unsafe_copyto!(pointer(x), pointer(y), n)
+        return x
+    end
+
+    function unsafe_copyto_overlap_tester(x, doffs, soffs, n)
+        GC.@preserve x unsafe_copyto!(pointer(x, doffs), pointer(x, soffs), n)
         return x
     end
 
@@ -496,6 +553,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 1, 4),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 2, 1, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 2, 3),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 3, 1, 2),
+        (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 3, 2),
         (
             false,
             :none,
@@ -511,6 +573,40 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             (lb=0.1, ub=150),
             x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
             _x,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+            [TestResources.TypeStableMutableStruct{Float64}(1.0, 2.0)],
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (
+                function objptr_isa(x)
+                    v = ["a", "bb"]
+                    s = GC.@preserve v unsafe_pointer_to_objref(
+                        unsafe_load(Ptr{Ptr{Cvoid}}(pointer(v, 2)))
+                    )
+                    return s === v[2] ? 2x : x
+                end
+            ),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> begin
+                r = TestResources.TypeStableMutableStruct{typeof(x)}(x, 2x)
+                return GC.@preserve r unsafe_load(
+                    Ptr{typeof(x)}(pointer_from_objref(r)) + sizeof(x)
+                )
+            end,
+            1.0,
         ),
         (false, :none, nothing, isassigned, randn(5), 4),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
@@ -553,6 +649,31 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             -1,
             Base.get_world_counter(),
         ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> begin
+                r = TestResources.NonDifferentiableFoo(1, false)
+                return GC.@preserve r (pointer_from_objref(r) != C_NULL ? 2x : x)
+            end,
+            1.0,
+        ),
     ]
+    @static if VERSION >= v"1.11.0-rc4"
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                x -> begin
+                    m = Memory{Int}(undef, 1)
+                    return GC.@preserve m (pointer_from_objref(m) != C_NULL ? 2x : x)
+                end,
+                1.0,
+            ),
+        )
+    end
     return test_cases, memory
 end
