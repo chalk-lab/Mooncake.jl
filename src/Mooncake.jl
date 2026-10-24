@@ -41,6 +41,13 @@ using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
 
+@static if isdefined(Core, :BFloat16)
+    const NonBlasFloat = Union{Float16,Core.BFloat16}
+else
+    const NonBlasFloat = Float16
+end
+const BuiltinFloat = Union{IEEEFloat,NonBlasFloat}
+
 DispatchDoctor.register_macro!(
     Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__
 )

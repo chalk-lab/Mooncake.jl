@@ -347,7 +347,7 @@ tangent_type(::Type{P}) where {P<:Union{Int8,Int16,Int32,Int64,Int128,BigInt}} =
 
 tangent_type(::Type{<:Core.Builtin}) = NoTangent
 
-@foldable tangent_type(::Type{P}) where {P<:IEEEFloat} = P
+@foldable tangent_type(::Type{P}) where {P<:BuiltinFloat} = P
 
 tangent_type(::Type{<:Core.LLVMPtr}) = NoTangent
 

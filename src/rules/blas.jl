@@ -17,12 +17,6 @@ const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
-@static if isdefined(Core, :BFloat16)
-    const NonBlasFloat = Union{Float16,Core.BFloat16}
-else
-    const NonBlasFloat = Float16
-end
-
 # `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
 # its parent, and reshaping an `Array` yields an `Array`.
 const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
