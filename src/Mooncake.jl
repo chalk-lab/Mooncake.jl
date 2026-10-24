@@ -47,6 +47,7 @@ using DispatchDoctor: @stable, @unstable, DispatchDoctor
 else
     const HalfFloat = Float16
 end
+# BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
 const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
 
 DispatchDoctor.register_macro!(

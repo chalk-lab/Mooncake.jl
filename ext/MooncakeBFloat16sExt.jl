@@ -1,4 +1,5 @@
 module MooncakeBFloat16sExt
+# `Core.BFloat16` methods that need the arithmetic BFloat16s.jl defines.
 
 using Mooncake
 using Random: AbstractRNG
