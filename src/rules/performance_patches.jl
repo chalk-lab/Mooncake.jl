@@ -92,11 +92,11 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
-const NonBlasStorage{P} = Union{
+const _DenseMat{P} = Union{
     Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
 }
-const NonBlasMatrix{P} = Union{
-    NonBlasStorage{P},Adjoint{P,<:NonBlasStorage{P}},Transpose{P,<:NonBlasStorage{P}}
+const _DenseMatOrAdjTrans{P} = Union{
+    _DenseMat{P},Adjoint{P,<:_DenseMat{P}},Transpose{P,<:_DenseMat{P}}
 }
 
 function _check_mul_alias(C, A, B)
@@ -113,18 +113,18 @@ end
     DefaultCtx,
     Tuple{
         typeof(mul!),
-        NonBlasStorage{P},
-        NonBlasMatrix{P},
-        NonBlasMatrix{P},
+        _DenseMat{P},
+        _DenseMatOrAdjTrans{P},
+        _DenseMatOrAdjTrans{P},
         Union{Bool,P},
         Union{Bool,P},
     } where {P<:HalfFloat},
 )
 function frule!!(
     ::Dual{typeof(mul!)},
-    C::Dual{<:NonBlasStorage{P}},
-    A::Dual{<:NonBlasMatrix{P}},
-    B::Dual{<:NonBlasMatrix{P}},
+    C::Dual{<:_DenseMat{P}},
+    A::Dual{<:_DenseMatOrAdjTrans{P}},
+    B::Dual{<:_DenseMatOrAdjTrans{P}},
     alpha::Dual{<:Union{Bool,P}},
     beta::Dual{<:Union{Bool,P}},
 ) where {P<:HalfFloat}
@@ -142,9 +142,9 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(mul!)},
-    C::CoDual{<:NonBlasStorage{P}},
-    A::CoDual{<:NonBlasMatrix{P}},
-    B::CoDual{<:NonBlasMatrix{P}},
+    C::CoDual{<:_DenseMat{P}},
+    A::CoDual{<:_DenseMatOrAdjTrans{P}},
+    B::CoDual{<:_DenseMatOrAdjTrans{P}},
     alpha::CoDual{<:Union{Bool,P}},
     beta::CoDual{<:Union{Bool,P}},
 ) where {P<:HalfFloat}
