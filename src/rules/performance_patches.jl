@@ -99,9 +99,9 @@ const NonBlasMatrix{P} = Union{
     NonBlasStorage{P},Adjoint{P,<:NonBlasStorage{P}},Transpose{P,<:NonBlasStorage{P}}
 }
 
-# Scalar reverse-mode tapes store every multiply-add; matrix pullbacks need only the inputs.
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
 @is_primitive(
-    MinimalCtx,
+    DefaultCtx,
     Tuple{
         typeof(mul!),
         NonBlasStorage{P},

@@ -23,8 +23,6 @@ else
     const NonBlasFloat = Float16
 end
 
-const ArrayifyFloat = Union{IEEEFloat,BlasFloat,NonBlasFloat}
-
 # `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
 # its parent, and reshaping an `Array` yields an `Array`.
 const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
@@ -54,11 +52,17 @@ convention.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
-) where {T<:ArrayifyFloat,A<:Union{AbstractArray{T},Ptr{<:T}}}
+) where {
+    A<:Union{
+        AbstractArray{<:Union{IEEEFloat,BlasFloat,NonBlasFloat}},
+        Ptr{<:Union{IEEEFloat,BlasFloat}},
+    },
+}
     return arrayify(primal(x), tangent(x))
 end
-function arrayify(x::A, dx::A) where {T<:ArrayifyFloat,A<:Union{Array{<:T},Ptr{<:T}}}
-    dx isa Ptr && _check_tangent_ptr(dx)
+arrayify(x::A, dx::A) where {A<:Array{<:Union{IEEEFloat,BlasFloat,NonBlasFloat}}} = (x, dx)
+function arrayify(x::A, dx::A) where {A<:Ptr{<:Union{IEEEFloat,BlasFloat}}}
+    _check_tangent_ptr(dx)
     return x, dx
 end
 function arrayify(
@@ -69,7 +73,7 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:ArrayifyFloat,B,C,D,E}
+) where {P<:Union{IEEEFloat,BlasFloat,NonBlasFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -89,25 +93,25 @@ function arrayify(
 end
 function arrayify(
     x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
-) where {T<:ArrayifyFloat}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:ArrayifyFloat}
+) where {T<:Union{IEEEFloat,BlasFloat,NonBlasFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
 function arrayify(
     x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:ArrayifyFloat}
+) where {T<:Union{IEEEFloat,BlasFloat,NonBlasFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, transpose(_dx)
 end
 
 @static if VERSION >= v"1.11-rc4"
-    arrayify(x::A, dx::A) where {A<:Memory{<:ArrayifyFloat}} = (x, dx)
+    arrayify(x::A, dx::A) where {A<:Memory{<:Union{IEEEFloat,BlasFloat}}} = (x, dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}
