@@ -73,7 +73,7 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:Union{IEEEFloat,BlasFloat,NonBlasFloat},B,C,D,E}
+) where {P<:Union{BlasFloat,NonBlasFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -99,13 +99,13 @@ function arrayify(
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat,NonBlasFloat}}
+) where {T<:Union{BlasFloat,NonBlasFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
 function arrayify(
     x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat,NonBlasFloat}}
+) where {T<:Union{BlasFloat,NonBlasFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, transpose(_dx)
 end
