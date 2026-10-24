@@ -53,13 +53,15 @@ convention.
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
 ) where {
-    A<:Union{AbstractArray{<:Union{BlasFloat,NonBlasFloat}},Ptr{<:Union{Float16,BlasFloat}}}
+    A<:Union{
+        AbstractArray{<:Union{BlasFloat,NonBlasFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}
+    },
 }
     return arrayify(primal(x), tangent(x))
 end
 function arrayify(
     x::A, dx::A
-) where {A<:Union{Array{<:Union{BlasFloat,NonBlasFloat}},Ptr{<:Union{Float16,BlasFloat}}}}
+) where {A<:Union{Array{<:Union{BlasFloat,NonBlasFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}}
     dx isa Ptr && _check_tangent_ptr(dx)
     return x, dx
 end
