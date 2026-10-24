@@ -46,7 +46,7 @@ using DispatchDoctor: @stable, @unstable, DispatchDoctor
 else
     const NonBlasFloat = Float16
 end
-const BuiltinFloat = Union{IEEEFloat,NonBlasFloat}
+const IEEEOrBFloat = Union{IEEEFloat,NonBlasFloat}
 
 DispatchDoctor.register_macro!(
     Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__
