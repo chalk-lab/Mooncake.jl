@@ -37,6 +37,7 @@ using Base.Broadcast: Broadcasted
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
 import Statistics: mean, varm
 import Mooncake:
+    FloatOrComplex as CuFloatOrComplex,
     MinimalCtx,
     DefaultCtx,
     frule!!,
@@ -121,7 +122,6 @@ end
 
 const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 const CuMaybeComplexMat = Union{CuArray{<:IEEEFloat,2},CuArray{<:Complex{<:IEEEFloat},2}}
-const CuFloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 const CuGpuSumFArray = Union{
     CuFloatArray,
     CuComplexArray,
@@ -249,12 +249,12 @@ end
 )
 function frule!!(
     ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
     _nopb(Val(3))
 end
@@ -3874,8 +3874,7 @@ end
     pa, t
 )[2]
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
-@inline _leaf_effective_tangent(::IEEEFloat, t) = t
-@inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
+@inline _leaf_effective_tangent(::CuFloatOrComplex, t) = t
 
 struct _GpuBroadcastCastDiff{T,PA,D}
     primal_arg::PA
