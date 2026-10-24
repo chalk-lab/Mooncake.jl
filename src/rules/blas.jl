@@ -18,10 +18,12 @@ const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 @static if isdefined(Core, :BFloat16)
-    const ArrayifyFloat = Union{IEEEFloat,BlasFloat,Core.BFloat16}
+    const NonBlasFloat = Union{Float16,Core.BFloat16}
 else
-    const ArrayifyFloat = Union{IEEEFloat,BlasFloat}
+    const NonBlasFloat = Float16
 end
+
+const ArrayifyFloat = Union{IEEEFloat,BlasFloat,NonBlasFloat}
 
 # `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
 # its parent, and reshaping an `Array` yields an `Array`.

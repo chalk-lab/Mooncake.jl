@@ -92,12 +92,6 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
-@static if isdefined(Core, :BFloat16)
-    const NonBlasFloat = Union{Float16,Core.BFloat16}
-else
-    const NonBlasFloat = Float16
-end
-
 const NonBlasStorage{P} = Union{
     Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
 }
