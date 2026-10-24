@@ -42,11 +42,11 @@ using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
 
 @static if isdefined(Core, :BFloat16)
-    const NonBlasFloat = Union{Float16,Core.BFloat16}
+    const HalfFloat = Union{Float16,Core.BFloat16}
 else
-    const NonBlasFloat = Float16
+    const HalfFloat = Float16
 end
-const IEEEOrBFloat = Union{IEEEFloat,NonBlasFloat}
+const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
 
 DispatchDoctor.register_macro!(
     Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__

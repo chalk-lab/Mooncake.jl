@@ -118,7 +118,7 @@ end
         NonBlasMatrix{P},
         Union{Bool,P},
         Union{Bool,P},
-    } where {P<:NonBlasFloat},
+    } where {P<:HalfFloat},
 )
 function frule!!(
     ::Dual{typeof(mul!)},
@@ -127,7 +127,7 @@ function frule!!(
     B::Dual{<:NonBlasMatrix{P}},
     alpha::Dual{<:Union{Bool,P}},
     beta::Dual{<:Union{Bool,P}},
-) where {P<:NonBlasFloat}
+) where {P<:HalfFloat}
     pC, dC = arrayify(C)
     pA, dA = arrayify(A)
     pB, dB = arrayify(B)
@@ -147,7 +147,7 @@ function rrule!!(
     B::CoDual{<:NonBlasMatrix{P}},
     alpha::CoDual{<:Union{Bool,P}},
     beta::CoDual{<:Union{Bool,P}},
-) where {P<:NonBlasFloat}
+) where {P<:HalfFloat}
     pC, dC = arrayify(C)
     pA, dA = arrayify(A)
     pB, dB = arrayify(B)
