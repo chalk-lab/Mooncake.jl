@@ -37,6 +37,7 @@ using Core:
     compilerbarrier
 using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
+# `BlasFloat` is `Union{Float32,Float64,ComplexF32,ComplexF64}`.
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
