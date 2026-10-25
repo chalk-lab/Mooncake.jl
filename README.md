@@ -60,16 +60,15 @@ for a walkthrough and the
 
 ## Contributing
 
-In the spirit of long-lived projects such as R and TeX, we take a conservative
-approach to development: correctness, stability, and tightly scoped fixes take
-precedence over expanding the package's scope.
+We take a conservative approach to development, in the spirit of long-lived
+projects such as R and TeX. Correctness, stability, and narrowly scoped fixes
+come before expanding the package's scope.
 
-Contributions are most welcome when they address reproducible defects, such as
-incorrect results, unexpected failures, or behaviour inconsistent with the
-documented scope.
+Contributions are most welcome when they fix reproducible problems: incorrect
+results, unexpected failures, or behaviour that contradicts the documented scope.
 
-If you wish to extend Mooncake's coverage, we encourage you to organise
-independently. See the [support policy](SUPPORT_POLICY.md#scope-of-differentiation-rules)
+To extend Mooncake's coverage, please organise the work independently.
+See the [support policy](SUPPORT_POLICY.md#scope-of-differentiation-rules)
 for guidance and examples.
 
 ## Licensing
