@@ -41,12 +41,15 @@ possible for all array types of interest so far.
 
 ## Convention
 
-Except for unit-triangular forward tangents, which use lazy strict-triangle projections,
-the tangent is wrapped
+Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
 in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
-`Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
-for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
-helper should extract the backing store (see `_accum_sym_logdet!`).
+`Symmetric` → `Symmetric`).
+The exception is a unit-triangular primal with a `Tangent`: its tangent is a lazy
+strict-triangle view, not wrapped in the primal's type, that reads zeros outside the strict
+triangle, writes through to the original storage inside it, and throws on a nonzero store
+outside it. Rules that need to write into the tangent in-place must account for whether the
+wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated helper should
+extract the backing store (see `_accum_sym_logdet!`).
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
