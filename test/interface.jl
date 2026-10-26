@@ -743,6 +743,52 @@ end
             )
         end
 
+        @testset "Array inputs with friendly tangents of another array type" begin
+            # A friendly tangent of an array input may be any array of the input's size,
+            # e.g. the `Array` that `similar(x)` builds for a `SubArray` or `Transpose`.
+            vec_parent = [1.0, 2.0, 3.0, 4.0]
+            mat_parent = [1.0 2.0; 3.0 4.0; 5.0 6.0]
+            vec_view = view(vec_parent, 2:3)
+            col_view = view(mat_parent, :, 2)
+            mat_transpose = transpose(mat_parent)
+            sum_abs2 = x -> sum(abs2, x)
+            # Reads the parent outside the view: a nonzero derivative there would mean
+            # primal values of the parent leaked into the tangent.
+            parent_sum_abs2 = x -> sum(abs2, parent(x))
+            entry_and_sum = x -> x[1, 2]^2 + sum(x)
+            dx_view = [1.0, 2.0]
+            dx_col = [1.0, 0.5, 2.0]
+            dx_transpose = [1.0 2.0 3.0; 4.0 5.0 6.0]
+            cases = [
+                (sum_abs2, vec_view, dx_view, 2 * (2.0 * 1.0 + 3.0 * 2.0)),
+                (sum_abs2, col_view, dx_col, 2 * (2.0 * 1.0 + 4.0 * 0.5 + 6.0 * 2.0)),
+                (parent_sum_abs2, vec_view, dx_view, 2 * (2.0 * 1.0 + 3.0 * 2.0)),
+                (entry_and_sum, mat_transpose, dx_transpose, 2 * 3.0 * 2.0 + 21.0),
+            ]
+            @testset "$(typeof(x))" for (f, x, dx, dy) in cases
+                cache = Mooncake.prepare_derivative_cache(
+                    f, x; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
+                )
+                y_and_dy = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (x, dx)
+                )
+                @test first(y_and_dy) ≈ f(x)
+                @test last(y_and_dy) ≈ dy
+
+                y_and_dy_chunk = Mooncake.value_and_derivative!!(
+                    cache,
+                    (f, Mooncake.zero_tangent(f)),
+                    (x, Mooncake.NTangent((dx, 2 * dx))),
+                )
+                @test first(y_and_dy_chunk) ≈ f(x)
+                @test collect(last(y_and_dy_chunk).lanes) ≈ [dy, 2 * dy]
+
+                @test_throws DimensionMismatch Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (x, zeros(size(x) .+ 1))
+                )
+            end
+        end
+
         @testset "Tuple-like inputs" begin
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)
