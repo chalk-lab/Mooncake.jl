@@ -14,6 +14,11 @@
         @test d isa wrapper_type(Type{open_type})
     end
 
+    # Inference widens a constant type to `Core.TypeEgal`; it must get `Type{P}`'s wrappers.
+    for wrapper_type in (dual_type, codual_type, Mooncake.fcodual_type)
+        @test wrapper_type(Core.Typeof(Float64)) == wrapper_type(Type{Float64})
+    end
+
     x = [2.0]
     skipped = @testset "unavailable static analysis" begin
         result = TestUtils.check_allocs(x -> (x[1] += 3; x), x)

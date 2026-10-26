@@ -19,6 +19,10 @@ function CoDual(x::Type{P}, dx::NoTangent) where {P}
 end
 
 primal(x::CoDual) = x.x
+@static if isdefined(Core, :TypeEgal)
+    # See `primal(::Dual{Type{P}})`.
+    primal(::CoDual{Type{P}}) where {P} = P
+end
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
 # CoDual can be safely shared without copying
@@ -111,6 +115,12 @@ end
         Base.has_free_typevars(p) && return CoDual
     end
     return @isdefined(P) ? CoDual{Type{P},NoFData} : CoDual{_typeof(p),NoFData}
+end
+
+@static if isdefined(Core, :TypeEgal)
+    # See `dual_type(::Core.TypeEgal)`.
+    @unstable codual_type(p::Core.TypeEgal) = codual_type(Type{Base.type_parameter(p)})
+    @unstable fcodual_type(p::Core.TypeEgal) = fcodual_type(Type{Base.type_parameter(p)})
 end
 
 to_fwds(x::CoDual) = CoDual(primal(x), fdata(tangent(x)))
