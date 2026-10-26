@@ -3,10 +3,14 @@
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+    # A null tangent must stay null: an offset one passes every check and segfaults.
+    dx = tangent(x)
+    return Dual(primal(x) + primal(y), dx == C_NULL ? dx : dx + primal(y))
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    dx = tangent(x)
+    return CoDual(primal(x) + primal(y), dx == C_NULL ? dx : dx + primal(y)),
+    NoPullback(f, x, y)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
@@ -137,7 +141,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
                 ),
                 2,
             ),
-
             # Rules for handling Atomic read operations.
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),

@@ -59,6 +59,10 @@ mutable struct DynamicFoRRule
     DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
 end
 
+# A copied forward rule (see `build_frule`) starts with empty caches, like `LazyFRule`.
+_copy(::P) where {P<:LazyFoRRule} = P()
+_copy(::DynamicFoRRule) = DynamicFoRRule()
+
 @generated function __build_primitive_frule(
     sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter{C},SMI,S,Bool}}
 ) where {C,SMI,S}
@@ -150,6 +154,17 @@ function _compile_for_rule(
     dri = generate_ir(
         interp, sig_or_mi; debug_mode, do_optimize=false, noinline_primitive_rules=true
     )
+
+    # noinline_primitive_rules protects primitive-rule calls. Protect increment!! too:
+    # inlining can erase its arithmetic before forward AD selects the rules. Apply
+    # this protection to other internals if their rule boundaries are lost likewise.
+    # Global do_inline=false prevents inlining needed to eliminate temporary allocations.
+    for inst in dri.rvs_ir.stmts
+        ex = stmt(inst)
+        if Meta.isexpr(ex, :call) && ex.args[1] === increment!!
+            CC.setindex!(inst, CC.getindex(inst, :flag) | CC.IR_FLAG_NOINLINE, :flag)
+        end
+    end
 
     # Optimize and build the primal DerivedRule.
     raw_rule = let

@@ -613,6 +613,46 @@ end
     return y, memoryrefset_adjoint
 end
 
+# `Base._unsetindex!` clears a slot by writing nulls through pointer arithmetic sized to the
+# primal's element layout, which does not match the tangent's, so unset each separately.
+@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),MemoryRef}
+function frule!!(::Dual{typeof(Base._unsetindex!)}, x::Dual{<:MemoryRef})
+    Base._unsetindex!(primal(x))
+    Base._unsetindex!(tangent(x))
+    return x
+end
+function rrule!!(
+    f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:MemoryRef{P},<:MemoryRef{V}}
+) where {P,V}
+    # `_unsetindex!` leaves isbits unions and pointer-free inline elements in place.
+    arrayelem = Base.datatype_arrayelem(typeof(x.x.mem))
+    if arrayelem == 2 || (arrayelem == 0 && Base.datatype_pointerfree(P::DataType))
+        Base._unsetindex!(x.x) # Preserve the primal's native bounds check.
+        Base._unsetindex!(x.dx)
+        return x, NoPullback(f, x)
+    end
+    to_save = isassigned(x.x)
+    old_x = Ref{Tuple{P,V}}()
+    if to_save
+        old_x[] = (
+            memoryrefget(x.x, :not_atomic, true), memoryrefget(x.dx, :not_atomic, true)
+        )
+    end
+    Base._unsetindex!(x.x)
+    Base._unsetindex!(x.dx)
+
+    # Pointer-free inline elements are left in place, so their cotangent passes through.
+    to_restore = to_save && !isassigned(x.x)
+    function _unsetindex!_pullback!!(::NoRData)
+        if to_restore
+            memoryrefset!(x.x, old_x[][1], :not_atomic, true)
+            memoryrefset!(x.dx, old_x[][2], :not_atomic, true)
+        end
+        return NoRData(), NoRData()
+    end
+    return x, _unsetindex!_pullback!!
+end
+
 # Core.memoryrefsetonce!
 # Core.memoryrefswap!
 # Core.set_binding_type!
@@ -657,7 +697,11 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    dy = _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
+    dy = if ptr_or_offset.dx == C_NULL  # zero-sized or non-mirroring tangent storage
+        Core.memoryrefnew(memoryref(mem.dx), Base.memoryrefoffset(y), false)
+    else
+        _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -722,7 +766,11 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
+    dy = if wants_length
+        NoTangent()
+    else
+        _build_tangent_ptr(tangent(x).ptr, primal(x), tangent(x))
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -733,7 +781,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : bitcast(Ptr{NoTangent}, x.dx.ptr)
+    dy = wants_length ? NoFData() : _build_tangent_ptr(x.dx.ptr, x.x, x.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -745,7 +793,8 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
+    dx = tangent(x)
+    dy = wants_offset ? _build_tangent_ptr(dx.ptr_or_offset, primal(x).mem, dx.mem) : dx.mem
     return Dual(y, dy)
 end
 function rrule!!(
@@ -756,7 +805,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    dy = wants_offset ? _build_tangent_ptr(x.dx.ptr_or_offset, x.x.mem, x.dx.mem) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1018,6 +1067,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             (false, :none, nothing, memoryrefset!, mem_ref, sample_value, :not_atomic, bc)
             for (mem_ref, sample_value) in assignable_refs for bc in [false, true]
         ],
+        [(false, :none, nothing, Base._unsetindex!, ref) for (ref, _) in assignable_refs],
+        (
+            false,
+            :none,
+            nothing,
+            Base._unsetindex!,
+            memoryref(
+                Memory{Tuple{Float64,Vector{Float64}}}([(1.0, [2.0]), (3.0, [4.0])]), 2
+            ),
+        ),
         (
             false,
             :stability,
@@ -1144,6 +1203,26 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, Base._deleteend!, randn(5), 2),
         (false, :none, nothing, Base._deleteend!, randn(5), 5),
         (false, :none, nothing, Base._deleteend!, randn(5), 0),
+        (false, :none, nothing, Base._deleteend!, [(1.0, [2.0]), (3.0, [4.0])], 1),
+        (false, :none, nothing, pop!, [(1.0, [2.0]), (3.0, [4.0])]),
+        (
+            false,
+            :none,
+            nothing,
+            pop!,
+            [TestResources.Mixed(1.0, [2.0]), TestResources.Mixed(3.0, [4.0])],
+        ),
+        (false, :none, nothing, Base._deletebeg!, [(1.0, [2.0]), (3.0, [4.0])], 1),
+        (
+            false,
+            :none,
+            nothing,
+            Base._deleteat!,
+            [(1.0, [2.0]), (3.0, [4.0]), (5.0, [6.0])],
+            2,
+            1,
+        ),
+        (false, :none, nothing, delete!, Dict(1 => (1.0, [2.0]), 2 => (3.0, [4.0])), 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 2, 2),
         (false, :none, nothing, Base._deleteat!, randn(5), 1, 5),
         (false, :none, nothing, Base._deleteat!, randn(5), 5, 1),
@@ -1182,6 +1261,55 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
+
+        # Stores and loads of pointers through a pointer into an array whose elements have no
+        # tangent (#1355).
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                p = Ptr{Ptr{Cvoid}}(pointer(v, 2))
+                GC.@preserve v Core.Intrinsics.atomic_pointerset(p, C_NULL, :monotonic)
+                return x * length(v)
+            end),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (function (x)
+                v = ["a", "b"]
+                q = GC.@preserve v unsafe_load(Ptr{Ptr{Cvoid}}(pointer(v, 2)))
+                return q == C_NULL ? x : 2x
+            end),
+            2.0,
+        ),
+        # Pointer loads through memory whose tangent is laid out like the primal memory, and a
+        # copy that takes pointers into memory with another layout only to check for aliasing.
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=[(x=x, n=nothing)];
+                GC.@preserve v unsafe_load(Ptr{Float64}(pointer(v)))
+            ),
+            2.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=Ptr{UInt8}[C_NULL];
+                GC.@preserve v x * length(unsafe_wrap(Array, pointer(v), 1))
+            ),
+            2.0,
+        ),
+        (false, :none, nothing, x -> (a=Any[]; append!(a, [(1, x)]); a[1][2]), 2.0),
     ]
     memory = Any[]
     return test_cases, memory

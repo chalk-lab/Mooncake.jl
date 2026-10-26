@@ -37,9 +37,19 @@ using Core:
     compilerbarrier
 using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
+# `BlasFloat` is `Union{Float32,Float64,ComplexF32,ComplexF64}`.
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
+
+@static if isdefined(Core, :BFloat16)
+    const HalfFloat = Union{Float16,Core.BFloat16}
+else
+    const HalfFloat = Float16
+end
+# BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
+const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 DispatchDoctor.register_macro!(
     Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__

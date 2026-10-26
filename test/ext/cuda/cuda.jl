@@ -45,26 +45,35 @@ end
             @test p_copy == p2
         end
 
-        @testset "Distributions.rand! is zero-derivative without restoring the RNG" begin
+        @testset "$f ($T, distribution=$distribution) restores arrays but not the RNG" for (
+            f, T, distribution
+        ) in vcat(
+            [(rand!, Float32, true)],
+            [
+                (f, T, false) for f in (rand!, randn!) for
+                T in (Float16, Float32, Float64, Complex{Float16}, ComplexF32, ComplexF64)
+            ],
+        )
             rng = CUDA.default_rng()
             sampler = MvNormal(CUDA.zeros(Float32, 2), Diagonal(CUDA.ones(Float32, 2)))
-            x = CUDA.fill(-1.0f0, 2, 4)
-            dx = CUDA.fill(2.0f0, 2, 4)
+            args = distribution ? (rng, sampler) : (rng,)
+            x = CUDA.fill(T(-1), 2, 4)
+            dx = CUDA.fill(T(2), 2, 4)
             x_before, dx_before = copy(x), copy(dx)
 
             Random.seed!(rng, 123)
             expected_x = similar(x)
-            Distributions.rand!(rng, sampler, expected_x)
+            f(args..., expected_x)
             expected_next = Random.rand(rng, Float32, 8)
 
             Random.seed!(rng, 123)
             out, pullback = Mooncake.rrule!!(
-                Mooncake.zero_fcodual(rand!),
-                Mooncake.zero_fcodual(rng),
-                Mooncake.zero_fcodual(sampler),
+                Mooncake.zero_fcodual(f),
+                map(Mooncake.zero_fcodual, args)...,
                 Mooncake.CoDual(x, dx),
             )
             @test Mooncake.primal(out) === x
+            @test Mooncake.tangent(out) === dx
             @test x == expected_x
             @test all(iszero, dx)
 
@@ -76,21 +85,20 @@ end
 
             Random.seed!(rng, 123)
             out = Mooncake.frule!!(
-                Mooncake.zero_dual(rand!),
-                Mooncake.zero_dual(rng),
-                Mooncake.zero_dual(sampler),
+                Mooncake.zero_dual(f),
+                map(Mooncake.zero_dual, args)...,
                 Mooncake.Dual(x, dx),
             )
             @test Mooncake.primal(out) === x
+            @test Mooncake.tangent(out) === dx
             @test x == expected_x
             @test all(iszero, dx)
             @test Random.rand(rng, Float32, 8) == expected_next
 
             test_rule(
                 StableRNG(123),
-                rand!,
-                rng,
-                sampler,
+                f,
+                args...,
                 similar(x);
                 interface_only=true,
                 is_primitive=true,
@@ -292,6 +300,7 @@ end
         _gather_mask_bits(x) = sum(x[BitVector([true, false, true, false])])
         _gather_mask_cx(x) = real(sum(x[CuArray(Bool[true, false, true, false])]))
         _gather_mask_none(x) = sum(x[CuArray(falses(4))]) + sum(x)
+        _slice_gram(m) = (a=m[:, 1:2]; b=m[3:end, :]; sum(a * a') + sum(b' * b))
         # A view carries an offset into its parent's allocation, while its tangent starts at
         # the beginning of a buffer of its own; deriving the tangent from the primal's offset
         # shifts every gradient by that many elements.  The weighted case pins which element
@@ -410,6 +419,7 @@ end
         # copy(CuArray) → copyto! → unsafe_copyto! — exercises the unsafe_copyto! rule.
         _copy_sum(x) = sum(copy(x))
         _copy_sum_cx(x) = real(sum(copy(x)))
+        _copy_overlap(x, doffs, soffs, n) = unsafe_copyto!(x, doffs, x, soffs, n)
         # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
         # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
         # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
@@ -1024,6 +1034,25 @@ end
                 _rand(rng, 4, 4),
                 CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
             ),
+            # Multidimensional slicing with integers, ranges and colons.
+            (false, :none, true, getindex, _rand(rng, 4, 5), :, 2:3),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 2:3, :),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 1:2:4, 5:-2:1),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 2, :),
+            (false, :none, true, getindex, _rand(rng, 4, 5), 3:2, :),
+            (false, :none, true, getindex, _rand(rng, 4, 5), StepRangeLen(2, 0, 3), 1:2),
+            (
+                false,
+                :none,
+                true,
+                getindex,
+                _rand(rng, ComplexF64, 4, 5),
+                :,
+                StepRangeLen(2, 0, 3),
+            ),
+            (false, :none, true, getindex, _rand(rng, Float32, 3, 4, 2), :, 2:3, 2),
+            (false, :none, true, getindex, _rand(rng, ComplexF64, 4, 5), 2:4, 1:2),
+            (false, :none, false, _slice_gram, _rand(rng, 5, 4)),
             # Non-differentiable device arrays: copy, fill and reductions had no rule.
             (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
             (false, :none, false, _nodiff_fill, _rand(rng, 8)),
@@ -1236,6 +1265,7 @@ end
             (false, :none, true, unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
             # Sub-range copy: only elements 2..5 of dest are overwritten; rest unchanged.
             (false, :none, true, unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
+            (false, :none, false, _copy_overlap, _rand(rng, 4), 1, 1, 4),
             # Complex full-array copy.
             (
                 false,
@@ -2088,6 +2118,13 @@ end
                 ),
                 # Scalar indexing would silently run a one-element GPU op per index.
                 (209, "scalar getindex", z -> z[1], (x32,), (; msg=r"scalar indexing")),
+                (
+                    282,
+                    "multidimensional scalar getindex",
+                    z -> z[1, 2],
+                    (M32,),
+                    (; msg=r"scalar indexing"),
+                ),
                 (
                     210,
                     "scalar setindex!",

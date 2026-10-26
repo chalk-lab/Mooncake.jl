@@ -4,12 +4,18 @@ using SpecialFunctions, Mooncake
 using Base: IEEEFloat
 import ChainRulesCore as CRC
 import Mooncake:
+    FloatOrComplex,
     DefaultCtx,
     @from_chainrules,
     @from_rrule,
     @zero_derivative,
     @is_primitive,
     Dual,
+    CoDual,
+    rrule!!,
+    zero_fcodual,
+    NoRData,
+    nan_tangent_guard,
     frule!!,
     Tangent,
     primal,
@@ -141,8 +147,6 @@ an unimplemented partial is mathematically required.
     typeof(expintx),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
 
-@from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
-
 # Ensure the frule return type matches the primal type.
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
@@ -158,36 +162,308 @@ function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     )
 end
 
-# 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
-@is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
+# Both partials are supported for finite positive shapes and positive x. At a=0 or
+# x=0, use one-sided first derivatives; at x=Inf, both partials are zero. Infinite
+# shapes are unsupported. The series and continued fraction have a 100,000-iteration
+# limit, which very large shapes near x=a can reach. The separate gamma(a,x) and
+# loggamma(a,x) shape derivatives remain unimplemented.
+# Stan also changes numerical regimes for the shape derivative:
+# https://github.com/stan-dev/math/blob/develop/stan/math/prim/fun/grad_reg_lower_inc_gamma.hpp
+function gamma_inc_partials(a::T, x::T, y) where {T<:IEEEFloat}
+    (isnan(a) || isnan(x)) && return (T(NaN), T(NaN))
+    isfinite(a) || throw(DomainError(a, "gamma_inc derivatives require finite a"))
+    isinf(x) && return (zero(T), zero(T))
+    iszero(a) && return (-expint(x), zero(T))
+    iszero(x) && return zero(T), x^(a - 1) * exp(-loggamma(a))
+    tol = 4 * eps(T)
+    # Differentiate the lower series (DLMF 8.7.1) without subtracting two full sums.
+    if x < a + 1
+        t, s = one(T), one(T)
+        dt, ds = zero(T), zero(T)
+        for n in 1:100_000
+            r = x / (a + n)
+            dt = r * (dt - t / (a + n))
+            t *= r
+            s += t
+            ds += dt
+            if abs(t) <= tol * abs(s) && abs(dt) <= tol * abs(ds)
+                g = log(x) - digamma(a + 1) + ds / s
+                A = y[1] * g
+                if x < 1
+                    D = exp((a - 1) * log(x) + log(a) - loggamma(a + 1) - x)
+                    # Keep the x factor outside exp so underflow preserves its derivative.
+                    y[1] < floatmin(T) && (A = D * ((x / a) * (s * g)))
+                elseif y[1] < floatmin(T)
+                    # Recover representable derivatives when the primal ratio underflows.
+                    l = a * (log(x) - loggamma(a + 1) / a) - x
+                    A = -exp(l + log(s) + log(-g))
+                    D = exp(l + log(a) - log(x))
+                else
+                    D = (y[1] / x) * (a / s)
+                end
+                return A, D
+            end
+        end
+    else
+        # Differentiate the upper continued fraction (DLMF 8.9.2).
+        b = x + 1 - a
+        c, f = b, b
+        dc, df = -one(T), -one(T)
+        # ld stores d'/d; d' itself can underflow in the far upper tail.
+        d, ld = zero(T), zero(T)
+        for n in 1:100_000
+            an = n * (a - n)
+            b += 2
+            ld = 1 - n * d - an * d * ld
+            d = inv(b + an * d)
+            ld *= d
+            dc = -1 + n / c - (an / c) * (dc / c)
+            c = b + an / c
+            delta = c * d
+            ddelta = delta * (dc / c + ld)
+            df = df * delta + f * ddelta
+            f *= delta
+            # Integer shapes terminate the primal fraction before its derivative.
+            if abs(delta - 1) <= tol && abs(ddelta) <= tol * abs(df / f)
+                # Avoid the digamma pole at tiny positive shapes.
+                g = log(x) - digamma(a + 1) - df / f
+                A = -(y[2] * g + y[2] / a)
+                D = y[2] * (f / x)
+                if y[2] < floatmin(T)
+                    l = a * (log(x) - loggamma(a + 1) / a) - x
+                    A = -exp(l - log(f) + log1p(a * g))
+                    D = exp(l + log(a) - log(x))
+                end
+                return A, D
+            end
+        end
+    end
+    error("gamma_inc derivative did not converge")
+end
+
+# Keep working precision through seed multiplication to avoid premature overflow.
+function gamma_inc_partials(a::T, x::T, y) where {T<:Union{Float16,Float32}}
+    aw, xw = widen(a), widen(x)
+    return gamma_inc_partials(aw, xw, gamma_inc(aw, xw))
+end
+
+# NIST Digital Library of Mathematical Functions, incomplete beta expansions:
+# https://dlmf.nist.gov/8.17.E7 (series), https://dlmf.nist.gov/8.17.E22
+# and https://dlmf.nist.gov/8.17.E23 (continued fraction and coefficients).
+# Shapes must be finite and positive; endpoints use one-sided first derivatives.
+# The fourth argument remains 1-x under differentiation; nonconvergence throws.
+function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:IEEEFloat}
+    any(isnan, (a, b, x, y)) && return (T(NaN), T(NaN), T(NaN))
+    (isfinite(a) && isfinite(b) && a > 0 && b > 0) ||
+        throw(DomainError((a, b), "beta_inc derivatives require finite positive shapes"))
+    if iszero(x)
+        D = if a == 1
+            b
+        elseif a < 1
+            T(Inf)
+        else
+            zero(T)
+        end
+        return zero(T), zero(T), D
+    elseif iszero(y)
+        D = if b == 1
+            a
+        elseif b < 1
+            T(Inf)
+        else
+            zero(T)
+        end
+        return zero(T), zero(T), D
+    end
+    # Choose the faster continued fraction (DLMF 8.17(v)).
+    reflect = x > (a+1)/(a+b+2)
+    if reflect
+        a, b, x, y = b, a, y, x
+    end
+    lx, ly = x < y ? (log(x), log1p(-x)) : (log1p(-y), log(y))
+    lb = logbeta(a, b)
+    D = exp((a-1)*lx + (b-1)*ly - lb)
+    tol = 8eps(T)
+    converged = false
+    local ga, gb, lh
+    # Factor out a in the power series so small shape partials do not cancel.
+    if a <= 1 && x <= 0.5 && b*x <= 1
+        u, ub = one(T), zero(T)
+        s, sa, sb = zero(T), zero(T), zero(T)
+        for n in 1:100_000
+            ub = ((n-b)*ub-u)*x/n
+            u *= (n-b)*x/n
+            t, ta, tb = u/(a+n), (n/(a+n))*(u/(a+n)), ub/(a+n)
+            s += t
+            sa += ta
+            sb += tb
+            if abs(t) <= tol*abs(s) && abs(ta) <= tol*abs(sa) && abs(tb) <= tol*abs(sb)
+                h = 1+a*s
+                ga = lx + digamma(a+b+1)-digamma(a+1)+sa/h
+                # A midpoint expansion avoids cancellation in the digamma difference.
+                db = if a < sqrt(sqrt(eps(T)))*(b+1)
+                    mid = b+1+a/2
+                    a*(trigamma(mid)+a^2*polygamma(3, mid)/24)
+                else
+                    digamma(a+b+1)-digamma(b+1)
+                end
+                gb = db+a*sb/h
+                lh = log1p(a*s) - b*ly
+                converged = true
+                break
+            end
+        end
+    else
+        c = one(T)
+        d = inv(1 - (a+b)*x/(a+1))
+        h = d
+        ca, cb = zero(T), zero(T)
+        da, db = d*x*(1-b)/(a+1)^2, d*x/(a+1)
+        ha, hb = da, db
+        for n in 2:100_000
+            m = n ÷ 2
+            if iseven(n)
+                r = (m/(a+2m))*((b-m)/(a+2m-1))*x
+                ra = -r*(inv(a+2m-1)+inv(a+2m))
+                rb = (m/(a+2m))*x/(a+2m-1)
+            else
+                r = -((a+m)/(a+2m))*((a+b+m)/(a+2m+1))*x
+                ra = r*(inv(a+m)+inv(a+b+m)-inv(a+2m)-inv(a+2m+1))
+                rb = -((a+m)/(a+2m))*x/(a+2m+1)
+            end
+            dn = inv(1+r*d)
+            da, db = -dn*d*(ra+r*da), -dn*d*(rb+r*db)
+            d = dn
+            cn = 1+r/c
+            ca, cb = (ra-r*ca)/(c*cn), (rb-r*cb)/(c*cn)
+            c = cn
+            delta = c*d
+            dha, dhb = ca+da, cb+db
+            ha += dha
+            hb += dhb
+            h *= delta
+            # Integer shapes can terminate the fraction before its derivatives.
+            if abs(delta-1) <= tol && abs(dha) <= tol*abs(ha) && abs(dhb) <= tol*abs(hb)
+                ga = lx + digamma(a+b+1) - digamma(a+1) + ha
+                gb = ly + digamma(a+b+1) - digamma(b+1) + hb
+                lh = log(h)
+                converged = true
+                break
+            end
+        end
+    end
+    converged || error("beta_inc derivatives did not converge")
+    p = reflect ? pq[2] : pq[1]
+    # Shift digamma away from zero and combine reciprocal terms before scaling.
+    A, B = p*ga - p/(a+b), p*gb + (p*(a/(a+b)))/b
+    if p < floatmin(T)
+        lp = a*lx+b*ly-lb+lh-log(a)
+        A = copysign(exp(lp+log(abs(ga))), ga) - exp(lp-log(a+b))
+        B = copysign(exp(lp+log(abs(gb))), gb) + exp(lp+log(a/(a+b))-log(b))
+    end
+    return reflect ? (-B, -A, D) : (A, B, D)
+end
+
+function beta_inc_partials(a::T, b::T, x::T, pq) where {T<:IEEEFloat}
+    return beta_inc_partials(a, b, x, 1-x, pq)
+end
+
+function beta_inc_partials(a::T, b::T, x::T, pq) where {T<:Union{Float16,Float32}}
+    values = widen.((a, b, x))
+    return beta_inc_partials(values..., beta_inc(values...))
+end
+
+function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:Union{Float16,Float32}}
+    values = widen.((a, b, x, y))
+    return beta_inc_partials(values..., beta_inc(values...))
+end
+
+for f in (beta_inc, SpecialFunctions._beta_inc)
+    @eval @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,IEEEFloat,IEEEFloat}
+    @eval @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,IEEEFloat,IEEEFloat,IEEEFloat}
+end
 
 function frule!!(
-    ::Dual{typeof(gamma_inc)}, _a::Dual{T}, _x::Dual{P}, _IND::Dual{I}
-) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-    IND = primal(_IND)
+    _f::Dual{<:Union{typeof(beta_inc),typeof(SpecialFunctions._beta_inc)}},
+    _a::Dual{T},
+    _b::Dual{S},
+    _x::Dual{U},
+    _y::Vararg{Dual{<:IEEEFloat},N},
+) where {T<:IEEEFloat,S<:IEEEFloat,U<:IEEEFloat,N}
+    a, adot = extract(_a)
+    b, bdot = extract(_b)
+    x, xdot = extract(_x)
+    y, ydot = isempty(_y) ? (1-x, -xdot) : extract(only(_y))
+    pq = primal(_f)(a, b, x, map(primal, _y)...)
+    A, B, D = beta_inc_partials(promote(a, b, x, map(primal, _y)...)..., pq)
+    # The fourth argument is 1-x; use the smaller coordinate for its tangent.
+    seed = x <= y ? xdot : -ydot
+    dp = typeof(pq[1])(
+        nan_tangent_guard(adot, A*adot) +
+        nan_tangent_guard(bdot, B*bdot) +
+        nan_tangent_guard(seed, D*seed),
+    )
+    return Dual(pq, (dp, -dp))
+end
 
-    y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
-    primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
+function rrule!!(
+    _f::CoDual{<:Union{typeof(beta_inc),typeof(SpecialFunctions._beta_inc)}},
+    _a::CoDual{T},
+    _b::CoDual{S},
+    _x::CoDual{U},
+    _y::Vararg{CoDual{<:IEEEFloat},N},
+) where {T<:IEEEFloat,S<:IEEEFloat,U<:IEEEFloat,N}
+    a, b, x = primal(_a), primal(_b), primal(_x)
+    y = isempty(_y) ? 1-x : primal(only(_y))
+    pq = primal(_f)(a, b, x, map(primal, _y)...)
+    A, B, D = beta_inc_partials(promote(a, b, x, map(primal, _y)...)..., pq)
+    function beta_inc_pb!!(dpq)
+        d = typeof(A)(dpq[1]) - typeof(A)(dpq[2])
+        da = T(nan_tangent_guard(d, A*d))
+        db = S(nan_tangent_guard(d, B*d))
+        dx = nan_tangent_guard(d, D*d)
+        isempty(_y) && return NoRData(), da, db, U(dx)
+        return NoRData(),
+        da, db, x <= y ? U(dx) : zero(U),
+        typeof(y)(x <= y ? zero(dx) : -dx)
+    end
+    return zero_fcodual(pq), beta_inc_pb!!
+end
 
-    ∂a = Mooncake.notimplemented_tangent_guard(da)     # ∂p/∂a - NotImplemented
-    z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
+@is_primitive DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-    # dot_p = ∂p/∂a * da + ∂p/∂x * dx
-    # dot_q = ∂p/∂a * da + (-∂p/∂x) * dx
-    return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
+function frule!!(
+    ::Dual{typeof(gamma_inc)}, _a::Dual{T}, _x::Dual{S}, _ind::Dual{I}
+) where {T<:IEEEFloat,S<:IEEEFloat,I<:Integer}
+    a, adot = extract(_a)
+    x, xdot = extract(_x)
+    ind = primal(_ind)
+    y = gamma_inc(a, x, ind)
+    A, D = gamma_inc_partials(promote(a, x)..., iszero(ind) ? y : gamma_inc(a, x))
+    dx = isfinite(D) ? D * xdot : nan_tangent_guard(xdot, D * xdot)
+    dp = typeof(y[1])(A * adot + dx)
+    return Dual(y, (dp, -dp))
+end
+
+function rrule!!(
+    ::CoDual{typeof(gamma_inc)}, _a::CoDual{T}, _x::CoDual{S}, _ind::CoDual{I}
+) where {T<:IEEEFloat,S<:IEEEFloat,I<:Integer}
+    a, x, ind = primal(_a), primal(_x), primal(_ind)
+    y = gamma_inc(a, x, ind)
+    A, D = gamma_inc_partials(promote(a, x)..., iszero(ind) ? y : gamma_inc(a, x))
+    function gamma_inc_pb!!(dy)
+        d = typeof(A)(dy[1]) - typeof(A)(dy[2])
+        dx = isfinite(D) ? D * d : nan_tangent_guard(d, D * d)
+        return NoRData(), T(A * d), S(dx), NoRData()
+    end
+    return zero_fcodual(y), gamma_inc_pb!!
 end
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(gamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(gamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -202,14 +478,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(loggamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(loggamma),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(loggamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -226,14 +498,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expint),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(expint),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(expint)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -250,14 +518,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expintx),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(expintx),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(expintx)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -275,12 +539,10 @@ function frule!!(
 end
 
 # 2-arg standard Bessel and Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselj),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselj)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -297,12 +559,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(bessely),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(bessely)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -318,12 +578,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besseli),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besseli)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -339,12 +597,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselk),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselk)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -360,12 +616,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh1),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh1)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -381,12 +635,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh2),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh2)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -407,12 +659,10 @@ end
 #
 
 # 2-arg scaled Bessel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselix),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselix),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselix)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -431,12 +681,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselkx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselkx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -452,12 +700,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besseljx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besseljx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -475,12 +721,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselyx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselyx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -499,12 +743,10 @@ function frule!!(
 end
 
 # Scaled Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh1x),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh1x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -520,12 +762,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh2x),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh2x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -750,42 +990,24 @@ end
     )
 end
 
-# beta_inc(a, b, x) = (I_x(a,b), 1 - I_x(a,b)) — regularized incomplete beta function.
-# Implements the x-partial: ∂I_x(a,b)/∂x = x^(a-1)·(1-x)^(b-1) / B(a,b)  (the Beta PDF).
-# Derivatives w.r.t. the shape parameters a, b are not implemented; callers that promote
-# Float64 shape params to NDual (zero partials) get the correct result, but differentiating
-# w.r.t. a or b directly will give wrong answers.
-
-# Case: a and b are plain Reals (not NDual), only x varies.
-function SpecialFunctions.beta_inc(a::Real, b::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
-    av, bv, xv = T(a), T(b), x.value
-    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
-    d_dx = exp(
-        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
-    )
-    return (
-        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
-        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
-    )
-end
-
-# Case: all three args are NDual (e.g. when StatsFuns promotes Float64 shape params).
-# Only the x-partial is computed; zero-partial promoted shape parameters are supported,
-# but active shape-parameter tangents must fail loudly rather than being ignored.
-function SpecialFunctions.beta_inc(
-    a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}
-) where {T<:IEEEFloat,N}
-    _ndual_partials_are_zero(a.partials) || _throw_ndual_notimplemented(:beta_inc, :a)
-    _ndual_partials_are_zero(b.partials) || _throw_ndual_notimplemented(:beta_inc, :b)
-    av, bv, xv = a.value, b.value, x.value
-    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
-    d_dx = exp(
-        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
-    )
-    return (
-        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
-        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
-    )
+function SpecialFunctions._beta_inc(
+    a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}, _y::Vararg{NDual{T,N},M}
+) where {T<:IEEEFloat,N,M}
+    y = isempty(_y) ? 1-x : only(_y)
+    av, bv, xv, yv = a.value, b.value, x.value, y.value
+    values = (av, bv, xv, map(t -> t.value, _y)...)
+    pq = beta_inc(values...)
+    A, B, D = beta_inc_partials(values..., pq)
+    dp = ntuple(Val(N)) do k
+        adot, bdot = a.partials[k], b.partials[k]
+        seed = xv <= yv ? x.partials[k] : -y.partials[k]
+        T(
+            nan_tangent_guard(adot, A*adot) +
+            nan_tangent_guard(bdot, B*bdot) +
+            nan_tangent_guard(seed, D*seed),
+        )
+    end
+    return NDual{T,N}(pq[1], dp), NDual{T,N}(pq[2], map(-, dp))
 end
 
 end

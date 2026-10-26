@@ -4,7 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.Nfwd: NDual, ndual_partial, ndual_value
-using Mooncake.TestUtils: test_rule
+using Mooncake.TestUtils: test_rule, test_rule_throws
 using NNlib: dropout
 using LuxLib
 import LuxLib: Impl
@@ -13,12 +13,18 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
+# Fix p so finite differences test the input gradient, not the sampling probability.
+function dropout_mixed_tester(Trng, x, ::Val{p}, ::Val{dims}) where {p,dims}
+    return dims === nothing ? dropout(Trng(1), x, p) : dropout(Trng(1), x, p; dims)
+end
+
 @testset "batched_mul CPU rule" for batches in ((3, 3), (1, 3), (3, 1))
+    rng = StableRNG(123)
     test_rule(
-        StableRNG(123),
+        rng,
         batched_mul,
-        randn(3, 2, batches[1]),
-        randn(2, 5, batches[2]);
+        randn(rng, 3, 2, batches[1]),
+        randn(rng, 2, 5, batches[2]);
         is_primitive=true,
         unsafe_perturb=true,
     )
@@ -26,14 +32,16 @@ end
 
 @testset "affine normalization rule" for device in
                                          (CUDA.functional() ? (identity, cu) : (identity,))
+    rng = StableRNG(123)
     test_rule(
-        StableRNG(123),
+        rng,
         NNlib._affine_normalize,
-        device(randn(Float32, 2, 5)),
-        device(randn(Float32, 2, 1)),
-        device(rand(Float32, 2, 1)),
-        device(randn(Float32, 2, 1)),
-        device(randn(Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 5)),
+        device(randn(rng, Float32, 2, 1)),
+        # Keep variance + epsilon positive under finite-difference perturbations.
+        device(1.0f0 .+ rand(rng, Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 1)),
         1.0f-5;
         is_primitive=true,
         unsafe_perturb=true,
@@ -57,6 +65,27 @@ end
 # TODO: drop the CUDA version bound once the fix for
 # https://github.com/JuliaGPU/CUDA.jl/issues/2886 is released.
 cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
+
+@testset "dropout rejects invalid mixed-precision probabilities" begin
+    devices = cuda ? ((identity, StableRNG), (CuArray, CUDA.RNG)) : ((identity, StableRNG),)
+    for (device, Trng) in devices,
+        p in (-eps(Float64), nextfloat(1.0), Inf, NaN),
+        kw in (false, true)
+
+        rng = Trng(123)
+        x = device(ones(Float32, 4))
+        args = kw ? (Core.kwcall, (dims=1,), dropout, rng, x, p) : (dropout, rng, x, p)
+        test_rule_throws(
+            StableRNG(123),
+            args...;
+            err=ArgumentError,
+            msg="dropout expects a probability 0 <= p <= 1",
+            mode=Mooncake.ReverseMode,
+            primal=true,
+        )
+        @test rand(rng, Float32, 8) == rand(Trng(123), Float32, 8)
+    end
+end
 
 @testset "nnlib" begin
     _rand = if cuda
@@ -200,6 +229,19 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         ),
 
         # dropout
+        [
+            (
+                false,
+                :none,
+                false,
+                dropout_mixed_tester,
+                Trng,
+                wrap(cuda ? CuArray(ones(T, 32, 4)) : ones(T, 32, 4)),
+                Val(p),
+                Val(dims),
+            ) for (T, p) in ((Float32, 0.9), (Float64, 0.1f0), (Float32, 0.0)) for
+            dims in (nothing, 1) for wrap in (identity, adjoint, transpose)
+        ]...,
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
@@ -605,8 +647,8 @@ end
     rng = StableRNG(123)
     A2 = randn(rng, 3, 4)
     g2 = randn(rng, 3, 4)
-    A3 = randn(Float32, 3, 4, 2)
-    g3 = randn(Float32, 3, 4, 2)
+    A3 = randn(rng, Float32, 3, 4, 2)
+    g3 = randn(rng, Float32, 3, 4, 2)
 
     # Plain array
     xf = zeros(3, 4)

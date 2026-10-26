@@ -18,8 +18,9 @@ import Mooncake:
     zero_fcodual,
     NoRData,
     extract,
+    nan_tangent_guard,
     arrayify
-using Mooncake.Nfwd: NDual
+using Mooncake.Nfwd: NDual, _promote_matching_nduals
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
 # logistic(x::Real) = inv(exp(-x) + one(x)) produces a zero-partial NDual from
@@ -118,26 +119,92 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
     return NDual{T,N}(y_val, _nf_logsumexp_scale(grad, inv_sw))
 end
 
-# xlogx(x) = x == 0 ? zero(x*log(x)) : x*log(x).  The generic implementation computes
-# x*log(x) speculatively over the full NDual before the iszero branch can discard the
-# result.  Specialise to: (1) early-exit on x.value (scalar branch, no NDual work),
-# (2) compute log once at scalar level, (3) apply the chain rule d/dx[x log x] = log(x)+1
-# with a single scalar multiply per partial slot, saving one NDual multiply and one NDual log.
-@inline function LogExpFunctions.xlogx(x::NDual{T,N}) where {T<:IEEEFloat,N}
-    v = x.value
-    iszero(v) && return zero(x)
-    lv = log(v)
-    d = lv + one(T)  # derivative: d/dx[x log x] = log(x) + 1
-    return NDual(v * lv, ntuple(i -> x.partials[i] * d, Val(N)))
+# The zero-value branch preserves the primal limit, not its derivative.
+function xlogx_value_and_partial(x)
+    lx = log(x)
+    z = x * lx
+    return iszero(x) ? zero(z) : z, lx + one(x)
 end
 
-# Importing these rules provides improved numerical stability for `logistic`, and avoids
-# incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
-# (similar to that for `logsumexp` below). The other chain rules for LogExpFunctions were
-# investigated and found to be no better than Mooncake's derived rules in terms of
-# performance or numerical stability, so are not imported here.
+@inline function LogExpFunctions.xlogx(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    z, d = xlogx_value_and_partial(x.value)
+    return NDual(z, ntuple(i -> scale_partial(d, x.partials[i]), Val(N)))
+end
+
+@is_primitive DefaultCtx Tuple{typeof(xlogx),IEEEFloat}
+function frule!!(::Dual{typeof(xlogx)}, x::Dual{<:IEEEFloat})
+    z, d = xlogx_value_and_partial(primal(x))
+    return Dual(z, scale_partial(d, tangent(x)))
+end
+function rrule!!(::CoDual{typeof(xlogx)}, x::CoDual{<:IEEEFloat})
+    z, d = xlogx_value_and_partial(primal(x))
+    xlogx_pb!!(dz) = (NoRData(), scale_partial(d, dz))
+    return zero_fcodual(z), xlogx_pb!!
+end
+
+# These rules avoid saturation in logistic and the equal-input branch in logaddexp.
 @from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
+
+# Preserve the quotients at regular points, including x=0, to retain mixed derivatives.
+xlogy_partials(x, y, z) = (log(y), iszero(x) && iszero(y) ? zero(x / y) : x / y)
+function xlog1py_partials(x, y, z)
+    v = one(y) + y
+    return log1p(y), iszero(x) && iszero(v) ? zero(x / v) : x / v
+end
+xexpy_partials(x, y, z) = (exp(y), z)
+
+@inline scale_partial(p, d) = isfinite(p) ? p * d : nan_tangent_guard(d, p * d)
+
+# The zero-multiplier branches require rules; evaluate the original primal separately.
+for f in (:xlogy, :xlog1py, :xexpy)
+    partials = Symbol(f, :_partials)
+    @eval begin
+        @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,Union{IEEEFloat,Integer}}
+        function frule!!(
+            ::Dual{typeof($f)}, _x::Dual{T}, _y::Dual{S}
+        ) where {T<:IEEEFloat,S<:Union{IEEEFloat,Integer}}
+            x, dx = extract(_x)
+            y, dy = extract(_y)
+            z = $f(x, y)
+            a, b = $partials(x, y, z)
+            dz = scale_partial(a, dx) + (S <: Integer ? zero(z) : scale_partial(b, dy))
+            return Dual(z, typeof(z)(dz))
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)}, _x::CoDual{T}, _y::CoDual{S}
+        ) where {T<:IEEEFloat,S<:Union{IEEEFloat,Integer}}
+            x, y = primal(_x), primal(_y)
+            z = $f(x, y)
+            a, b = $partials(x, y, z)
+            function pb!!(dz)
+                dy = S <: Integer ? NoRData() : S(scale_partial(b, dz))
+                return NoRData(), T(scale_partial(a, dz)), dy
+            end
+            return zero_fcodual(z), pb!!
+        end
+        @inline function LogExpFunctions.$f(x::NDual{T,N}, y::NDual{S,M}) where {T,S,N,M}
+            xp, yp = _promote_matching_nduals($(QuoteNode(f)), x, y)
+            z = $f(x.value, y.value)
+            a, b = $partials(x.value, y.value, z)
+            dz = ntuple(
+                i -> scale_partial(a, xp.partials[i]) + scale_partial(b, yp.partials[i]),
+                Val(N),
+            )
+            return NDual(z, dz)
+        end
+        @inline function LogExpFunctions.$f(x::NDual{T,N}, y::Real) where {T,N}
+            z = $f(x.value, y)
+            a, _ = $partials(x.value, y, z)
+            return NDual(z, ntuple(i -> scale_partial(a, x.partials[i]), Val(N)))
+        end
+        @inline function LogExpFunctions.$f(x::Real, y::NDual{T,N}) where {T,N}
+            z = $f(x, y.value)
+            _, b = $partials(x, y.value, z)
+            return NDual(z, ntuple(i -> scale_partial(b, y.partials[i]), Val(N)))
+        end
+    end
+end
 
 # logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
 # branching in the primal implementation. (In principle, the forward-mode rule for logsumexp

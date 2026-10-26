@@ -347,7 +347,7 @@ tangent_type(::Type{P}) where {P<:Union{Int8,Int16,Int32,Int64,Int128,BigInt}} =
 
 tangent_type(::Type{<:Core.Builtin}) = NoTangent
 
-@foldable tangent_type(::Type{P}) where {P<:IEEEFloat} = P
+@foldable tangent_type(::Type{P}) where {P<:IEEEOrBFloat} = P
 
 tangent_type(::Type{<:Core.LLVMPtr}) = NoTangent
 
@@ -1458,15 +1458,15 @@ live in `src/rules/linear_algebra.jl`.
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Skip non-differentiable eltypes: avoids pointless caches and maps on sparse containers.                                                                                              
-    # Calling tangent_type in a generator body risks world-age cycles, but is probably sufficient here:
-    # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an                                                                                                 
-    # explicit non-generated method, and tangent_type for struct eltypes recurses only into
-    # field types, all of which eventually bottom out at such explicit methods. 
-    if P <: AbstractArray &&
-        !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
-        tangent_type(eltype(P)) != NoTangent
-        return :(map(friendly_tangent_cache, x))
+    # Resolve element tangents at runtime so later methods remain visible.
+    if P <: AbstractArray && !(eltype(P) <: FloatOrComplex)
+        return quote
+            if tangent_type(eltype(P)) == NoTangent
+                friendly_tangent_cache_internal(x)
+            else
+                map(friendly_tangent_cache, x)
+            end
+        end
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
     # in the buffer as a NamedTuple, mirroring the immutable struct path. This avoids
@@ -1506,6 +1506,9 @@ end
 function friendly_tangent_cache_internal(x::P) where {P}
     return FriendlyTangentCache{AsRaw}(nothing)
 end
+
+# Stop at types: recursing from a DataType into its Core.TypeName never terminates.
+friendly_tangent_cache(::Type) = FriendlyTangentCache{AsRaw}(nothing)
 
 # Mutable collections: reconstruct as the primal container type.
 function friendly_tangent_cache(x::AbstractDict)

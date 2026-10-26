@@ -168,7 +168,7 @@ fdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 
 @foldable fdata_type(::Type{Union{}}) = Union{}
 
-fdata_type(::Type{T}) where {T<:IEEEFloat} = NoFData
+fdata_type(::Type{T}) where {T<:IEEEOrBFloat} = NoFData
 
 function fdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
     Tfields = fdata_type(T)
@@ -339,7 +339,7 @@ function _verify_fdata_value(c::IdDict{Any,Nothing}, p, f)::Nothing
     return __verify_fdata_value(c, p, f)
 end
 
-__verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEFloat, ::NoFData) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEOrBFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
 
@@ -462,7 +462,7 @@ rdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 
 @foldable rdata_type(::Type{Union{}}) = Union{}
 
-rdata_type(::Type{T}) where {T<:IEEEFloat} = T
+rdata_type(::Type{T}) where {T<:IEEEOrBFloat} = T
 
 function rdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
     return PossiblyUninitTangent{rdata_type(T)}
@@ -749,13 +749,13 @@ end
 end
 
 @generated function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
-    fields = has_definite_fieldcount(P) ? fieldtypes(P) : ()
-    zero_exprs = map(T -> :(zero_rdata_from_type($T)), fields)
-    zeros = Expr(:call, :tuple, zero_exprs...)
+    has_fields = has_definite_fieldcount(P)
+    zero_exprs = has_fields ? map(_P -> :(zero_rdata_from_type($_P)), fieldtypes(P)) : []
+    names = has_fields ? fieldnames(P) : ()
     return quote
         can_produce_zero_rdata_from_type($P) || return CannotProduceZeroRDataFromType()
         rdata_type(tangent_type($P)) == NoRData && return NoRData()
-        return NamedTuple{fieldnames($P)}($zeros)
+        return NamedTuple{$names}($(Expr(:call, :tuple, zero_exprs...)))
     end
 end
 
@@ -811,7 +811,7 @@ function verify_rdata_value(p, r)::Nothing
     return _verify_rdata_value(p, r)
 end
 
-_verify_rdata_value(::P, ::P) where {P<:IEEEFloat} = nothing
+_verify_rdata_value(::P, ::P) where {P<:IEEEOrBFloat} = nothing
 
 _verify_rdata_value(::Array, ::NoRData) = nothing
 
@@ -1023,7 +1023,7 @@ end
 Reconstruct the tangent `t` for which `fdata(t) == f` and `rdata(t) == r`.
 """
 tangent(::NoFData, ::NoRData) = NoTangent()
-tangent(::NoFData, r::IEEEFloat) = r
+tangent(::NoFData, r::IEEEOrBFloat) = r
 tangent(f::Array, ::NoRData) = f
 tangent(f::Ptr, ::NoRData) = f
 

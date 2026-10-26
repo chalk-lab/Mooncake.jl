@@ -48,13 +48,16 @@ convention.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
-) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
+) where {
+    A<:Union{AbstractArray{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}
+}
     return arrayify(primal(x), tangent(x))
 end
 function arrayify(
     x::A, dx::A
-) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
-    (x, dx)
+) where {A<:Union{Array{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}}
+    dx isa Ptr && _check_tangent_ptr(dx)
+    return x, dx
 end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
@@ -64,7 +67,7 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
+) where {P<:Union{BlasFloat,HalfFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -90,19 +93,19 @@ function arrayify(
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat}}
+) where {T<:Union{BlasFloat,HalfFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
 function arrayify(
     x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat}}
+) where {T<:Union{BlasFloat,HalfFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, transpose(_dx)
 end
 
 @static if VERSION >= v"1.11-rc4"
-    arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
+    arrayify(x::A, dx::A) where {A<:Memory{<:Union{IEEEFloat,BlasFloat}}} = (x, dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}
@@ -454,6 +457,88 @@ function rrule!!(
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
     return X_dX, scal_adjoint
+end
+
+# `BLAS.axpy!` ends at a BLAS foreign call with no Mooncake derivative rule in either mode;
+# this wrapper supplies both, since forward-over-reverse HVP paths invoke `axpy!` directly
+# (e.g. GaussAdjoint's HVP forward-differentiating its own reverse pass, SciMLSensitivity.jl#1648).
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
+    } where {
+        P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}},Y<:Union{Ptr{P},AbstractArray{P}}
+    }
+)
+function frule!!(
+    ::Dual{typeof(BLAS.axpy!)},
+    _n::Dual{<:Integer},
+    a_da::Dual{P},
+    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::Dual{<:Integer},
+    Y_dY::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::Dual{<:Integer},
+) where {P<:BlasFloat}
+
+    # Extract params.
+    n = primal(_n)
+    incx = primal(_incx)
+    incy = primal(_incy)
+    a, da = extract(a_da)
+    X, dX = arrayify(X_dX)
+    Y, dY = arrayify(Y_dY)
+
+    # `axpy!(n, a, x, incx, x, incy)` is a legal call with `X === Y`, in which case
+    # Mooncake's aliasing invariant guarantees `dX === dY`. Accumulating `da*X` into `dY`
+    # first would then corrupt the value the second call below reads as `dX`, so copy the
+    # source tangent first whenever that's the case.
+    dX_source = X === Y ? copy(dX) : dX
+
+    # Fréchet derivative of Y_new = a*X + Y: dY_new = da*X + a*dX + dY.
+    BLAS.axpy!(n, da, X, incx, dY, incy)
+    BLAS.axpy!(n, a, dX_source, incx, dY, incy)
+
+    # Perform primal computation.
+    BLAS.axpy!(n, a, X, incx, Y, incy)
+    return Y_dY
+end
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpy!)},
+    _n::CoDual{<:Integer},
+    a_da::CoDual{P},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::CoDual{<:Integer},
+    Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::CoDual{<:Integer},
+) where {P<:BlasFloat}
+
+    # Extract params.
+    n = primal(_n)
+    incx = primal(_incx)
+    incy = primal(_incy)
+    a = primal(a_da)
+    X, dX = viewify(n, X_dX, incx)
+    Y, dY = viewify(n, Y_dY, incy)
+
+    # Take a copy of previous state in order to recover it on the reverse pass.
+    Y_copy = copy(Y)
+
+    # Run primal computation.
+    BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
+
+    function axpy_adjoint(::NoRData)
+
+        # Set primal to previous state.
+        Y .= Y_copy
+
+        # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
+        # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
+        ∇a = dot(X, dY)
+        dX .+= a' .* dY
+
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return Y_dY, axpy_adjoint
 end
 
 #
@@ -1604,6 +1689,41 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
+        end,
+
+        # axpy!(n, a, x, incx, y, incy)
+        map_prod([1, 3, 11], [1, 2], [1, 2]) do (n, incx, incy)
+            flags = (false, :stability, nothing)
+            return (
+                flags...,
+                BLAS.axpy!,
+                n,
+                randn(rng, P),
+                randn(rng, P, n * incx),
+                incx,
+                randn(rng, P, n * incy),
+                incy,
+            )
+        end,
+
+        # axpy!(n, a, x, 1, y, 1) with mismatched X/Y wrapper types (Vector, SubArray,
+        # ReshapedArray, ...) -- the sweep above always pairs same-type Vectors, which
+        # would miss a primitive registration that wrongly ties X and Y to one concrete
+        # type. `circshift` forces the mismatch: `blas_vectors` returns the same sequence
+        # of types every call, so zipping two calls by index would just pair each type with
+        # itself. `only_contiguous=true` since incx=incy=1 below isn't valid for
+        # `blas_vectors`' one non-contiguous entry.
+        let xs = blas_vectors(rng, P, 5; only_contiguous=true)
+            map(xs, circshift(xs, 1)) do x, y
+                (false, :stability, nothing, BLAS.axpy!, 5, randn(rng, P), x, 1, y, 1)
+            end
+        end...,
+
+        # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
+        map_prod([1, 3, 11], [1, 2]) do (n, incx)
+            flags = (false, :stability, nothing)
+            x = randn(rng, P, n * incx)
+            return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
         end,
 
         #

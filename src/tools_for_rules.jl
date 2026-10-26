@@ -370,10 +370,18 @@ end
 
 Convert a Mooncake tangent into a type that ChainRules.jl `rrule`s expect to see.
 """
-to_cr_tangent(t::IEEEFloat) = t
-to_cr_tangent(t::Complex{<:IEEEFloat}) = t
+to_cr_tangent(t::FloatOrComplex) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
+@static if VERSION >= v"1.11-rc4"
+    # An unassigned element, such as an empty slot of a `Dict`, has a zero tangent.
+    to_cr_tangent(t::Memory{<:IEEEFloat}) = t
+    function to_cr_tangent(t::Memory)
+        return map(
+            n -> isassigned(t, n) ? to_cr_tangent(t[n]) : CRC.ZeroTangent(), eachindex(t)
+        )
+    end
+end
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
@@ -452,15 +460,13 @@ end
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
 and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 """
-function increment_and_get_rdata!(
-    ::NoFData, r::T, t::T
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+function increment_and_get_rdata!(::NoFData, r::T, t::T) where {T<:FloatOrComplex}
     return r + t
 end
 # Plain arrays only: a view's fdata is the parent's, so views need a hand-written `rrule!!`.
 function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
-) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {P<:FloatOrComplex}
     increment!!(f, t)
     return NoRData()
 end
@@ -530,10 +536,7 @@ zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
 """
 @inline function nan_tangent_guard(
     dy::L, tangent::T
-) where {
-    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
-    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
-}
+) where {L<:FloatOrComplex,T<:FloatOrComplex}
     return if iszero(dy)
         T(0)
     else
@@ -555,10 +558,7 @@ be used to signal the presence of a non-differentiable point.
 """
 @inline function nondifferentiable_tangent_guard(
     dy::L, tangent::T
-) where {
-    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
-    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
-}
+) where {L<:FloatOrComplex,T<:FloatOrComplex}
     return if iszero(dy)
         T(0)
     else
@@ -582,9 +582,7 @@ This masking ensures that missing derivatives only affect results when they are 
     It cannot support `Int` tangents, since `NaN` is only defined for
     `AbstractFloat` types.
 """
-function notimplemented_tangent_guard(
-    dy::L
-) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+function notimplemented_tangent_guard(dy::L) where {L<:FloatOrComplex}
     return if _dot(dy, dy) != L(0)
         L(NaN)
     else

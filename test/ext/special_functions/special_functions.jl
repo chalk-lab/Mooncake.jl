@@ -123,6 +123,222 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 
+    @testset "beta_inc" begin
+        for T in (Float32, Float64),
+            (a, b, x) in (
+                (1, 2, 0.5),
+                (2, 2, 0.5),
+                (2, 4, 0.4),
+                (0.5, 0.5, 0.1),
+                (1.3, 2.1, 0.8),
+                (100, 100, 0.5),
+            )
+
+            test_rule(
+                StableRNG(123), beta_inc, T(a), T(b), T(x); perf_flag=:stability_and_allocs
+            )
+        end
+        test_rule(
+            StableRNG(123), beta_inc, 1.0f0, 2.0, 0.5f0; perf_flag=:stability_and_allocs
+        )
+        for x in (0.25, 0.75)
+            test_rule(
+                StableRNG(123),
+                beta_inc,
+                2.0,
+                2.0,
+                x,
+                1-x;
+                interface_only=true,
+                perf_flag=:stability_and_allocs,
+            )
+            # Finite differences must preserve y = 1-x.
+            test_rule(
+                StableRNG(123),
+                (a, b, x) -> beta_inc(a, b, x, 1-x),
+                2.0,
+                2.0,
+                x;
+                is_primitive=false,
+                perf_flag=:allocs,
+            )
+        end
+
+        for T in (Float16, Float32, Float64),
+            (a, b, x, A, B, D) in (
+                (1, 2, 0.5, 1/4-3log(2)/4, log(2)/4, 1),
+                (2, 1, 0.5, -log(2)/4, 3log(2)/4-1/4, 1),
+                (2, 2, 0.5, 1/8-log(2)/2, log(2)/2-1/8, 1.5),
+                (0.1, 0.1, 0.5, -2.532522082864052, 2.532522082864052, 0.17663027797787373),
+                (
+                    1000,
+                    1000,
+                    0.5,
+                    -0.008922479336000142,
+                    0.008922479336000142,
+                    35.67802229170864,
+                ),
+                (1, 2, 0, 0, 0, 2),
+                (2, 1, 1, 0, 0, 2),
+                (2, 2, 0, 0, 0, 0),
+                (2, 2, 1, 0, 0, 0),
+                (1000, 1000, 0, 0, 0, 0),
+                (1000, 1000, 1, 0, 0, 0),
+                (0.5, 2, 0, 0, 0, Inf),
+                (2, 0.5, 1, 0, 0, Inf),
+            )
+
+            a, b, x = T.((a, b, x))
+            y, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (beta_inc, a, b, x))...)
+            @test Mooncake.primal(y) === beta_inc(a, b, x)
+            tol = max(16eps(T), 1e-11)
+            for (dp, dq) in ((one(T), zero(T)), (zero(T), one(T)), (one(T), one(T)))
+                d = dp-dq
+                g = pb((dp, dq))[2:end]
+                expected = iszero(d) ? (zero(T), zero(T), zero(T)) : T.(d .* (A, B, D))
+                @test all(isapprox.(g, expected; rtol=tol))
+            end
+            for i in 1:3
+                seeds = ntuple(k -> T(k==i), 3)
+                args = map(Mooncake.Dual, (a, b, x), seeds)
+                out = Mooncake.frule!!(Mooncake.zero_dual(beta_inc), args...)
+                @test Mooncake.tangent(out)[1] ≈ T((A, B, D)[i]) rtol=tol
+                @test Mooncake.tangent(out)[2] ≈ -T((A, B, D)[i]) rtol=tol
+            end
+            args = ntuple(i -> NDual{T,3}((a, b, x)[i], ntuple(k -> T(k==i), 3)), 3)
+            p, q = beta_inc(args...)
+            @test all(isapprox.(p.partials, T.((A, B, D)); rtol=tol))
+            @test q.partials == map(-, p.partials)
+        end
+
+        for args in ((1.0, 2.0, 0.5), (2.0, 3.0, 0.75)),
+            f in (
+                (a, b, x) -> beta_inc(a, 2.0, 0.5),
+                (a, b, x) -> beta_inc(1.0, b, 0.5),
+                (a, b, x) -> beta_inc(a, b, 0.5),
+                (a, b, x) -> beta_inc(1.0, 2.0, x),
+                (a, b, x) -> beta_inc(a, 2.0, x),
+                (a, b, x) -> beta_inc(1.0, b, x),
+                beta_inc,
+            )
+
+            test_rule(
+                StableRNG(123),
+                f,
+                args...;
+                is_primitive=false,
+                mode=ReverseMode,
+                rrule=Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=3),
+            )
+        end
+
+        y = NDual{Float64,1}(1e-20, (1.0,))
+        p, q = beta_inc(2.0, 1.0, 1-y, y)
+        @test q.value > 0
+        @test q.partials[1] ≈ 2.0
+        for (a, b) in ((0.0, 1.0), (1.0, 0.0), (Inf, 1.0))
+            @test_throws DomainError Mooncake.rrule!!(
+                map(Mooncake.zero_fcodual, (beta_inc, a, b, 0.5))...
+            )
+        end
+        f(a) = first(beta_inc(a, 2.0, 0.5))
+        cache = Mooncake.prepare_hvp_cache(f, 1.0)
+        @test Mooncake.value_and_hvp!!(cache, f, 1.0, 1.0)[3] ≈ 3log(2)^2/4-log(2)/2
+    end
+
+    @testset "gamma_inc" begin
+        for T in (Float32, Float64),
+            (a, x) in ((0.1, 0.1), (3, 2), (1, 2), (3, 50), (1000, 1000))
+
+            test_rule(
+                StableRNG(123), gamma_inc, T(a), T(x), 0; perf_flag=:stability_and_allocs
+            )
+        end
+        test_rule(StableRNG(123), gamma_inc, 3.0, 2.0; is_primitive=false)
+        for (T, S) in ((Float32, Float64), (Float64, Float32))
+            test_rule(
+                StableRNG(123), gamma_inc, T(3), S(2), 0; perf_flag=:stability_and_allocs
+            )
+        end
+        for T in (Float16, Float32, Float64),
+            (a, x, da, dx) in (
+                (3, 2, -0.2318486720439896, 0.2706705664732254),
+                (1, 2, -0.2208254262118595, 0.1353352832366127),
+                (1000, 2000, -4.756465407623239e-136, 3.430501706332743e-136),
+                (2, 1e-200, 0, 1e-200),
+                (3, 50, -7.552056917446367e-19, 2.410937309954897e-19),
+                (1000, 1000, -0.012616713994069625, 0.012614611348721499),
+                # `gamma_inc` underflows p to 0 here; the partials come from log space.
+                (170, 1, -2.620172596340683e-307, 8.617324446353426e-306),
+                (0, 2, -0.04890051070806112, 0),
+                (1, 0, 0, 1),
+                (2, 0, 0, 0),
+                (0.5, 0, 0, Inf),
+                (3, Inf, 0, 0),
+            ),
+            ind in (0, 1, 2)
+
+            a, x = T(a), T(x)
+            y, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, ind))...)
+            @test Mooncake.primal(y) == gamma_inc(a, x, ind)
+            for (dp, dq) in ((one(T), zero(T)), (zero(T), one(T)), (one(T), one(T)))
+                d = dp - dq
+                expected_a = iszero(d) ? zero(T) : T(d * da)
+                expected_x = iszero(d) ? zero(T) : T(d * dx)
+                grad = pb((dp, dq))
+                @test grad[2] ≈ expected_a rtol=max(4eps(T), 1e-12)
+                @test grad[3] ≈ expected_x rtol=max(4eps(T), 1e-12)
+            end
+            for (adot, xdot) in ((one(T), zero(T)), (zero(T), one(T)), (zero(T), zero(T)))
+                args = (
+                    Mooncake.Dual(gamma_inc, Mooncake.NoTangent()),
+                    Mooncake.Dual(a, adot),
+                    Mooncake.Dual(x, xdot),
+                    Mooncake.Dual(ind, Mooncake.NoTangent()),
+                )
+                result = Mooncake.frule!!(args...)
+                expected =
+                    (iszero(adot) ? zero(T) : T(da)) + (iszero(xdot) ? zero(T) : T(dx))
+                @test Mooncake.primal(result) == gamma_inc(a, x, ind)
+                @test Mooncake.tangent(result)[1] ≈ expected rtol=max(4eps(T), 1e-12)
+                @test Mooncake.tangent(result)[2] ≈ -expected rtol=max(4eps(T), 1e-12)
+            end
+        end
+
+        for T in (Float16, Float32, Float64)
+            a, x = nextfloat(zero(T)), T(2)
+            _, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, 0))...)
+            @test pb((one(T), zero(T)))[2] ≈ -expint(x) rtol=max(4eps(T), 1e-12)
+        end
+
+        for (a, x, seed, expected) in (
+            (Float16(0.05), nextfloat(Float16(0)), Float16(0.01), Float16(3752)),
+            (Float16(1), Float16(2), floatmax(Float16), Float16(8864)),
+            (0.05f0, nextfloat(0.0f0), 1.0f-5, 2.0961772f36),
+            (1e-10, 1e-310, 1.0, 9.9999992867763e299),
+            (3.0, 1e160, 1.0, 0.0),
+            (3.0, 1e308, 1.0, 0.0),
+        )
+            _, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, 0))...)
+            @test pb((seed, zero(seed)))[3] ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
+            @test pb((seed, -seed))[3] ≈ 2expected rtol=max(4eps(typeof(a)), 1e-12)
+            result = Mooncake.frule!!(
+                Mooncake.zero_dual(gamma_inc),
+                Mooncake.Dual(a, zero(a)),
+                Mooncake.Dual(x, seed),
+                Mooncake.zero_dual(0),
+            )
+            @test Mooncake.tangent(result)[1] ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
+        end
+
+        @test_throws DomainError Mooncake.rrule!!(
+            map(Mooncake.zero_fcodual, (gamma_inc, Inf, 1.0, 0))...
+        )
+        @test_throws ErrorException Mooncake.rrule!!(
+            map(Mooncake.zero_fcodual, (gamma_inc, 1e12, 1e12, 0))...
+        )
+    end
+
     @testset "Primitive SpecialFunctions with `NotImplemented` gradients" begin
         first_arg_types = [Float64, Float32]
         second_arg_types = [Float64, Float32]
@@ -131,10 +347,6 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
             map_prod(first_arg_types, second_arg_types) do (T, P)
                 return Any[
-                    # 3-arg gamma_inc (IND is 0/1; tangent(a) is 0 in AD, but approximated in FD)
-                    (:none, x -> gamma_inc(T(3), x, 0), P(2)),
-                    (:none, x -> gamma_inc(T(3), x, 1), P(2)),
-
                     # 2-arg standard Bessel/Hankel (1st arg gradient is `NotImplemented`)
                     (:none, x -> besselj(T(3), x), P(1.5)),
                     (:none, x -> besseli(T(3), x), P(1.5)),
@@ -194,11 +406,5 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         ν_active = NDual{Float64,1}(3.0, (1.0,))
         x_active = NDual{Float64,1}(1.5, (1.0,))
         @test_throws ArgumentError besselj(ν_active, x_active)
-
-        a_active = NDual{Float64,1}(2.0, (1.0,))
-        b_zero = NDual{Float64,1}(3.0, (0.0,))
-        x_zero = NDual{Float64,1}(0.4, (0.0,))
-        @test_throws ArgumentError beta_inc(a_active, b_zero, x_zero)
-        @test_throws ArgumentError beta_inc(b_zero, a_active, x_zero)
     end
 end

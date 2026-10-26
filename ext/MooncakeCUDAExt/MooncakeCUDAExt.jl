@@ -26,15 +26,18 @@ using CUDA.CUDACore:
     capture_status,
     hasfieldcount
 using CUDA: CUDACore
+using CUDA: cuRAND
 using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: derive, unsafe_free!
+using CUDA.CUDACore: GPUArrays
 using Base.Broadcast: Broadcasted
 # Statistics is a weakdep triggering this extension alongside CUDA; always loaded
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
 import Statistics: mean, varm
 import Mooncake:
+    FloatOrComplex as CuFloatOrComplex,
     MinimalCtx,
     DefaultCtx,
     frule!!,
@@ -95,6 +98,7 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose
@@ -118,7 +122,6 @@ end
 
 const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 const CuMaybeComplexMat = Union{CuArray{<:IEEEFloat,2},CuArray{<:Complex{<:IEEEFloat},2}}
-const CuFloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 const CuGpuSumFArray = Union{
     CuFloatArray,
     CuComplexArray,
@@ -246,12 +249,12 @@ end
 )
 function frule!!(
     ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
     _nopb(Val(3))
 end
@@ -434,6 +437,7 @@ _register_cudataref_internal_types!()
 # task_local_state!() is the root entry point: all library handle() functions and
 # active_state() call it to retrieve the per-task device/context/stream state.
 @zero_derivative MinimalCtx Tuple{typeof(task_local_state!)}
+@zero_derivative MinimalCtx Tuple{typeof(cuRAND.gpuarrays_rng)}
 # active_state() wraps task_local_state!() and returns a NamedTuple{device,context,stream,
 # math_mode}.  Registering it separately covers call sites that bypass task_local_state!.
 @zero_derivative MinimalCtx Tuple{typeof(active_state)}
@@ -878,6 +882,54 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy_out), getindex_pb!!
+end
+
+const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(getindex),
+        CuMaybeComplexArray,
+        _CuSliceIndex,
+        _CuSliceIndex,
+        Vararg{_CuSliceIndex},
+    },
+)
+function frule!!(
+    ::Dual{typeof(getindex)},
+    x::Dual{<:CuMaybeComplexArray},
+    i::Dual{<:_CuSliceIndex},
+    j::Dual{<:_CuSliceIndex},
+    inds::Vararg{Dual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    return Dual(px[I...], dx[I...])
+end
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuMaybeComplexArray},
+    i::CoDual{<:_CuSliceIndex},
+    j::CoDual{<:_CuSliceIndex},
+    inds::Vararg{CoDual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    y = px[I...]
+    dy = zero(y)
+    function getindex_slice_pb!!(::NoRData)
+        if all(k -> k isa Colon || allunique(k), I)
+            view(dx, I...) .+= dy
+        else
+            lin_dx = similar(dy, Int)
+            lin_dx .= view(LinearIndices(dx), I...)
+            _gpu_scatter_add!(dx, lin_dx, dy)
+        end
+        return ntuple(_ -> NoRData(), length(I) + 2)
+    end
+    return CoDual(y, dy), getindex_slice_pb!!
 end
 
 # norm: d(norm(x)) = Re(dot(x, dx)) / norm(x)  (valid for both real and complex x)
@@ -1734,13 +1786,16 @@ for (_fn, _beat) in ((:maximum, :<), (:minimum, :>))
     end
 end
 
-# Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
-# This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
-# Mooncake cannot trace. It implements a GPU memcpy — the gradient is identity:
-# accumulate the destination tangent into the source tangent over the same range.
-#
-# Forward: copy both primal and tangent with the same offsets.
-# Backward: accumulate ddest[doffs:doffs+n-1] into dsrc[soffs:soffs+n-1], then zero ddest range.
+function _gpu_swap_kernel!(x, y)
+    i = (CUDACore.blockIdx().x - 1) * CUDACore.blockDim().x + CUDACore.threadIdx().x
+    @inbounds if i <= length(x)
+        x[i], y[i] = y[i], x[i]
+    end
+    return nothing
+end
+
+# CUDA's context setup contains try/catch that Mooncake cannot trace, so the copy
+# needs explicit rules.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -1785,10 +1840,16 @@ function rrule!!(
     ddest_copy = copy(view(ddest, dest_range))
     unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
     function unsafe_copyto!_pb!!(::NoRData)
-        # Accumulate gradient into src tangent, then restore dest to pre-mutation state.
-        view(dsrc, src_range) .+= view(ddest, dest_range)
         copyto!(view(pdest, dest_range), pdest_copy)
-        copyto!(view(ddest, dest_range), ddest_copy)
+        # Restore the destination before accumulating into a possibly overlapping source.
+        if n_v > 0
+            threads = min(n_v, 256)
+            blocks = cld(n_v, threads)
+            CUDACore.@cuda threads = threads blocks = blocks _gpu_swap_kernel!(
+                view(ddest, dest_range), ddest_copy
+            )
+        end
+        view(dsrc, src_range) .+= ddest_copy
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return dest, unsafe_copyto!_pb!!
@@ -3037,18 +3098,17 @@ function rrule!!(
     return C, generic_matmatmul!_pb!!
 end
 
-# The 7-arg `generic_matmatmul!` is the CUDA.jl boundary through Julia 1.12; Julia 1.13
-# uses the equivalent public storage-type boundary `mul!(C, tA, tB, A, B, alpha, beta)`.
+# CUDA.jl implements this either as the 7-arg `generic_matmatmul!` or as the equivalent
+# public storage-type boundary `mul!(C, tA, tB, A, B, alpha, beta)`, depending on its
+# version and Julia's, and forwards the name it does not implement to the one it does. Cover
+# both names: a rule on only one of them lets the forwarding call fall through into cuBLAS,
+# which AD cannot follow (the device allocator uses `try`/`catch`).
 #
 # alpha / beta are differentiated.  They are usually `true`/`false` (from `MulAddMul`), which
 # carry no derivative and cost nothing here, but a caller may pass floats — `mul!(C, A, B, α,
 # β)` — and their derivatives are simple: ⟨op_A(A)·op_B(B), dC⟩ and ⟨C_old, dC⟩.
 
-const _MatMatMul = if VERSION >= v"1.13-"
-    Union{typeof(LinearAlgebra.generic_matmatmul!),typeof(mul!)}
-else
-    typeof(LinearAlgebra.generic_matmatmul!)
-end
+const _MatMatMul = Union{typeof(LinearAlgebra.generic_matmatmul!),typeof(mul!)}
 
 @is_primitive(
     MinimalCtx,
@@ -3284,11 +3344,7 @@ end
 #
 # Limitation: 'T' flag for complex arrays is rejected (same as generic_matmatmul!).
 
-const _MatVecMul = if VERSION >= v"1.13-"
-    Union{typeof(LinearAlgebra.generic_matvecmul!),typeof(mul!)}
-else
-    typeof(LinearAlgebra.generic_matvecmul!)
-end
+const _MatVecMul = Union{typeof(LinearAlgebra.generic_matvecmul!),typeof(mul!)}
 
 @is_primitive(
     MinimalCtx,
@@ -3818,8 +3874,7 @@ end
     pa, t
 )[2]
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
-@inline _leaf_effective_tangent(::IEEEFloat, t) = t
-@inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
+@inline _leaf_effective_tangent(::CuFloatOrComplex, t) = t
 
 struct _GpuBroadcastCastDiff{T,PA,D}
     primal_arg::PA

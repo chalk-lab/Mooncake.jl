@@ -109,6 +109,8 @@ end
     end
 
     @testset "zero_rdata_from_type checks" begin
+        P = typeof((a=(b=1.0, c=2.0f0), d=3))
+        @test (@inferred zero_rdata_from_type(P)) == (a=(b=0.0, c=0.0f0), d=NoRData())
         @test can_produce_zero_rdata_from_type(Vector) == true
         check_allocs(can_produce_zero_rdata_from_type, Vector)
         @test zero_rdata_from_type(Vector) == NoRData()

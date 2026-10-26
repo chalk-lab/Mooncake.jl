@@ -673,7 +673,7 @@ end
 
 # ── logexpfunctions integration ───────────────────────────────────────────────
 # All singleton scalar and vector/matrix functions from
-# test/integration_testing/logexpfunctions/logexpfunctions.jl.
+# test/ext/logexpfunctions/logexpfunctions.jl.
 #
 # Excluded (API limitations, not missing NDual rules):
 #   logsumexp(x; dims=...) — kwarg lambda, not singleton callable
