@@ -92,6 +92,94 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
+const _DenseMat{P} = Union{
+    Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
+}
+const _DenseMatOrAdjTrans{P} = Union{
+    _DenseMat{P},Adjoint{P,<:_DenseMat{P}},Transpose{P,<:_DenseMat{P}}
+}
+
+function _check_mul_alias(C, A, B)
+    # Unwrap Transpose/Adjoint: mightalias otherwise rejects disjoint slices of one array.
+    (
+        Base.mightalias(C, A isa Union{Transpose,Adjoint} ? parent(A) : A) ||
+        Base.mightalias(C, B isa Union{Transpose,Adjoint} ? parent(B) : B)
+    ) && throw(ArgumentError("output matrix must not be aliased with input matrix"))
+    return nothing
+end
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
+@is_primitive(
+    DefaultCtx,
+    Tuple{
+        typeof(mul!),
+        _DenseMat{P},
+        _DenseMatOrAdjTrans{P},
+        _DenseMatOrAdjTrans{P},
+        Union{Bool,P},
+        Union{Bool,P},
+    } where {P<:HalfFloat},
+)
+function frule!!(
+    ::Dual{typeof(mul!)},
+    C::Dual{<:_DenseMat{P}},
+    A::Dual{<:_DenseMatOrAdjTrans{P}},
+    B::Dual{<:_DenseMatOrAdjTrans{P}},
+    alpha::Dual{<:Union{Bool,P}},
+    beta::Dual{<:Union{Bool,P}},
+) where {P<:HalfFloat}
+    pC, dC = arrayify(C)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    _check_mul_alias(pC, pA, pB)
+    a, b = primal(alpha), primal(beta)
+    mul!(dC, dA, pB, a, b)
+    mul!(dC, pA, dB, a, one(P))
+    a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), one(P))
+    b isa P && !iszero(b) && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
+    mul!(pC, pA, pB, a, b)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(mul!)},
+    C::CoDual{<:_DenseMat{P}},
+    A::CoDual{<:_DenseMatOrAdjTrans{P}},
+    B::CoDual{<:_DenseMatOrAdjTrans{P}},
+    alpha::CoDual{<:Union{Bool,P}},
+    beta::CoDual{<:Union{Bool,P}},
+) where {P<:HalfFloat}
+    pC, dC = arrayify(C)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    _check_mul_alias(pC, pA, pB)
+    a, b = primal(alpha), primal(beta)
+    old_C = copy(pC)
+    AB = a isa P ? pA * pB : nothing
+    mul!(pC, pA, pB, a, b)
+    function mul!_pb(::NoRData)
+        da = if a isa Bool
+            NoRData()
+        else
+            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, AB); init=0.0f0))
+        end
+        db = if b isa Bool
+            NoRData()
+        elseif iszero(b)
+            zero(P)
+        else
+            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, old_C); init=0.0f0))
+        end
+        if !iszero(a)
+            mul!(dA, dC, transpose(pB), a, one(P))
+            mul!(dB, transpose(pA), dC, a, one(P))
+        end
+        copyto!(pC, old_C)
+        iszero(b) ? fill!(dC, zero(P)) : (dC .*= b)
+        return NoRData(), NoRData(), NoRData(), NoRData(), da, db
+    end
+    return C, mul!_pb
+end
+
 # Differentiating the generic implementation element by element costs more than the rules
 # either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
 @is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
@@ -218,7 +306,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     sum_sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
-
+        Any[],
         # sum(x)
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -262,6 +350,38 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
     )
+    P = Float16
+    A = P[0.2 0.3; 0.4 0.5]
+    B = P[0.3 0.4; 0.5 0.6]
+    append!(
+        test_cases,
+        [
+            (true, :none, nothing, mul!, zeros(P, 2, 2), A, A, true, false),
+            (true, :none, nothing, mul!, ones(P, 2, 2), A, B, false, true),
+            (
+                true,
+                :none,
+                nothing,
+                mul!,
+                zeros(P, 2, 2),
+                transpose(A),
+                adjoint(B),
+                true,
+                false,
+            ),
+            (true, :none, nothing, mul!, ones(P, 2, 2), A, B, P(0.5), zero(P)),
+            (true, :none, nothing, mul!, zeros(P, 2, 2), A, B, P(0.5), zero(P)),
+            (true, :none, nothing, mul!, ones(P, 2, 2), A, B, true, P(0.25)),
+            (true, :none, nothing, mul!, ones(P, 2, 2), A, B, P(0.5), true),
+        ],
+    )
+    for (wrap_a, wrap_b) in
+        ((identity, transpose), (transpose, adjoint), (adjoint, identity))
+        X = wrap_a(view(reshape(copy(A), 2, 2, 1),:,:,1))
+        Y = wrap_b(view(reshape(copy(B), 2, 2, 1),:,:,1))
+        C = view(fill(P(0.1), 2, 2, 1),:,:,1)
+        push!(test_cases, (true, :none, nothing, mul!, C, X, Y, P(0.5), P(0.25)))
+    end
     memory = Any[]
     return test_cases, memory
 end
