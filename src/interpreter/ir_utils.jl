@@ -345,7 +345,8 @@ get_matches(x::Vector{Any}) = x
     )::Tuple{IRCode, T}
 
 Get the unique IR associated to `sig_or_mi` under `interp`. Throws `ArgumentError`s if
-there is no code found, or if more than one `IRCode` instance returned.
+there is no code found, or if more than one `IRCode` instance returned. On Julia 1.14,
+global accesses through `Core.BindingPartition`s are rewritten into `GlobalRef`-based forms.
 
 Returns a tuple containing the `IRCode` and its return type.
 """
@@ -367,7 +368,7 @@ function lookup_ir(
         if code === nothing
             push!(asts, match.method => Any)
         else
-            push!(asts, code => ty)
+            push!(asts, globalrefs_from_partitions!(code) => ty)
         end
     end
     if isempty(asts)
@@ -393,11 +394,65 @@ end
 function lookup_ir(
     interp::CC.AbstractInterpreter, mi::Core.MethodInstance; optimize_until=nothing
 )
-    return CC.typeinf_ircode(interp, mi.def, mi.specTypes, mi.sparam_vals, optimize_until)
+    ir, ty = CC.typeinf_ircode(interp, mi.def, mi.specTypes, mi.sparam_vals, optimize_until)
+    return globalrefs_from_partitions!(ir), ty
 end
 
 function lookup_ir(::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
-    return mc.ir[], return_type(mc.oc)
+    return globalrefs_from_partitions!(mc.ir[]), return_type(mc.oc)
+end
+
+globalrefs_from_partitions!(ir) = ir
+@static if isdefined(Core, :getglobal_partition)
+    # JuliaLang/julia#62452 (Julia 1.14) lets optimised IR access globals through
+    # `Core.BindingPartition`s and `Core.*global_partition` builtins. Rewrite reads, writes and
+    # definedness checks into the forms earlier Julia versions produce, which the rest of
+    # Mooncake handles. Replace constant partitions in value position by their values, as the
+    # verifier now rejects most `GlobalRef`s there.
+    function globalrefs_from_partitions!(ir::IRCode)
+        insts = stmt(ir.stmts)
+        for n in eachindex(insts)
+            insts[n] = partition_operands(globalref_stmt(insts[n]))
+        end
+        return ir
+    end
+    function globalref_stmt(@nospecialize(inst))
+        inst isa Core.BindingPartition && return Base.partition_owner(inst).globalref
+        if Meta.isexpr(inst, :(=)) && inst.args[1] isa Core.BindingPartition
+            return global_call(:setglobal!, inst.args[1], inst.args[2])
+        end
+        Meta.isexpr(inst, :call) || return inst
+        f = __get_arg(inst.args[1])
+        if f === Core.getglobal_partition # (gr, partition, order)
+            gr, order = inst.args[2].value, inst.args[4]
+            order == QuoteNode(:unordered) && return gr # as for a `GlobalRef` read
+            ord = order == QuoteNode(:monotonic) ? () : (order,) # `getglobal`'s default
+            return Expr(:call, GlobalRef(Core, :getglobal), gr.mod, QuoteNode(gr.name), ord...)
+        elseif f === Core.setglobal_partition # (partition, value[, order])
+            return global_call(:setglobal!, inst.args[2].value, inst.args[3:end]...)
+        elseif f === Core.isdefinedglobal_partition # (partition, order)
+            return global_call(:isdefined, inst.args[2].value, inst.args[3])
+        end
+        return inst
+    end
+    function global_call(f::Symbol, p::Core.BindingPartition, args...)
+        gr = Base.partition_owner(p).globalref
+        return Expr(:call, GlobalRef(Core, f), gr.mod, QuoteNode(gr.name), args...)
+    end
+    function partition_operands(@nospecialize(x))
+        if x isa Core.BindingPartition
+            Base.is_defined_const_binding(Base.binding_kind(x)) || return globalref_stmt(x)
+            return CC.quoted(Base.partition_restriction(x))
+        end
+        # Recurse into all `Expr` args to also reach `:foreigncall` library tuples.
+        x isa Expr && return Expr(x.head, map(partition_operands, x.args)...)
+        # Other nodes (`PhiNode`, `PiNode`, `ReturnNode`, ...) only hold leaf operands.
+        urs = CC.userefs(x)
+        for ur in urs
+            ur[] isa Core.BindingPartition && (ur[] = partition_operands(ur[]))
+        end
+        return urs[]
+    end
 end
 
 @static if VERSION > v"1.12-"
