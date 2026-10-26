@@ -46,16 +46,15 @@ convention.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
-) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
+) where {
+    A<:Union{AbstractArray{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}
+}
     return arrayify(primal(x), tangent(x))
 end
 function arrayify(
     x::A, dx::A
-) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
-    (x, dx)
-end
-function arrayify(x::A, dx::A) where {T<:Union{IEEEFloat,BlasFloat},A<:Ptr{T}}
-    _check_tangent_ptr(dx)
+) where {A<:Union{Array{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}}
+    dx isa Ptr && _check_tangent_ptr(dx)
     return x, dx
 end
 function arrayify(
@@ -66,7 +65,7 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
+) where {P<:Union{BlasFloat,HalfFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -92,13 +91,13 @@ function arrayify(
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat}}
+) where {T<:Union{BlasFloat,HalfFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
 function arrayify(
     x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat}}
+) where {T<:Union{BlasFloat,HalfFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, transpose(_dx)
 end

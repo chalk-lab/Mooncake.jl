@@ -93,7 +93,7 @@ function build_frule(
         # create a copy and pass in new shared data.
         oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
         if haskey(interp.oc_cache, oc_cache_key)
-            return interp.oc_cache[oc_cache_key]
+            return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)

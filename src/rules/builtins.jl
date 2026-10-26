@@ -40,8 +40,6 @@ function Base.showerror(io::IO, err::MissingRuleForBuiltinException)
     return _print_boxed_error(io, split(err.msg, '\n'))
 end
 
-# Tangent storage must mirror primal bytes: `Memory{NoTangent}` has no storage, and
-# the tangent of `Tuple{Int,Float64}` stores only the `Float64`.
 """
     _build_tangent_ptr(dp::Ptr, ::Type{P}, ::Type{T}, ::Val{objref}=Val(false))
     _build_tangent_ptr(dp::Ptr, x::DenseArray{P}, dx::DenseArray{T})
@@ -144,7 +142,6 @@ end
 @doc """
     _check_tangent_ptr(dp::Ptr{T}, n::Integer)
     _check_tangent_ptr(dp::Ptr{T})
-    _check_tangent_ptr(dp::Ptr{<:Ptr})
 
 Return `true` if a load, store or copy may go through tangent pointer `dp`, `false` if it
 can safely be skipped.
@@ -169,7 +166,6 @@ _check_tangent_ptr(Ptr{Float64}(C_NULL))          # throws
 _check_tangent_ptr(dp) && unsafe_store!(dp, dv)   # guarded store
 ```
 """ _check_tangent_ptr
-# Throws where `false` would make the caller skip an access that carries a derivative.
 function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     dp != C_NULL && return true
     (T == NoTangent || n <= 0) && return false
@@ -182,12 +178,12 @@ function _check_tangent_ptr(dp::Ptr{T}, n::Integer) where {T}
     )
 end
 
-# Without a count, the access moves one element.
-_check_tangent_ptr(dp::Ptr) = _check_tangent_ptr(dp, 1)
+# A pointer value may carry a null tangent; counted accesses still require storage.
+function _check_tangent_ptr(dp::Ptr{T}) where {T}
+    return T <: Ptr ? dp != C_NULL : _check_tangent_ptr(dp, 1)
+end
 
-# A pointer value may carry a null tangent, so a null `dp` is skipped here; copies, casts,
-# `unsafe_wrap` and `unsafe_pointer_to_objref` pass `n` to require tangent storage.
-_check_tangent_ptr(dp::Ptr{<:Ptr}) = dp != C_NULL
+_null_tangent(::Ptr{T}) where {T} = T == NoTangent ? NoTangent() : T(C_NULL)
 
 """
     module IntrinsicsWrappers
@@ -239,6 +235,7 @@ import ..Mooncake:
     rrule!!,
     _build_tangent_ptr,
     _check_tangent_ptr,
+    _null_tangent,
     frule!!,
     CoDual,
     Dual,
@@ -392,18 +389,12 @@ end
 # atomic_pointermodify
 # atomic_pointerreplace
 
-# Null loads yield `NoTangent` or a null pointer; null stores skip those tangents.
-# Other tangents require storage, so the guard throws before access.
 # Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
 @intrinsic atomic_pointerref
 function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
     a = atomic_pointerref(primal(x), primal(order))
     dx = tangent(x)
-    da = if _check_tangent_ptr(dx)
-        atomic_pointerref(dx, primal(order))
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? atomic_pointerref(dx, primal(order)) : _null_tangent(dx)
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
@@ -413,11 +404,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = atomic_pointerref(_x, _order)
-    da = if _check_tangent_ptr(dx)
-        atomic_pointerref(dx, :monotonic)
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? atomic_pointerref(dx, :monotonic) : _null_tangent(dx)
     a = CoDual(a, fdata(da))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
@@ -448,23 +435,20 @@ end
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
     dp = tangent(p)
-    old_tangent = if _check_tangent_ptr(dp)
-        atomic_pointerref(dp, :monotonic)
-    else
-        eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
-    end
+    old_tangent =
+        _check_tangent_ptr(dp) ? atomic_pointerref(dp, :monotonic) : _null_tangent(dp)
     function atomic_pointerset_pullback!!(::NoRData)
-        dx_r = _check_tangent_ptr(dp) ? atomic_pointerref(dp, :monotonic) : old_tangent
+        # The entry check threw for a null `dp` needing storage, so nullness suffices here.
+        dx_r = dp != C_NULL ? atomic_pointerref(dp, :monotonic) : old_tangent
         atomic_pointerset(_p, old_value, :monotonic)
-        _check_tangent_ptr(dp) && atomic_pointerset(dp, old_tangent, :monotonic)
+        dp != C_NULL && atomic_pointerset(dp, old_tangent, :monotonic)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
 
     atomic_pointerset(_p, primal(x), _order)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _check_tangent_ptr(dp) &&
-        atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
+    dp != C_NULL && atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -472,7 +456,7 @@ end
 
 @intrinsic bitcast
 function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
-    if T <: IEEEFloat
+    if !(T <: Ptr) && tangent_type(T) !== NoTangent
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
             "this risks dropping tangents, and therefore risks silently giving the wrong " *
@@ -500,7 +484,7 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     return Dual(v, dv)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
-    if T <: IEEEFloat
+    if !(T <: Ptr) && tangent_type(T) !== NoTangent
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
             "this risks dropping tangents, and therefore risks silently giving the wrong " *
@@ -848,11 +832,7 @@ end
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
     dx = tangent(x)
-    da = if _check_tangent_ptr(dx)
-        pointerref(dx, primal(y), primal(z))
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? pointerref(dx, primal(y), primal(z)) : _null_tangent(dx)
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -861,11 +841,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _z = primal(z)
     dx = tangent(x)
     a = pointerref(_x, _y, _z)
-    da = if _check_tangent_ptr(dx)
-        pointerref(dx, _y, _z)
-    else
-        eltype(dx) == NoTangent ? NoTangent() : eltype(dx)(C_NULL)
-    end
+    da = _check_tangent_ptr(dx) ? pointerref(dx, _y, _z) : _null_tangent(dx)
     a = CoDual(a, fdata(da))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
@@ -891,22 +867,19 @@ end
     _z = primal(z)
     old_value = pointerref(_p, _idx, _z)
     dp = tangent(p)
-    old_tangent = if _check_tangent_ptr(dp)
-        pointerref(dp, _idx, _z)
-    else
-        eltype(dp) == NoTangent ? NoTangent() : eltype(dp)(C_NULL)
-    end
+    old_tangent = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : _null_tangent(dp)
     function pointerset_pullback!!(::NoRData)
-        dx_r = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : old_tangent
+        # The entry check threw for a null `dp` needing storage, so nullness suffices here.
+        dx_r = dp != C_NULL ? pointerref(dp, _idx, _z) : old_tangent
         pointerset(_p, old_value, _idx, _z)
-        _check_tangent_ptr(dp) && pointerset(dp, old_tangent, _idx, _z)
+        dp != C_NULL && pointerset(dp, old_tangent, _idx, _z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
 
     pointerset(_p, primal(x), _idx, _z)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    _check_tangent_ptr(dp) && pointerset(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
+    dp != C_NULL && pointerset(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
     return p, pointerset_pullback!!
 end
 

@@ -59,6 +59,10 @@ mutable struct DynamicFoRRule
     DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
 end
 
+# A copied forward rule (see `build_frule`) starts with empty caches, like `LazyFRule`.
+_copy(::P) where {P<:LazyFoRRule} = P()
+_copy(::DynamicFoRRule) = DynamicFoRRule()
+
 @generated function __build_primitive_frule(
     sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter{C},SMI,S,Bool}}
 ) where {C,SMI,S}
