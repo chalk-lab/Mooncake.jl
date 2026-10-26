@@ -18,11 +18,11 @@
 
      If test_args is omitted, the "basic" group runs (not the full suite).
 
-  3. Nightly correctness profile (no JET or AllocCheck dependencies):
-       julia --project=test/nightly test/nightly/runtests.jl basic
-       julia --project=test/nightly test/nightly/runtests.jl rules/misc
+  3. Julia prerelease profile (no AllocCheck dependency):
+       julia --project=test/prerelease test/prerelease/runtests.jl basic
+       julia --project=test/prerelease test/prerelease/runtests.jl rules/misc
 
-     Static-analysis checks are recorded as skipped; runtime allocation checks still run.
+     AllocCheck checks are recorded as skipped; JET and runtime allocation checks still run.
      Use this runner, not Pkg.test, which installs the full test target's dependencies.
 =#
 # Note: Julia 1.10 can mis-measure scalar allocations when Mooncake is loaded from
@@ -39,7 +39,7 @@
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
-    test_profile == "nightly" && include("nightly/profile_tests.jl")
+    test_profile == "prerelease" && include(joinpath("prerelease", "profile_tests.jl"))
     if test_group == "basic"
         Aqua.test_all(Mooncake)
         include("utils.jl")

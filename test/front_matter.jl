@@ -1,11 +1,9 @@
-using Aqua, BenchmarkTools, LinearAlgebra, Logging, Random, StableRNGs, Test
+using Aqua, BenchmarkTools, JET, LinearAlgebra, Logging, Random, StableRNGs, Mooncake, Test
 
 const test_profile = get(ENV, "MOONCAKE_TEST_PROFILE", "full")
-if test_profile == "nightly"
-    using Mooncake
-    include("nightly/hooks.jl")
+if test_profile == "prerelease"
+    include(joinpath("prerelease", "hooks.jl"))
 elseif test_profile == "full"
-    using JET, Mooncake
     using AllocCheck: AllocCheck # load to enable testing functionality
 else
     error("Unknown MOONCAKE_TEST_PROFILE: $test_profile")
