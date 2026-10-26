@@ -1517,7 +1517,7 @@ end
 
 function _chunk_pack_tangent(
     x::Array{T,N}, dx::NTangent, buf_ref::Base.RefValue{Union{Nothing,Array{T}}}, ::Val{C}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,C}
+) where {T<:FloatOrComplex,N,C}
     buf = buf_ref[]
     wanted = (size(x)..., C)
     if !(buf isa Array{T} && size(buf) == wanted)
@@ -1535,7 +1535,7 @@ end
 
 function _chunk_pack_tangent(
     x::Array{T,N}, dx::Array{T,N}, buf_ref::Base.RefValue{Union{Nothing,Array{T}}}, ::Val{C}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,C}
+) where {T<:FloatOrComplex,N,C}
     buf = buf_ref[]
     wanted = (size(x)..., C)
     if !(buf isa Array{T} && size(buf) == wanted)

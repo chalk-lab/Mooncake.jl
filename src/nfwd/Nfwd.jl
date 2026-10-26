@@ -61,6 +61,8 @@ module Nfwd
 using Base: IEEEFloat
 using LinearAlgebra
 
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
 export NDual,
     NDualUnsupportedError,
     ndual_value,
