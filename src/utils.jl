@@ -554,8 +554,9 @@ Currently, `_copy` has the following behaviours for specific types:
 - Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
 - `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
 - `DerivedRule` → construct new instances with copied captures and caches  
-- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
-- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
+- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode
+- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode
+- `DerivedFRule` → returned as is when it holds no per-call state (see `_shared`), else a new instance with copied captures
 """
 
 # Generic fallback to Base.copy

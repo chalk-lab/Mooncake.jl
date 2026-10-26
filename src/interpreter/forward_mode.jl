@@ -89,8 +89,8 @@ function build_frule(
     # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
-        # If we've already derived the OpaqueClosures and info, do not re-derive, just
-        # create a copy and pass in new shared data.
+        # If we've already derived the OpaqueClosures and info, do not re-derive. A rule
+        # without per-call state is shared; one with it is copied (see `_shared`).
         oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
@@ -113,8 +113,21 @@ function build_frule(
     end
 end
 
+"""
+    DerivedFRule(fwd_oc)
+
+A derived forward rule. `shared` is true when no capture of `fwd_oc` holds per-call state
+(see `_shared`), so one instance may run on many threads at once and `_copy` returns it.
+"""
 struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
+    shared::Bool
+    function DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}(
+        fwd_oc::Tfwd_oc
+    ) where {primal_sig,Tfwd_oc,isva,nargs}
+        shared = all(_shared, fwd_oc.oc.captures)
+        return new{primal_sig,Tfwd_oc,isva,nargs}(fwd_oc, shared)
+    end
 end
 
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
@@ -133,10 +146,26 @@ end
     end
 end
 
-# Copy forward rule with recursively copied captures
+# A shared rule is returned as is; otherwise copy with recursively copied captures.
 function _copy(x::P) where {P<:DerivedFRule}
+    if x.shared
+        return x
+    end
     return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
 end
+
+"""
+    _shared(x)
+
+Whether `x`, a forward rule or a capture of one, holds no per-call state, so that one
+instance may run on many threads at once. Bits and singleton values, `Dual`s, and the
+lazy and dynamic forward rules (whose caches are atomic or locked) are shared; a derived
+rule is shared when its captures are. Other rules, such as nfwd rules with a workspace or
+forward-over-reverse rules with stacks, hold per-call state.
+"""
+_shared(x) = Base.issingletontype(typeof(x)) || isbitstype(typeof(x))
+_shared(::Dual) = true
+_shared(x::DerivedFRule) = x.shared
 
 _isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
 _nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
@@ -518,23 +547,35 @@ function get_forward_primal_type(::CC.IRCode, x::Expr)
     return error("Unrecognised expression $x found in argument slot.")
 end
 
+"""
+    LazyFRule(mi, debug_mode, world)
+
+A forward rule for `mi`, built on its first call. One instance is safe to call from many
+threads. A shared built rule (see `_shared`) stays in place for every caller. An unshared
+one is taken out for each call and put back after it, so a single-threaded caller never
+copies, and a call that finds the rule taken builds its own copy.
+"""
 mutable struct LazyFRule{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
     world::UInt
-    rule::Trule
+    @atomic rule::Union{Nothing,Trule}
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
         interp = get_interpreter(ForwardMode, world)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
+        Trule = frule_type(interp, mi; debug_mode)
+        return new{mi.specTypes,Trule}(debug_mode, mi, world, nothing)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool, world::UInt
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi, world)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, world, nothing)
     end
 end
 
+# Called only when an unshared derived rule is copied. A fresh lazy rule gives each copy its
+# own callee, so a recursive unshared rule keeps one rule per depth across calls.
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
+_shared(::LazyFRule) = true
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -558,17 +599,36 @@ _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
 end
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
+    built = @atomic rule.rule
+    if built !== nothing && _shared(built)
+        return __call_rule(built, args)
+    end
+    return _call_owned!(rule, built, args)
 end
 
-# Build at the world `Trule` was predicted at: a later world can re-tighten `mi`'s inferred
-# return type, giving a rule that no longer matches `Trule` and fails to `convert` (#1218).
-@noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ForwardMode, rule.world)
-    rule.rule = build_frule(
-        interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
-    )
-    return __call_rule(rule.rule, args)
+"""
+    _call_owned!(rule::LazyFRule, built, args)
+
+Take `built` out of `rule`, or build a rule when it is absent or another call holds it; run
+it on `args` and put it back. A shared rule goes back before the call, for recursive calls.
+"""
+@noinline function _call_owned!(rule::LazyFRule{sig,Trule}, built, args) where {sig,Trule}
+    if built === nothing || !(@atomicreplace rule.rule built => nothing).success
+        # Build at the world `Trule` was predicted at, where `mi`'s inferred return type
+        # matches `Trule` (#1218).
+        interp = get_interpreter(ForwardMode, rule.world)
+        built = build_frule(
+            interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
+        )
+    end
+    owned = convert(Trule, built)
+    if _shared(owned)
+        @atomicreplace rule.rule nothing => owned
+        return __call_rule(owned, args)
+    end
+    output = __call_rule(owned, args)
+    @atomicreplace rule.rule nothing => owned
+    return output
 end
 
 function dual_ret_type(primal_ir::IRCode)
@@ -597,30 +657,64 @@ function frule_type(
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
 
+"""
+    DynamicFRule(debug_mode, world)
+
+A forward rule for a call whose signature is known only at run time, with one built rule
+per signature. One instance is safe to call from many threads: `lock` guards `cache`, and an
+unshared built rule is taken out of `cache` for each call, as in `LazyFRule`.
+"""
 struct DynamicFRule{V}
     cache::V
+    lock::ReentrantLock
     debug_mode::Bool
     world::UInt
+end
+
+function DynamicFRule(cache::V, debug_mode::Bool, world::UInt) where {V}
+    return DynamicFRule(cache, ReentrantLock(), debug_mode, world)
 end
 
 function DynamicFRule(debug_mode::Bool, world::UInt)
     return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
+# A fresh cache for each copy of an unshared derived rule, as for `LazyFRule`.
+_copy(x::DynamicFRule) = DynamicFRule(x.debug_mode, x.world)
+_shared(::DynamicFRule) = true
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
     # See DynamicDerivedRule for details, the same reasoning applies.
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
-    rule = get(dynamic_rule.cache, sig, nothing)
+    rule = @lock dynamic_rule.lock _take_rule!(dynamic_rule.cache, sig)
     if rule === nothing
-        # Build at this rule's creation world, not the current one; see _build_rule! (#1218)
+        # Build at this rule's creation world, not the current one; see _call_owned! (#1218)
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
         rule = build_frule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
         )
-        dynamic_rule.cache[sig] = rule
+        if _shared(rule)
+            @lock dynamic_rule.lock get!(dynamic_rule.cache, sig, rule)
+        end
     end
-    return __call_rule(rule, args)
+    if _shared(rule)
+        return __call_rule(rule, args)
+    end
+    output = __call_rule(rule, args)
+    @lock dynamic_rule.lock get!(dynamic_rule.cache, sig, rule)
+    return output
+end
+
+"""
+    _take_rule!(cache::AbstractDict, sig::Type)
+
+The cached rule for `sig`, removed from `cache` when it is unshared; `nothing` if absent.
+"""
+function _take_rule!(cache::AbstractDict, sig::Type)
+    rule = get(cache, sig, nothing)
+    if rule !== nothing && !_shared(rule)
+        delete!(cache, sig)
+    end
+    return rule
 end
