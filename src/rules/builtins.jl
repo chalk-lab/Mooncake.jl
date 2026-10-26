@@ -111,7 +111,7 @@ _build_tangent_ptr(dp, ["a"], [NoTangent()])               # null
         if Base.isbitsunion(P)
             # A member without a tangent, e.g. the `Int` in `Union{Int,Float64}` or `missing`,
             # leaves the tangent bytes of the value it replaces behind.
-            Ws = Base.isbitsunion(T) ? Base.uniontypes(T) : Any[T]
+            Ws = Base.uniontypes(T)
             NoTangent in Ws && return false
             Ps = Base.uniontypes(P)
             return all(Q -> any(W -> mirrors(Q, W), Ws), Ps) &&
@@ -469,12 +469,11 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         P, dx = eltype(T), tangent(x)
-        # A `Ptr{Int}` cast of a `Float64` pointer must not keep the old tangent in place.
-        # Known gaps: the check compares `P` only with its own tangent, so a `Ptr{Float32}`
-        # cast reinterprets a `Float64` tangent's bytes; zero-size pointees skip it, so a
-        # `Ptr{Cvoid}` detour evades it.
-        # The skip stays: pointers without tangent storage carry non-null placeholders.
-        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
+        # Refuse a target laid out unlike its own tangent, e.g. `Ptr{Int}` over `Float64`.
+        # The source is not compared: `Ptr{Float32}` reinterprets `Float64` tangent bytes,
+        # and a `Ptr{Cvoid}` detour passes the zero-size-source skip kept for non-null
+        # placeholders.
+        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0
             _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
         end
         dv = bitcast(Ptr{tangent_type(P)}, dx)
@@ -497,7 +496,7 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         P, dx = eltype(T), tangent(x)
-        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0 && Base.aligned_sizeof(P) > 0
+        if dx != C_NULL && Base.aligned_sizeof(eltype(dx)) > 0
             _check_tangent_ptr(_build_tangent_ptr(dx, P, tangent_type(P)), 1)
         end
         dv = bitcast(Ptr{tangent_type(P)}, dx)
