@@ -24,7 +24,8 @@ end
 # The function an `:invoke` statement calls. Julia 1.14 IR names it by a `BindingPartition`.
 function invoked_function(inst)
     f = inst.args[2]
-    isdefined(Core, :BindingPartition) && f isa Core.BindingPartition &&
+    isdefined(Core, :BindingPartition) &&
+        f isa Core.BindingPartition &&
         return Base.partition_restriction(f)
     return f isa GlobalRef ? getglobal(f.mod, f.name) : f
 end

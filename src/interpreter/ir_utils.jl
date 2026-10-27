@@ -427,7 +427,9 @@ globalrefs_from_partitions!(ir) = ir
             gr, order = inst.args[2].value, inst.args[4]
             order == QuoteNode(:unordered) && return gr # as for a `GlobalRef` read
             ord = order == QuoteNode(:monotonic) ? () : (order,) # `getglobal`'s default
-            return Expr(:call, GlobalRef(Core, :getglobal), gr.mod, QuoteNode(gr.name), ord...)
+            return Expr(
+                :call, GlobalRef(Core, :getglobal), gr.mod, QuoteNode(gr.name), ord...
+            )
         elseif f === Core.setglobal_partition # (partition, value[, order])
             return global_call(:setglobal!, inst.args[2].value, inst.args[3:end]...)
         elseif f === Core.isdefinedglobal_partition # (partition, order)
