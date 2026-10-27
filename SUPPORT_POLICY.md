@@ -6,7 +6,7 @@ Consequently, the versions of Julia which are officially supported by `Mooncake.
 We may also run CI against a prerelease of the next Julia minor version to find compatibility problems before release. These lanes are preparatory: a Julia version becomes officially supported only when its stable release is available.
 
 Julia 1.14 prereleases are admitted by compat, with the `basic` and `rules/misc` test groups
-in non-blocking CI on the latest prerelease, using a separate test profile. This profile
+in non-blocking CI on the latest 1.14 prerelease, using a separate test profile. This profile
 excludes AllocCheck/GPUCompiler, which do not yet support Julia 1.14, from its test
 environment: their static allocation checks are reported as skipped, while JET analysis and
 numerical, mutation, cache, and runtime allocation checks still run. The full profile on
