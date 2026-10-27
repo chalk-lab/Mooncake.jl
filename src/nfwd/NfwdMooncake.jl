@@ -3,6 +3,7 @@ module NfwdMooncake
 import ..Mooncake
 using Base: IEEEFloat
 using ..Nfwd
+import ..Nfwd: FloatOrComplex
 import ..Mooncake:
     @unstable,
     CoDual,
@@ -364,11 +365,8 @@ function (rule::Rule{sig,N})(
     return Dual(y, dy)
 end
 
-@inline _nfwd_rule_pack_buffer(::IEEEFloat) = nothing
-@inline _nfwd_rule_pack_buffer(::Complex{<:IEEEFloat}) = nothing
-@inline function _nfwd_rule_pack_buffer(
-    x::Array{T}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+@inline _nfwd_rule_pack_buffer(::FloatOrComplex) = nothing
+@inline function _nfwd_rule_pack_buffer(x::Array{T}) where {T<:FloatOrComplex}
     return Ref{Union{Nothing,Array{T}}}(nothing)
 end
 @inline _nfwd_rule_pack_buffer(x::Tuple) = tuple_map(_nfwd_rule_pack_buffer, x)
@@ -883,19 +881,17 @@ end
 end
 
 # Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
-@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) = zero(
-    y
-)
-@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}) where {N} = ntuple(
+@inline _nfwd_zero_output_tangent(y::FloatOrComplex, ::Val{1}) = zero(y)
+@inline _nfwd_zero_output_tangent(y::FloatOrComplex, ::Val{N}) where {N} = ntuple(
     _ -> zero(y), Val(N)
 )
 
 # Array (real or complex elements): chunk_size=1 → same-shape zero array; chunk_size=N → N extra lanes.
-@inline _nfwd_zero_output_tangent(y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}) = zero_tangent(
+@inline _nfwd_zero_output_tangent(y::AbstractArray{<:FloatOrComplex}, ::Val{1}) = zero_tangent(
     y
 )
 @inline function _nfwd_zero_output_tangent(
-    y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{N}
+    y::AbstractArray{<:FloatOrComplex}, ::Val{N}
 ) where {N}
     return zeros(eltype(y), size(y)..., N)
 end
@@ -932,9 +928,7 @@ function _nfwd_contract_output(
 end
 
 # Single-chunk array case (ȳ and dy have the same shape — real or complex elements).
-function _nfwd_contract_output(
-    ȳ::A, dy::A
-) where {A<:AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+function _nfwd_contract_output(ȳ::A, dy::A) where {A<:AbstractArray{<:FloatOrComplex}}
     acc = zero(real(eltype(ȳ)))
     @inbounds for I in CartesianIndices(ȳ)
         acc += _nfwd_real_dot(ȳ[I], dy[I])
@@ -949,7 +943,7 @@ end
 # this situation only arises from incorrect external use.
 function _nfwd_contract_output(
     ȳ::A, dy::B
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},A<:AbstractArray{T},B<:AbstractArray{T}}
+) where {T<:FloatOrComplex,A<:AbstractArray{T},B<:AbstractArray{T}}
     ndims(dy) == ndims(ȳ) + 1 || _nfwd_output_error(dy)
     size(dy)[1:(end - 1)] == size(ȳ) || _nfwd_output_error(dy)
     N = size(dy, ndims(dy))

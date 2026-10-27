@@ -49,6 +49,7 @@ else
 end
 # BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
 const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 DispatchDoctor.register_macro!(
     Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__

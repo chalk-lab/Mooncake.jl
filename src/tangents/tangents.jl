@@ -1452,7 +1452,7 @@ live in `src/rules/linear_algebra.jl`.
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
     # Resolve element tangents at runtime so later methods remain visible.
-    if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
+    if P <: AbstractArray && !(eltype(P) <: FloatOrComplex)
         return quote
             if tangent_type(eltype(P)) == NoTangent
                 friendly_tangent_cache_internal(x)

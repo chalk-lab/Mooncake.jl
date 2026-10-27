@@ -4,6 +4,7 @@ using SpecialFunctions, Mooncake
 using Base: IEEEFloat
 import ChainRulesCore as CRC
 import Mooncake:
+    FloatOrComplex,
     DefaultCtx,
     @from_chainrules,
     @from_rrule,
@@ -459,14 +460,10 @@ function rrule!!(
 end
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(gamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(gamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -481,14 +478,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(loggamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(loggamma),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(loggamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -505,14 +498,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expint),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(expint),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(expint)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -529,14 +518,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expintx),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(expintx),FloatOrComplex,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(expintx)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:FloatOrComplex}
     a, da = extract(_a)
     x, dx = extract(_x)
 
@@ -554,12 +539,10 @@ function frule!!(
 end
 
 # 2-arg standard Bessel and Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselj),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselj)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -576,12 +559,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(bessely),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(bessely)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -597,12 +578,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besseli),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besseli)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -618,12 +597,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselk),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselk)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -639,12 +616,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh1),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh1)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -660,12 +635,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh2),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh2)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -686,12 +659,10 @@ end
 #
 
 # 2-arg scaled Bessel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselix),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselix),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselix)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -710,12 +681,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselkx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselkx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -731,12 +700,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besseljx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besseljx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -754,12 +721,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(besselyx),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(besselyx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -778,12 +743,10 @@ function frule!!(
 end
 
 # Scaled Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh1x),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh1x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
@@ -799,12 +762,10 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(hankelh2x),IEEEFloat,FloatOrComplex}
 function frule!!(
     ::Dual{typeof(hankelh2x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+) where {T<:IEEEFloat,P<:FloatOrComplex}
     v, dv = extract(_v)
     x, dx = extract(_x)
 
