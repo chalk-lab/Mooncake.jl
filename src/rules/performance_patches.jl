@@ -136,7 +136,7 @@ function frule!!(
     mul!(dC, dA, pB, a, b)
     mul!(dC, pA, dB, a, one(P))
     a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), one(P))
-    b isa P && !iszero(b) && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
+    b isa P && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
     mul!(pC, pA, pB, a, b)
     return C
 end
@@ -164,10 +164,12 @@ function rrule!!(
         end
         db = if b isa Bool
             NoRData()
-        elseif iszero(b)
-            zero(P)
         else
-            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, old_C); init=0.0f0))
+            P(
+                sum(zip(dC, old_C); init=0.0f0) do (dc, c)
+                    nan_tangent_guard(Float32(dc), Float32(dc) * Float32(c))
+                end,
+            )
         end
         if !iszero(a)
             mul!(dA, dC, transpose(pB), a, one(P))
@@ -351,6 +353,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
     )
     P = Float16
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            nothing,
+            mul!,
+            ones(P, 2, 2),
+            zeros(P, 2, 2),
+            zeros(P, 2, 2),
+            true,
+            zero(P),
+        ),
+    )
     A = P[0.2 0.3; 0.4 0.5]
     B = P[0.3 0.4; 0.5 0.6]
     append!(
