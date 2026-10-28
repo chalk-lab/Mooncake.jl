@@ -92,94 +92,167 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
-const _DenseMat{P} = Union{
-    Matrix{P},SubArray{P,2,<:Array{P},<:Tuple{Base.Slice,Base.Slice,Int},true}
-}
-const _DenseMatOrAdjTrans{P} = Union{
-    _DenseMat{P},Adjoint{P,<:_DenseMat{P}},Transpose{P,<:_DenseMat{P}}
-}
-
 function _check_mul_alias(C, A, B)
     # Unwrap Transpose/Adjoint: mightalias otherwise rejects disjoint slices of one array.
-    (
-        Base.mightalias(C, A isa Union{Transpose,Adjoint} ? parent(A) : A) ||
-        Base.mightalias(C, B isa Union{Transpose,Adjoint} ? parent(B) : B)
-    ) && throw(ArgumentError("output matrix must not be aliased with input matrix"))
+    C isa Union{Transpose,Adjoint} && return _check_mul_alias(parent(C), A, B)
+    A isa Union{Transpose,Adjoint} && return _check_mul_alias(C, parent(A), B)
+    B isa Union{Transpose,Adjoint} && return _check_mul_alias(C, A, parent(B))
+    (Base.mightalias(C, A) || Base.mightalias(C, B)) &&
+        throw(ArgumentError("output matrix must not be aliased with input matrix"))
     return nothing
 end
 
-# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
-@is_primitive(
-    DefaultCtx,
-    Tuple{
-        typeof(mul!),
-        _DenseMat{P},
-        _DenseMatOrAdjTrans{P},
-        _DenseMatOrAdjTrans{P},
-        Union{Bool,P},
-        Union{Bool,P},
-    } where {P<:HalfFloat},
-)
-function frule!!(
-    ::Dual{typeof(mul!)},
-    C::Dual{<:_DenseMat{P}},
-    A::Dual{<:_DenseMatOrAdjTrans{P}},
-    B::Dual{<:_DenseMatOrAdjTrans{P}},
-    alpha::Dual{<:Union{Bool,P}},
-    beta::Dual{<:Union{Bool,P}},
-) where {P<:HalfFloat}
-    pC, dC = arrayify(C)
-    pA, dA = arrayify(A)
-    pB, dB = arrayify(B)
-    _check_mul_alias(pC, pA, pB)
-    a, b = primal(alpha), primal(beta)
-    mul!(dC, dA, pB, a, b)
-    mul!(dC, pA, dB, a, one(P))
-    a isa P && !iszero(tangent(alpha)) && mul!(dC, pA, pB, tangent(alpha), one(P))
-    b isa P && !iszero(tangent(beta)) && (dC .+= tangent(beta) .* pC)
-    mul!(pC, pA, pB, a, b)
-    return C
+const _MulMatrix{T} = Union{
+    StridedMatrix{T},
+    Adjoint{T,<:StridedMatrix{T}},
+    Transpose{T,<:StridedMatrix{T}},
+    Adjoint{T,<:Transpose{T,<:StridedMatrix{T}}},
+    Transpose{T,<:Adjoint{T,<:StridedMatrix{T}}},
+}
+const _MulVecOrMat{T} = Union{StridedVector{T},_MulMatrix{T}}
+
+# Finite zero products must retain their derivatives in forward-over-reverse AD.
+@inline function _mul_guarded_scale(d, x)
+    return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
 end
-function rrule!!(
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
+# Stdlib `mul!` skips A·B when α = 0; its generic kernels skip α at one and C at β = 0.
+# Exception to convention 2: strided coefficient correctness requires an open signature;
+# every named element type and wrapper kind is tested.
+# The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
+# lose coefficient derivatives.
+# Hidden element types let mul! inline past this rule and lose coefficient derivatives.
+# Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
+# scalar-array mul! and stdlib internals can lose coefficient derivatives.
+@is_primitive MinimalCtx Tuple{
+    typeof(mul!),
+    _MulVecOrMat{T},
+    _MulMatrix{T},
+    _MulVecOrMat{T},
+    Union{Bool,IEEEFloat,T},
+    Union{Bool,IEEEFloat,T},
+} where {T<:Union{BlasFloat,HalfFloat}}
+
+@inline function frule!!(
+    ::Dual{typeof(mul!)},
+    c::Dual{<:_MulVecOrMat{T}},
+    a::Dual{<:_MulMatrix{T}},
+    b::Dual{<:_MulVecOrMat{T}},
+    alpha::Dual{<:Union{Bool,IEEEFloat,T}},
+    beta::Dual{<:Union{Bool,IEEEFloat,T}},
+) where {T<:Union{BlasFloat,HalfFloat}}
+    C, dC = arrayify(c)
+    A, dA = arrayify(a)
+    B, dB = arrayify(b)
+    _check_mul_alias(C, A, B)
+    dC = B isa AbstractVector && dC isa AbstractMatrix ? view(dC, :, 1) : dC
+    pa, pb = primal(alpha), primal(beta)
+    da = pa isa Bool ? zero(T) : tangent(alpha)
+    db = pb isa Bool ? zero(T) : tangent(beta)
+    mul!(dC, dA, B, pa, pb)
+    mul!(dC, A, dB, pa, one(T))
+    iszero(da) || mul!(dC, A, B, da, one(T))
+    if !iszero(db)
+        @inbounds @simd for i in eachindex(IndexLinear(), C, dC)
+            dC[i] += db * C[i]
+        end
+    end
+    mul!(C, A, B, pa, pb)
+    return c
+end
+
+@inline function rrule!!(
     ::CoDual{typeof(mul!)},
-    C::CoDual{<:_DenseMat{P}},
-    A::CoDual{<:_DenseMatOrAdjTrans{P}},
-    B::CoDual{<:_DenseMatOrAdjTrans{P}},
-    alpha::CoDual{<:Union{Bool,P}},
-    beta::CoDual{<:Union{Bool,P}},
-) where {P<:HalfFloat}
-    pC, dC = arrayify(C)
-    pA, dA = arrayify(A)
-    pB, dB = arrayify(B)
-    _check_mul_alias(pC, pA, pB)
-    a, b = primal(alpha), primal(beta)
-    old_C = copy(pC)
-    AB = a isa P ? pA * pB : nothing
-    mul!(pC, pA, pB, a, b)
-    function mul!_pb(::NoRData)
-        da = if a isa Bool
-            NoRData()
+    c::CoDual{<:_MulVecOrMat{T}},
+    a::CoDual{<:_MulMatrix{T}},
+    b::CoDual{<:_MulVecOrMat{T}},
+    alpha::CoDual{S},
+    beta::CoDual{U},
+) where {
+    T<:Union{BlasFloat,HalfFloat},S<:Union{Bool,IEEEFloat,T},U<:Union{Bool,IEEEFloat,T}
+}
+    C, dC = arrayify(c)
+    A, dA = arrayify(a)
+    B, dB = arrayify(b)
+    _check_mul_alias(C, A, B)
+    # Small outputs must not allocate a separate restoration buffer.
+    # Some avoids a union-typed NamedTuple field, whose tangent type is Any.
+    old = (
+        small=ntuple(i -> i <= length(C) && length(C) <= 16 ? C[i] : zero(T), Val(16)),
+        large=Some{Union{Nothing,Array{T,ndims(C)}}}(length(C) <= 16 ? nothing : copy(C)),
+    )
+    pa, pb = primal(alpha), primal(beta)
+    mul!(C, A, B, pa, pb)
+    function pullback(::NoRData)
+        # Wider coefficients must not round through an input cotangent product.
+        da = pa isa Bool ? NoRData() : zero(T <: HalfFloat ? Float32 : T) + zero(pa)
+        from_output = !(pa isa Bool) && isone(pa) && iszero(pb)
+        reuse_A = !from_output && da isa T && !iszero(pa) && size(C) == size(A)
+        reuse_B = !from_output && da isa T && !iszero(pa) && !reuse_A && size(C) == size(B)
+        if !(pa isa Bool) && !(reuse_A || reuse_B)
+            dest = B isa AbstractVector && C isa AbstractMatrix ? view(C, :, 1) : C
+            from_output || mul!(dest, A, B, one(T), zero(T))
+            @inbounds @simd for i in eachindex(C)
+                da += _mul_guarded_scale(oftype(da, dC[i]), conj(oftype(da, C[i])))
+            end
+        end
+        # The transposed left factor avoids Julia 1.10's tiled outer-product buffers.
+        left, right = if VERSION < v"1.11-" && T <: Float16 && B isa AbstractVector
+            transpose(Base.ReshapedArray(dC, (1, length(dC)), ())),
+            Base.ReshapedArray(B, (1, length(B)), ())
         else
-            P(sum(xy -> Float32(xy[1]) * Float32(xy[2]), zip(dC, AB); init=0.0f0))
+            dC, adjoint(B)
         end
-        db = if b isa Bool
-            NoRData()
+        # Keep zero coefficients in mul! calls so nested AD retains their directions.
+        if reuse_A
+            mul!(C, left, right, one(T), zero(T))
+            @inbounds @simd for i in eachindex(C)
+                v = C[i]
+                dA[i] += conj(pa) * v
+                da += _mul_guarded_scale(v, conj(A[i]))
+            end
         else
-            P(
-                sum(zip(dC, old_C); init=0.0f0) do (dc, c)
-                    nan_tangent_guard(Float32(dc), Float32(dc) * Float32(c))
-                end,
-            )
+            mul!(dA, left, right, conj(pa), one(T))
         end
-        if !iszero(a)
-            mul!(dA, dC, transpose(pB), a, one(P))
-            mul!(dB, transpose(pA), dC, a, one(P))
+        if reuse_B
+            mul!(C, adjoint(A), dC, one(T), zero(T))
+            @inbounds @simd for i in eachindex(C)
+                v = C[i]
+                dB[i] += conj(pa) * v
+                da += _mul_guarded_scale(v, conj(B[i]))
+            end
+        elseif B isa AbstractVector && dC isa AbstractMatrix
+            mul!(dB, adjoint(A), view(dC, :, 1), conj(pa), one(T))
+        else
+            mul!(dB, adjoint(A), dC, conj(pa), one(T))
         end
-        copyto!(pC, old_C)
-        iszero(b) ? fill!(dC, zero(P)) : (dC .*= b)
+        large = something(old.large)
+        db = zero(eltype(C) <: HalfFloat ? Float32 : eltype(C)) + zero(pb)
+        @inbounds @simd for i in 1:length(C)
+            v = (large === nothing ? old.small : large)[i]
+            if !(pb isa Bool)
+                db += _mul_guarded_scale(oftype(db, dC[i]), conj(oftype(db, v)))
+            end
+            dC[i] = if !isfinite(pb) && iszero(dC[i])
+                zero(dC[i])
+            else
+                _mul_guarded_scale(conj(pb), dC[i])
+            end
+            C[i] = v
+        end
+        db = pb isa Bool ? NoRData() : db
+        # Keep α and β in the correction so nested AD sees the unscaled product.
+        if from_output
+            da =
+                (da - (pb isa Bool ? zero(da) : _mul_guarded_scale(conj(pb), db))) /
+                conj(pa)
+        end
+        da = pa isa Bool ? da : S(S <: Real ? real(da) : da)
+        db = pb isa Bool ? db : U(U <: Real ? real(db) : db)
         return NoRData(), NoRData(), NoRData(), NoRData(), da, db
     end
-    return C, mul!_pb
+    return c, pullback
 end
 
 # Differentiating the generic implementation element by element costs more than the rules
@@ -398,6 +471,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         C = view(fill(P(0.1), 2, 2, 1),:,:,1)
         push!(test_cases, (true, :none, nothing, mul!, C, X, Y, P(0.5), P(0.25)))
     end
+    push!(
+        test_cases,
+        (
+            true,
+            :none,
+            nothing,
+            mul!,
+            ones(Float16, 2, 2),
+            ones(Float16, 2, 2),
+            ones(Float16, 2, 2),
+            Float16(0.5),
+            Float16(0.25),
+        ),
+    )
     memory = Any[]
     return test_cases, memory
 end
@@ -408,6 +495,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     precisions = [Float64, Float32]
     test_cases = vcat(
+        Any[],
         map(precisions) do (P)
             return (
                 false,
@@ -464,6 +552,249 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             return (false, :none, nothing, _square_matmul, randn(rng, P, 5, 5))
         end,
     )
+    push!(
+        test_cases,
+        (false, :none, nothing, _mul_guarded_scale, 0.0, 2.0),
+        (false, :none, nothing, _mul_guarded_scale, 0.0+0.0im, 2.0+1.0im),
+    )
+    for T in (Float32, Float64, ComplexF32, ComplexF64),
+        n in (2, 3, 4),
+        (a, b) in ((one(T), zero(T)), (zero(T), zero(T)), (true, zero(T)))
+
+        A = reshape(T.(1:(n ^ 2)), n, n) ./ T(n^2)
+        B = reverse(A; dims=1)
+        T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
+        push!(test_cases, (false, :none, nothing, mul!, ones(T, n, n), A, B, a, b))
+    end
+    for T in (Float64, ComplexF64),
+        wrap in (adjoint, transpose),
+        n in (2, 5),
+        a in (one(T), T <: Complex ? T(0.7+0.2im) : T(0.7)),
+        b in (zero(T), T <: Complex ? T(-0.2+0.3im) : T(-0.2))
+
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                mul!,
+                wrap(randn(rng, T, n+1, n)),
+                randn(rng, T, n, 4),
+                randn(rng, T, 4, n+1),
+                a,
+                b,
+            ),
+        )
+    end
+    for wrap in (adjoint ∘ transpose, transpose ∘ adjoint)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                mul!,
+                wrap(randn(rng, ComplexF64, 2, 3)),
+                randn(rng, ComplexF64, 2, 4),
+                randn(rng, ComplexF64, 4, 3),
+                one(ComplexF64),
+                zero(ComplexF64),
+            ),
+        )
+    end
+    for T in (Float64, ComplexF64), wrap in (adjoint, transpose)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                mul!,
+                wrap(ones(T, 1, 2)),
+                randn(rng, T, 2, 3),
+                randn(rng, T, 3),
+                one(T),
+                zero(T),
+            ),
+        )
+    end
+    # The pullback must retain α's direction in wrapped cotangent updates.
+    for T in (Float64, ComplexF64), wrap in (adjoint, transpose), side in (:A, :B)
+        f =
+            (z, T) -> begin
+                A = side === :A ? wrap(fill(T(z[2]), 2, 2)) : fill(T(z[2]), 2, 2)
+                B = side === :B ? wrap(ones(T, 2, 2)) : ones(T, 2, 2)
+                c, a, b = map(zero_fcodual, (zeros(T, 2, 2), A, B))
+                _, pb = rrule!!(
+                    zero_fcodual(mul!), c, a, b, zero_fcodual(z[1]), zero_fcodual(0.0)
+                )
+                fill!(c.dx, one(T))
+                pb(NoRData())
+                sum(real, last(arrayify(a))) + sum(real, last(arrayify(b)))
+            end
+        push!(test_cases, (false, :none, nothing, f, [1.0, 0.4], T))
+    end
+    for T in (Float64, ComplexF64),
+        shape in ((2,), (3,), (2, 1)),
+        a in (zero(T), T <: Complex ? T(0.7+0.1im) : T(0.7))
+
+        m = first(shape)
+        A = reshape(T.(1:(2m)), m, 2) ./ T(2m)
+        B = T[1, 2]
+        T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
+        push!(test_cases, (false, :none, nothing, mul!, ones(T, shape), A, B, a, zero(T)))
+    end
+    for T in (Float64, ComplexF64)
+        A = reshape(T.(1:24), 6, 4) ./ T(24)
+        B = reshape(T.(1:12), 4, 3) ./ T(12)
+        T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
+        a, b = T <: Complex ? (T(0.7+0.2im), T(-0.2+0.3im)) : (T(0.7), T(-0.2))
+        for av in (view(A, 1:2:6, :), view(A, 2:4, :))
+            push!(
+                test_cases,
+                (false, :none, nothing, mul!, view(ones(T, 6, 3), 1:2:6, :), av, B, a, b),
+            )
+        end
+    end
+    for wrap in (identity, transpose, adjoint)
+        A = ComplexF64[1+im 2-im; -1+2im 3+im]
+        B = ComplexF64[2-im 1+im; 3+2im -1-im]
+        for (a, b) in ((1.0, 0.0), (0.0, 0.0), (0.7+0.2im, -0.2+0.3im))
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    nothing,
+                    mul!,
+                    ones(ComplexF64, 2, 2),
+                    wrap(A),
+                    wrap(B),
+                    a,
+                    b,
+                ),
+            )
+        end
+    end
+    push!(
+        test_cases,
+        (false, :none, nothing, mul!, ones(2, 3), zeros(2, 0), zeros(0, 3), 0.0, 0.0),
+        (false, :none, nothing, mul!, ones(5, 5), ones(5, 5), ones(5, 5), 0.0, 0.3),
+    )
+    for n in (2, 3), side in (:left, :right)
+        f = if side == :left
+            a -> sum(a * ones(n, n) * ones(n, n))
+        else
+            a -> sum(ones(n, n) * ones(n, n) * a)
+        end
+        push!(test_cases, (false, :none, nothing, f, 1.0))
+    end
+    f =
+        a -> real(
+            sum(
+                mul!(
+                    fill(oftype(a, NaN), 2, 2),
+                    ones(typeof(a), 2, 2),
+                    ones(typeof(a), 2, 2),
+                    a,
+                    zero(a),
+                ),
+            ),
+        )
+    for T in (Float64, ComplexF64)
+        push!(test_cases, (false, :none, nothing, f, one(T)))
+    end
+    # Scale β so the smallest finite-difference step survives conversion to Float16.
+    for wrap in (identity, transpose, adjoint), k in (0, 2)
+        dims = wrap === identity ? (2, k) : (k, 2)
+        f =
+            b -> sum(
+                mul!(
+                    ones(Float16, 2),
+                    wrap(zeros(Float16, dims)),
+                    ones(Float16, k),
+                    true,
+                    Float16(8b),
+                ),
+            )
+        push!(test_cases, (false, :none, nothing, f, 0.0))
+    end
+    f =
+        b -> sum(
+            mul!(
+                ones(Float16, 2, 2),
+                view(zeros(Float16, 4, 2), 1:2:4, :),
+                ones(Float16, 2, 2),
+                true,
+                Float16(8b),
+            ),
+        )
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    f =
+        b -> sum(
+            mul!(
+                ones(Float16, 2, 1),
+                zeros(Float16, 2, 2),
+                ones(Float16, 2),
+                true,
+                Float16(8b),
+            ),
+        )
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    f = b -> sum(mul!(ones(2, 2), Base.inferencebarrier(ones(2, 2)), ones(2, 2), true, b))
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    f =
+        a -> begin
+            T = Base.inferencebarrier(Float64)::DataType
+            sum(
+                Base.inferencebarrier(mul!)(
+                    ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)
+                ),
+            )
+        end
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    for T in (Float16, Float64)
+        f =
+            b -> sum(
+                Base.inferencebarrier(mul!)(
+                    view(ones(T, 4, 1), 1:2:4, :),
+                    zeros(T, 2, 2),
+                    ones(T, 2),
+                    true,
+                    T(8b),
+                ),
+            )
+        push!(test_cases, (false, :none, nothing, f, 0.0))
+    end
+    f =
+        a -> sum(
+            mul!(
+                zeros(Float16, 2),
+                reshape(view(ones(Float16, 6), 1:4), 2, 2),
+                ones(Float16, 2),
+                Float16(8a),
+                false,
+            ),
+        )
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    f =
+        z -> sum(
+            abs2,
+            mul!(zeros(2, 2), reinterpret(reshape, Float64, z), ones(2, 2), 1.0, false),
+        )
+    push!(test_cases, (false, :none, nothing, f, ComplexF64[1 + 2im, 3 - im]))
+    f =
+        z -> sum(
+            mul!(
+                zeros(Float16, 2),
+                ones(Float16, 2, 2),
+                reinterpret(Float16, z),
+                true,
+                false,
+            ),
+        )
+    push!(test_cases, (false, :none, nothing, f, zeros(ComplexF16, 1)))
     memory = Any[]
     return test_cases, memory
 end
