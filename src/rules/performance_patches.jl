@@ -104,31 +104,39 @@ end
 
 # `StridedArray` admits `AbstractGPUArray <: DenseArray`; the scalar loops and `arrayify`
 # need `Array` or `Memory` storage, so other dense arrays fall back to stdlib `mul!`.
-const _MulStorage = @static VERSION < v"1.11-" ? Array : Union{Array,Memory}
-const _MulContiguous = Union{
-    _MulStorage,Base.StridedFastContiguousSubArray{T,N,<:_MulStorage} where {T,N}
+const _CPUDenseArray = @static VERSION < v"1.11-" ? Array : Union{Array,Memory}
+const _CPUContiguousArray = Union{
+    _CPUDenseArray,Base.StridedFastContiguousSubArray{T,N,<:_CPUDenseArray} where {T,N}
 }
-const _MulReinterpret = Base.StridedReinterpretArray{T,N,<:_MulContiguous} where {T,N}
-const _MulReshaped =
-    Base.StridedReshapedArray{T,N,<:Union{_MulContiguous,_MulReinterpret}} where {T,N}
-const _MulStrided{T,N} = Union{
+const _CPUReinterpretArray =
+    Base.StridedReinterpretArray{T,N,<:_CPUContiguousArray} where {T,N}
+const _CPUReshapedArray = Base.StridedReshapedArray{
+    T,N,<:Union{_CPUContiguousArray,_CPUReinterpretArray}
+} where {T,N}
+const _CPUStridedArray{T,N} = Union{
     Array{T,N},
-    Base.StridedSubArray{T,N,<:Union{_MulStorage,_MulReinterpret,_MulReshaped}},
-    _MulReinterpret{T,N},
-    _MulReshaped{T,N},
+    Base.StridedSubArray{
+        T,N,<:Union{_CPUDenseArray,_CPUReinterpretArray,_CPUReshapedArray}
+    },
+    _CPUReinterpretArray{T,N},
+    _CPUReshapedArray{T,N},
 }
 
-const _MulMatrix{T} = Union{
-    _MulStrided{T,2},
-    Adjoint{T,<:_MulStrided{T,2}},
-    Transpose{T,<:_MulStrided{T,2}},
-    Adjoint{T,<:Transpose{T,<:_MulStrided{T,2}}},
-    Transpose{T,<:Adjoint{T,<:_MulStrided{T,2}}},
+const _CPUStridedOrAdjTransMatrix{T} = Union{
+    _CPUStridedArray{T,2},
+    Adjoint{T,<:_CPUStridedArray{T,2}},
+    Transpose{T,<:_CPUStridedArray{T,2}},
+    Adjoint{T,<:Transpose{T,<:_CPUStridedArray{T,2}}},
+    Transpose{T,<:Adjoint{T,<:_CPUStridedArray{T,2}}},
 }
 @static if VERSION < v"1.11-"
-    const _MulVecOrMat{T} = Union{_MulStrided{T,1},_MulMatrix{T}}
+    const _CPUStridedOrAdjTransVecOrMat{T} = Union{
+        _CPUStridedArray{T,1},_CPUStridedOrAdjTransMatrix{T}
+    }
 else
-    const _MulVecOrMat{T} = Union{Memory{T},_MulStrided{T,1},_MulMatrix{T}}
+    const _CPUStridedOrAdjTransVecOrMat{T} = Union{
+        Memory{T},_CPUStridedArray{T,1},_CPUStridedOrAdjTransMatrix{T}
+    }
 end
 
 # Finite zero products must retain their derivatives in forward-over-reverse AD.
@@ -147,18 +155,18 @@ end
 # scalar-array mul! and stdlib internals can lose coefficient derivatives.
 @is_primitive MinimalCtx Tuple{
     typeof(mul!),
-    _MulVecOrMat{T},
-    _MulMatrix{T},
-    _MulVecOrMat{T},
+    _CPUStridedOrAdjTransVecOrMat{T},
+    _CPUStridedOrAdjTransMatrix{T},
+    _CPUStridedOrAdjTransVecOrMat{T},
     Union{Bool,IEEEFloat,T},
     Union{Bool,IEEEFloat,T},
 } where {T<:Union{BlasFloat,HalfFloat}}
 
 @inline function frule!!(
     ::Dual{typeof(mul!)},
-    c::Dual{<:_MulVecOrMat{T}},
-    a::Dual{<:_MulMatrix{T}},
-    b::Dual{<:_MulVecOrMat{T}},
+    c::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    a::Dual{<:_CPUStridedOrAdjTransMatrix{T}},
+    b::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
     alpha::Dual{<:Union{Bool,IEEEFloat,T}},
     beta::Dual{<:Union{Bool,IEEEFloat,T}},
 ) where {T<:Union{BlasFloat,HalfFloat}}
@@ -184,9 +192,9 @@ end
 
 @inline function rrule!!(
     ::CoDual{typeof(mul!)},
-    c::CoDual{<:_MulVecOrMat{T}},
-    a::CoDual{<:_MulMatrix{T}},
-    b::CoDual{<:_MulVecOrMat{T}},
+    c::CoDual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    a::CoDual{<:_CPUStridedOrAdjTransMatrix{T}},
+    b::CoDual{<:_CPUStridedOrAdjTransVecOrMat{T}},
     alpha::CoDual{S},
     beta::CoDual{U},
 ) where {
