@@ -333,7 +333,17 @@ function rrule!!(
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
 end
 
-for name in (:jl_get_world_counter, :jl_matching_methods)
+for name in (
+    :jl_get_world_counter,
+    :jl_matching_methods,
+    :utf8proc_isupper,
+    :utf8proc_islower,
+    :utf8proc_category,
+    :utf8proc_toupper,
+    :utf8proc_tolower,
+    :utf8proc_totitle,
+    :utf8proc_charwidth,
+)
     @eval function frule!!(
         f::Dual{typeof(_foreigncall_)},
         n::Dual{Val{$(QuoteNode(name))}},
@@ -466,6 +476,29 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _c, _d = [1, 2], [3, 4]
 
     test_cases = Any[
+        [
+            (
+                false,
+                :stability_and_allocs,
+                nothing,
+                _foreigncall_,
+                Val(name),
+                Val(RT),
+                (Val(UInt32),),
+                Val(0),
+                Val(:ccall),
+                UInt32(c),
+                UInt32(c),
+            ) for (name, RT) in (
+                (:utf8proc_isupper, Cint),
+                (:utf8proc_islower, Cint),
+                (:utf8proc_category, Cint),
+                (:utf8proc_toupper, UInt32),
+                (:utf8proc_tolower, UInt32),
+                (:utf8proc_totitle, UInt32),
+                (:utf8proc_charwidth, Cint),
+            ) for c in ('A', 'α')
+        ]...,
         (false, :stability, nothing, Base.allocatedinline, Float64),
         (false, :stability, nothing, Base.allocatedinline, Vector{Float64}),
         (false, :stability, nothing, objectid, 5.0),
