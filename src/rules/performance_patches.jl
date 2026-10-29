@@ -102,14 +102,34 @@ function _check_mul_alias(C, A, B)
     return nothing
 end
 
-const _MulMatrix{T} = Union{
-    StridedMatrix{T},
-    Adjoint{T,<:StridedMatrix{T}},
-    Transpose{T,<:StridedMatrix{T}},
-    Adjoint{T,<:Transpose{T,<:StridedMatrix{T}}},
-    Transpose{T,<:Adjoint{T,<:StridedMatrix{T}}},
+# `StridedArray` admits `AbstractGPUArray <: DenseArray`; the scalar loops and `arrayify`
+# need `Array` or `Memory` storage, so other dense arrays fall back to stdlib `mul!`.
+const _MulStorage = @static VERSION < v"1.11-" ? Array : Union{Array,Memory}
+const _MulContiguous = Union{
+    _MulStorage,Base.StridedFastContiguousSubArray{T,N,<:_MulStorage} where {T,N}
 }
-const _MulVecOrMat{T} = Union{StridedVector{T},_MulMatrix{T}}
+const _MulReinterpret = Base.StridedReinterpretArray{T,N,<:_MulContiguous} where {T,N}
+const _MulReshaped =
+    Base.StridedReshapedArray{T,N,<:Union{_MulContiguous,_MulReinterpret}} where {T,N}
+const _MulStrided{T,N} = Union{
+    Array{T,N},
+    Base.StridedSubArray{T,N,<:Union{_MulStorage,_MulReinterpret,_MulReshaped}},
+    _MulReinterpret{T,N},
+    _MulReshaped{T,N},
+}
+
+const _MulMatrix{T} = Union{
+    _MulStrided{T,2},
+    Adjoint{T,<:_MulStrided{T,2}},
+    Transpose{T,<:_MulStrided{T,2}},
+    Adjoint{T,<:Transpose{T,<:_MulStrided{T,2}}},
+    Transpose{T,<:Adjoint{T,<:_MulStrided{T,2}}},
+}
+@static if VERSION < v"1.11-"
+    const _MulVecOrMat{T} = Union{_MulStrided{T,1},_MulMatrix{T}}
+else
+    const _MulVecOrMat{T} = Union{Memory{T},_MulStrided{T,1},_MulMatrix{T}}
+end
 
 # Finite zero products must retain their derivatives in forward-over-reverse AD.
 @inline function _mul_guarded_scale(d, x)
