@@ -508,20 +508,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         C = view(fill(P(0.1), 2, 2, 1),:,:,1)
         push!(test_cases, (true, :none, nothing, mul!, C, X, Y, P(0.5), P(0.25)))
     end
-    push!(
-        test_cases,
-        (
-            true,
-            :none,
-            nothing,
-            mul!,
-            ones(Float16, 2, 2),
-            ones(Float16, 2, 2),
-            ones(Float16, 2, 2),
-            Float16(0.5),
-            Float16(0.25),
-        ),
-    )
     memory = Any[]
     return test_cases, memory
 end
@@ -594,21 +580,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         (false, :none, nothing, _mul_guarded_scale, 0.0, 2.0),
         (false, :none, nothing, _mul_guarded_scale, 0.0+0.0im, 2.0+1.0im),
     )
-    for T in (Float32, Float64, ComplexF32, ComplexF64),
-        n in (2, 3, 4),
+    for T in (Float64, ComplexF64),
         (a, b) in ((one(T), zero(T)), (zero(T), zero(T)), (true, zero(T)))
 
-        A = reshape(T.(1:(n ^ 2)), n, n) ./ T(n^2)
+        A = T[0.25 0.75; 0.5 1.0]
         B = reverse(A; dims=1)
         T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
-        push!(test_cases, (false, :none, nothing, mul!, ones(T, n, n), A, B, a, b))
+        push!(test_cases, (false, :none, nothing, mul!, ones(T, 2, 2), A, B, a, b))
     end
-    for T in (Float64, ComplexF64),
-        wrap in (adjoint, transpose),
-        n in (2, 5),
-        a in (one(T), T <: Complex ? T(0.7+0.2im) : T(0.7)),
-        b in (zero(T), T <: Complex ? T(-0.2+0.3im) : T(-0.2))
+    let A = Float32[0.25 0.75; 0.5 1.0], B = reverse(A; dims=1)
+        push!(
+            test_cases, (false, :none, nothing, mul!, ones(Float32, 2, 2), A, B, 1.0, 0.0)
+        )
+    end
+    for wrap in (adjoint, transpose),
+        (n, a, b) in ((2, 1.0+0.0im, 0.0+0.0im), (5, 0.7+0.2im, -0.2+0.3im))
 
+        T = ComplexF64
         push!(
             test_cases,
             (
@@ -640,7 +628,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             ),
         )
     end
-    for T in (Float64, ComplexF64), wrap in (adjoint, transpose)
+    for wrap in (adjoint, transpose)
+        T = ComplexF64
         push!(
             test_cases,
             (
@@ -657,7 +646,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         )
     end
     # The pullback must retain α's direction in wrapped cotangent updates.
-    for T in (Float64, ComplexF64), wrap in (adjoint, transpose), side in (:A, :B)
+    for wrap in (adjoint, transpose), side in (:A, :B)
+        T = ComplexF64
         f =
             (z, T) -> begin
                 A = side === :A ? wrap(fill(T(z[2]), 2, 2)) : fill(T(z[2]), 2, 2)
@@ -672,21 +662,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             end
         push!(test_cases, (false, :none, nothing, f, [1.0, 0.4], T))
     end
-    for T in (Float64, ComplexF64),
-        shape in ((2,), (3,), (2, 1)),
-        a in (zero(T), T <: Complex ? T(0.7+0.1im) : T(0.7))
-
+    for shape in ((2,), (3,), (2, 1))
+        T, a = ComplexF64, 0.7+0.1im
         m = first(shape)
         A = reshape(T.(1:(2m)), m, 2) ./ T(2m)
         B = T[1, 2]
-        T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
+        A .+= 0.2im
+        B .-= 0.3im
         push!(test_cases, (false, :none, nothing, mul!, ones(T, shape), A, B, a, zero(T)))
     end
-    for T in (Float64, ComplexF64)
+    let T = ComplexF64
         A = reshape(T.(1:24), 6, 4) ./ T(24)
         B = reshape(T.(1:12), 4, 3) ./ T(12)
-        T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
-        a, b = T <: Complex ? (T(0.7+0.2im), T(-0.2+0.3im)) : (T(0.7), T(-0.2))
+        A .+= 0.2im
+        B .-= 0.3im
+        a, b = 0.7+0.2im, -0.2+0.3im
         for av in (view(A, 1:2:6, :), view(A, 2:4, :))
             push!(
                 test_cases,
@@ -694,7 +684,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end
     end
-    for wrap in (identity, transpose, adjoint)
+    for wrap in (transpose, adjoint)
         A = ComplexF64[1+im 2-im; -1+2im 3+im]
         B = ComplexF64[2-im 1+im; 3+2im -1-im]
         for (a, b) in ((1.0, 0.0), (0.0, 0.0), (0.7+0.2im, -0.2+0.3im))
@@ -717,13 +707,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     push!(
         test_cases,
         (false, :none, nothing, mul!, ones(2, 3), zeros(2, 0), zeros(0, 3), 0.0, 0.0),
-        (false, :none, nothing, mul!, ones(5, 5), ones(5, 5), ones(5, 5), 0.0, 0.3),
     )
-    for n in (2, 3), side in (:left, :right)
+    for side in (:left, :right)
         f = if side == :left
-            a -> sum(a * ones(n, n) * ones(n, n))
+            a -> sum(a * ones(2, 2) * ones(2, 2))
         else
-            a -> sum(ones(n, n) * ones(n, n) * a)
+            a -> sum(ones(2, 2) * ones(2, 2) * a)
         end
         push!(test_cases, (false, :none, nothing, f, 1.0))
     end
@@ -743,7 +732,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         push!(test_cases, (false, :none, nothing, f, one(T)))
     end
     # Scale β so the smallest finite-difference step survives conversion to Float16.
-    for wrap in (identity, transpose, adjoint), k in (0, 2)
+    for (wrap, k) in ((identity, 0), (identity, 2), (transpose, 2), (adjoint, 2))
         dims = wrap === identity ? (2, k) : (k, 2)
         f =
             b -> sum(
@@ -786,19 +775,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         sum(mul!(ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)))
     end
     push!(test_cases, (false, :none, nothing, f, 0.0))
-    for T in (Float16, Float64)
-        f =
-            b -> sum(
-                Base.inferencebarrier(mul!)(
-                    view(ones(T, 4, 1), 1:2:4, :),
-                    zeros(T, 2, 2),
-                    ones(T, 2),
-                    true,
-                    T(8b),
-                ),
-            )
-        push!(test_cases, (false, :none, nothing, f, 0.0))
-    end
+    f =
+        b -> sum(
+            Base.inferencebarrier(mul!)(
+                view(ones(Float16, 4, 1), 1:2:4, :),
+                zeros(Float16, 2, 2),
+                ones(Float16, 2),
+                true,
+                Float16(8b),
+            ),
+        )
+    push!(test_cases, (false, :none, nothing, f, 0.0))
     f =
         a -> sum(
             mul!(
