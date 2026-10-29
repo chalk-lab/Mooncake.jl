@@ -44,12 +44,12 @@ possible for all array types of interest so far.
 Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
 in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
 `Symmetric` → `Symmetric`).
-The exception is a unit-triangular primal with a `Tangent`: its tangent is a lazy
-strict-triangle view, not wrapped in the primal's type, that reads zeros outside the strict
-triangle, writes through to the original storage inside it, and throws on a nonzero store
-outside it. Rules that need to write into the tangent in-place must account for whether the
-wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated helper should
-extract the backing store (see `_accum_sym_logdet!`).
+The exception is a unit-triangular primal: its tangent is a lazy strict-triangle view, not
+wrapped in the primal's type, that reads zeros outside the strict triangle, writes through
+to the original storage inside it, and throws on a nonzero store outside it. Rules that need
+to write into the tangent in-place must account for whether the wrapper supports
+`setindex!`; if it does not (e.g. `Symmetric`), a dedicated helper should extract the
+backing store (see `_accum_sym_logdet!`).
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
@@ -124,9 +124,8 @@ function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
-    # increment_densified_tangent!! needs the unit wrapper; Tangent reads a zero diagonal.
-    dx isa Tangent && x isa UnitUpperTriangular && return x, StrictTriangle(_dx, Val(true))
-    dx isa Tangent && x isa UnitLowerTriangular && return x, StrictTriangle(_dx, Val(false))
+    x isa UnitUpperTriangular && return x, StrictTriangle(_dx, Val(true))
+    x isa UnitLowerTriangular && return x, StrictTriangle(_dx, Val(false))
     return x, Tx(_dx)
 end
 function arrayify(
@@ -175,12 +174,12 @@ end
 
 Return structurally unrestricted storage in which to increment the tangent `dx`.
 
-[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
-off-structure entries are not parameters: the primal reads a constant there whatever the
-storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
-and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
-part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
-even if indexing makes the view itself non-strided, so the common case costs nothing.
+[`arrayify`](@ref) returns structurally wrapped tangents, whose off-structure entries are
+not parameters: the primal reads a constant there whatever the storage holds. A rule whose
+adjoint is a dense expression must therefore accumulate here and hand the result to
+[`increment_densified_tangent!!`](@ref), which adds back only the part `dx` can represent. A
+tangent backed by strided storage is structurally unrestricted, even if indexing makes the
+view itself non-strided, so the common case costs nothing.
 """
 densify_tangent(dx::StridedArray) = dx
 densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
@@ -188,8 +187,7 @@ function densify_tangent(
     dx::Union{
         UpperTriangular,
         LowerTriangular,
-        UnitUpperTriangular,
-        UnitLowerTriangular,
+        StrictTriangle,
         Diagonal,
         Symmetric,
         Hermitian,
@@ -230,12 +228,8 @@ function increment_densified_tangent!!(dx::Diagonal, dense)
     return nothing
 end
 
-function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
-    increment_densified_tangent!!(parent(dx), triu!(dense, 1))
-    return nothing
-end
-function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
-    increment_densified_tangent!!(parent(dx), tril!(dense, -1))
+function increment_densified_tangent!!(dx::StrictTriangle{T,A,U}, dense) where {T,A,U}
+    increment_densified_tangent!!(dx.data, U ? triu!(dense, 1) : tril!(dense, -1))
     return nothing
 end
 function increment_densified_tangent!!(dx::Adjoint, dense)
@@ -2340,6 +2334,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
             ones(2, 2),
         ) for U in (true, false)
     ]
+    for W in (UnitUpperTriangular, UnitLowerTriangular)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ReverseMode, oracle=(_, f, x) -> iszero(f(x))),
+                x -> fill!(arrayify(x, fdata(zero_tangent(x)))[2], 0),
+                W(zeros(2, 2)),
+            ),
+        )
+    end
     push!(
         test_cases,
         (
