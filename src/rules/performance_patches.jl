@@ -150,10 +150,9 @@ end
 # every named element type and wrapper kind is tested.
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
 # lose coefficient derivatives.
-# Hidden element types let mul! inline past this rule and lose coefficient derivatives.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
 # scalar-array mul! and stdlib internals can lose coefficient derivatives.
-@is_primitive MinimalCtx Tuple{
+const _MulSignature = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
     _CPUStridedOrAdjTransMatrix{T},
@@ -161,6 +160,16 @@ end
     Union{Bool,IEEEFloat,T},
     Union{Bool,IEEEFloat,T},
 } where {T<:Union{BlasFloat,HalfFloat}}
+
+@is_primitive MinimalCtx _MulSignature
+
+function may_match_primitive(
+    ::Type{<:Union{MinimalCtx,DefaultCtx}},
+    ::Type{<:Mode},
+    @nospecialize(S::Type{<:Tuple{typeof(mul!),Any,Any,Any,Any,Any}}),
+)
+    return typeintersect(S, _MulSignature) !== Union{}
+end
 
 @inline function frule!!(
     ::Dual{typeof(mul!)},
@@ -772,6 +781,45 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     push!(test_cases, (false, :none, nothing, f, 0.0))
     f = b -> sum(mul!(ones(2, 2), Base.inferencebarrier(ones(2, 2)), ones(2, 2), true, b))
     push!(test_cases, (false, :none, nothing, f, 0.0))
+    f = a -> begin
+        T = Base.inferencebarrier(Float64)::DataType
+        sum(mul!(ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)))
+    end
+    push!(test_cases, (false, :none, nothing, f, 0.0))
+    for shape in ((2,), (2, 1))
+        f =
+            b -> begin
+                T = Base.inferencebarrier(Float16)::DataType
+                sum(mul!(ones(T, shape), zeros(T, 2, 2), ones(T, 2), one(T), Float16(8b)))
+            end
+        push!(test_cases, (false, :none, nothing, f, 0.0))
+    end
+    for shape in ((2,), (2, 1))
+        f =
+            a -> sum(
+                abs2,
+                mul!(
+                    ones(shape),
+                    Base.inferencebarrier(Diagonal(a))::AbstractMatrix,
+                    ones(shape),
+                    0.7,
+                    0.3,
+                ),
+            )
+        push!(test_cases, (false, :none, nothing, f, [1.0, 2.0]))
+        f =
+            a -> sum(
+                abs2,
+                mul!(
+                    ones(shape),
+                    Base.inferencebarrier(ones(Int, 2, 2))::AbstractMatrix,
+                    a,
+                    0.7,
+                    0.3,
+                ),
+            )
+        push!(test_cases, (false, :none, nothing, f, ones(shape)))
+    end
     f =
         a -> begin
             T = Base.inferencebarrier(Float64)::DataType
