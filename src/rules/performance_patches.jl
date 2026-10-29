@@ -149,7 +149,7 @@ end
 # Exception to convention 2: strided coefficient correctness requires an open signature;
 # every named element type and wrapper kind is tested.
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
-# lose coefficient derivatives.
+# lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
 # scalar-array mul! and stdlib internals can lose coefficient derivatives.
 const _MulSignature = Tuple{
