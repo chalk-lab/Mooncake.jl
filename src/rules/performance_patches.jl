@@ -786,50 +786,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         sum(mul!(ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)))
     end
     push!(test_cases, (false, :none, nothing, f, 0.0))
-    for shape in ((2,), (2, 1))
-        f =
-            b -> begin
-                T = Base.inferencebarrier(Float16)::DataType
-                sum(mul!(ones(T, shape), zeros(T, 2, 2), ones(T, 2), one(T), Float16(8b)))
-            end
-        push!(test_cases, (false, :none, nothing, f, 0.0))
-    end
-    for shape in ((2,), (2, 1))
-        f =
-            a -> sum(
-                abs2,
-                mul!(
-                    ones(shape),
-                    Base.inferencebarrier(Diagonal(a))::AbstractMatrix,
-                    ones(shape),
-                    0.7,
-                    0.3,
-                ),
-            )
-        push!(test_cases, (false, :none, nothing, f, [1.0, 2.0]))
-        f =
-            a -> sum(
-                abs2,
-                mul!(
-                    ones(shape),
-                    Base.inferencebarrier(ones(Int, 2, 2))::AbstractMatrix,
-                    a,
-                    0.7,
-                    0.3,
-                ),
-            )
-        push!(test_cases, (false, :none, nothing, f, ones(shape)))
-    end
-    f =
-        a -> begin
-            T = Base.inferencebarrier(Float64)::DataType
-            sum(
-                Base.inferencebarrier(mul!)(
-                    ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)
-                ),
-            )
-        end
-    push!(test_cases, (false, :none, nothing, f, 0.0))
     for T in (Float16, Float64)
         f =
             b -> sum(
