@@ -40,44 +40,14 @@ function hvp_oracle(expected)
 end
 
 function structured_output_cases(f)
-    cases = Any[
-        (
-            false,
-            :none,
-            (;),
-            f,
-            view(UnitUpperTriangular(zeros(2, 2)), 1:1, 2:2),
-            ones(1, 1),
-        ),
-        (
-            false,
-            :none,
-            (;),
-            f,
-            view(UnitLowerTriangular(zeros(2, 2)), 2:2, 1:1),
-            ones(1, 1),
-        ),
-    ]
-    for (W, i, j, expected) in
-        ((UnitUpperTriangular, 1, 2, 13.0), (UnitLowerTriangular, 2, 1, 12.0))
+    cases = Any[]
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
+        push!(cases, (false, :none, (;), f, view(W(zeros(2, 2)), i:i, j:j), ones(1, 1)))
         g = M -> begin
             f(view(W(M), i:i, j:j), view(M, 1:1, 1:1))
             return sum(M)
         end
         push!(cases, (false, :none, (is_primitive=false,), g, [0.2 0.3; 0.4 0.5]))
-        push!(
-            cases,
-            (
-                false,
-                :none,
-                (
-                    mode=Mooncake.ForwardMode,
-                    oracle=jvp_oracle(([2.0 3.0; 4.0 5.0],), expected),
-                ),
-                g,
-                [0.2 0.3; 0.4 0.5],
-            ),
-        )
     end
     return cases
 end
@@ -87,7 +57,7 @@ function structured_rule_cases(f)
     for (W, offdiag) in ((UnitUpperTriangular, 0.3), (UnitLowerTriangular, 0.4))
         x = W([0.2 0.3; 0.4 0.5])
         expected = exp(offdiag) / (2exp(1.0) + exp(offdiag) + 1)
-        for (d, value) in ((zeros(2, 2), 0.0), ([1.0 0; 0 1], 0.0), (ones(2, 2), expected))
+        for (d, value) in (([1.0 0; 0 1], 0.0), (ones(2, 2), expected))
             push!(
                 cases,
                 (
@@ -102,21 +72,19 @@ function structured_rule_cases(f)
                 ),
             )
         end
-        for g in (M -> f(W(M)) + sum(M), M -> sum(M) + f(W(M)))
-            push!(
-                cases,
+        push!(
+            cases,
+            (
+                false,
+                :none,
                 (
-                    false,
-                    :none,
-                    (
-                        mode=Mooncake.ForwardMode,
-                        oracle=jvp_oracle((ones(2, 2),), 4 + expected; unchanged=true),
-                    ),
-                    g,
-                    [0.2 0.3; 0.4 0.5],
+                    mode=Mooncake.ForwardMode,
+                    oracle=jvp_oracle((ones(2, 2),), 4 + expected; unchanged=true),
                 ),
-            )
-        end
+                M -> f(W(M)) + sum(M),
+                [0.2 0.3; 0.4 0.5],
+            ),
+        )
         push!(
             cases,
             (

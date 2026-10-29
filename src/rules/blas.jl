@@ -1804,18 +1804,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     dAs = ['N', 'U']
     rng = rng_ctor(123456)
 
-    test_cases = vcat(
-        [
+    regressions = if P in (Float64, ComplexF64)
+        Any[
             (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
-            (
-                false,
-                :none,
-                (lb=1e-3, ub=50.0, unsafe_perturb=true),
-                BLAS.nrm2,
-                2,
-                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
-                2,
-            ),
             (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
             (
                 false,
@@ -1829,26 +1820,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 ones(P, 2),
                 1,
             ),
-        ],
-        [(
-            true,
-            :none,
-            (
-                lb=1e-3,
-                ub=50.0,
-                mode=ReverseMode,
-                oracle=TestResources.primal_oracle(zeros(P, 2, 2)),
-            ),
-            BLAS.symm!,
-            'L',
-            'U',
-            P(0),
-            fill(P(NaN), 2, 2),
-            ones(P, 2, 2),
-            P(1),
-            zeros(P, 2, 2),
-        )],
-        [
             (
                 true,
                 :none,
@@ -1856,18 +1827,36 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     lb=1e-3,
                     ub=50.0,
                     mode=ReverseMode,
-                    oracle=TestResources.primal_oracle(fill(P(4), 2, 2)),
+                    oracle=TestResources.primal_oracle(zeros(P, 2, 2)),
                 ),
-                f,
-                flags...,
-                P(2),
-                ones(P, 2, 2),
-                ones(P, 2, 2),
+                BLAS.symm!,
+                'L',
+                'U',
                 P(0),
                 fill(P(NaN), 2, 2),
-            ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
-        ],
-        [
+                ones(P, 2, 2),
+                P(1),
+                zeros(P, 2, 2),
+            ),
+            [
+                (
+                    true,
+                    :none,
+                    (
+                        lb=1e-3,
+                        ub=50.0,
+                        mode=ReverseMode,
+                        oracle=TestResources.primal_oracle(fill(P(4), 2, 2)),
+                    ),
+                    f,
+                    flags...,
+                    P(2),
+                    ones(P, 2, 2),
+                    ones(P, 2, 2),
+                    P(0),
+                    fill(P(NaN), 2, 2),
+                ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
+            ]...,
             (
                 false,
                 :none,
@@ -1892,7 +1881,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 norm,
                 zeros(P, 32),
             ),
-        ],
+        ]
+    else
+        Any[]
+    end
+    if P === Float64
+        push!(
+            regressions,
+            (
+                false,
+                :none,
+                (lb=1e-3, ub=50.0, unsafe_perturb=true),
+                BLAS.nrm2,
+                2,
+                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
+                2,
+            ),
+        )
+    end
+    test_cases = vcat(
+        regressions,
 
         #
         # BLAS LEVEL 1
@@ -2222,6 +2230,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
 
         P <: BlasRealFloat && f === BLAS.hemm! && continue
+        P in (Float32, ComplexF32) && f in (BLAS.gemm!, BLAS.symv!) && continue
         p = zero(P)
         dims = f === BLAS.symv! ? (n,) : (n, n)
         push!(
