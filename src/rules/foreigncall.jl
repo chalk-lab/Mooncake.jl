@@ -488,7 +488,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
                 Val(0),
                 Val(:ccall),
                 UInt32('α'),
-                UInt32('α'),
             ) for (name, RT) in (
                 (:utf8proc_isupper, Cint),
                 (:utf8proc_islower, Cint),
