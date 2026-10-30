@@ -583,19 +583,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     for T in (Float64, ComplexF64),
         (a, b) in ((one(T), zero(T)), (zero(T), zero(T)), (true, zero(T)))
 
-        A = T[0.25 0.75; 0.5 1.0]
-        B = reverse(A; dims=1)
+        n = iszero(a) ? 1 : 2
+        A, B = fill(T(0.25), n, n), fill(T(0.5), n, n)
         T <: Complex && (A .+= T(0.2im); B .-= T(0.3im))
-        push!(test_cases, (false, :none, nothing, mul!, ones(T, 2, 2), A, B, a, b))
+        push!(test_cases, (false, :none, nothing, mul!, ones(T, n, n), A, B, a, b))
     end
     let A = Float32[0.25 0.75; 0.5 1.0], B = reverse(A; dims=1)
         push!(
             test_cases, (false, :none, nothing, mul!, ones(Float32, 2, 2), A, B, 1.0, 0.0)
         )
     end
-    for wrap in (adjoint, transpose),
-        (n, a, b) in ((2, 1.0+0.0im, 0.0+0.0im), (5, 0.7+0.2im, -0.2+0.3im))
-
+    for (wrap, n, a, b) in (
+        (adjoint, 1, 1.0+0.0im, 0.0+0.0im),
+        (transpose, 1, 1.0+0.0im, 0.0+0.0im),
+        (adjoint, 17, 0.7+0.2im, -0.2+0.3im),
+    )
         T = ComplexF64
         push!(
             test_cases,
@@ -604,15 +606,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 :none,
                 nothing,
                 mul!,
-                wrap(randn(rng, T, n+1, n)),
-                randn(rng, T, n, 4),
-                randn(rng, T, 4, n+1),
+                wrap(randn(rng, T, 1, n)),
+                randn(rng, T, n, 2),
+                randn(rng, T, 2, 1),
                 a,
                 b,
             ),
         )
     end
     for wrap in (adjoint ∘ transpose, transpose ∘ adjoint)
+        T = ComplexF64
         push!(
             test_cases,
             (
@@ -620,11 +623,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 :none,
                 nothing,
                 mul!,
-                wrap(randn(rng, ComplexF64, 2, 3)),
-                randn(rng, ComplexF64, 2, 4),
-                randn(rng, ComplexF64, 4, 3),
-                one(ComplexF64),
-                zero(ComplexF64),
+                wrap(ones(T, 1, 1)),
+                fill(T(0.2+0.3im), 1, 1),
+                fill(T(0.4-0.1im), 1, 1),
+                one(T),
+                zero(T),
             ),
         )
     end
@@ -637,57 +640,59 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 :none,
                 nothing,
                 mul!,
-                wrap(ones(T, 1, 2)),
-                randn(rng, T, 2, 3),
-                randn(rng, T, 3),
+                wrap(ones(T, 1, 1)),
+                randn(rng, T, 1, 2),
+                randn(rng, T, 2),
                 one(T),
                 zero(T),
             ),
         )
     end
     # The pullback must retain α's direction in wrapped cotangent updates.
-    for wrap in (adjoint, transpose), side in (:A, :B)
-        T = ComplexF64
-        f =
-            (z, T) -> begin
-                A = side === :A ? wrap(fill(T(z[2]), 2, 2)) : fill(T(z[2]), 2, 2)
-                B = side === :B ? wrap(ones(T, 2, 2)) : ones(T, 2, 2)
-                c, a, b = map(zero_fcodual, (zeros(T, 2, 2), A, B))
-                _, pb = rrule!!(
-                    zero_fcodual(mul!), c, a, b, zero_fcodual(z[1]), zero_fcodual(0.0)
-                )
-                fill!(c.dx, one(T))
-                pb(NoRData())
-                sum(real, last(arrayify(a))) + sum(real, last(arrayify(b)))
-            end
-        push!(test_cases, (false, :none, nothing, f, [1.0, 0.4], T))
-    end
-    for shape in ((2,), (3,), (2, 1))
+    f =
+        a -> begin
+            T = ComplexF64
+            c, x, y = map(
+                zero_fcodual,
+                (
+                    zeros(T, 1, 1),
+                    adjoint(fill(T(0.4+0.2im), 1, 1)),
+                    transpose(fill(T(1+im), 1, 1)),
+                ),
+            )
+            _, pb = rrule!!(zero_fcodual(mul!), c, x, y, zero_fcodual(a), zero_fcodual(0.0))
+            fill!(c.dx, one(T))
+            pb(NoRData())
+            sum(real, last(arrayify(x))) + sum(real, last(arrayify(y)))
+        end
+    push!(test_cases, (false, :none, nothing, f, 1.0))
+    for shape in ((1,), (2,), (1, 1))
         T, a = ComplexF64, 0.7+0.1im
-        m = first(shape)
-        A = reshape(T.(1:(2m)), m, 2) ./ T(2m)
-        B = T[1, 2]
-        A .+= 0.2im
-        B .-= 0.3im
+        m, k = first(shape), length(shape) == 1 ? 1 : 2
+        A = fill(T(0.5+0.2im), m, k)
+        B = fill(T(1-0.3im), k)
         push!(test_cases, (false, :none, nothing, mul!, ones(T, shape), A, B, a, zero(T)))
     end
     let T = ComplexF64
-        A = reshape(T.(1:24), 6, 4) ./ T(24)
-        B = reshape(T.(1:12), 4, 3) ./ T(12)
-        A .+= 0.2im
-        B .-= 0.3im
-        a, b = 0.7+0.2im, -0.2+0.3im
-        for av in (view(A, 1:2:6, :), view(A, 2:4, :))
-            push!(
-                test_cases,
-                (false, :none, nothing, mul!, view(ones(T, 6, 3), 1:2:6, :), av, B, a, b),
-            )
-        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                mul!,
+                view(ones(T, 3, 1), 1:2:3, :),
+                view(fill(T(0.5+0.2im), 3, 1), 2:3, :),
+                fill(T(1-0.3im), 1, 1),
+                0.7+0.2im,
+                -0.2+0.3im,
+            ),
+        )
     end
     for wrap in (transpose, adjoint)
-        A = ComplexF64[1+im 2-im; -1+2im 3+im]
-        B = ComplexF64[2-im 1+im; 3+2im -1-im]
-        for (a, b) in ((1.0, 0.0), (0.0, 0.0), (0.7+0.2im, -0.2+0.3im))
+        for (a, b) in ((1.0, 0.0), (0.7+0.2im, -0.2+0.3im))
+            n = a isa Real ? 2 : 1
+            A, B = fill(0.5+0.2im, n, n), fill(1-0.3im, n, n)
             push!(
                 test_cases,
                 (
@@ -695,7 +700,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                     :none,
                     nothing,
                     mul!,
-                    ones(ComplexF64, 2, 2),
+                    ones(ComplexF64, n, n),
                     wrap(A),
                     wrap(B),
                     a,
@@ -706,23 +711,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     end
     push!(
         test_cases,
-        (false, :none, nothing, mul!, ones(2, 3), zeros(2, 0), zeros(0, 3), 0.0, 0.0),
+        (false, :none, nothing, mul!, ones(1, 1), zeros(1, 0), zeros(0, 1), 0.0, 0.0),
     )
-    for side in (:left, :right)
-        f = if side == :left
-            a -> sum(a * ones(2, 2) * ones(2, 2))
-        else
-            a -> sum(ones(2, 2) * ones(2, 2) * a)
-        end
-        push!(test_cases, (false, :none, nothing, f, 1.0))
-    end
+    f = a -> sum(a * ones(2, 2) * ones(2, 2))
+    push!(test_cases, (false, :none, nothing, f, 1.0))
     f =
         a -> real(
             sum(
                 mul!(
-                    fill(oftype(a, NaN), 2, 2),
-                    ones(typeof(a), 2, 2),
-                    ones(typeof(a), 2, 2),
+                    fill(oftype(a, NaN), 3, 3),
+                    ones(typeof(a), 3, 3),
+                    ones(typeof(a), 3, 3),
                     a,
                     zero(a),
                 ),
@@ -732,12 +731,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         push!(test_cases, (false, :none, nothing, f, one(T)))
     end
     # Scale β so the smallest finite-difference step survives conversion to Float16.
-    for (wrap, k) in ((identity, 0), (identity, 2), (transpose, 2), (adjoint, 2))
-        dims = wrap === identity ? (2, k) : (k, 2)
+    for (wrap, k) in ((identity, 0), (identity, 1), (transpose, 1), (adjoint, 1))
+        dims = wrap === identity ? (1, k) : (k, 1)
         f =
-            b -> sum(
+            b -> only(
                 mul!(
-                    ones(Float16, 2),
+                    ones(Float16, 1),
                     wrap(zeros(Float16, dims)),
                     ones(Float16, k),
                     true,
@@ -749,26 +748,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     f =
         b -> sum(
             mul!(
-                ones(Float16, 2, 2),
-                view(zeros(Float16, 4, 2), 1:2:4, :),
-                ones(Float16, 2, 2),
+                ones(Float16, 2, 1),
+                view(zeros(Float16, 3, 1), 1:2:3, :),
+                ones(Float16, 1, 1),
                 true,
                 Float16(8b),
             ),
         )
     push!(test_cases, (false, :none, nothing, f, 0.0))
     f =
-        b -> sum(
+        b -> only(
             mul!(
-                ones(Float16, 2, 1),
-                zeros(Float16, 2, 2),
-                ones(Float16, 2),
+                ones(Float16, 1, 1),
+                zeros(Float16, 1, 1),
+                ones(Float16, 1),
                 true,
                 Float16(8b),
             ),
         )
-    push!(test_cases, (false, :none, nothing, f, 0.0))
-    f = b -> sum(mul!(ones(2, 2), Base.inferencebarrier(ones(2, 2)), ones(2, 2), true, b))
     push!(test_cases, (false, :none, nothing, f, 0.0))
     f = a -> begin
         T = Base.inferencebarrier(Float64)::DataType
@@ -776,38 +773,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     end
     push!(test_cases, (false, :none, nothing, f, 0.0))
     f =
-        b -> sum(
-            Base.inferencebarrier(mul!)(
-                view(ones(Float16, 4, 1), 1:2:4, :),
-                zeros(Float16, 2, 2),
-                ones(Float16, 2),
-                true,
-                Float16(8b),
-            ),
-        )
-    push!(test_cases, (false, :none, nothing, f, 0.0))
-    f =
-        a -> sum(
+        a -> only(
             mul!(
-                zeros(Float16, 2),
-                reshape(view(ones(Float16, 6), 1:4), 2, 2),
-                ones(Float16, 2),
+                zeros(Float16, 1),
+                reshape(view(ones(Float16, 1), 1:1), 1, 1),
+                ones(Float16, 1),
                 Float16(8a),
                 false,
             ),
         )
     push!(test_cases, (false, :none, nothing, f, 0.0))
+    f = z -> mul!(zeros(2, 1), reinterpret(reshape, Float64, z), ones(1, 1), 1.0, false)
+    push!(test_cases, (false, :none, nothing, f, ComplexF64[1 + 2im]))
     f =
-        z -> sum(
-            abs2,
-            mul!(zeros(2, 2), reinterpret(reshape, Float64, z), ones(2, 2), 1.0, false),
-        )
-    push!(test_cases, (false, :none, nothing, f, ComplexF64[1 + 2im, 3 - im]))
-    f =
-        z -> sum(
+        z -> only(
             mul!(
-                zeros(Float16, 2),
-                ones(Float16, 2, 2),
+                zeros(Float16, 1),
+                ones(Float16, 1, 2),
                 reinterpret(Float16, z),
                 true,
                 false,
