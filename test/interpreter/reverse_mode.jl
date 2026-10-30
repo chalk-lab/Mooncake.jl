@@ -353,11 +353,10 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
             @testset "throw_undef_if_not" begin
                 cond_id = ID()
                 line = ID()
-                fwds = Expr(:throw_undef_if_not, :x, cond_id)
-                @test TestUtils.has_equal_data(
-                    make_ad_stmts!(Expr(:throw_undef_if_not, :x, cond_id), line, info),
-                    ad_stmt_info(line, nothing, fwds, nothing),
-                )
+                ad = make_ad_stmts!(Expr(:throw_undef_if_not, :x, cond_id), line, info)
+                @test ad.fwds[1][2].stmt == Expr(:call, primal, cond_id)
+                @test ad.fwds[2][1] == line
+                @test ad.fwds[2][2].stmt == Expr(:throw_undef_if_not, :x, ad.fwds[1][1])
             end
             @testset "$stmt" for stmt in [Expr(:gc_preserve_begin)]
                 line = ID()

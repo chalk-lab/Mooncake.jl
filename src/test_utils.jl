@@ -903,6 +903,14 @@ __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
     return pb!!(Mooncake.zero_rdata(primal(out)))
 end
 
+# The type of a primal argument as inference sees it at a call site. On Julia 1.14 a type `x`
+# is `Core.TypeEgal{x}`; `Type{x}` no longer implies `<: DataType` (JuliaLang/julia#62141).
+@static if isdefined(Core, :TypeEgal)
+    _primal_typeof(x) = x isa Type ? Core.Typeof(x) : _typeof(x)
+else
+    _primal_typeof(x) = _typeof(x)
+end
+
 function test_frule_performance(
     performance_checks_flag::Symbol, rule::R, f_ḟ::F, x_ẋ::Vararg{Any,N}
 ) where {R,F,N}
@@ -923,7 +931,7 @@ function test_frule_performance(
     if performance_checks_flag in (:stability, :stability_and_allocs)
 
         # Test primal stability.
-        test_opt(primal(f_ḟ), map(_typeof ∘ primal, x_ẋ))
+        test_opt(primal(f_ḟ), map(_primal_typeof ∘ primal, x_ẋ))
 
         # Test forwards-mode stability.
         test_opt(rule, (_typeof(f_ḟ), map(_typeof, x_ẋ)...))
@@ -973,7 +981,7 @@ function test_rrule_performance(
     if performance_checks_flag in (:stability, :stability_and_allocs)
 
         # Test primal stability.
-        test_opt(primal(f_f̄), map(_typeof ∘ primal, x_x̄))
+        test_opt(primal(f_f̄), map(_primal_typeof ∘ primal, x_x̄))
 
         # Test forwards-pass stability.
         test_opt(rule, (_typeof(to_fwds(f_f̄)), map(_typeof ∘ to_fwds, x_x̄)...))
@@ -1434,7 +1442,7 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
 
     # Verify tangent type returns the expected type.
     @test tangent_type(primal_type) == expected_tangent_type
-    @test is_foldable(tangent_type, (Type{expected_tangent_type},))
+    @test is_foldable(tangent_type, (CC.widenconst(Core.Const(expected_tangent_type)),))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
     return nothing
 end
@@ -1892,7 +1900,7 @@ function _test_tangent_splitting_internal(
 
     # Compute the tangent type associated to `F` and `R`, and check it is equal to `T`.
     @test tangent_type(F, R) == T
-    @test is_foldable(tangent_type, (Type{F}, Type{R}))
+    @test is_foldable(tangent_type, map(CC.widenconst ∘ Core.Const, (F, R)))
 
     # Check that combining f and r yields a tangent of the correct type and value.
     t_combined = Mooncake.tangent(f, r)
