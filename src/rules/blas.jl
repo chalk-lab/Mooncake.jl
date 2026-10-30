@@ -63,7 +63,9 @@ function arrayify(
 end
 function arrayify(
     x::A, dx::A
-) where {A<:Union{Array{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}}
+) where {
+    A<:Union{Array{<:Union{BlasFloat,HalfFloatOrComplex}},Ptr{<:Union{IEEEFloat,BlasFloat}}}
+}
     dx isa Ptr && _check_tangent_ptr(dx)
     return x, dx
 end
@@ -75,17 +77,21 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:Union{BlasFloat,HalfFloat},B,C,D,E}
+) where {P<:Union{BlasFloat,HalfFloatOrComplex},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
-function arrayify(x::ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D}
+function arrayify(
+    x::ReshapedArray{P,B,C,D}, dx::TangentOrFData
+) where {P<:Union{BlasFloat,HalfFloatOrComplex},B,C,D}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
 end
-function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
+function arrayify(
+    x::Base.ReinterpretArray{T,N,S,A,R}, dx::TangentOrFData
+) where {T<:Union{BlasFloat,HalfFloatOrComplex},N,S,A,R}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, reinterpret(T, _dx)
+    return x, R ? reinterpret(reshape, T, _dx) : reinterpret(T, _dx)
 end
 struct StrictTriangle{T,A<:AbstractMatrix{T},U} <: AbstractMatrix{T}
     data::A

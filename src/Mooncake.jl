@@ -44,8 +44,11 @@ using DispatchDoctor: @stable, @unstable, DispatchDoctor
 
 @static if isdefined(Core, :BFloat16)
     const HalfFloat = Union{Float16,Core.BFloat16}
+    # Complex BFloat16 is listed but unsupported: its tangent is a structural Tangent.
+    const HalfFloatOrComplex = Union{HalfFloat,ComplexF16,Complex{Core.BFloat16}}
 else
     const HalfFloat = Float16
+    const HalfFloatOrComplex = Union{HalfFloat,ComplexF16}
 end
 # BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
 const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
