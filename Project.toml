@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.67"
+version = "0.5.68"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -51,7 +51,6 @@ MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
 MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
-MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
@@ -80,7 +79,7 @@ Logging = "1"
 LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
-NNlib = "0.9.45"
+NNlib = "0.9.57"
 PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
