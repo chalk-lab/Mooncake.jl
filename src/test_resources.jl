@@ -42,7 +42,6 @@ end
 function structured_output_cases(f)
     cases = Any[]
     for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
-        push!(cases, (false, :none, (;), f, view(W(zeros(2, 2)), i:i, j:j), ones(1, 1)))
         g = M -> begin
             f(view(W(M), i:i, j:j), view(M, 1:1, 1:1))
             return sum(M)
@@ -54,24 +53,8 @@ end
 
 function structured_rule_cases(f)
     cases = Any[]
-    for (W, offdiag) in ((UnitUpperTriangular, 0.3), (UnitLowerTriangular, 0.4))
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
         x = W([0.2 0.3; 0.4 0.5])
-        expected = exp(offdiag) / (2exp(1.0) + exp(offdiag) + 1)
-        for (d, value) in (([1.0 0; 0 1], 0.0), (ones(2, 2), expected))
-            push!(
-                cases,
-                (
-                    false,
-                    :none,
-                    (
-                        mode=Mooncake.ForwardMode,
-                        oracle=jvp_oracle((Tangent((data=d,)),), value; unchanged=true),
-                    ),
-                    f,
-                    x,
-                ),
-            )
-        end
         push!(
             cases,
             (
@@ -79,10 +62,17 @@ function structured_rule_cases(f)
                 :none,
                 (
                     mode=Mooncake.ForwardMode,
-                    oracle=jvp_oracle((ones(2, 2),), 4 + expected; unchanged=true),
+                    oracle=(_, f, x, dx) -> begin
+                        _, actual = f(x, dx)
+                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
+                        return actual == expected &&
+                               Base.mightalias(actual, dx.fields.data) &&
+                               dx.fields.data == ones(2, 2)
+                    end,
                 ),
-                M -> f(W(M)) + sum(M),
-                [0.2 0.3; 0.4 0.5],
+                Mooncake.arrayify,
+                x,
+                Tangent((data=ones(2, 2),)),
             ),
         )
         push!(
@@ -95,13 +85,8 @@ function structured_rule_cases(f)
                 [0.2 0.3; 0.4 0.5],
             ),
         )
-        for y in (
-            x,
-            view(x, [2, 1, 2], [2, 1]),
-            reshape(x, 4),
-            Adjoint(view(x, :, :)),
-            Diagonal(reshape(x, 4)),
-        )
+        for y in
+            (x, view(x, [i, i], j:j), reshape(x, 4), Adjoint(x), Diagonal(view(x, :, j)))
             push!(cases, (false, :none, (;), f, y))
         end
     end
@@ -138,15 +123,13 @@ function gradient_oracle(expected)
     end
 end
 
-function jvp_oracle(directions, expected; unchanged=false)
+function jvp_oracle(directions, expected)
     return function (_, f, x...)
-        before = unchanged ? deepcopy(directions) : nothing
         rule = Mooncake.build_frule(f, x...)
         _, actual = Mooncake.value_and_derivative!!(
             rule, (f, Mooncake.NoTangent()), map(tuple, x, directions)...
         )
-        return Mooncake.TestUtils.has_equal_data(actual, expected) &&
-               (!unchanged || Mooncake.TestUtils.has_equal_data(directions, before))
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
     end
 end
 

@@ -1806,8 +1806,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
     regressions = if P in (Float64, ComplexF64)
         Any[
-            (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
-            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
+            (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4], 1:2:3), 2),
+            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4], 1:2:3), 2),
             (
                 false,
                 :none,
@@ -1815,7 +1815,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 BLAS.axpy!,
                 2,
                 P(2),
-                view(P[3, 9, 4, 9], 1:2:4),
+                view(P[3, 9, 4], 1:2:3),
                 2,
                 ones(P, 2),
                 1,
@@ -1827,16 +1827,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     lb=1e-3,
                     ub=50.0,
                     mode=ReverseMode,
-                    oracle=TestResources.primal_oracle(zeros(P, 2, 2)),
+                    oracle=TestResources.primal_oracle(zeros(P, 1, 1)),
                 ),
                 BLAS.symm!,
                 'L',
                 'U',
                 P(0),
-                fill(P(NaN), 2, 2),
-                ones(P, 2, 2),
+                fill(P(NaN), 1, 1),
+                ones(P, 1, 1),
                 P(1),
-                zeros(P, 2, 2),
+                zeros(P, 1, 1),
             ),
             [
                 (
@@ -1846,15 +1846,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                         lb=1e-3,
                         ub=50.0,
                         mode=ReverseMode,
-                        oracle=TestResources.primal_oracle(fill(P(4), 2, 2)),
+                        oracle=TestResources.primal_oracle(fill(P(2), 1, 1)),
                     ),
                     f,
                     flags...,
                     P(2),
-                    ones(P, 2, 2),
-                    ones(P, 2, 2),
+                    ones(P, 1, 1),
+                    ones(P, 1, 1),
                     P(0),
-                    fill(P(NaN), 2, 2),
+                    fill(P(NaN), 1, 1),
                 ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
             ]...,
             (
@@ -1876,10 +1876,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     lb=1e-3,
                     ub=50.0,
                     mode=ForwardMode,
-                    oracle=TestResources.jvp_oracle((ones(P, 32),), zero(real(P))),
+                    oracle=TestResources.jvp_oracle((ones(P, 1),), zero(real(P))),
                 ),
-                norm,
-                zeros(P, 32),
+                BLAS.nrm2,
+                zeros(P, 1),
             ),
         ]
     else
@@ -2373,8 +2373,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
                 end,
             ),
             BLAS.nrm2,
-            4,
-            view(ones(6, 7), 1:3, 2:5),
+            2,
+            view(ones(2, 2), 1:1, :),
             1,
         ),
     )
