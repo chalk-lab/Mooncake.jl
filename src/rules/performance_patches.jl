@@ -152,7 +152,7 @@ end
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
 # scalar-array mul! and stdlib internals can lose coefficient derivatives.
-const _MulSignature = Tuple{
+const _CPUStridedMulSig = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
     _CPUStridedOrAdjTransMatrix{T},
@@ -161,14 +161,14 @@ const _MulSignature = Tuple{
     Union{Bool,IEEEFloat,T},
 } where {T<:Union{BlasFloat,HalfFloat}}
 
-@is_primitive MinimalCtx _MulSignature
+@is_primitive MinimalCtx _CPUStridedMulSig
 
 function may_match_primitive(
     ::Type{<:Union{MinimalCtx,DefaultCtx}},
     ::Type{<:Mode},
     @nospecialize(S::Type{<:Tuple{typeof(mul!),Any,Any,Any,Any,Any}}),
 )
-    return typeintersect(S, _MulSignature) !== Union{}
+    return typeintersect(S, _CPUStridedMulSig) !== Union{}
 end
 
 @inline function frule!!(
