@@ -144,6 +144,16 @@ end
     return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
 end
 
+@inline function _mul_into_parent!(dX::Adjoint, left, right, alpha)
+    return _mul_into_parent!(parent(dX), adjoint(right), adjoint(left), conj(alpha))
+end
+@inline function _mul_into_parent!(dX::Transpose, left, right, alpha)
+    return _mul_into_parent!(parent(dX), transpose(right), transpose(left), alpha)
+end
+@inline function _mul_into_parent!(dX, left, right, alpha)
+    return mul!(dX, left, right, alpha, one(eltype(dX)))
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
 # Stdlib `mul!` skips A·B when α = 0; its generic kernels skip α at one and C at β = 0.
 # Exception to convention 2: strided coefficient correctness requires an open signature;
@@ -250,7 +260,7 @@ end
                 da += _mul_guarded_scale(v, conj(A[i]))
             end
         else
-            mul!(dA, left, right, conj(pa), one(T))
+            _mul_into_parent!(dA, left, right, conj(pa))
         end
         if reuse_B
             mul!(C, adjoint(A), dC, one(T), zero(T))
@@ -260,9 +270,9 @@ end
                 da += _mul_guarded_scale(v, conj(B[i]))
             end
         elseif B isa AbstractVector && dC isa AbstractMatrix
-            mul!(dB, adjoint(A), view(dC, :, 1), conj(pa), one(T))
+            _mul_into_parent!(dB, adjoint(A), view(dC, :, 1), conj(pa))
         else
-            mul!(dB, adjoint(A), dC, conj(pa), one(T))
+            _mul_into_parent!(dB, adjoint(A), dC, conj(pa))
         end
         large = something(old.large)
         db = zero(eltype(C) <: HalfFloat ? Float32 : eltype(C)) + zero(pb)
