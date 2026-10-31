@@ -720,8 +720,7 @@ end
     # Strong zero is essential here, in case `y` has undefined element values.
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            dy[n] += dβ * y[n]
         end
     end
 
@@ -844,8 +843,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         BLAS.$fname(ul, α, A, dx, one(T), dy)
         if !iszero(dβ)
             @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+                dy[n] += dβ * y[n]
             end
         end
 
@@ -1150,11 +1148,6 @@ end
     } where {T<:BlasFloat},
 )
 
-# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
-    return isnan(cond) * left + !isnan(cond) * right
-end
-
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
@@ -1184,7 +1177,7 @@ end
 
     if !iszero(dβ)
         @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+            dC[n] += dβ * C[n]
         end
     end
 
@@ -1329,7 +1322,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         end
         if !iszero(dβ)
             @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+                dC[n] += dβ * C[n]
             end
         end
 
@@ -1890,6 +1883,27 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         ]
     else
         Any[]
+    end
+    if P === Float64
+        push!(
+            regressions,
+            (
+                false,
+                :none,
+                (
+                    oracle=(_, f, b) -> begin
+                        rule = build_frule(f, b)
+                        _, db = value_and_derivative!!(rule, (f, NoTangent()), (b, one(b)))
+                        _, dz = value_and_derivative!!(rule, (f, NoTangent()), (b, zero(b)))
+                        cache = prepare_gradient_cache(f, b)
+                        _, grad = value_and_gradient!!(cache, f, b)
+                        return isnan(db) && isnan(grad[2]) && iszero(dz)
+                    end,
+                ),
+                b -> sum(BLAS.gemv!('N', 1.0, ones(1, 1), ones(1), b, [NaN])),
+                0.0,
+            ),
+        )
     end
     if P === Float64
         push!(
