@@ -44,6 +44,20 @@ Mooncake.rrule!!
 Mooncake.build_primitive_rrule
 ```
 
+## Preserving partly inferred primitive calls
+
+A rule may need `Mooncake.may_match_primitive(Context, Mode, Signature)` when an
+inlineable call's inferred signature overlaps the primitive signature without being
+contained in it. For example, a call inferred as `f(::Real)` can reach a primitive
+for `f(::Float64)` at runtime. Inlining can remove that call before rule selection.
+Return `true` from a narrowly scoped method of `may_match_primitive` to preserve it;
+`is_primitive` still determines which runtime signatures use the rule.
+
+Most rules need no such method. The strided `mul!` rule uses this hook when array
+element types are hidden from inference. Applying a nonempty `typeintersect` check
+automatically to every primitive was rejected: preserving every overlapping call
+blocked useful inlining and made the measured rule builds 1.5–9 times slower.
+
 ## Canonicalising Tangent Types
 
 For some differentiation rules, Mooncake performs an explicit canonicalisation step inside `frule!!`/`rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By canonicalising at the rule boundary, a single implementation can support many combinations of argument and tangent types without duplicating logic or relying on complex dispatch. This allows the remainder of the rule to assume a single, well-defined tangent representation.

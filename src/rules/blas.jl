@@ -9,10 +9,14 @@ function _trans(flag, mat)
     throw(error("Unrecognised flag $flag"))
 end
 
+# Stdlib chkuplo validates uplo; trans, diag, and side need checks here.
 function _blas_flag(x)
     flag = primal(x)
-    'a' <= flag <= 'z' &&
-        throw(ArgumentError("lowercase BLAS/LAPACK flag '$flag' is unsupported"))
+    'a' <= flag <= 'z' && throw(
+        ArgumentError(
+            "lowercase BLAS/LAPACK flag '$flag' is unsupported: rules compare flags case-sensitively",
+        ),
+    )
     return flag
 end
 

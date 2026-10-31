@@ -1,6 +1,6 @@
-# All of the code here purely exists to work around current performance limitations of
-# Mooncake.jl. In order to prevent this from getting out of hand, there are several
-# conventions to which we adhere when writing these rules:
+# These rules work around performance limitations. The strided mul! rule is a
+# correctness exception retained here to preserve coefficient derivatives.
+# Performance rules follow these conventions:
 # 1. for each rule, a comment is added containing a link to the issue or issues that are
 #   believed to describe the deficiencies of Mooncake.jl which cause the rule to be needed.
 # 2. the number of concrete types for which the signature is valid is finite, and all are
@@ -156,7 +156,7 @@ end
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
-# scalar-array mul! and stdlib internals can lose coefficient derivatives.
+# Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
 const _CPUStridedMulSig = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
@@ -218,8 +218,7 @@ end
     A, dA = arrayify(a)
     B, dB = arrayify(b)
     _check_mul_alias(C, A, B)
-    # Small outputs must not allocate a separate restoration buffer.
-    # Some avoids a union-typed NamedTuple field, whose tangent type is Any.
+    # The tuple avoids copy(C)'s allocation for small outputs; Some keeps its tangent concrete.
     old = (
         small=ntuple(i -> i <= length(C) && length(C) <= 16 ? C[i] : zero(T), Val(16)),
         large=Some{Union{Nothing,Array{T,ndims(C)}}}(length(C) <= 16 ? nothing : copy(C)),

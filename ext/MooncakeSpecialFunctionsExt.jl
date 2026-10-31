@@ -173,7 +173,7 @@ function gamma_inc_partials(a::T, x::T, y) where {T<:IEEEFloat}
     (isnan(a) || isnan(x)) && return (T(NaN), T(NaN))
     isfinite(a) || throw(DomainError(a, "gamma_inc derivatives require finite a"))
     isinf(x) && return (zero(T), zero(T))
-    # A constant zero ∂a makes ∂²/∂a∂x read 0 at x = 0; it diverges there for a ≤ 1.
+    # Accepted limitation: constant ∂a gives a zero mixed partial at x = 0, divergent for a ≤ 1.
     iszero(x) && return zero(T), x^(a - 1) * exp(-x - loggamma(a))
     tol = 4 * eps(T)
     # Differentiate the lower series (DLMF 8.7.1) without subtracting two full sums.
@@ -285,7 +285,7 @@ function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:IEEEFloat}
         else
             nan_tangent_guard(z, z * exp(-log(a) - logbeta(a, b)) * (digamma(a+b)-digamma(b)))
         end
-        # A constant zero ∂a makes ∂²/∂a∂x read 0 at x = 0; it diverges there for a ≤ 1.
+        # Accepted limitation: constant ∂a gives a zero mixed partial at x = 0, divergent for a ≤ 1.
         return zero(T), B, D
     elseif iszero(y)
         D = if b == 1
@@ -302,7 +302,7 @@ function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:IEEEFloat}
         else
             nan_tangent_guard(z, -z * exp(-log(b) - logbeta(a, b)) * (digamma(a+b)-digamma(a)))
         end
-        # A constant zero ∂b makes ∂²/∂b∂x read 0 at x = 1; it diverges there for b ≤ 1.
+        # Accepted limitation: constant ∂b gives a zero mixed partial at x = 1, divergent for b ≤ 1.
         return A, zero(T), D
     end
     # Choose the faster continued fraction (DLMF 8.17(v)).
