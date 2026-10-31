@@ -37,7 +37,7 @@ using Base.Broadcast: Broadcasted
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
 import Statistics: mean, varm
 import Mooncake:
-    FloatOrComplex as CuFloatOrComplex,
+    FloatOrComplex,
     MinimalCtx,
     DefaultCtx,
     frule!!,
@@ -249,12 +249,12 @@ end
 )
 function frule!!(
     ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:CuFloatOrComplex,X<:CuArray{T}}
+) where {T<:FloatOrComplex,X<:CuArray{T}}
     return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
-) where {T<:CuFloatOrComplex,X<:CuArray{T}}
+) where {T<:FloatOrComplex,X<:CuArray{T}}
     return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
     _nopb(Val(3))
 end
@@ -2094,23 +2094,23 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
 # The real/complex unification works naturally: conj(x::Real) == x in Julia, so the
 # complex Adjoint formula is a no-op on the real branch — no special-casing required.
 @is_primitive(
-    DefaultCtx, Tuple{typeof(sum),<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
+    DefaultCtx, Tuple{typeof(sum),<:Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}},
 )
 @is_primitive(
-    DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
+    DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray}},
 )
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+    ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
 end
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+    ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
 end
 function rrule!!(
-    ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+    ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}}
 )
     dx_parent = _fields(tangent(x)).parent
     function sum_tr_pb!!(dy)
@@ -2120,7 +2120,7 @@ function rrule!!(
     return zero_fcodual(sum(primal(x))), sum_tr_pb!!
 end
 function rrule!!(
-    ::CoDual{typeof(sum)}, x::CoDual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+    ::CoDual{typeof(sum)}, x::CoDual{<:Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray}}
 )
     dx_parent = _fields(tangent(x)).parent
     function sum_adj_pb!!(dy)
@@ -2193,7 +2193,7 @@ _check_gpu_sum_f(f) = _check_gpu_captured_state(f, "sum(f, x) / mapreduce")
 # Anything else that carries a tangent — a Ref over a float, a struct, a host array — would be
 # dropped in silence by _leaf_effective_tangent's catch-all.
 _gpu_threads_leaf(::CuMaybeWrappedArray) = true
-_gpu_threads_leaf(::CuFloatOrComplex) = true
+_gpu_threads_leaf(::FloatOrComplex) = true
 _gpu_threads_leaf(x) = !_carries_differentiable_state(x)
 
 function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
@@ -2938,10 +2938,10 @@ for BDim in (2, 1)
     @eval begin
         @is_primitive MinimalCtx Tuple{
             typeof(*),CuArray{P,2},CuArray{P,$BDim}
-        } where {P<:CuFloatOrComplex}
+        } where {P<:FloatOrComplex}
         function frule!!(
             ::Dual{typeof(*)}, A::Dual{<:CuArray{P,2}}, B::Dual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+        ) where {P<:FloatOrComplex}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -2951,7 +2951,7 @@ for BDim in (2, 1)
         end
         function rrule!!(
             ::CoDual{typeof(*)}, A::CoDual{<:CuArray{P,2}}, B::CoDual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+        ) where {P<:FloatOrComplex}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -3239,7 +3239,7 @@ _blas_scalar_rdata(s::Number, X, dC) = zero_rdata(s)::NoRData
 # throw it away.  The JVP counterpart skips it for a zero tangent, which is what the float
 # literal in a keyword-free `mul!` carries.
 _blas_product_rdata(s::Number, X1, X2, dC) = zero_rdata(s)::NoRData
-function _blas_product_rdata(s::CuFloatOrComplex, X1, X2, dC)
+function _blas_product_rdata(s::FloatOrComplex, X1, X2, dC)
     return _blas_scalar_rdata(s, X1 * X2, dC)
 end
 _blas_product_jvp!(dC, ::NoTangent, X1, X2) = dC
@@ -3452,7 +3452,7 @@ _cu_pullback_like(::CuArray, dy) = dy
 # `Diagonal` argument has an `FData{@NamedTuple{parent::…}}` instead, which the body would
 # accumulate into as though it were a bare array; those spellings decompose through the
 # wrapper's own rules.
-const _CuTransferable = Union{Array{<:CuFloatOrComplex},CuArray{<:CuFloatOrComplex}}
+const _CuTransferable = Union{Array{<:FloatOrComplex},CuArray{<:FloatOrComplex}}
 @is_primitive(MinimalCtx, Tuple{typeof(cu),_CuTransferable})
 function frule!!(::Dual{typeof(cu)}, x::Dual{<:_CuTransferable})
     return Dual(cu(primal(x)), cu(tangent(x)))
@@ -3469,17 +3469,15 @@ end
 
 # Rule for `Array(x::CuArray)` — GPU→CPU transfer.
 # Symmetric to the `cu` rule: tangent stays on CPU, accumulated into by the pullback.
-@is_primitive(
-    MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
-)
+@is_primitive(MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:FloatOrComplex,N})
 function frule!!(
     ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
-) where {T<:CuFloatOrComplex,N}
+) where {T<:FloatOrComplex,N}
     return Dual(Array(primal(x)), Array(tangent(x)))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
-) where {T<:CuFloatOrComplex,N}
+) where {T<:FloatOrComplex,N}
     dx = tangent(x)
     dy_cpu = Array(zero(primal(x)))  # output fdata, accumulated into by downstream
     function array_pb!!(::NoRData)
@@ -3701,7 +3699,7 @@ end
 
 # Map each broadcast leaf arg to a representative scalar element so that
 # _nfwd_input_dof counts per-broadcast-element DOFs.
-@inline _gpu_rep_element(x::CuFloatOrComplex) = x
+@inline _gpu_rep_element(x::FloatOrComplex) = x
 @inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
 @inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
     Complex{T}
@@ -3710,7 +3708,7 @@ end
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
     dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
-    return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex)
+    return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa FloatOrComplex)
 end
 
 @inline function _gpu_decode_ndual_output(
@@ -3774,7 +3772,7 @@ end
 @inline _gpu_bcast_has_nondiff_result(::Any) = false
 @inline _gpu_is_simple_cast_broadcast(::Any) = false
 @inline function _gpu_is_simple_cast_broadcast(bc::Broadcasted)
-    return bc.f isa Type{<:CuFloatOrComplex} &&
+    return bc.f isa Type{<:FloatOrComplex} &&
            length(bc.args) == 1 &&
            !(first(bc.args) isa Broadcasted)
 end
@@ -3785,7 +3783,7 @@ end
 # at the bottom rather than to the outer cast's immediate argument.
 @inline _gpu_is_cast_chain(::Any) = false
 @inline function _gpu_is_cast_chain(bc::Broadcasted)
-    bc.f isa Type{<:CuFloatOrComplex} || return false
+    bc.f isa Type{<:FloatOrComplex} || return false
     length(bc.args) == 1 || return false
     a = first(bc.args)
     return !(a isa Broadcasted) || _gpu_is_cast_chain(a)
@@ -3800,8 +3798,8 @@ end
 @inline _gpu_bcast_arg_dof(x::AbstractArray{<:IEEEFloat}) = 1
 @inline _gpu_bcast_arg_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 1
 @inline _gpu_bcast_arg_dof(x::Base.Broadcast.Extruded) = _gpu_bcast_arg_dof(x.x)
-@inline _gpu_bcast_arg_dof(x::Adjoint{<:CuFloatOrComplex,<:AbstractArray}) = 1
-@inline _gpu_bcast_arg_dof(x::Transpose{<:CuFloatOrComplex,<:AbstractArray}) = 1
+@inline _gpu_bcast_arg_dof(x::Adjoint{<:FloatOrComplex,<:AbstractArray}) = 1
+@inline _gpu_bcast_arg_dof(x::Transpose{<:FloatOrComplex,<:AbstractArray}) = 1
 @inline _gpu_bcast_arg_dof(x::Broadcasted) = _gpu_bcast_effective_dof(x)
 @inline _gpu_bcast_arg_dof(::Any) = 0
 
@@ -3866,19 +3864,19 @@ end
 # Forward mode: return the effective tangent seen by the broadcast kernel for leaf pa.
 # For Adjoint/Transpose, raw_t is a Tangent{@NamedTuple{parent::CuArray}}; extract parent.
 @inline _leaf_effective_tangent(::CuMaybeComplexArray, t::CuArray) = t
-@inline _leaf_effective_tangent(::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = adjoint(
+@inline _leaf_effective_tangent(::Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray}, t) = adjoint(
     _fields(t).parent
 )
-@inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = transpose(
+@inline _leaf_effective_tangent(::Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}, t) = transpose(
     _fields(t).parent
 )
 # A non-contiguous view stays a SubArray (a contiguous one collapses to a plain CuArray);
 # `arrayify` rebuilds its tangent as a SubArray over the parent's tangent, same indices.
-@inline _leaf_effective_tangent(pa::SubArray{P,N,A}, t) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray} = arrayify(
+@inline _leaf_effective_tangent(pa::SubArray{P,N,A}, t) where {P<:FloatOrComplex,N,A<:CuMaybeComplexArray} = arrayify(
     pa, t
 )[2]
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
-@inline _leaf_effective_tangent(::CuFloatOrComplex, t) = t
+@inline _leaf_effective_tangent(::FloatOrComplex, t) = t
 
 struct _GpuBroadcastCastDiff{T,PA,D}
     primal_arg::PA
@@ -3891,14 +3889,14 @@ end
 end
 
 @inline _gpu_cast_like(::Type{T}, x::AbstractArray) where {T} = T.(x)
-@inline _gpu_cast_like(::Type{T}, x::CuFloatOrComplex) where {T} = convert(T, x)
+@inline _gpu_cast_like(::Type{T}, x::FloatOrComplex) where {T} = convert(T, x)
 # A real->complex cast leaf gets a complex contribution back; project before narrowing, or
 # the eltype conversion is Float32(::ComplexF32).  Widening casts (Float64.(x32)) are real
 # throughout and unaffected.
 @inline _gpu_cast_back_like(pa::AbstractArray, contrib) = eltype(pa).(
     _project_cotangent(pa, contrib)
 )
-@inline _gpu_cast_back_like(pa::CuFloatOrComplex, contrib) = convert(
+@inline _gpu_cast_back_like(pa::FloatOrComplex, contrib) = convert(
     typeof(pa), _project_cotangent(pa, contrib)
 )
 
@@ -3930,18 +3928,18 @@ end
     return fd .+= _unbroadcast(contrib, size(pa))
 end
 @inline function _leaf_accum_fdata!(
-    pa::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
+    pa::Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
 )
     return _fields(fd).parent .+= adjoint(_unbroadcast(contrib, size(pa)))
 end
 @inline function _leaf_accum_fdata!(
-    pa::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
+    pa::Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
 )
     return _fields(fd).parent .+= transpose(_unbroadcast(contrib, size(pa)))
 end
 @inline function _leaf_accum_fdata!(
     pa::SubArray{P,N,A}, fd, contrib
-) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray}
+) where {P<:FloatOrComplex,N,A<:CuMaybeComplexArray}
     _, dpa = arrayify(pa, fd)
     dpa .+= _unbroadcast(contrib, size(pa))
     return dpa
@@ -3963,7 +3961,7 @@ end
 end
 @inline function _leaf_accum_broadcast!(
     pa::SubArray{P,N,A}, fd, contrib::Broadcasted
-) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray}
+) where {P<:FloatOrComplex,N,A<:CuMaybeComplexArray}
     _, dpa = arrayify(pa, fd)
     dpa .+= contrib
     return true
@@ -4115,7 +4113,7 @@ function _gpu_collect_scalar_map_args(args::Tuple, scalar_index::Ref{Int})
         a = args[i]
         if a isa Broadcasted
             _gpu_collect_scalar_map(a, scalar_index)
-        elseif a isa CuFloatOrComplex
+        elseif a isa FloatOrComplex
             idx = scalar_index[]
             scalar_index[] += 1
             idx
@@ -4325,8 +4323,8 @@ function _check_mixed_gpu_eltype(flat_pargs)
     for pa in flat_pargs
         (
             pa isa CuMaybeComplexArray ||
-            pa isa Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray} ||
-            pa isa Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}
+            pa isa Adjoint{<:FloatOrComplex,<:CuMaybeComplexArray} ||
+            pa isa Transpose{<:FloatOrComplex,<:CuMaybeComplexArray}
         ) || continue
         et = eltype(pa)
         if first_et === nothing
@@ -4744,7 +4742,7 @@ function frule!!(
     kw::Dual{<:NamedTuple},
     ::Dual{typeof(varm)},
     x::Dual{<:CuMaybeComplexArray},
-    m::Dual{<:CuFloatOrComplex},
+    m::Dual{<:FloatOrComplex},
 )
     pkw = primal(kw)
     px = primal(x)
@@ -4762,7 +4760,7 @@ function rrule!!(
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(varm)},
     x::CoDual{<:CuMaybeComplexArray},
-    m::CoDual{<:CuFloatOrComplex},
+    m::CoDual{<:FloatOrComplex},
 )
     pkw = primal(kw)
     px, dx = arrayify(x)
@@ -4781,7 +4779,7 @@ end
 # `dims` kwarg, so this spelling is always the Colon case with corrected=true. Its
 # @is_primitive declarations live in the loop above so the precision tie is stated once.
 function frule!!(
-    ::Dual{typeof(varm)}, x::Dual{<:CuMaybeComplexArray}, m::Dual{<:CuFloatOrComplex}
+    ::Dual{typeof(varm)}, x::Dual{<:CuMaybeComplexArray}, m::Dual{<:FloatOrComplex}
 )
     px = primal(x)
     pm = primal(m)
@@ -4790,7 +4788,7 @@ function frule!!(
     return Dual(σ², dσ²)
 end
 function rrule!!(
-    ::CoDual{typeof(varm)}, x::CoDual{<:CuMaybeComplexArray}, m::CoDual{<:CuFloatOrComplex}
+    ::CoDual{typeof(varm)}, x::CoDual{<:CuMaybeComplexArray}, m::CoDual{<:FloatOrComplex}
 )
     px, dx = arrayify(x)
     pm = primal(m)
