@@ -59,7 +59,8 @@ mutable struct DynamicFoRRule
     DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
 end
 
-# A copied forward rule (see `build_frule`) starts with empty caches, like `LazyFRule`.
+# A copied forward rule (see `build_frule`) starts with empty caches; these rules hold
+# per-call state, so `_shared` is false for them.
 _copy(::P) where {P<:LazyFoRRule} = P()
 _copy(::DynamicFoRRule) = DynamicFoRRule()
 

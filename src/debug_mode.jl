@@ -17,8 +17,9 @@ struct DebugFRule{Trule}
     rule::Trule
 end
 
-# Recursively copy the wrapped rule
+# Recursively copy the wrapped rule; a debug rule is shared when the wrapped rule is.
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
+_shared(x::DebugFRule) = _shared(x.rule)
 
 """
     (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
