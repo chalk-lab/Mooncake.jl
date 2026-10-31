@@ -521,38 +521,21 @@ function increment_and_get_rdata!(f, r, t)
     )
 end
 
+# Finite zero products must retain their derivatives in forward-over-reverse AD.
+@inline function _mul_guarded_scale(d, x)
+    return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
+end
+
 """
-    nan_tangent_guard(dy::L, tangent::T) where {L,T}
+    nan_tangent_guard(dy, tangent)
 
-Guard against NaN propagation in automatic differentiation.  
-
-When `dy = 0`, the corresponding gradient does not contribute to the total  
-gradient, so a zero tangent is returned to prevent NaN poisoning.  
-
-Otherwise, return `tangent`.  
-
-Note that this does not fully eliminate gradient poisoning; it relies on  
-zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
+Return zero for a non-finite `tangent` when `dy` is zero.
+Preserve finite products so nested AD retains their directions at zero.
 """
 @inline function nan_tangent_guard(
     dy::L, tangent::T
-) where {L<:FloatOrComplex,T<:FloatOrComplex}
-    return if iszero(dy)
-        T(0)
-    else
-        tangent
-    end
-end
-
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(nan_tangent_guard),L,T
-} where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
-function frule!!(
-    ::Dual{typeof(nan_tangent_guard)}, dy::Dual{L}, t::Dual{T}
 ) where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
-    # Mask the direction only when both the factor and its direction are zero.
-    dt = iszero(primal(dy)) ? nan_tangent_guard(tangent(dy), tangent(t)) : tangent(t)
-    return Dual(nan_tangent_guard(primal(dy), primal(t)), dt)
+    return iszero(dy) && !isfinite(tangent) ? zero(tangent) : tangent
 end
 
 """

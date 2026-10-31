@@ -139,11 +139,6 @@ else
     }
 end
 
-# Finite zero products must retain their derivatives in forward-over-reverse AD.
-@inline function _mul_guarded_scale(d, x)
-    return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
-end
-
 @inline function _mul_into_parent!(dX::Adjoint, left, right, alpha)
     return _mul_into_parent!(parent(dX), adjoint(right), adjoint(left), conj(alpha))
 end

@@ -335,15 +335,13 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
-# The zero branch must retain coefficient directions under forward-over-reverse.
-_guarded_mul(x::T, coef::T) where {T<:BlasFloat} = ifelse(iszero(coef), zero(T), x * coef)
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(_guarded_mul),T,T} where {T<:BlasFloat}
-function frule!!(
-    ::Dual{typeof(_guarded_mul)}, x::Dual{T}, coef::Dual{T}
-) where {T<:BlasFloat}
-    a, da = extract(x)
-    b, db = extract(coef)
-    return Dual(_guarded_mul(a, b), _guarded_mul(a, db) + _guarded_mul(da, b))
+# Reusing the output adds coefficient directions to dα under forward-over-reverse AD.
+@inline function _correct_reused_product(dα, dβ, α, β)
+    return if α == 1 && β == 0
+        dα - (_mul_guarded_scale(β', dβ) + _mul_guarded_scale(α' - one(α), dα))
+    else
+        dα
+    end
 end
 
 #
@@ -918,9 +916,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(y, dy)
-            # Reusing y adds α/β directions to dα in forward-over-reverse; remove them.
-            (α == 1 && β == 0) &&
-                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
+            dα = _correct_reused_product(dα, dβ, α, β)
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -1214,7 +1210,7 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        p_C .= a .* tmp .+ _guarded_mul.(p_C, b)
+        p_C .= a .* tmp .+ _mul_guarded_scale.(b, p_C)
     end
 
     function gemm!_pb!!(::NoRData)
@@ -1226,8 +1222,7 @@ end
 
         # gradient wrt beta
         db = dot(p_C, dC)
-        # Reusing p_C adds a/b directions to da in forward-over-reverse; remove them.
-        (a == 1 && b == 0) && (da -= _guarded_mul(db, b') + _guarded_mul(da, a' - one(T)))
+        da = _correct_reused_product(da, db, a, b)
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1360,7 +1355,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         else
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
             tmp_ref[] = tmp
-            C .= _guarded_mul.(tmp, α) .+ _guarded_mul.(C, β)
+            C .= _mul_guarded_scale.(α, tmp) .+ _mul_guarded_scale.(β, C)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -1389,9 +1384,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(C, dC)
-            # Reusing C adds α/β directions to dα in forward-over-reverse; remove them.
-            (α == 1 && β == 0) &&
-                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
+            dα = _correct_reused_product(dα, dβ, α, β)
 
             # gradient w.r.t. C.
             dC .*= β'

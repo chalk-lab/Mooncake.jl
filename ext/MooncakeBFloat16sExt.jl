@@ -74,8 +74,6 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 
 @foldable can_produce_zero_rdata_from_type(::Type{P}) = true
 
-@inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
-
 # Conversions
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
