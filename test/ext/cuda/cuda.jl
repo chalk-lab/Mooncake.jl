@@ -45,10 +45,34 @@ end
                 ("sum dims", false, x -> sum(x; dims=1), (x,)),
                 ("matmul", true, *, (x, copy(x))),
                 ("matvec", true, *, (x, CUDA.fill(P(0.25), 2))),
+                ("reshape", true, reshape, (x, (4,))),
+                ("view", false, view, (x, :, 1:1)),
+                ("getindex", true, getindex, (x, 1:1, :)),
+                ("vcat", true, vcat, (x, transpose(copy(x)))),
+                ("permutedims", true, permutedims, (view(x, [1, 2], :), (2, 1))),
+                ("fill!", true, fill!, (adjoint(copy(x)), P(0.5))),
+                ("copyto!", false, copyto!, (copy(x), x)),
+                ("host-to-device copy", true, unsafe_copyto!, (copy(x), 1, Array(x), 1, 4)),
             ]
                 test_rule(StableRNG(123), f, args...; is_primitive, atol=0.2, rtol=0.4)
             end
+            @testset "vector-index getindex forward" begin
+                test_rule(
+                    StableRNG(123),
+                    getindex,
+                    CuArray(P[1 2; 3 4]),
+                    [1, 3, 3];
+                    mode=Mooncake.ForwardMode,
+                    atol=0.2,
+                    rtol=0.4,
+                )
+            end
             @testset "$name refuses" for (name, f, opts) in [
+                (
+                    "vector-index getindex",
+                    x -> Float32(sum(x[[1, 3]])),
+                    (; mode=Mooncake.ReverseMode),
+                ),
                 ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
                 (
                     "broadcast",

@@ -147,6 +147,14 @@ const CuMaybeWrappedArray = Union{
     SubArray{T,N,P} where {T<:LinearAlgebra.BlasFloat,N,P<:CuMaybeComplexArray},
 }
 
+const CuTangentWrappedArray = Union{
+    CuTangentArray,
+    CuMaybeWrappedArray,
+    Adjoint{<:BFloat16,<:CuArray{<:BFloat16}},
+    Transpose{<:BFloat16,<:CuArray{<:BFloat16}},
+    SubArray{T,N,P} where {T<:BFloat16,N,P<:CuArray{<:BFloat16}},
+}
+
 @inline _nopb(::Val{N}) where {N} = NoPullback(ntuple(_ -> NoRData(), N))
 @noinline _throw_gpu_argument_error(msg::AbstractString) = throw(ArgumentError(msg))
 
@@ -599,16 +607,12 @@ end
 # Primitive because CUDA.jl's reshape body calls copy(DataRef) for reference counting,
 # which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
 # x.dx and gradient accumulation propagates automatically — NoPullback is correct.
-@is_primitive(
-    MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
-)
-function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
-)
+@is_primitive(MinimalCtx, Tuple{typeof(reshape),CuTangentArray,NTuple{N,Int}} where {N},)
+function frule!!(::Dual{typeof(reshape)}, x::Dual{<:CuTangentArray}, dims::Dual{<:NTuple})
     return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 function rrule!!(
-    ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
+    ::CoDual{typeof(reshape)}, x::CoDual{<:CuTangentArray}, dims::CoDual{<:NTuple}
 )
     _dims = primal(dims)
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
@@ -639,11 +643,11 @@ function _check_derive_eltype(::Type{T}, pa) where {T}
         _UNIMPL_MSG,
     )
 end
-@is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuMaybeComplexArray,Dims,Int})
+@is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuTangentArray,Dims,Int})
 function frule!!(
     ::Dual{typeof(derive)},
     ::Dual{Type{T}},
-    a::Dual{<:CuMaybeComplexArray},
+    a::Dual{<:CuTangentArray},
     dims::Dual,
     offset::Dual,
 ) where {T}
@@ -655,7 +659,7 @@ end
 function rrule!!(
     ::CoDual{typeof(derive)},
     ::CoDual{Type{T}},
-    a::CoDual{<:CuMaybeComplexArray},
+    a::CoDual{<:CuTangentArray},
     dims::CoDual,
     offset::CoDual,
 ) where {T}
@@ -675,7 +679,7 @@ function frule!!(
     maxsize::Dual,
     offset::Dual,
     dims::Dual,
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuTangentArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
     return Dual(y, dy)
@@ -687,7 +691,7 @@ function rrule!!(
     maxsize::CoDual,
     offset::CoDual,
     dims::CoDual,
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuTangentArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, data.dx, primal(maxsize), primal(offset), primal(dims))
     return CoDual(y, dy), _nopb(Val(6))
@@ -863,13 +867,11 @@ function _gpu_scatter_add!(dx, pidx, dy)
 end
 @is_primitive(
     MinimalCtx,
-    Tuple{
-        typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Union{Integer,CartesianIndex}}
-    },
+    Tuple{typeof(getindex),CuTangentArray,AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:CuTangentArray},
     idx::Dual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
     px, dx = arrayify(x)
@@ -877,9 +879,12 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
-    x::CoDual{<:CuMaybeComplexArray},
+    x::CoDual{<:CuTangentArray},
     idx::CoDual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
+    eltype(primal(x)) <: BFloat16 && _throw_gpu_argument_error(
+        "Mooncake: vector-index getindex does not support $(eltype(primal(x)))."
+    )
     px, dx = arrayify(x)
     pidx = primal(idx)
     y = px[pidx]
@@ -895,16 +900,12 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(getindex),
-        CuMaybeComplexArray,
-        _CuSliceIndex,
-        _CuSliceIndex,
-        Vararg{_CuSliceIndex},
+        typeof(getindex),CuTangentArray,_CuSliceIndex,_CuSliceIndex,Vararg{_CuSliceIndex}
     },
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:CuTangentArray},
     i::Dual{<:_CuSliceIndex},
     j::Dual{<:_CuSliceIndex},
     inds::Vararg{Dual{<:_CuSliceIndex}},
@@ -916,7 +917,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
-    x::CoDual{<:CuMaybeComplexArray},
+    x::CoDual{<:CuTangentArray},
     i::CoDual{<:_CuSliceIndex},
     j::CoDual{<:_CuSliceIndex},
     inds::Vararg{CoDual{<:_CuSliceIndex}},
@@ -1804,20 +1805,13 @@ end
 # needs explicit rules.
 @is_primitive(
     MinimalCtx,
-    Tuple{
-        typeof(unsafe_copyto!),
-        <:CuMaybeComplexArray,
-        Integer,
-        <:CuMaybeComplexArray,
-        Integer,
-        Integer,
-    },
+    Tuple{typeof(unsafe_copyto!),<:CuTangentArray,Integer,<:CuTangentArray,Integer,Integer},
 )
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::Dual{<:CuTangentArray,<:CuTangentArray},
     doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    src::Dual{<:CuTangentArray,<:CuTangentArray},
     soffs::Dual{<:Integer,NoTangent},
     n::Dual{<:Integer,NoTangent},
 )
@@ -1830,9 +1824,9 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::CoDual{<:CuTangentArray,<:CuTangentArray},
     doffs::CoDual{<:Integer,NoFData},
-    src::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    src::CoDual{<:CuTangentArray,<:CuTangentArray},
     soffs::CoDual{<:Integer,NoFData},
     n::CoDual{<:Integer,NoFData},
 )
@@ -1868,11 +1862,11 @@ end
 # into the CPU src tangent via a synchronous device-to-host transfer.
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
+    Tuple{typeof(unsafe_copyto!),<:CuTangentArray,Integer,<:Array,Integer,Integer},
 )
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::Dual{<:CuTangentArray,<:CuTangentArray},
     doffs::Dual{<:Integer,NoTangent},
     src::Dual{<:Array,<:Array},
     soffs::Dual{<:Integer,NoTangent},
@@ -1887,7 +1881,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::CoDual{<:CuTangentArray,<:CuTangentArray},
     doffs::CoDual{<:Integer,NoFData},
     src::CoDual{<:Array,<:Array},
     soffs::CoDual{<:Integer,NoFData},
@@ -2048,15 +2042,15 @@ end
 #   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
-@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeWrappedArray,Any}
-function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuMaybeWrappedArray}, x::Dual)
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuTangentWrappedArray,Any}
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuTangentWrappedArray}, x::Dual)
     pa, da = arrayify(a)
     fill!(pa, primal(x))
     tx = tangent(x)
     fill!(da, tx isa NoTangent ? zero(eltype(da)) : eltype(da)(tx))
     return a
 end
-function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuMaybeWrappedArray}, x::CoDual)
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuTangentWrappedArray}, x::CoDual)
     # Through the wrapper, so `sum(da)` sums the destination's own elements and the restore
     # writes back through it — conjugating for an `Adjoint`, as its `setindex!` does.
     pa, da = arrayify(a)
@@ -2706,7 +2700,7 @@ function rrule!!(
     )
 end
 
-# vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that
+# vcat / hcat / cat on CuTangentWrappedArray (see its definition above for what that
 # includes and why).
 # frule:    tangent of concatenation = concatenation of tangents (concat is linear).
 # pullback: selectdim returns a view (no allocation per slice); running-offset loop
@@ -2771,13 +2765,13 @@ function _unwrap_cat_dim(d)
 end
 
 @is_primitive(
-    MinimalCtx, Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
+    MinimalCtx, Tuple{typeof(vcat),CuTangentWrappedArray,Vararg{CuTangentWrappedArray}}
 )
-function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuMaybeWrappedArray}...)
+function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuTangentWrappedArray}...)
     pairs = map(arrayify, args)
     return Dual(vcat(map(first, pairs)...), vcat(map(last, pairs)...))
 end
-function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
+function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuTangentWrappedArray}...)
     pairs = map(arrayify, args)
     primals = map(first, pairs)
     fdatas = map(last, pairs)
@@ -2789,13 +2783,13 @@ function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
 end
 
 @is_primitive(
-    MinimalCtx, Tuple{typeof(hcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
+    MinimalCtx, Tuple{typeof(hcat),CuTangentWrappedArray,Vararg{CuTangentWrappedArray}}
 )
-function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuMaybeWrappedArray}...)
+function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuTangentWrappedArray}...)
     pairs = map(arrayify, args)
     return Dual(hcat(map(first, pairs)...), hcat(map(last, pairs)...))
 end
-function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
+function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuTangentWrappedArray}...)
     pairs = map(arrayify, args)
     primals = map(first, pairs)
     fdatas = map(last, pairs)
@@ -2812,15 +2806,15 @@ end
         typeof(Core.kwcall),
         NamedTuple,
         typeof(cat),
-        CuMaybeWrappedArray,
-        Vararg{CuMaybeWrappedArray},
+        CuTangentWrappedArray,
+        Vararg{CuTangentWrappedArray},
     },
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
-    args::Dual{<:CuMaybeWrappedArray}...,
+    args::Dual{<:CuTangentWrappedArray}...,
 )
     pkw = primal(kw)
     pairs = map(arrayify, args)
@@ -2830,7 +2824,7 @@ function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
-    args::CoDual{<:CuMaybeWrappedArray}...,
+    args::CoDual{<:CuTangentWrappedArray}...,
 )
     pkw = primal(kw)
     dim = _unwrap_cat_dim(pkw.dims)
@@ -2865,7 +2859,7 @@ end
 # has_gpu=false, and fall through to the interpreter, which keeps CPU code such as NNlib's
 # softmax working. `@is_primitive` can't express a decision that depends on the concrete
 # argument types, hence the direct `_is_primitive` method.
-_cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
+_cu_isa_gpu_side(::Type{T}) where {T} = T <: CuTangentWrappedArray
 
 # `any_matches_primitive` feeds every call site's type into `_is_primitive`, including
 # splatted calls (`Core.TypeofVararg`, not a `Type`) and imprecise-eltype calls
@@ -4629,14 +4623,14 @@ end
 # wrapping a CuArray (via `arrayify`, same convention as vcat/hcat/cat above).
 # frule:    permute the tangent with the same permutation — permutedims is linear.
 # pullback: permute the output cotangent with the inverse permutation.
-@is_primitive(MinimalCtx, Tuple{typeof(permutedims),CuMaybeWrappedArray,Any})
-function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:CuMaybeWrappedArray}, perm::Dual)
+@is_primitive(MinimalCtx, Tuple{typeof(permutedims),CuTangentWrappedArray,Any})
+function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:CuTangentWrappedArray}, perm::Dual)
     px, dx = arrayify(x)
     pperm = primal(perm)
     return Dual(permutedims(px, pperm), permutedims(dx, pperm))
 end
 function rrule!!(
-    ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeWrappedArray}, perm::CoDual
+    ::CoDual{typeof(permutedims)}, x::CoDual{<:CuTangentWrappedArray}, perm::CoDual
 )
     px, dx = arrayify(x)
     pperm = primal(perm)
