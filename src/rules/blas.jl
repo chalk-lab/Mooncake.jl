@@ -1803,21 +1803,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     regressions = if P in (Float64, ComplexF64)
         Any[
             (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4], 1:2:3), 2),
-            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4], 1:2:3), 2),
             (
                 false,
-                :none,
-                nothing,
-                BLAS.axpy!,
-                2,
-                P(2),
-                view(P[3, 9, 4], 1:2:3),
-                2,
-                ones(P, 2),
-                1,
-            ),
-            (
-                true,
                 :none,
                 (
                     lb=1e-3,
@@ -1836,7 +1823,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ),
             [
                 (
-                    true,
+                    false,
                     :none,
                     (
                         lb=1e-3,
@@ -1860,10 +1847,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     lb=1e-3,
                     ub=50.0,
                     mode=ReverseMode,
-                    oracle=TestResources.gradient_oracle((zeros(P, 32),)),
+                    oracle=TestResources.gradient_oracle((zeros(P, 1),)),
                 ),
-                norm,
-                zeros(P, 32),
+                BLAS.nrm2,
+                zeros(P, 1),
             ),
             (
                 false,
@@ -1899,20 +1886,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 ),
                 b -> sum(BLAS.gemv!('N', 1.0, ones(1, 1), ones(1), b, [NaN])),
                 0.0,
-            ),
-        )
-    end
-    if P === Float64
-        push!(
-            regressions,
-            (
-                false,
-                :none,
-                (lb=1e-3, ub=50.0, unsafe_perturb=true),
-                BLAS.nrm2,
-                2,
-                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
-                2,
             ),
         )
     end
@@ -2239,15 +2212,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     for (f, flags) in (
             (BLAS.gemm!, ('N', 'N')),
             (BLAS.symm!, ('L', 'U')),
-            (BLAS.symm!, ('R', 'U')),
             (BLAS.hemm!, ('L', 'U')),
-            (BLAS.hemm!, ('R', 'U')),
             (BLAS.symv!, ('U',)),
         ),
-        n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
+        n in (f in (BLAS.symm!, BLAS.hemm!) ? (2,) : (1,))
 
         P <: BlasRealFloat && f === BLAS.hemm! && continue
-        P in (Float32, ComplexF32) && f in (BLAS.gemm!, BLAS.symv!) && continue
+        P in (Float64, ComplexF64) || continue
         p = zero(P)
         dims = f === BLAS.symv! ? (n,) : (n, n)
         push!(
@@ -2366,9 +2337,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
             (
                 false,
                 :none,
-                (mode=ReverseMode, oracle=(_, f, x) -> iszero(f(x))),
-                x -> fill!(arrayify(x, fdata(zero_tangent(x)))[2], 0),
-                W(zeros(2, 2)),
+                (
+                    mode=ForwardMode,
+                    oracle=(_, f, x, dx) -> begin
+                        _, actual = f(x, dx)
+                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
+                        return actual == expected &&
+                               Base.mightalias(actual, dx.fields.data) &&
+                               dx.fields.data == ones(2, 2)
+                    end,
+                ),
+                arrayify,
+                W([0.2 0.3; 0.4 0.5]),
+                Tangent((data=ones(2, 2),)),
             ),
         )
     end

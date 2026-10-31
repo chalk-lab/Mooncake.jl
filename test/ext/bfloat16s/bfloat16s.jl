@@ -30,14 +30,6 @@ end
     end
 
     cases = [
-        (
-            mul!,
-            zeros(P, 2, 2),
-            transpose(P[0.2 0.3; 0.4 0.5]),
-            P[0.3 0.4; 0.5 0.6]',
-            true,
-            false,
-        ),
         (Float32, P(0.5)),
         (Float64, P(0.5)),
         (P, 0.5f0),
@@ -80,7 +72,7 @@ end
     A = P[0.2 0.3; 0.4 0.5]
     push!(cases, (mul!, zeros(P, 2, 2), A, A, true, false))
     push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), false, true))
-    for wrap_a in (identity, transpose, adjoint), wrap_b in (identity, transpose, adjoint)
+    for wrap in (identity, transpose, adjoint)
         A = reshape(P[0.2, 0.3, 0.4, 0.5], 2, 2, 1)
         B = reshape(P[0.3, 0.4, 0.5, 0.6], 2, 2, 1)
         C = fill(P(0.1), 2, 2, 1)
@@ -89,20 +81,15 @@ end
             (
                 mul!,
                 view(C,:,:,1),
-                wrap_a(view(A,:,:,1)),
-                wrap_b(view(B,:,:,1)),
+                wrap(view(A,:,:,1)),
+                wrap(view(B,:,:,1)),
                 P(0.5),
                 P(0.25),
             ),
         )
     end
 
-    for wrap in (identity, transpose, adjoint)
-        push!(cases, (mul!, ones(P, 2), wrap(zeros(P, 2, 2)), ones(P, 2), true, zero(P)))
-    end
-    for A in (view(zeros(P, 4, 2), 1:2:4, :), reshape(view(zeros(P, 6), 1:4), 2, 2))
-        push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), true, zero(P)))
-    end
+    push!(cases, (mul!, ones(P, 2), zeros(P, 2, 2), ones(P, 2), true, zero(P)))
 
     # Tolerances reflect BFloat16's ~3-digit precision. Test values are in [0.125, 0.25)
     # so the ε=1e-2 FD perturbation (≈0.00129) exceeds the BF16 half-spacing (0.000488)

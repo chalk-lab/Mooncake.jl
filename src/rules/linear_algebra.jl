@@ -460,6 +460,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             ]
         end...,
     )
+    push!(
+        test_cases,
+        (false, :none, nothing, x -> sum(Symmetric(x) * Symmetric(x)), [0.2 0.3; 0.4 0.5]),
+    )
     memory = Any[]
     return test_cases, memory
 end

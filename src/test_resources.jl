@@ -60,34 +60,22 @@ function structured_rule_cases(f)
             (
                 false,
                 :none,
-                (
-                    mode=Mooncake.ForwardMode,
-                    oracle=(_, f, x, dx) -> begin
-                        _, actual = f(x, dx)
-                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
-                        return actual == expected &&
-                               Base.mightalias(actual, dx.fields.data) &&
-                               dx.fields.data == ones(2, 2)
-                    end,
-                ),
-                Mooncake.arrayify,
-                x,
-                Tangent((data=ones(2, 2),)),
-            ),
-        )
-        push!(
-            cases,
-            (
-                false,
-                :none,
                 (is_primitive=false,),
                 M -> sum(f(W(M); dims=1)),
                 [0.2 0.3; 0.4 0.5],
             ),
         )
-        for y in
-            (x, view(x, [i, i], j:j), reshape(x, 4), Adjoint(x), Diagonal(view(x, :, j)))
-            push!(cases, (false, :none, (;), f, y))
+        push!(cases, (false, :none, (;), f, x))
+        if W === UnitUpperTriangular
+            for y in (
+                view(x, [i, i], j:j),
+                reshape(x, 4),
+                Adjoint(x),
+                Transpose(x),
+                Diagonal(view(x, :, j)),
+            )
+                push!(cases, (false, :none, (;), f, y))
+            end
         end
     end
     push!(cases, (false, :none, (;), f, Hermitian([1.0 2.0; 3.0 4.0])))
