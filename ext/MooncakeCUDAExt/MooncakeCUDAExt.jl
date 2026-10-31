@@ -1,6 +1,7 @@
 module MooncakeCUDAExt
 
 using LinearAlgebra, Random, Mooncake
+using BFloat16s: BFloat16
 
 using Base: IEEEFloat, unsafe_convert
 using CUDA.CUDACore:
@@ -95,6 +96,10 @@ import Mooncake.TestUtils:
 
 # NDual lives in Mooncake.Nfwd and is loaded as part of Mooncake core.
 
+# BFloat16 arrays can store tangents without supporting every numerical kernel.
+const CuTangentFloatOrComplex = Union{CuFloatOrComplex,BFloat16}
+const CuTangentArray = CuArray{<:CuTangentFloatOrComplex}
+
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
@@ -112,10 +117,9 @@ const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 # `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
 const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
-# Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
-# Julia-visible fields — wrong for GPU arrays.
-Mooncake._copy_output(x::CuMaybeComplexArray) = copy(x)
-function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuMaybeComplexArray}
+# GPU tangents must copy the array buffer, not recurse into its storage handles.
+Mooncake._copy_output(x::CuTangentArray) = copy(x)
+function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuTangentArray}
     copyto!(dst, src)
     return dst
 end
@@ -204,8 +208,7 @@ end
 
 # CuPtr and CuArray tangent types.
 # CuPtr carries no differentiable content (it's a device address), so rdata is NoRData.
-# CuMaybeComplexArray (float/complex GPU arrays) is its own tangent — gradient arrays
-# have the same shape and element type as the primal.
+# Differentiable CuArrays are their own tangents, including BFloat16 arrays.
 
 # For CuPtr{T}: if T has no differentiable content (tangent_type(T) = NoTangent) then the
 # pointer itself carries no gradient — e.g. CuPtr{Nothing} is a raw void pointer used only
@@ -216,8 +219,8 @@ end
 @foldable fdata_type(::Type{CuPtr{T}}) where {T} =
     tangent_type(T) === NoTangent ? NoFData : CuPtr{T}
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
-@foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
-@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
+@foldable tangent_type(::Type{P}) where {P<:CuTangentArray} = P
+@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuTangentArray} = P
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
@@ -474,23 +477,23 @@ _register_cudataref_internal_types!()
 @zero_derivative MinimalCtx Tuple{typeof(Base.mightalias),T,S} where {T<:CuArray,S<:CuArray}
 # Assigning NoTangent stops Mooncake from building a struct tangent from CuArray's
 # internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
-# The CuMaybeComplexArray rule above takes priority for float and complex arrays.
+# Differentiable arrays use the buffer tangent registered above.
 tangent_type(::Type{<:CuNonDiffArray}) = NoTangent
 tangent_type(::Type{<:CuNonDiffArray}, ::Type{NoRData}) = NoTangent
 
-tangent(p::CuMaybeComplexArray, ::NoRData) = p
+tangent(p::CuTangentArray, ::NoRData) = p
 
-function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
+function arrayify(x::A, dx::A) where {A<:CuTangentArray}
     return (x, dx)
 end
 
-function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
+function zero_tangent_internal(x::CuTangentArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = zero(x)
     dict[x] = t
     return t
 end
-function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::MaybeCache)
+function randn_tangent_internal(rng::AbstractRNG, x::CuTangentArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     # Use `similar` to match the memory kind of `x` (DeviceMemory, UnifiedMemory, or
     # HostMemory), then populate from a CPU-side randn so we don't need a GPU RNG.
@@ -500,7 +503,7 @@ function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuTangentArray}
     # allow nan comparisons to return true, real() to cover complex case
     return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
 end
@@ -515,21 +518,21 @@ end
 # need no `set_to_zero!!`-style `fill!` workaround: they form `Broadcasted{CuArrayStyle}`,
 # so under HVP they hit the `materialize!` rule and route to the `_gpu_broadcast_dual`
 # chokepoint (a clear error), never a raw kernel escaping to `cufunction`.
-function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexArray}
+function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuTangentArray}
     (x === y || haskey(c, x)) && return x
     c[x] = true
     x .+= y
     return x
 end
-__increment_should_allocate(::Type{<:CuMaybeComplexArray}) = true
+__increment_should_allocate(::Type{<:CuTangentArray}) = true
 # Use `fill!` (has Mooncake rules), not `x .= 0`: under HVP `set_to_zero!!` is itself
 # differentiated, and the broadcast inlines to a raw kernel launch whose forward-mode
 # trace descends into `cufunction`; `fill!` dispatches to its frule!! instead.
-set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = fill!(x, 0)
+set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuTangentArray) = fill!(x, 0)
 
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuTangentArray}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
     # `.+`, not `+`: CUBLAS `geam` scales by complex `one(T)`, giving `Inf + 0im` a NaN.
@@ -537,19 +540,19 @@ function _add_to_primal_internal(
     c[key] = x′
     return x′
 end
-function primal_to_tangent_internal!!(t, x::CuMaybeComplexArray, c::MaybeCache)
+function primal_to_tangent_internal!!(t, x::CuTangentArray, c::MaybeCache)
     haskey(c, x) && return c[x]::typeof(t)
     c[x] = t
     t .= x
     return t
 end
-function tangent_to_primal_internal!!(x::CuMaybeComplexArray, t, c::MaybeCache)
+function tangent_to_primal_internal!!(x::CuTangentArray, t, c::MaybeCache)
     haskey(c, x) && return c[x]::typeof(x)
     c[x] = x
     x .= t
     return x
 end
-function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
+function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuTangentArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
@@ -557,7 +560,7 @@ function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
     T = real(eltype(P))
     return Float64(dot(reinterpret(T, vec(x)), reinterpret(T, vec(y))))
 end
-function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
+function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuTangentArray}
     haskey(c, y) && return c[y]::P
     # Scale by a real `x`: a complex `x + 0im` turns `Inf + 0im` into `Inf + NaN*im`.
     t′ = real(eltype(P))(x) .* y
@@ -580,9 +583,9 @@ end
 
 # ChainRules interop.  CuArray is its own tangent in both Mooncake and ChainRules,
 # so to_cr_tangent and mooncake_tangent are identity operations.
-mooncake_tangent(::CuMaybeComplexArray, t::CuMaybeComplexArray) = t
-to_cr_tangent(x::CuMaybeComplexArray) = x
-function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuMaybeComplexArray}
+mooncake_tangent(::CuTangentArray, t::CuTangentArray) = t
+to_cr_tangent(x::CuTangentArray) = x
+function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuTangentArray}
     f .+= t
     return NoRData()
 end
@@ -1530,12 +1533,12 @@ end
 
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
 # See also `src/rules/performance_patches`.
-@is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
+@is_primitive(DefaultCtx, Tuple{typeof(sum),CuTangentArray})
+function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuTangentArray})
     px, dx = arrayify(x)
     return Dual(sum(px), sum(dx))
 end
-function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
+function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuTangentArray})
     _, dx = arrayify(x)
     function sum_pb!!(dz)
         dx .+= dz
@@ -2423,7 +2426,7 @@ end
 function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
     return _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "float or complex arrays; got op=$(primal(op)) over " *
+        "IEEE float or complex arrays; got op=$(primal(op)) over " *
         "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
@@ -2431,7 +2434,7 @@ end
 function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
     return _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "float or complex arrays; got op=$(primal(op)) over " *
+        "IEEE float or complex arrays; got op=$(primal(op)) over " *
         "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
@@ -2602,14 +2605,12 @@ end
 # output eltype (GPUArrays takes it from typeof(init), so init=0.0 on a Float32
 # array gives a Float64 result), hence the output-typed zero seeding the tangent
 # reduction.
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
-)
+@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuTangentArray})
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
     ::Dual{typeof(sum)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:CuTangentArray},
 )
     pkw = primal(kw)
     _check_reduction_identity(sum, pkw)
@@ -2622,7 +2623,7 @@ function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(sum)},
-    x::CoDual{<:CuMaybeComplexArray},
+    x::CoDual{<:CuTangentArray},
 )
     pkw = primal(kw)
     _check_reduction_identity(sum, pkw)
@@ -2686,7 +2687,7 @@ function frule!!(
     x::Dual{<:CuArray},
 )
     return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
+        "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; got " *
         "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
@@ -2699,7 +2700,7 @@ function rrule!!(
     x::CoDual{<:CuArray},
 )
     return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
+        "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; got " *
         "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
@@ -2937,10 +2938,10 @@ for BDim in (2, 1)
     @eval begin
         @is_primitive MinimalCtx Tuple{
             typeof(*),CuArray{P,2},CuArray{P,$BDim}
-        } where {P<:CuFloatOrComplex}
+        } where {P<:CuTangentFloatOrComplex}
         function frule!!(
             ::Dual{typeof(*)}, A::Dual{<:CuArray{P,2}}, B::Dual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+        ) where {P<:CuTangentFloatOrComplex}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -2950,7 +2951,7 @@ for BDim in (2, 1)
         end
         function rrule!!(
             ::CoDual{typeof(*)}, A::CoDual{<:CuArray{P,2}}, B::CoDual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+        ) where {P<:CuTangentFloatOrComplex}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -4045,6 +4046,9 @@ function _check_gpu_bcast_captures(args::Tuple)
     if a isa Broadcasted
         _check_gpu_bcast_captures(a)
     elseif !_gpu_threads_leaf(a)
+        a isa CuArray && _throw_gpu_argument_error(
+            "Mooncake: broadcasting over CuArray does not support element type $(eltype(a)).",
+        )
         _throw_gpu_unthreaded(typeof(a), "broadcasting", "a differentiable argument")
     end
     return _check_gpu_bcast_captures(Base.tail(args))
@@ -4439,6 +4443,28 @@ end
 # never reaches `CuArrayStyle`. Its args are all scalars, so the kernel hands back a scalar
 # NDual, which the primal write and the JVP accumulation each broadcast over `dest`. A
 # `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
+@is_primitive MinimalCtx Tuple{
+    typeof(Base.Broadcast.materialize!),CuArray{<:BFloat16},Broadcasted
+}
+function frule!!(
+    ::Dual{typeof(Base.Broadcast.materialize!)},
+    dest::Dual{<:CuArray{<:BFloat16}},
+    ::Dual{<:Broadcasted},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: in-place CUDA broadcast does not support $(eltype(primal(dest)))."
+    )
+end
+function rrule!!(
+    ::CoDual{typeof(Base.Broadcast.materialize!)},
+    dest::CoDual{<:CuArray{<:BFloat16}},
+    ::CoDual{<:Broadcasted},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: in-place CUDA broadcast does not support $(eltype(primal(dest)))."
+    )
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{

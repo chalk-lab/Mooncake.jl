@@ -2,6 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
+using BFloat16s
 using AllocCheck, CUDA, Distributions, JET, Mooncake, Random, StableRNGs, Test
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using CUDA.CUDACore: hasfieldcount
@@ -32,6 +33,35 @@ end
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
+        @testset "BFloat16" begin
+            P = BFloat16s.BFloat16
+            x = CUDA.fill(P(0.25), 2, 2)
+            @testset "tangent representation" begin
+                test_tangent_interface(StableRNG(123), x)
+                test_tangent_splitting(StableRNG(123), x)
+            end
+            @testset "$name" for (name, is_primitive, f, args) in [
+                ("sum", true, sum, (x,)),
+                ("sum dims", false, x -> sum(x; dims=1), (x,)),
+                ("matmul", true, *, (x, copy(x))),
+                ("matvec", true, *, (x, CUDA.fill(P(0.25), 2))),
+            ]
+                test_rule(StableRNG(123), f, args...; is_primitive, atol=0.2, rtol=0.4)
+            end
+            @testset "$name refuses" for (name, f, opts) in [
+                ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
+                (
+                    "broadcast",
+                    x -> Float32(sum(x .* x)),
+                    (; msg=r"does not support element type BFloat16"),
+                ),
+            ]
+                test_rule_throws(
+                    StableRNG(123), f, x; msg=r"does not support BFloat16", opts...
+                )
+            end
+        end
+
         # TODO: move test case definitions to `src/ext/MooncakeCUDAExt.jl`, in line
         # with other rules.
         #
