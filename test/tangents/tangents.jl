@@ -118,6 +118,17 @@ using DispatchDoctor: allow_unstable
         @test_throws "two-argument form" zero_tangent(Ptr{Float64}())
     end
 
+    @testset "zero_tangent of an isbits array allocates no cache" begin
+        x = rand(Float32, 1000)
+        zero_tangent(x)
+        # The array's own 4000 bytes plus headers; an IdDict would add several hundred more.
+        @test @allocated(zero_tangent(x)) < sizeof(x) + 300
+        @test zero_tangent(x) == zeros(Float32, 1000)
+        aliased = rand(3)
+        t = zero_tangent([aliased, aliased])  # non-isbits elements still keep aliasing
+        @test t[1] === t[2]
+    end
+
     tangent(nt::NamedTuple) = Tangent(map(PossiblyUninitTangent, nt))
     mutable_tangent(nt::NamedTuple) = MutableTangent(map(PossiblyUninitTangent, nt))
 
