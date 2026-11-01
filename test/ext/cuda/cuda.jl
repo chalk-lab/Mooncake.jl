@@ -16,6 +16,11 @@ using Mooncake.TestUtils:
     test_rrule_interface
 using LinearAlgebra, Statistics
 
+@testset "nonfinite tangents" for row in Mooncake.TestResources.cuda_tangent_cases(CuArray)
+    interface_only, perf_flag, opts, f, args... = row
+    test_rule(StableRNG(123), f, args...; interface_only, perf_flag, opts...)
+end
+
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
 # A callable struct carrying a differentiable field, for the captured-state tests.

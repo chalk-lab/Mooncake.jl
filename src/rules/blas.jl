@@ -9,6 +9,13 @@ function _trans(flag, mat)
     throw(error("Unrecognised flag $flag"))
 end
 
+function _blas_flag(x)
+    flag = primal(x)
+    'a' <= flag <= 'z' &&
+        throw(ArgumentError("lowercase BLAS/LAPACK flag '$flag' is unsupported"))
+    return flag
+end
+
 function tri!(A, u::Char, d::Char)
     return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
 end
@@ -36,9 +43,13 @@ possible for all array types of interest so far.
 
 Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
 in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
-`Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
-for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
-helper should extract the backing store (see `_accum_sym_logdet!`).
+`Symmetric` → `Symmetric`).
+The exception is a unit-triangular primal: its tangent is a lazy strict-triangle view, not
+wrapped in the primal's type, that reads zeros outside the strict triangle, writes through
+to the original storage inside it, and throws on a nonzero store outside it. Rules that need
+to write into the tangent in-place must account for whether the wrapper supports
+`setindex!`; if it does not (e.g. `Symmetric`), a dedicated helper should extract the
+backing store (see `_accum_sym_logdet!`).
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
@@ -52,7 +63,9 @@ function arrayify(
 end
 function arrayify(
     x::A, dx::A
-) where {A<:Union{Array{<:Union{BlasFloat,HalfFloat}},Ptr{<:Union{IEEEFloat,BlasFloat}}}}
+) where {
+    A<:Union{Array{<:Union{BlasFloat,HalfFloatOrComplex}},Ptr{<:Union{IEEEFloat,BlasFloat}}}
+}
     dx isa Ptr && _check_tangent_ptr(dx)
     return x, dx
 end
@@ -64,22 +77,61 @@ function arrayify(
 end
 function arrayify(
     x::SubArray{P,B,C,D,E}, dx::TangentOrFData
-) where {P<:Union{BlasFloat,HalfFloat},B,C,D,E}
+) where {P<:Union{BlasFloat,HalfFloatOrComplex},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
-function arrayify(x::ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D}
+function arrayify(
+    x::ReshapedArray{P,B,C,D}, dx::TangentOrFData
+) where {P<:Union{BlasFloat,HalfFloatOrComplex},B,C,D}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
 end
-function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
+function arrayify(
+    x::Base.ReinterpretArray{T,N,S,A,R}, dx::TangentOrFData
+) where {T<:Union{BlasFloat,HalfFloatOrComplex},N,S,A,R}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, reinterpret(T, _dx)
+    return x, R ? reinterpret(reshape, T, _dx) : reinterpret(T, _dx)
 end
+struct StrictTriangle{T,A<:AbstractMatrix{T},U} <: AbstractMatrix{T}
+    data::A
+end
+function StrictTriangle(a::AbstractMatrix{T}, ::Val{U}) where {T,U}
+    StrictTriangle{T,typeof(a),U}(a)
+end
+Base.size(a::StrictTriangle) = size(a.data)
+Base.dataids(a::StrictTriangle) = Base.dataids(a.data)
+function Base.unaliascopy(a::StrictTriangle{T,A,U}) where {T,A,U}
+    return StrictTriangle(Base.unaliascopy(a.data), Val(U))
+end
+Base.@propagate_inbounds function Base.getindex(
+    a::StrictTriangle{T,A,U}, i::Int, j::Int
+) where {T,A,U}
+    @boundscheck checkbounds(a, i, j)
+    return (U ? i < j : i > j) ? a.data[i, j] : zero(T)
+end
+# Keep the throw out of line: inlined into `setindex!`, it boxes callers' temporary views.
+@noinline function _strict_triangle_write_error()
+    throw(ArgumentError("cannot write a nonzero direction outside the strict triangle"))
+end
+Base.@propagate_inbounds function Base.setindex!(
+    a::StrictTriangle{T,A,U}, v, i::Int, j::Int
+) where {T,A,U}
+    @boundscheck checkbounds(a, i, j)
+    if U ? i < j : i > j
+        a.data[i, j] = v
+    else
+        iszero(v) || _strict_triangle_write_error()
+    end
+    return a
+end
+
 function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
+    x isa UnitUpperTriangular && return x, StrictTriangle(_dx, Val(true))
+    x isa UnitLowerTriangular && return x, StrictTriangle(_dx, Val(false))
     return x, Tx(_dx)
 end
 function arrayify(
@@ -87,6 +139,12 @@ function arrayify(
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
+end
+function arrayify(
+    x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:IEEEFloat}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Hermitian(_dx, Symbol(x.uplo))
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
@@ -122,16 +180,29 @@ end
 
 Return structurally unrestricted storage in which to increment the tangent `dx`.
 
-[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
-off-structure entries are not parameters: the primal reads a constant there whatever the
-storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
-and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
-part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
-even if indexing makes the view itself non-strided, so the common case costs nothing.
+[`arrayify`](@ref) returns structurally wrapped tangents, whose off-structure entries are
+not parameters: the primal reads a constant there whatever the storage holds. A rule whose
+adjoint is a dense expression must therefore accumulate here and hand the result to
+[`increment_densified_tangent!!`](@ref), which adds back only the part `dx` can represent. A
+tangent backed by strided storage is structurally unrestricted, even if indexing makes the
+view itself non-strided, so the common case costs nothing.
 """
 densify_tangent(dx::StridedArray) = dx
 densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
-function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+function densify_tangent(
+    dx::Union{
+        UpperTriangular,
+        LowerTriangular,
+        StrictTriangle,
+        Diagonal,
+        Symmetric,
+        Hermitian,
+        Adjoint,
+        Transpose,
+        SubArray,
+        ReshapedArray,
+    },
+)
     return zeros(eltype(dx), size(dx))
 end
 
@@ -139,29 +210,59 @@ end
     increment_densified_tangent!!(dx, dense)
 
 Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
-returned `dx` itself, the increment is already complete.
+returned `dx` itself, the increment is already complete. The projection may overwrite `dense`.
 """
-increment_densified_tangent!!(::StridedArray, dense) = nothing
-function increment_densified_tangent!!(
-    ::SubArray{T,N,A}, dense
-) where {T,N,A<:StridedArray{T}}
-    return nothing
+function increment_densified_tangent!!(dx::StridedArray, dense)
+    (dx === dense || (dx .+= dense); nothing)
 end
 function increment_densified_tangent!!(
-    dx::T, dense
-) where {T<:Union{UpperTriangular,LowerTriangular}}
-    parent(dx) .+= T(dense)
+    dx::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    dx === dense || (dx .+= dense)
+    return nothing
+end
+function increment_densified_tangent!!(dx::UpperTriangular, dense)
+    increment_densified_tangent!!(parent(dx), triu!(dense, 0))
+    return nothing
+end
+function increment_densified_tangent!!(dx::LowerTriangular, dense)
+    increment_densified_tangent!!(parent(dx), tril!(dense, 0))
     return nothing
 end
 function increment_densified_tangent!!(dx::Diagonal, dense)
-    dx.diag .+= view(dense, diagind(dense))
+    increment_densified_tangent!!(dx.diag, view(dense, diagind(dense)))
     return nothing
 end
 
-# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
-# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
-# picks up both. Dropping the fold would silently halve those gradients rather than throw.
-function increment_densified_tangent!!(dx::Symmetric, dense)
+function increment_densified_tangent!!(dx::StrictTriangle{T,A,U}, dense) where {T,A,U}
+    increment_densified_tangent!!(dx.data, U ? triu!(dense, 1) : tril!(dense, -1))
+    return nothing
+end
+function increment_densified_tangent!!(dx::Adjoint, dense)
+    increment_densified_tangent!!(parent(dx), adjoint(dense))
+    return nothing
+end
+function increment_densified_tangent!!(dx::Transpose, dense)
+    increment_densified_tangent!!(parent(dx), transpose(dense))
+    return nothing
+end
+function increment_densified_tangent!!(dx::ReshapedArray, dense)
+    increment_densified_tangent!!(parent(dx), reshape(dense, size(parent(dx))))
+    return nothing
+end
+function increment_densified_tangent!!(dx::SubArray, dense)
+    p = densify_tangent(parent(dx))
+    v = view(p, parentindices(dx)...)
+    for i in eachindex(v, dense)
+        v[i] += dense[i]
+    end
+    increment_densified_tangent!!(parent(dx), p)
+    return nothing
+end
+
+# Real symmetric wrappers read each off-diagonal entry twice; the pullback must fold
+# both contributions into the stored triangle.
+function increment_densified_tangent!!(dx::Union{Symmetric,Hermitian{<:Real}}, dense)
     folded = dense .+ transpose(dense)
     folded[diagind(folded)] .= view(dense, diagind(dense))
     parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
@@ -204,8 +305,25 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
+    s = if x isa AbstractVector
+        stride(x, 1)
+    elseif all(d -> size(x, d) == 1 || stride(x, d) == prod(size(x)[1:(d - 1)]), 1:ndims(x))
+        1
+    else
+        throw(
+            ArgumentError(
+                "BLAS rule does not support non-contiguous multidimensional array operands",
+            ),
+        )
+    end
+    s > 0 && incx > 0 && incx % s == 0 || throw(
+        ArgumentError(
+            "BLAS increment $incx must be positive and a multiple of the array stride ($s)",
+        ),
+    )
+    step = incx ÷ s
+    inds = 1:step:(1 + (n - 1) * step)
+    return view(x, inds), view(dx, inds)
 end
 
 #
@@ -216,6 +334,17 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_get_num_threads)}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
+
+# The zero branch must retain coefficient directions under forward-over-reverse.
+_guarded_mul(x::T, coef::T) where {T<:BlasFloat} = ifelse(iszero(coef), zero(T), x * coef)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_guarded_mul),T,T} where {T<:BlasFloat}
+function frule!!(
+    ::Dual{typeof(_guarded_mul)}, x::Dual{T}, coef::Dual{T}
+) where {T<:BlasFloat}
+    a, da = extract(x)
+    b, db = extract(coef)
+    return Dual(_guarded_mul(a, b), _guarded_mul(a, db) + _guarded_mul(da, b))
+end
 
 #
 # LEVEL 1
@@ -373,9 +502,9 @@ function frule!!(
     dy = zero(y)
     @inbounds for i in eachindex(X)
         xi = X[i] * r
-        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
+        dy += real(xi' * dX[i])
     end
-    return Dual(y, dy / 2(y * r))
+    return Dual(y, iszero(y) ? zero(y) : dy / (y * r))
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
@@ -386,7 +515,8 @@ function rrule!!(
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
-        dX .+= X .* (dy / y)
+        # Choose the zero subgradient at the zero vector.
+        iszero(y) || (dX .+= X .* (dy / y))
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
@@ -564,7 +694,7 @@ end
     α, dα = extract(alpha)
     β, dβ = extract(beta)
 
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+    _gemv!_frule_core!(_blas_flag(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
     return y_dy
 end
@@ -611,7 +741,7 @@ end
 ) where {P<:BlasFloat}
 
     # Pull out primals and tangents (the latter only where necessary).
-    trans = _tA.x
+    trans = _blas_flag(_tA)
     alpha = _alpha.x
     A, dA = matrixify(_A)
     x, dx = arrayify(_x)
@@ -790,6 +920,9 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(y, dy)
+            # Reusing y adds α/β directions to dα in forward-over-reverse; remove them.
+            (α == 1 && β == 0) &&
+                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -817,8 +950,8 @@ function frule!!(
 ) where {T<:BlasFloat}
     # Extract primals.
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -848,8 +981,8 @@ function rrule!!(
 
     # Extract primals.
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     x_copy = copy(x)
@@ -926,8 +1059,8 @@ function frule!!(
     x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -953,8 +1086,8 @@ function rrule!!(
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
     uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    trans = _blas_flag(_trans)
+    diag = _blas_flag(_diag)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -1032,8 +1165,8 @@ end
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _blas_flag(transA)
+    tB = _blas_flag(transB)
     α, dα = extract(alpha)
     β, dβ = extract(beta)
     A, dA = matrixify(A_dA)
@@ -1071,8 +1204,8 @@ end
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _blas_flag(transA)
+    tB = _blas_flag(transB)
     a = primal(alpha)
     b = primal(beta)
     p_A, dA = matrixify(A)
@@ -1088,7 +1221,7 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
+        p_C .= a .* tmp .+ _guarded_mul.(p_C, b)
     end
 
     function gemm!_pb!!(::NoRData)
@@ -1100,6 +1233,8 @@ end
 
         # gradient wrt beta
         db = dot(p_C, dC)
+        # Reusing p_C adds a/b directions to da in forward-over-reverse; remove them.
+        (a == 1 && b == 0) && (da -= _guarded_mul(db, b') + _guarded_mul(da, a' - one(T)))
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1178,7 +1313,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        s = primal(side)
+        s = _blas_flag(side)
         ul = primal(uplo)
         α, dα = extract(alpha)
         β, dβ = extract(beta)
@@ -1214,7 +1349,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        s = primal(side)
+        s = _blas_flag(side)
         ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
@@ -1232,7 +1367,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         else
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
             tmp_ref[] = tmp
-            C .= α .* tmp .+ β .* C
+            C .= _guarded_mul.(tmp, α) .+ _guarded_mul.(C, β)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -1242,7 +1377,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
-            dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
+            dA_tmp =
+                s == 'L' ? BLAS.gemm('N', 'C', α', dC, B) : BLAS.gemm('C', 'N', α', B, dC)
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -1260,6 +1396,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
             # gradient w.r.t. beta.
             dβ = dot(C, dC)
+            # Reusing C adds α/β directions to dα in forward-over-reverse; remove them.
+            (α == 1 && β == 0) &&
+                (dα -= _guarded_mul(dβ, β') + _guarded_mul(dα, α' - one(T)))
 
             # gradient w.r.t. C.
             dC .*= β'
@@ -1307,7 +1446,7 @@ for (fname, elty, relty) in (
 
         # Extract values from pairs.
         uplo = primal(_uplo)
-        t = primal(_t)
+        t = _blas_flag(_t)
         α, dα = extract(α_dα)
         A, dA = matrixify(A_dA)
         β, dβ = extract(β_dβ)
@@ -1340,7 +1479,7 @@ for (fname, elty, relty) in (
 
         # Extract values from pairs.
         uplo = primal(_uplo)
-        trans = primal(_t)
+        trans = _blas_flag(_t)
         α = primal(α_dα)
         A, dA = matrixify(A_dA)
         β = primal(β_dβ)
@@ -1406,10 +1545,10 @@ function frule!!(
 ) where {P<:BlasFloat}
 
     # Extract data.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
+    ta = _blas_flag(_ta)
+    diag = _blas_flag(_diag)
     α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1440,10 +1579,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract values.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    tA = primal(_ta)
-    diag = primal(_diag)
+    tA = _blas_flag(_ta)
+    diag = _blas_flag(_diag)
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1512,10 +1651,10 @@ function frule!!(
 ) where {P<:BlasFloat}
 
     # Extract parameters.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    trans = _blas_flag(_t)
+    diag = _blas_flag(_diag)
     α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1551,10 +1690,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract parameters.
-    side = primal(_side)
+    side = _blas_flag(_side)
     uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    trans = _blas_flag(_t)
+    diag = _blas_flag(_diag)
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -1671,7 +1810,103 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     dAs = ['N', 'U']
     rng = rng_ctor(123456)
 
+    regressions = if P in (Float64, ComplexF64)
+        Any[
+            (false, :none, nothing, BLAS.nrm2, 2, view(P[3, 9, 4], 1:2:3), 2),
+            (false, :none, nothing, BLAS.scal!, 2, P(2), view(P[3, 9, 4], 1:2:3), 2),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpy!,
+                2,
+                P(2),
+                view(P[3, 9, 4], 1:2:3),
+                2,
+                ones(P, 2),
+                1,
+            ),
+            (
+                true,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.primal_oracle(zeros(P, 1, 1)),
+                ),
+                BLAS.symm!,
+                'L',
+                'U',
+                P(0),
+                fill(P(NaN), 1, 1),
+                ones(P, 1, 1),
+                P(1),
+                zeros(P, 1, 1),
+            ),
+            [
+                (
+                    true,
+                    :none,
+                    (
+                        lb=1e-3,
+                        ub=50.0,
+                        mode=ReverseMode,
+                        oracle=TestResources.primal_oracle(fill(P(2), 1, 1)),
+                    ),
+                    f,
+                    flags...,
+                    P(2),
+                    ones(P, 1, 1),
+                    ones(P, 1, 1),
+                    P(0),
+                    fill(P(NaN), 1, 1),
+                ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
+            ]...,
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.gradient_oracle((zeros(P, 32),)),
+                ),
+                norm,
+                zeros(P, 32),
+            ),
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ForwardMode,
+                    oracle=TestResources.jvp_oracle((ones(P, 1),), zero(real(P))),
+                ),
+                BLAS.nrm2,
+                zeros(P, 1),
+            ),
+        ]
+    else
+        Any[]
+    end
+    if P === Float64
+        push!(
+            regressions,
+            (
+                false,
+                :none,
+                (lb=1e-3, ub=50.0, unsafe_perturb=true),
+                BLAS.nrm2,
+                2,
+                view(reinterpret(real(P), Complex{real(P)}[3 + 9im, 4 + 9im]), 1:2:4),
+                2,
+            ),
+        )
+    end
     test_cases = vcat(
+        regressions,
 
         #
         # BLAS LEVEL 1
@@ -1990,6 +2225,48 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    for (f, flags) in (
+            (BLAS.gemm!, ('N', 'N')),
+            (BLAS.symm!, ('L', 'U')),
+            (BLAS.symm!, ('R', 'U')),
+            (BLAS.hemm!, ('L', 'U')),
+            (BLAS.hemm!, ('R', 'U')),
+            (BLAS.symv!, ('U',)),
+        ),
+        n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
+
+        P <: BlasRealFloat && f === BLAS.hemm! && continue
+        P in (Float32, ComplexF32) && f in (BLAS.gemm!, BLAS.symv!) && continue
+        p = zero(P)
+        dims = f === BLAS.symv! ? (n,) : (n, n)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (
+                    lb=1e-3,
+                    ub=50.0,
+                    mode=ReverseMode,
+                    oracle=TestResources.hvp_oracle([
+                        30.0n^4 + 6n^3, 14.0n^4 + 2n^3, 8.0n^3 + 2n^2
+                    ]),
+                ),
+                x -> sum(
+                    abs2,
+                    f(
+                        flags...,
+                        oftype(p, x[1]),
+                        fill(oftype(p, x[2]), n, n),
+                        ones(typeof(p), dims),
+                        oftype(p, x[3]),
+                        ones(typeof(p), dims),
+                    ),
+                ),
+                [1.0, 3.0, 0.0],
+            ),
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end
@@ -2063,7 +2340,51 @@ end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    return Any[], Any[]
+    test_cases = Any[
+        (
+            false,
+            :none,
+            (oracle=(_, f, A) -> f(A) == (U ? [0 1; 0 0] : [0 0; 1 0]),),
+            A -> copyto!(A, StrictTriangle(A, Val(U))),
+            ones(2, 2),
+        ) for U in (true, false)
+    ]
+    for W in (UnitUpperTriangular, UnitLowerTriangular)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ReverseMode, oracle=(_, f, x) -> iszero(f(x))),
+                x -> fill!(arrayify(x, fdata(zero_tangent(x)))[2], 0),
+                W(zeros(2, 2)),
+            ),
+        )
+    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (
+                oracle=(mode, f, args...) -> begin
+                    TestUtils.test_rule_throws(
+                        rng_ctor(123),
+                        f,
+                        args...;
+                        mode,
+                        msg="non-contiguous multidimensional array operands",
+                    )
+                    true
+                end,
+            ),
+            BLAS.nrm2,
+            2,
+            view(ones(2, 2), 1:1, :),
+            1,
+        ),
+    )
+    return test_cases, Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     test_cases = Any[
