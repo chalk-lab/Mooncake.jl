@@ -8,7 +8,7 @@ using Random: AbstractRNG
 #! format: off
 using BFloat16s: BFloat16s
 
-using Mooncake: @foldable
+using Mooncake: @foldable, CRC
 
 import Mooncake:
     MaybeCache,
@@ -110,6 +110,21 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
 
 # Conversions
+
+Mooncake.to_cr_tangent(t::P) = t
+Mooncake.to_cr_tangent(t::Array{P}) = t
+@static if VERSION >= v"1.11-rc4"
+    Mooncake.to_cr_tangent(t::Memory{P}) = t
+end
+Mooncake.mooncake_tangent(p, t::P) = t
+Mooncake.mooncake_tangent(p::Array, t::Array{P}) = t
+Mooncake.mooncake_tangent(::P, ::CRC.NotImplemented) = P(NaN)
+Mooncake.increment_and_get_rdata!(::NoFData, r::P, t::P) = r + t
+function Mooncake.increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P})
+    Mooncake.increment!!(f, t)
+    return NoRData()
+end
+Mooncake.increment_and_get_rdata!(f, r::P, ::CRC.NotImplemented) = P(NaN)
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
 function Mooncake.frule!!(::Dual{Type{Float32}}, x::Dual{P})

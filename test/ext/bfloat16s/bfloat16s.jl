@@ -3,11 +3,17 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
+using ChainRulesCore: ChainRulesCore as CRC
 using LinearAlgebra: mul!
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
 const sr = StableRNG
 const P = BFloat16s.BFloat16
+
+double(x) = 2 .* x
+CRC.rrule(::typeof(double), x) = double(x), dy -> (CRC.NoTangent(), 2 .* dy)
+CRC.frule((_, dx), ::typeof(double), x) = double(x), double(dx)
+Mooncake.@from_chainrules Mooncake.DefaultCtx Tuple{typeof(double),Union{P,Array{P}}}
 
 # NNlib's `sigmoid` shape: `exp(-abs(x))` under an `ifelse`, smooth at zero even though
 # `abs` is not, because the kink cancels between the two branches.
@@ -41,7 +47,21 @@ end
         end
     end
 
+    @testset "ChainRules conversions" begin
+        x = P[0.25]
+        @test Mooncake.to_cr_tangent(x) === Mooncake.mooncake_tangent(x, x) === x
+        ni = CRC.@not_implemented "test derivative"
+        @test Mooncake.mooncake_tangent(P(1), ni) === P(NaN)
+        @test Mooncake.increment_and_get_rdata!(Mooncake.NoFData(), P(0), ni) === P(NaN)
+        @static if VERSION >= v"1.11-rc4"
+            x = Memory{P}(P[0.25])
+            @test Mooncake.to_cr_tangent(x) === x
+        end
+    end
+
     cases = [
+        (double, P(0.25)),
+        (double, P[0.125, 0.25]),
         (-, P(0.25)),
         (
             mul!,
