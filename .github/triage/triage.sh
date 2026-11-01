@@ -25,6 +25,7 @@ decide='
   | (flatten | map(if .event then . else error("unexpected timeline entry: \(tojson[:200])") end | {
       event, body, state, label: .label.name, url: .html_url,
       who: ((.user // .actor).login // "" | ascii_downcase),
+      human: ((.user // .actor).type == "User"),
       at: ((.submitted_at // .created_at // empty) | fromdate)
     })) as $events
   | if $created < $since then keep("opened before the start date")
@@ -40,7 +41,11 @@ decide='
       | if $feedback == null then
           if $now < $created + 14 * $day then keep("opened less than 14 days ago")
           else "close - no response from an approved contributor in 14 days" end
-        elif $item.pr | not then keep("an approved contributor has responded")
+        elif $item.pr | not then
+          ([$feedback.at, ($events[] | select(.human and .event == "commented") | .at)]
+            | max) as $last_activity
+          | if $now < $last_activity + 14 * $day then keep("discussion is less than 14 days old")
+            else "close-inactive - no further human discussion for 14 days" end
         elif $feedback.event == "reviewed" and $feedback.state == "approved" then keep("approved; waiting on maintainers")
         elif any($events[]; .who == $author and .at >= $feedback.at
             and (.event | IN("commented", "reviewed", "review_requested", "reopened")))
@@ -77,12 +82,16 @@ while read -r item; do
     gh pr comment "$number" --body "Hi @$(jq -r .user.login <<<"$item"), a friendly reminder that there is [review feedback]($url) on this PR waiting for your reply. When you get a chance, please leave a comment (even a short \"still working on it\" is enough) or re-request review once it is ready; we cannot tell from commits alone whether feedback has been addressed. If there is no reply within 7 days, this PR will be closed to keep the review queue manageable. Nothing is lost if that happens, and you can ask for it to be reopened later.$note"$'\n\n<!-- triage:reminder -->' </dev/null
     continue
   fi
-  if [[ $url == - ]]; then
-    why="we have not been able to respond within 14 days. That reflects our limited capacity, not a judgment on the report or fix"
+  if [[ $action == close-inactive ]]; then
+    comment="Thanks for the discussion so far. We're closing this issue for now after 14 days without further discussion. If you'd like to pick it up again, please leave a comment in your own words explaining why it should be reopened, and a maintainer will take a look.$note"
   else
-    why="the [review feedback]($url) has not had a reply for a while. This is not a judgment on the work"
+    if [[ $url == - ]]; then
+      why="we have not been able to respond within 14 days. That reflects our limited capacity, not a judgment on the report or fix"
+    else
+      why="the [review feedback]($url) has not had a reply for a while. This is not a judgment on the work"
+    fi
+    comment="Closing this for now, as $why. Nothing is lost: the discussion stays here. If you think it should be reopened, say why in a comment in your own words and a maintainer will take a look.$note"
   fi
-  comment="Closing this for now, as $why. Nothing is lost: the discussion stays here. If you think it should be reopened, say why in a comment in your own words and a maintainer will take a look.$note"
   if [[ $(jq -r .pr <<<"$item") == true ]]; then
     gh pr close "$number" --comment "$comment" </dev/null
   else
