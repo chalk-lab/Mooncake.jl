@@ -40,6 +40,12 @@ end
                 test_tangent_interface(StableRNG(123), x)
                 test_tangent_splitting(StableRNG(123), x)
             end
+            @testset "forward cache" begin
+                cache = Mooncake.prepare_derivative_cache(sum, x)
+                @test Mooncake.value_and_derivative!!(
+                    cache, (sum, Mooncake.NoTangent()), (x, one.(x))
+                ) == (P(1), P(4))
+            end
             @testset "$name" for (name, is_primitive, f, args) in [
                 ("sum", true, sum, (x,)),
                 ("sum dims", false, x -> sum(x; dims=1), (x,)),
