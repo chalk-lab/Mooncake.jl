@@ -532,7 +532,8 @@ function _add_to_primal_internal(
 ) where {P<:CuMaybeComplexArray}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
-    x′ = x + y
+    # `.+`, not `+`: CUBLAS `geam` scales by complex `one(T)`, giving `Inf + 0im` a NaN.
+    x′ = x .+ y
     c[key] = x′
     return x′
 end
@@ -552,11 +553,14 @@ function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return Float64(real(dot(x, y)))
+    # Real dot of the components: `real(dot(x, y))` without complex `Inf * 0` terms.
+    T = real(eltype(P))
+    return Float64(dot(reinterpret(T, vec(x)), reinterpret(T, vec(y))))
 end
 function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
     haskey(c, y) && return c[y]::P
-    t′ = eltype(P)(x) * y
+    # Scale by a real `x`: a complex `x + 0im` turns `Inf + 0im` into `Inf + NaN*im`.
+    t′ = real(eltype(P))(x) .* y
     c[y] = t′
     return t′
 end
@@ -4527,6 +4531,73 @@ function rrule!!(
     end
 
     return dest, materialize!_pb!!
+end
+
+for f in (triu, tril)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{
+            typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
+        }
+        function frule!!(
+            ::Dual{typeof($f)},
+            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::Dual{<:Integer},
+        )
+            dx = tangent(x)
+            return Dual($f(primal(x), primal(k)), dx isa NoTangent ? dx : $f(dx, primal(k)))
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)},
+            x::CoDual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::CoDual{<:Integer},
+        )
+            y = $f(primal(x), primal(k))
+            dx = tangent(x)
+            dx isa NoFData && return CoDual(y, NoFData()), _nopb(Val(3))
+            dy = zero_tangent(y)
+            function triangle_pb!!(::NoRData)
+                dx .+= $f(dy, primal(k))
+                return NoRData(), NoRData(), NoRData()
+            end
+            return CoDual(y, dy), triangle_pb!!
+        end
+    end
+end
+for f in (triu!, tril!)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{
+            typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
+        }
+        function frule!!(
+            ::Dual{typeof($f)},
+            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::Dual{<:Integer},
+        )
+            $f(primal(x), primal(k))
+            tangent(x) isa NoTangent || $f(tangent(x), primal(k))
+            return x
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)},
+            x::CoDual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::CoDual{<:Integer},
+        )
+            px, dx = primal(x), tangent(x)
+            old_px = copy(px)
+            old_dx = dx isa NoFData ? dx : copy(dx)
+            $f(px, primal(k))
+            dx isa NoFData || fill!(dx, 0)
+            function triangle!_pb!!(::NoRData)
+                copyto!(px, old_px)
+                if !(dx isa NoFData)
+                    $f(dx, primal(k))
+                    dx .+= old_dx
+                end
+                return NoRData(), NoRData(), NoRData()
+            end
+            return x, triangle!_pb!!
+        end
+    end
 end
 
 # Rules for `permutedims(x, perm)` on CuArrays, and on Adjoint/Transpose/SubArray

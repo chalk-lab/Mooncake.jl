@@ -97,6 +97,13 @@ end
         )
     end
 
+    for wrap in (identity, transpose, adjoint)
+        push!(cases, (mul!, ones(P, 2), wrap(zeros(P, 2, 2)), ones(P, 2), true, zero(P)))
+    end
+    for A in (view(zeros(P, 4, 2), 1:2:4, :), reshape(view(zeros(P, 6), 1:4), 2, 2))
+        push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), true, zero(P)))
+    end
+
     # Tolerances reflect BFloat16's ~3-digit precision. Test values are in [0.125, 0.25)
     # so the ε=1e-2 FD perturbation (≈0.00129) exceeds the BF16 half-spacing (0.000488)
     # and is captured, but snaps to one grid step (0.000977), giving ~24% relative error

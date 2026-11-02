@@ -25,7 +25,9 @@ For everyone else, we do our best to respond to new issues and pull requests. Wh
 no approved contributor has been able to respond within 14 days of one being opened,
 the bot closes it for now and leaves a note explaining why. This reflects our limited
 capacity, not the value of your report or contribution, and you are welcome to ask
-for it to be reopened.
+for it to be reopened. After an approved contributor responds to an issue, we
+close it after 14 days without a human comment or another approved contributor
+response; a short "still working on this" is enough to keep it open.
 
 Once an approved contributor leaves feedback on a pull request, the next step is
 usually yours. If 14 days pass without a reply, the bot posts a friendly reminder.

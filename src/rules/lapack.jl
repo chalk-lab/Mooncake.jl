@@ -228,7 +228,7 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
 
     # Extract data.
-    trans = _trans.x
+    trans = _blas_flag(_trans)
     A, dA = arrayify(_A)
     ipiv = _ipiv.x
     B, dB = arrayify(_B)
@@ -547,8 +547,9 @@ end
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
 
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        uplo = _blas_flag(_uplo)
+        LAPACK.lacpy!(B, A, uplo)
+        LAPACK.lacpy!(dB, dA, uplo)
         return B_dB
     end
     function rrule!!(
@@ -559,14 +560,16 @@ end
     ) where {P<:BlasFloat}
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
-        uplo = primal(_uplo)
+        uplo = _blas_flag(_uplo)
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
-        # fill dB with zeros in the copied region
-        zero_tri!(dB, uplo)
+        # Only exact self-copy is handled; partially overlapping views are not.
+        # Clear cotangents in the overwritten region unless the copy is an identity.
+        dA === dB || zero_tri!(dB, uplo)
 
         function lacpy_pb!!(::NoRData)
+            dA === dB && return ntuple(_ -> NoRData(), 4)
             if uplo == 'U'
                 dA .+= UpperTriangular(dB)
             elseif uplo == 'L'
@@ -825,7 +828,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     bools = [false, true]
     uplos = ['U', 'L', 'N']
     test_cases = vcat(
-
         # getrf!
         map_prod(Ps) do (P,)
             As = blas_matrices(rng, P, 5, 5)
@@ -971,6 +973,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
+    @static if VERSION > v"1.11-"
+        test_cases = vcat(
+            test_cases,
+            [(
+                false,
+                :none,
+                (lb=1e-3, ub=50.0, is_primitive=false),
+                A -> sum(LAPACK.lacpy!(A, A, 'U')),
+                ones(2, 2),
+            )],
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end

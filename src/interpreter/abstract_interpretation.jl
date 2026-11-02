@@ -157,7 +157,7 @@ function Core.Compiler.abstract_call_gf_by_type(
         (; valid_worlds, applicable) = matches
         # For applicable method matches in IR, we need to check if any of them is a primitive.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
-        if any_prim
+        if any_prim || may_match_primitive(C, M, atype)
             # A primitive already has a hand-written `rrule!!`, so Mooncake does not need
             # to inspect its body when differentiating. The only thing we need here is the
             # ordinary `CallMeta` for the call site, especially the inferred return type.
@@ -201,6 +201,14 @@ function Core.Compiler.abstract_call_gf_by_type(
         max_methods::Int,
     )
 end
+
+# A call is kept when a matched method's specialisation is a subtype of a primitive's
+# signature. Keeping every overlapping call (non-empty `typeintersect`) blocks inlining
+# and slows rule builds 1.5–9×. E.g. for a primitive `f(::Float64)` and a method
+# `@inline f(::Real)`, a call inferred as `f(::Real)` only overlaps the primitive (a
+# runtime `Float64` matches, an `Int` does not); it is inlined, so a runtime `Float64`
+# bypasses the rule silently, unless `may_match_primitive` returns true for it.
+may_match_primitive(C, M, sig) = false
 
 function any_matches_primitive(applicable, C, M, world)
     for app in applicable
