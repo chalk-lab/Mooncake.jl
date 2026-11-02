@@ -24,6 +24,115 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function primal_oracle(expected)
+    return function (_, f, args...)
+        out, _ = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (f, args...))...)
+        return Mooncake.TestUtils.has_equal_data(primal(out), expected)
+    end
+end
+
+function hvp_oracle(expected)
+    return function (_, f, x)
+        cache = Mooncake.prepare_hvp_cache(f, x)
+        _, _, actual = Mooncake.value_and_hvp!!(cache, f, ones(eltype(x), size(x)), x)
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
+function structured_output_cases(f)
+    cases = Any[]
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
+        g = M -> begin
+            f(view(W(M), i:i, j:j), view(M, 1:1, 1:1))
+            return sum(M)
+        end
+        push!(cases, (false, :none, (is_primitive=false,), g, [0.2 0.3; 0.4 0.5]))
+    end
+    return cases
+end
+
+function structured_rule_cases(f)
+    cases = Any[]
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
+        x = W([0.2 0.3; 0.4 0.5])
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (
+                    mode=Mooncake.ForwardMode,
+                    oracle=(_, f, x, dx) -> begin
+                        _, actual = f(x, dx)
+                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
+                        return actual == expected &&
+                               Base.mightalias(actual, dx.fields.data) &&
+                               dx.fields.data == ones(2, 2)
+                    end,
+                ),
+                Mooncake.arrayify,
+                x,
+                Tangent((data=ones(2, 2),)),
+            ),
+        )
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (is_primitive=false,),
+                M -> sum(f(W(M); dims=1)),
+                [0.2 0.3; 0.4 0.5],
+            ),
+        )
+        for y in
+            (x, view(x, [i, i], j:j), reshape(x, 4), Adjoint(x), Diagonal(view(x, :, j)))
+            push!(cases, (false, :none, (;), f, y))
+        end
+    end
+    push!(cases, (false, :none, (;), f, Hermitian([1.0 2.0; 3.0 4.0])))
+    push!(
+        cases,
+        (false, :none, (;), f, UpperTriangular(view([0.2 0.3 9.0; 0.4 0.5 9.0], :, 1:2))),
+    )
+    return cases
+end
+
+function cuda_tangent_cases(array)
+    x = array(fill(complex(Inf, 0.0), 1, 1))
+    check = (_, f, args...) -> isequal(Array(f(args...)), fill(complex(Inf, 0.0), 1, 1))
+    return [
+        (false, :none, (oracle=check,), Mooncake._add_to_primal, x, zero(x), true),
+        (false, :none, (oracle=check,), Mooncake._scale, 1.0, x),
+        (
+            false,
+            :none,
+            (oracle=(_, f, args...)->f(args...) === Inf,),
+            Mooncake._dot,
+            vec(x),
+            array(ones(ComplexF64, 1)),
+        ),
+    ]
+end
+
+function gradient_oracle(expected)
+    return function (_, f, x...)
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        _, actual = Mooncake.value_and_gradient!!(cache, f, x...)
+        return Mooncake.TestUtils.has_equal_data(actual[2:end], expected)
+    end
+end
+
+function jvp_oracle(directions, expected)
+    return function (_, f, x...)
+        rule = Mooncake.build_frule(f, x...)
+        _, actual = Mooncake.value_and_derivative!!(
+            rule, (f, Mooncake.NoTangent()), map(tuple, x, directions)...
+        )
+        return Mooncake.TestUtils.has_equal_data(actual, expected)
+    end
+end
+
 #
 # Types used for testing purposes
 #

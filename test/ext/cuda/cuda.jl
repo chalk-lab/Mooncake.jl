@@ -16,6 +16,11 @@ using Mooncake.TestUtils:
     test_rrule_interface
 using LinearAlgebra, Statistics
 
+@testset "nonfinite tangents" for row in Mooncake.TestResources.cuda_tangent_cases(CuArray)
+    interface_only, perf_flag, opts, f, args... = row
+    test_rule(StableRNG(123), f, args...; interface_only, perf_flag, opts...)
+end
+
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
 # A callable struct carrying a differentiable field, for the captured-state tests.
@@ -1586,6 +1591,31 @@ end
                 _rand(rng, Float32, 5),
             ),
         ]
+        append!(
+            test_cases,
+            [
+                (false, :none, true, f, CuArray(rand(rng, T, 3, 4)), k) for
+                (f, k) in ((triu, 1), (tril, -4), (triu!, -1), (tril!, 4)),
+                T in (Bool, Float32)
+            ],
+        )
+        append!(
+            test_cases,
+            [
+                (false, :none, false, f, CuArray(rand(rng, Float32, 4, 3))) for
+                f in (triu, tril, triu!, tril!)
+            ],
+        )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                false,
+                x -> sum(x .* triu(fill!(similar(x, Bool), true))),
+                _rand(rng, Float32, 3, 4),
+            ),
+        )
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
                                         test_cases
 
@@ -1596,6 +1626,23 @@ end
             test_rule(
                 StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
             )
+        end
+
+        @testset "triangular mutation cotangent history" begin
+            x = CuArray(reshape(Float32.(1:12), 3, 4))
+            old_x = copy(x)
+            dx = CUDA.fill(2.0f0, size(x))
+            out, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(triu!),
+                Mooncake.CoDual(x, dx),
+                Mooncake.zero_fcodual(1),
+            )
+            @test Mooncake.primal(out) === x
+            @test Mooncake.tangent(out) === dx
+            dx .+= 3.0f0
+            pb(Mooncake.NoRData())
+            @test x == old_x
+            @test Array(dx) == fill(2.0f0, size(x)) + triu(fill(3.0f0, size(x)), 1)
         end
 
         @testset "$name" for (seed, name, fargs) in [

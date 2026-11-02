@@ -1128,9 +1128,8 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
     both are subgradients, so a disagreement is not evidence of a defect, and an agreement
     is not evidence of correctness.
 
-Accepting a caller-supplied reference derivative would close the first two. Until then, a
-rule whose derivative depends on any of these needs pinning some other way — calling the
-rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
+For cases outside finite differences, `oracle(mode, f, args...)` must return a Boolean
+checking an analytic reference. It replaces the ordinary rule checks.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1148,9 +1147,11 @@ function test_rule(
     frule=nothing,
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
+    oracle=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
+    isnothing(oracle) || return @test oracle(mode, x...)
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
@@ -1349,10 +1350,13 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+        interface_only, perf_flag, options, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
+        opts =
+            options isa NamedTuple ? Base.structdiff(options, NamedTuple{(:lb, :ub)}) : (;)
+        get(opts, :mode, mode) === mode || continue
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode, opts...)
     end
 end
 
