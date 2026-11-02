@@ -138,7 +138,7 @@ using DispatchDoctor: allow_unstable
         _, (_, gradient) = Mooncake.value_and_gradient!!(cache, read_both, pair)
         # Both reads land in the one shared tangent: 1 + 2 per element.
         @test gradient.first === gradient.second
-        @test all(==(3f0), gradient.first)
+        @test all(==(3.0f0), gradient.first)
     end
 
     tangent(nt::NamedTuple) = Tangent(map(PossiblyUninitTangent, nt))
