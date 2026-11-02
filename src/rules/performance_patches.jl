@@ -161,7 +161,7 @@ end
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
-# scalar-array mul! and stdlib internals can lose coefficient derivatives.
+# Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
 const _CPUStridedMulSig = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
