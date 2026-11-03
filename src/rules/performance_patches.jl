@@ -144,13 +144,13 @@ end
     return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
 end
 
-@inline function _accumulate_product!(dX::Adjoint, left, right, alpha)
-    return _accumulate_product!(parent(dX), adjoint(right), adjoint(left), conj(alpha))
+@inline function _mul_add!(dX::Adjoint, left, right, alpha)
+    return _mul_add!(parent(dX), adjoint(right), adjoint(left), conj(alpha))
 end
-@inline function _accumulate_product!(dX::Transpose, left, right, alpha)
-    return _accumulate_product!(parent(dX), transpose(right), transpose(left), alpha)
+@inline function _mul_add!(dX::Transpose, left, right, alpha)
+    return _mul_add!(parent(dX), transpose(right), transpose(left), alpha)
 end
-@inline function _accumulate_product!(dX, left, right, alpha)
+@inline function _mul_add!(dX, left, right, alpha)
     return mul!(dX, left, right, alpha, one(eltype(dX)))
 end
 
@@ -260,7 +260,7 @@ end
                 da += _mul_guarded_scale(v, conj(A[i]))
             end
         else
-            _accumulate_product!(dA, left, right, conj(pa))
+            _mul_add!(dA, left, right, conj(pa))
         end
         if reuse_B
             mul!(C, adjoint(A), dC, one(T), zero(T))
@@ -270,9 +270,9 @@ end
                 da += _mul_guarded_scale(v, conj(B[i]))
             end
         elseif B isa AbstractVector && dC isa AbstractMatrix
-            _accumulate_product!(dB, adjoint(A), view(dC, :, 1), conj(pa))
+            mul!(dB, adjoint(A), view(dC, :, 1), conj(pa), one(T))
         else
-            _accumulate_product!(dB, adjoint(A), dC, conj(pa))
+            _mul_add!(dB, adjoint(A), dC, conj(pa))
         end
         large = something(old.large)
         db = zero(eltype(C) <: HalfFloat ? Float32 : eltype(C)) + zero(pb)
