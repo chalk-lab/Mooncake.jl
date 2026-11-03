@@ -2,7 +2,6 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using BFloat16s
 using AllocCheck, CUDA, Distributions, JET, Mooncake, Random, StableRNGs, Test
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using CUDA.CUDACore: hasfieldcount
@@ -34,7 +33,7 @@ end
     cuda = CUDA.functional()
     if cuda
         @testset "BFloat16" begin
-            P = BFloat16s.BFloat16
+            P = CUDA.CUDACore.BFloat16
             x = CUDA.fill(P(0.25), 2, 2)
             @testset "tangent representation" begin
                 test_tangent_interface(StableRNG(123), x)
@@ -48,9 +47,6 @@ end
                 ("reshape", true, reshape, (x, (4,))),
                 ("view", false, view, (x, :, 1:1)),
                 ("getindex", true, getindex, (x, 1:1, :)),
-                ("vcat", true, vcat, (x, transpose(copy(x)))),
-                ("permutedims", true, permutedims, (view(x, [1, 2], :), (2, 1))),
-                ("fill!", true, fill!, (adjoint(copy(x)), P(0.5))),
                 ("copyto!", false, copyto!, (copy(x), x)),
                 ("host-to-device copy", true, unsafe_copyto!, (copy(x), 1, Array(x), 1, 4)),
             ]
@@ -68,21 +64,36 @@ end
                 )
             end
             @testset "$name refuses" for (name, f, opts) in [
+                ("mean", mean, (; msg="IEEE float or complex arrays")),
+                ("sum(abs2)", x -> sum(abs2, x), (; msg="IEEE float or complex arrays")),
+                (
+                    "sum(abs2; dims)",
+                    x -> Float32(sum(sum(abs2, x; dims=1))),
+                    (; msg="IEEE float or complex arrays"),
+                ),
                 (
                     "vector-index getindex",
                     x -> Float32(sum(x[[1, 3]])),
                     (; mode=Mooncake.ReverseMode),
                 ),
+                (
+                    "concatenation",
+                    x -> sum(vcat(x, x)),
+                    (; msg="CUDA concatenation does not support BFloat16"),
+                ),
+                (
+                    "wrapped array",
+                    x -> sum(transpose(x)),
+                    (; msg="wrapped CUDA BFloat16 arrays are unsupported"),
+                ),
                 ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
                 (
                     "broadcast",
                     x -> Float32(sum(x .* x)),
-                    (; msg=r"does not support element type BFloat16"),
+                    (; msg="does not support element type $P"),
                 ),
             ]
-                test_rule_throws(
-                    StableRNG(123), f, x; msg=r"does not support BFloat16", opts...
-                )
+                test_rule_throws(StableRNG(123), f, x; msg="does not support $P", opts...)
             end
         end
 
