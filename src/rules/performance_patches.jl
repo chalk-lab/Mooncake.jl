@@ -144,6 +144,16 @@ end
     return iszero(d) && !isfinite(x) ? zero(d*x) : d*x
 end
 
+@inline function _mul_add!(dX::Adjoint, left, right, alpha)
+    return _mul_add!(parent(dX), adjoint(right), adjoint(left), conj(alpha))
+end
+@inline function _mul_add!(dX::Transpose, left, right, alpha)
+    return _mul_add!(parent(dX), transpose(right), transpose(left), alpha)
+end
+@inline function _mul_add!(dX, left, right, alpha)
+    return mul!(dX, left, right, alpha, one(eltype(dX)))
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/1396
 # Stdlib `mul!` skips A·B when α = 0; its generic kernels skip α at one and C at β = 0.
 # Exception to convention 2: strided coefficient correctness requires an open signature;
@@ -151,7 +161,7 @@ end
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
-# scalar-array mul! and stdlib internals can lose coefficient derivatives.
+# Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
 const _CPUStridedMulSig = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
@@ -250,7 +260,7 @@ end
                 da += _mul_guarded_scale(v, conj(A[i]))
             end
         else
-            mul!(dA, left, right, conj(pa), one(T))
+            _mul_add!(dA, left, right, conj(pa))
         end
         if reuse_B
             mul!(C, adjoint(A), dC, one(T), zero(T))
@@ -262,13 +272,14 @@ end
         elseif B isa AbstractVector && dC isa AbstractMatrix
             mul!(dB, adjoint(A), view(dC, :, 1), conj(pa), one(T))
         else
-            mul!(dB, adjoint(A), dC, conj(pa), one(T))
+            _mul_add!(dB, adjoint(A), dC, conj(pa))
         end
         large = something(old.large)
         db = zero(eltype(C) <: HalfFloat ? Float32 : eltype(C)) + zero(pb)
         @inbounds @simd for i in 1:length(C)
             v = (large === nothing ? old.small : large)[i]
             if !(pb isa Bool)
+                # Zero dC[i] masks NaN C here; the BLAS rules' dot-based dβ stays NaN.
                 db += _mul_guarded_scale(oftype(db, dC[i]), conj(oftype(db, v)))
             end
             dC[i] = if !isfinite(pb) && iszero(dC[i])
@@ -614,39 +625,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             ),
         )
     end
-    for wrap in (adjoint ∘ transpose, transpose ∘ adjoint)
-        T = ComplexF64
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                nothing,
-                mul!,
-                wrap(ones(T, 1, 1)),
-                fill(T(0.2+0.3im), 1, 1),
-                fill(T(0.4-0.1im), 1, 1),
-                one(T),
-                zero(T),
-            ),
+    let T = ComplexF64
+        for (wrap, A, B) in (
+            (adjoint ∘ transpose, fill(T(0.2+0.3im), 1, 1), fill(T(0.4-0.1im), 1, 1)),
+            (transpose ∘ adjoint, fill(T(0.2+0.3im), 1, 1), fill(T(0.4-0.1im), 1, 1)),
+            (adjoint, randn(rng, T, 1, 2), randn(rng, T, 2)),
+            (transpose, randn(rng, T, 1, 2), randn(rng, T, 2)),
         )
-    end
-    for wrap in (adjoint, transpose)
-        T = ComplexF64
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                nothing,
-                mul!,
-                wrap(ones(T, 1, 1)),
-                randn(rng, T, 1, 2),
-                randn(rng, T, 2),
-                one(T),
-                zero(T),
-            ),
-        )
+            C = wrap(ones(T, 1, 1))
+            push!(test_cases, (false, :none, nothing, mul!, C, A, B, one(T), zero(T)))
+        end
     end
     # The pullback must retain α's direction in wrapped cotangent updates.
     f =
@@ -689,25 +677,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             ),
         )
     end
-    for wrap in (transpose, adjoint)
-        for (a, b) in ((1.0, 0.0), (0.7+0.2im, -0.2+0.3im))
-            n = a isa Real ? 2 : 1
-            A, B = fill(0.5+0.2im, n, n), fill(1-0.3im, n, n)
-            push!(
-                test_cases,
-                (
-                    false,
-                    :none,
-                    nothing,
-                    mul!,
-                    ones(ComplexF64, n, n),
-                    wrap(A),
-                    wrap(B),
-                    a,
-                    b,
-                ),
-            )
-        end
+    for wrap in (transpose, adjoint), (a, b) in ((1.0, 0.0), (0.7+0.2im, -0.2+0.3im))
+        n = a isa Real ? 2 : 1
+        A, B = fill(0.5+0.2im, n, n), fill(1-0.3im, n, n)
+        C = ones(ComplexF64, n, n)
+        push!(test_cases, (false, :none, nothing, mul!, C, wrap(A), wrap(B), a, b))
     end
     push!(
         test_cases,
@@ -731,13 +705,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         push!(test_cases, (false, :none, nothing, f, one(T)))
     end
     # Scale β so the smallest finite-difference step survives conversion to Float16.
-    for (wrap, k) in ((identity, 0), (identity, 1), (transpose, 1), (adjoint, 1))
-        dims = wrap === identity ? (1, k) : (k, 1)
+    for (r, c, wrap, a, k) in (
+        (only, (1,), identity, (1, 0), (0,)),
+        (only, (1,), identity, (1, 1), (1,)),
+        (only, (1,), transpose, (1, 1), (1,)),
+        (only, (1,), adjoint, (1, 1), (1,)),
+        (sum, (2, 1), A -> view(A, 1:2:3, :), (3, 1), (1, 1)),
+        (only, (1, 1), identity, (1, 1), (1,)),
+    )
         f =
-            b -> only(
+            b -> r(
                 mul!(
-                    ones(Float16, 1),
-                    wrap(zeros(Float16, dims)),
+                    ones(Float16, c),
+                    wrap(zeros(Float16, a)),
                     ones(Float16, k),
                     true,
                     Float16(8b),
@@ -745,28 +725,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         push!(test_cases, (false, :none, nothing, f, 0.0))
     end
-    f =
-        b -> sum(
-            mul!(
-                ones(Float16, 2, 1),
-                view(zeros(Float16, 3, 1), 1:2:3, :),
-                ones(Float16, 1, 1),
-                true,
-                Float16(8b),
-            ),
-        )
-    push!(test_cases, (false, :none, nothing, f, 0.0))
-    f =
-        b -> only(
-            mul!(
-                ones(Float16, 1, 1),
-                zeros(Float16, 1, 1),
-                ones(Float16, 1),
-                true,
-                Float16(8b),
-            ),
-        )
-    push!(test_cases, (false, :none, nothing, f, 0.0))
     f = a -> begin
         T = Base.inferencebarrier(Float64)::DataType
         sum(mul!(ones(T, 2, 2), ones(T, 2, 2), ones(T, 2, 2), a, zero(T)))

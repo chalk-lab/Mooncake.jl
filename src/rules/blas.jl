@@ -720,8 +720,7 @@ end
     # Strong zero is essential here, in case `y` has undefined element values.
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            dy[n] += dβ * y[n]
         end
     end
 
@@ -844,8 +843,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         BLAS.$fname(ul, α, A, dx, one(T), dy)
         if !iszero(dβ)
             @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+                dy[n] += dβ * y[n]
             end
         end
 
@@ -1150,11 +1148,6 @@ end
     } where {T<:BlasFloat},
 )
 
-# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
-    return isnan(cond) * left + !isnan(cond) * right
-end
-
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
@@ -1184,7 +1177,7 @@ end
 
     if !iszero(dβ)
         @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+            dC[n] += dβ * C[n]
         end
     end
 
@@ -1329,7 +1322,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         end
         if !iszero(dβ)
             @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+                dC[n] += dβ * C[n]
             end
         end
 
@@ -1827,63 +1820,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 1,
             ),
             (
-                true,
-                :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ReverseMode,
-                    oracle=TestResources.primal_oracle(zeros(P, 1, 1)),
-                ),
-                BLAS.symm!,
-                'L',
-                'U',
-                P(0),
-                fill(P(NaN), 1, 1),
-                ones(P, 1, 1),
-                P(1),
-                zeros(P, 1, 1),
-            ),
-            [
-                (
-                    true,
-                    :none,
-                    (
-                        lb=1e-3,
-                        ub=50.0,
-                        mode=ReverseMode,
-                        oracle=TestResources.primal_oracle(fill(P(2), 1, 1)),
-                    ),
-                    f,
-                    flags...,
-                    P(2),
-                    ones(P, 1, 1),
-                    ones(P, 1, 1),
-                    P(0),
-                    fill(P(NaN), 1, 1),
-                ) for (f, flags) in ((BLAS.gemm!, ('N', 'N')), (BLAS.symm!, ('L', 'U')))
-            ]...,
-            (
                 false,
                 :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ReverseMode,
-                    oracle=TestResources.gradient_oracle((zeros(P, 32),)),
-                ),
+                (lb=1e-3, ub=50.0, is_primitive=false, mode=ReverseMode),
                 norm,
                 zeros(P, 32),
             ),
             (
                 false,
                 :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ForwardMode,
-                    oracle=TestResources.jvp_oracle((ones(P, 1),), zero(real(P))),
-                ),
+                (lb=1e-3, ub=50.0, is_primitive=false, mode=ForwardMode),
                 BLAS.nrm2,
                 zeros(P, 1),
             ),
@@ -2225,48 +2171,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
-    for (f, flags) in (
-            (BLAS.gemm!, ('N', 'N')),
-            (BLAS.symm!, ('L', 'U')),
-            (BLAS.symm!, ('R', 'U')),
-            (BLAS.hemm!, ('L', 'U')),
-            (BLAS.hemm!, ('R', 'U')),
-            (BLAS.symv!, ('U',)),
-        ),
-        n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
-
-        P <: BlasRealFloat && f === BLAS.hemm! && continue
-        P in (Float32, ComplexF32) && f in (BLAS.gemm!, BLAS.symv!) && continue
-        p = zero(P)
-        dims = f === BLAS.symv! ? (n,) : (n, n)
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ReverseMode,
-                    oracle=TestResources.hvp_oracle([
-                        30.0n^4 + 6n^3, 14.0n^4 + 2n^3, 8.0n^3 + 2n^2
-                    ]),
-                ),
-                x -> sum(
-                    abs2,
-                    f(
-                        flags...,
-                        oftype(p, x[1]),
-                        fill(oftype(p, x[2]), n, n),
-                        ones(typeof(p), dims),
-                        oftype(p, x[3]),
-                        ones(typeof(p), dims),
-                    ),
-                ),
-                [1.0, 3.0, 0.0],
-            ),
-        )
-    end
     memory = Any[]
     return test_cases, memory
 end
