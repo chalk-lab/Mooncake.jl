@@ -1,13 +1,12 @@
 module MooncakeCUDABFloat16sExt
 
-using Mooncake, CUDA, BFloat16s, LinearAlgebra, Random
+using Mooncake, CUDA, BFloat16s, LinearAlgebra
 using CUDA.CUDACore.GPUArrays: derive
 using Base.Broadcast: Broadcasted
 
-using Mooncake: MinimalCtx, DefaultCtx, @is_primitive, @foldable, primal, TestUtils
-using Mooncake: Dual, CoDual, MaybeCache, IncCache, NoRData
-import Mooncake: frule!!, rrule!!, tangent_type, tangent, arrayify
-import Mooncake.TestUtils: __increment_should_allocate
+using Mooncake: MinimalCtx, DefaultCtx, @is_primitive, primal
+using Mooncake: Dual, CoDual
+import Mooncake: frule!!, rrule!!, tangent_type
 
 # Statistics makes MooncakeCUDAExt's triggers a strict subset, as required by extension precompilation.
 const CUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
@@ -25,91 +24,6 @@ function tangent_type(::Type{<:CuBFloatWrappedArray})
     )
 end
 CUDAExt._cu_isa_gpu_side(::Type{<:CuBFloatArray}) = true
-
-Mooncake._copy_output(x::CuBFloatArray) = copy(x)
-function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuBFloatArray}
-    copyto!(dst, src)
-    return dst
-end
-
-@foldable tangent_type(::Type{P}) where {P<:CuBFloatArray} = P
-@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuBFloatArray} = P
-
-tangent(p::CuBFloatArray, ::NoRData) = p
-
-function arrayify(x::A, dx::A) where {A<:CuBFloatArray}
-    return (x, dx)
-end
-
-function Mooncake.zero_tangent_internal(x::CuBFloatArray, dict::MaybeCache)
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = zero(x)
-    dict[x] = t
-    return t
-end
-function Mooncake.randn_tangent_internal(
-    rng::AbstractRNG, x::CuBFloatArray, dict::MaybeCache
-)
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = copyto!(similar(x), randn(rng, eltype(x), size(x)...))
-    dict[x] = t
-    return t
-end
-function TestUtils.has_equal_data_internal(
-    x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {P<:CuBFloatArray}
-    return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
-end
-function Mooncake.increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuBFloatArray}
-    (x === y || haskey(c, x)) && return x
-    c[x] = true
-    x .+= y
-    return x
-end
-__increment_should_allocate(::Type{<:CuBFloatArray}) = true
-Mooncake.set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuBFloatArray) = fill!(x, 0)
-
-function Mooncake._add_to_primal_internal(
-    c::MaybeCache, x::P, y::P, unsafe::Bool
-) where {P<:CuBFloatArray}
-    key = (x, y, unsafe)
-    haskey(c, key) && return c[key]::P
-    x′ = x .+ y
-    c[key] = x′
-    return x′
-end
-function Mooncake.primal_to_tangent_internal!!(t, x::CuBFloatArray, c::MaybeCache)
-    haskey(c, x) && return c[x]::typeof(t)
-    c[x] = t
-    t .= x
-    return t
-end
-function Mooncake.tangent_to_primal_internal!!(x::CuBFloatArray, t, c::MaybeCache)
-    haskey(c, x) && return c[x]::typeof(x)
-    c[x] = x
-    x .= t
-    return x
-end
-function Mooncake._dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuBFloatArray}
-    key = (x, y)
-    haskey(c, key) && return c[key]::Float64
-    c[key] = 0.0
-    T = real(eltype(P))
-    return Float64(dot(reinterpret(T, vec(x)), reinterpret(T, vec(y))))
-end
-function Mooncake._scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuBFloatArray}
-    haskey(c, y) && return c[y]::P
-    t′ = real(eltype(P))(x) .* y
-    c[y] = t′
-    return t′
-end
-
-Mooncake.mooncake_tangent(::CuBFloatArray, t::CuBFloatArray) = t
-Mooncake.to_cr_tangent(x::CuBFloatArray) = x
-function Mooncake.increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuBFloatArray}
-    f .+= t
-    return NoRData()
-end
 
 for sig in (
     Tuple{typeof(reshape),CuBFloatArray,NTuple{N,Int}} where {N},
@@ -151,23 +65,6 @@ end
 
 for (D, rule) in ((Dual, :frule!!), (CoDual, :rrule!!))
     @eval begin
-        function $rule(
-            ::$D{typeof(Mooncake._new_)},
-            ::$D{Type{P}},
-            data::$D,
-            maxsize::$D,
-            offset::$D,
-            dims::$D,
-        ) where {P<:CuBFloatArray}
-            y = Mooncake._new_(
-                P, primal(data), primal(maxsize), primal(offset), primal(dims)
-            )
-            dy = Mooncake._new_(
-                P, tangent(data), primal(maxsize), primal(offset), primal(dims)
-            )
-            out = $D(y, dy)
-            return $D === Dual ? out : (out, CUDAExt._nopb(Val(6)))
-        end
         function $rule(
             ::$D{typeof(Core.kwcall)},
             ::$D{<:NamedTuple},
