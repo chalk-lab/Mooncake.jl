@@ -11,11 +11,8 @@ end
 
 function _blas_flag(x)
     flag = primal(x)
-    'a' <= flag <= 'z' && throw(
-        ArgumentError(
-            "lowercase BLAS/LAPACK flag '$flag' is unsupported: rules compare flags case-sensitively",
-        ),
-    )
+    'a' <= flag <= 'z' &&
+        throw(ArgumentError("lowercase BLAS/LAPACK flag '$flag' is unsupported"))
     return flag
 end
 
