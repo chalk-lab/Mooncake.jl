@@ -1887,6 +1887,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     if P === Float64
         push!(
             regressions,
+            # Uses the frule as the reverse-mode reference; could fold into `test_rule`.
             (
                 false,
                 :none,
