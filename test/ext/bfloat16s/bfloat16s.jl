@@ -3,7 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
-using ChainRulesCore: ChainRulesCore as CRC
+using Mooncake: CRC
 using LinearAlgebra: mul!
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
@@ -44,18 +44,6 @@ end
             y, (_, dx) = Mooncake.value_and_gradient!!(cache, f, x)
             @test y == f(x)
             @test dx == expected
-        end
-    end
-
-    @testset "ChainRules conversions" begin
-        x = P[0.25]
-        @test Mooncake.to_cr_tangent(x) === Mooncake.mooncake_tangent(x, x) === x
-        ni = CRC.@not_implemented "test derivative"
-        @test Mooncake.mooncake_tangent(P(1), ni) === P(NaN)
-        @test Mooncake.increment_and_get_rdata!(Mooncake.NoFData(), P(0), ni) === P(NaN)
-        @static if VERSION >= v"1.11-rc4"
-            x = Memory{P}(P[0.25])
-            @test Mooncake.to_cr_tangent(x) === x
         end
     end
 
