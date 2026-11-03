@@ -24,13 +24,6 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
-function primal_oracle(expected)
-    return function (_, f, args...)
-        out, _ = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (f, args...))...)
-        return Mooncake.TestUtils.has_equal_data(primal(out), expected)
-    end
-end
-
 function hvp_oracle(expected)
     return function (_, f, x)
         cache = Mooncake.prepare_hvp_cache(f, x)
@@ -113,24 +106,6 @@ function cuda_tangent_cases(array)
             array(ones(ComplexF64, 1)),
         ),
     ]
-end
-
-function gradient_oracle(expected)
-    return function (_, f, x...)
-        cache = Mooncake.prepare_gradient_cache(f, x...)
-        _, actual = Mooncake.value_and_gradient!!(cache, f, x...)
-        return Mooncake.TestUtils.has_equal_data(actual[2:end], expected)
-    end
-end
-
-function jvp_oracle(directions, expected)
-    return function (_, f, x...)
-        rule = Mooncake.build_frule(f, x...)
-        _, actual = Mooncake.value_and_derivative!!(
-            rule, (f, Mooncake.NoTangent()), map(tuple, x, directions)...
-        )
-        return Mooncake.TestUtils.has_equal_data(actual, expected)
-    end
 end
 
 #
