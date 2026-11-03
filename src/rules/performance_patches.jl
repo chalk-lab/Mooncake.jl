@@ -279,7 +279,7 @@ end
         @inbounds @simd for i in 1:length(C)
             v = (large === nothing ? old.small : large)[i]
             if !(pb isa Bool)
-                # Zero dC[i] masks NaN C; BLAS rules' dot-based dβ stays NaN (accepted).
+                # Zero dC[i] masks NaN C here; the BLAS rules' dot-based dβ stays NaN.
                 db += _mul_guarded_scale(oftype(db, dC[i]), conj(oftype(db, v)))
             end
             dC[i] = if !isfinite(pb) && iszero(dC[i])
