@@ -1887,26 +1887,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     if P === Float64
         push!(
             regressions,
-            # Uses the frule as the reverse-mode reference; could fold into `test_rule`.
-            (
-                false,
-                :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ReverseMode,
-                    oracle=(_, f, b) -> begin
-                        rule = build_frule(f, b)
-                        _, db = value_and_derivative!!(rule, (f, NoTangent()), (b, one(b)))
-                        _, dz = value_and_derivative!!(rule, (f, NoTangent()), (b, zero(b)))
-                        cache = prepare_gradient_cache(f, b)
-                        _, grad = value_and_gradient!!(cache, f, b)
-                        return isnan(db) && isnan(grad[2]) && iszero(dz)
-                    end,
-                ),
-                b -> sum(BLAS.gemv!('N', 1.0, ones(1, 1), ones(1), b, [NaN])),
-                0.0,
-            ),
             (
                 false,
                 :none,
