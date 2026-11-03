@@ -1894,6 +1894,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 false,
                 :none,
                 (
+                    lb=1e-3,
+                    ub=50.0,
                     mode=ReverseMode,
                     oracle=(_, f, b) -> begin
                         rule = build_frule(f, b)
