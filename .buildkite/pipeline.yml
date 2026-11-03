@@ -27,7 +27,6 @@ steps:
           - "1.13"
         label:
           - "cuda"
-          - "nnlib"
 
   - label: "Julia v{{matrix.version}}, integration/{{matrix.label}}"
     plugins:
