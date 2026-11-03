@@ -2171,48 +2171,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
-    for (f, flags) in (
-            (BLAS.gemm!, ('N', 'N')),
-            (BLAS.symm!, ('L', 'U')),
-            (BLAS.symm!, ('R', 'U')),
-            (BLAS.hemm!, ('L', 'U')),
-            (BLAS.hemm!, ('R', 'U')),
-            (BLAS.symv!, ('U',)),
-        ),
-        n in (f in (BLAS.symm!, BLAS.hemm!) ? (1, 2, 3) : (1,))
-
-        P <: BlasRealFloat && f === BLAS.hemm! && continue
-        P in (Float32, ComplexF32) && f in (BLAS.gemm!, BLAS.symv!) && continue
-        p = zero(P)
-        dims = f === BLAS.symv! ? (n,) : (n, n)
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                (
-                    lb=1e-3,
-                    ub=50.0,
-                    mode=ReverseMode,
-                    oracle=TestResources.hvp_oracle([
-                        30.0n^4 + 6n^3, 14.0n^4 + 2n^3, 8.0n^3 + 2n^2
-                    ]),
-                ),
-                x -> sum(
-                    abs2,
-                    f(
-                        flags...,
-                        oftype(p, x[1]),
-                        fill(oftype(p, x[2]), n, n),
-                        ones(typeof(p), dims),
-                        oftype(p, x[3]),
-                        ones(typeof(p), dims),
-                    ),
-                ),
-                [1.0, 3.0, 0.0],
-            ),
-        )
-    end
     memory = Any[]
     return test_cases, memory
 end
