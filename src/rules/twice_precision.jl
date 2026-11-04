@@ -54,7 +54,10 @@ tangent(::NoFData, t::TWP) = t
 
 zero_rdata(p::TWP) = zero_tangent(p)
 
-zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
+function zero_rdata_from_type(P::Type{<:TWP{F}}) where {F}
+    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
+    return P(zero(F), zero(F))
+end
 
 #
 # Rules. These are required for a lot of functionality in this case.

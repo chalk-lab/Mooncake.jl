@@ -109,6 +109,15 @@ end
     end
 
     @testset "zero_rdata_from_type checks" begin
+        for P in (
+            Union{Float32,Float64},
+            Union{ComplexF32,ComplexF64},
+            Complex{Union{Float32,Float64}},
+            TwicePrecision{Union{Float32,Float64}},
+        )
+            @test !can_produce_zero_rdata_from_type(P)
+            @test zero_rdata_from_type(P) === CannotProduceZeroRDataFromType()
+        end
         P = typeof((a=(b=1.0, c=2.0f0), d=3))
         @test (@inferred zero_rdata_from_type(P)) == (a=(b=0.0, c=0.0f0), d=NoRData())
         @test can_produce_zero_rdata_from_type(Vector) == true
