@@ -52,6 +52,10 @@ else
 end
 # BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
 const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
+
+_is_ieee_or_bfloat(::Type) = false
+_is_ieee_or_bfloat(::Type{<:IEEEOrBFloat}) = true
+
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 DispatchDoctor.register_macro!(
