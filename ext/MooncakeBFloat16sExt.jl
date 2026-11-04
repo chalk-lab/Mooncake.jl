@@ -72,7 +72,31 @@ for (Wrapper, wrap) in ((LinearAlgebra.Adjoint, adjoint), (LinearAlgebra.Transpo
     end
 end
 
+Mooncake._is_ieee_or_bfloat(::Type{P}) = true
+
 Mooncake.@is_primitive MinimalCtx Mooncake._CPUStridedMulSig{P}
+
+@inline function Mooncake.frule!!(
+    ::Dual{typeof(mul!)},
+    c::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    a::Dual{<:Mooncake._CPUStridedOrAdjTransMatrix{P}},
+    b::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    alpha::Dual{<:Union{Bool,Base.IEEEFloat,P}},
+    beta::Dual{<:Union{Bool,Base.IEEEFloat,P}},
+)
+    return Mooncake._mul_frule!!(c, a, b, alpha, beta)
+end
+
+@inline function Mooncake.rrule!!(
+    ::CoDual{typeof(mul!)},
+    c::CoDual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    a::CoDual{<:Mooncake._CPUStridedOrAdjTransMatrix{P}},
+    b::CoDual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    alpha::CoDual{S},
+    beta::CoDual{U},
+) where {S<:Union{Bool,Base.IEEEFloat,P},U<:Union{Bool,Base.IEEEFloat,P}}
+    return Mooncake._mul_rrule!!(c, a, b, alpha, beta)
+end
 
 end
 
