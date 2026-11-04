@@ -98,7 +98,6 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
-# Wider signatures serve the plain BFloat16 arrays registered by MooncakeCUDABFloat16sExt.
 const CuTangentArray = CuArray{<:Union{IEEEFloat,CUDACore.BFloat16,Complex{<:IEEEFloat}}}
 
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
@@ -138,7 +137,6 @@ const CuGpuSumFArray = Union{
 # own — `Union{IEEEFloat,BlasFloat}` for Adjoint/Transpose, `BlasFloat` alone for SubArray —
 # since a wider bound would claim a call as primitive only to fail inside the rule with a
 # misdirected `arrayify` error instead of falling through to the interpreter.
-# MooncakeCUDABFloat16sExt uses this alias through get_extension for concatenation refusals.
 const CuMaybeWrappedArray = Union{
     CuMaybeComplexArray,
     Adjoint{<:Union{IEEEFloat,LinearAlgebra.BlasFloat},<:CuMaybeComplexArray},
@@ -590,7 +588,6 @@ function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuTangentArra
 end
 
 # CuArray construction and reshape.
-# CuArray tangent signatures also serve MooncakeCUDABFloat16sExt primitives.
 
 # Primitive (not _new_) because GPU allocation happens inside the constructor body before
 # the `new` call; tracing through it would hit CUDA-internal machinery.
@@ -891,7 +888,6 @@ function rrule!!(
     return CoDual(y, dy_out), getindex_pb!!
 end
 
-# MooncakeCUDABFloat16sExt imports this index family through get_extension.
 const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
 @is_primitive(
     MinimalCtx,
@@ -2868,7 +2864,6 @@ end
 # has_gpu=false, and fall through to the interpreter, which keeps CPU code such as NNlib's
 # softmax working. `@is_primitive` can't express a decision that depends on the concrete
 # argument types, hence the direct `_is_primitive` method.
-# MooncakeCUDABFloat16sExt extends this predicate through get_extension.
 _cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
 
 # `any_matches_primitive` feeds every call site's type into `_is_primitive`, including
@@ -4940,6 +4935,90 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(μ, dμ), mean_array_pb!!
+end
+
+# MooncakeBFloat16sExt is absent while this extension precompiles: top-level code here must
+# not call BFloat16 tangent methods, or their fallback results are cached.
+const CuBFloatArray = CuArray{CUDACore.BFloat16}
+const CuBFloatWrappedArray = Union{
+    Adjoint{CUDACore.BFloat16,<:CuBFloatArray},
+    Transpose{CUDACore.BFloat16,<:CuBFloatArray},
+    SubArray{CUDACore.BFloat16,N,P} where {N,P<:CuBFloatArray},
+}
+function tangent_type(::Type{<:CuBFloatWrappedArray})
+    return _throw_gpu_argument_error(
+        "Mooncake: wrapped CUDA BFloat16 arrays are unsupported; use a plain CuArray."
+    )
+end
+_cu_isa_gpu_side(::Type{<:CuBFloatArray}) = true
+
+for sig in (
+    Tuple{typeof(reshape),CuBFloatArray,NTuple{N,Int}} where {N},
+    Tuple{typeof(derive),Type,CuBFloatArray,Dims,Int},
+    Tuple{typeof(getindex),CuBFloatArray,AbstractVector{<:Union{Integer,CartesianIndex}}},
+    Tuple{typeof(getindex),CuBFloatArray,_CuSliceIndex,_CuSliceIndex,Vararg{_CuSliceIndex}},
+    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,Array,Integer,Integer},
+    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,CuBFloatArray,Integer,Integer},
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuBFloatArray},
+    Tuple{typeof(*),CuArray{CUDACore.BFloat16,2},CuArray{CUDACore.BFloat16,2}},
+    Tuple{typeof(*),CuArray{CUDACore.BFloat16,2},CuArray{CUDACore.BFloat16,1}},
+)
+    @eval @is_primitive MinimalCtx $sig
+end
+@is_primitive DefaultCtx Tuple{typeof(sum),CuBFloatArray}
+
+# BFloat16 atomic scatter is unavailable for the reverse vector-index rule.
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuBFloatArray,<:CuBFloatArray},
+    idx::CoDual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: vector-index getindex does not support $(eltype(primal(x)))."
+    )
+end
+
+const CuCatArray = Union{CuBFloatArray,CuMaybeWrappedArray}
+@is_primitive MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(cat),CuCatArray,Vararg{CuCatArray}
+}
+for f in (vcat, hcat)
+    @eval @is_primitive MinimalCtx Tuple{typeof($f),CuCatArray,Vararg{CuCatArray}}
+end
+# NDual broadcast kernels do not support BFloat16.
+@is_primitive MinimalCtx Tuple{
+    typeof(Base.Broadcast.materialize!),CuBFloatArray,Broadcasted
+}
+
+for (D, rule) in ((Dual, :frule!!), (CoDual, :rrule!!))
+    @eval begin
+        function $rule(
+            ::$D{typeof(Core.kwcall)},
+            ::$D{<:NamedTuple},
+            ::$D{typeof(cat)},
+            args::$D{<:CuCatArray}...,
+        )
+            return _throw_gpu_argument_error(
+                "Mooncake: CUDA concatenation does not support BFloat16."
+            )
+        end
+        function $rule(
+            ::$D{typeof(Base.Broadcast.materialize!)},
+            dest::$D{<:CuBFloatArray},
+            ::$D{<:Broadcasted},
+        )
+            return _throw_gpu_argument_error(
+                "Mooncake: in-place CUDA broadcast does not support $(eltype(primal(dest))).",
+            )
+        end
+    end
+    for f in (vcat, hcat)
+        @eval function $rule(::$D{typeof($f)}, args::$D{<:CuCatArray}...)
+            return _throw_gpu_argument_error(
+                "Mooncake: CUDA concatenation does not support BFloat16."
+            )
+        end
+    end
 end
 
 end
