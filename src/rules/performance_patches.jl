@@ -179,13 +179,19 @@ function may_match_primitive(
     @nospecialize(S::Type{<:Tuple{typeof(mul!),Any,Any,Any,Any,Any}}),
 )
     typeintersect(S, _CPUStridedMulSig) === Union{} && return false
-    # `_CPUStridedMulSig` leaves `T` unbounded; re-impose the `@is_primitive` bound where
-    # `A <: AbstractArray{T}` pins the eltype exactly.
+    # `_CPUStridedMulSig` leaves `T` unbounded; re-impose the `@is_primitive` bound on
+    # exactly pinned array eltypes and concrete coefficients.
     for i in 2:4
         A = fieldtype(S, i)
         T = eltype(A)
         A <: AbstractArray{T} &&
             !(T <: Union{BlasFloat,HalfFloat} || _is_ieee_or_bfloat(T)) &&
+            return false
+    end
+    for i in 5:6
+        T = fieldtype(S, i)
+        isconcretetype(T) &&
+            !(T <: Union{Bool,IEEEFloat,BlasFloat,HalfFloat} || _is_ieee_or_bfloat(T)) &&
             return false
     end
     return true
