@@ -579,7 +579,7 @@ end
         _mean_sum_ddup(x) = sum(mean(x; dims=(1, 1)))
         _mean_sum_dempty(x) = sum(mean(x; dims=()))  # empty dims: see _varm_sum_dempty
         _mean_nodims(x) = mean(x; dims=:)
-        # Bare spelling: decomposed (no rule); used to pin rule/decomposition agreement.
+        # Bare spelling: an overlay routes it to the keyword rule.
         _mean_bare(x) = mean(x)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
@@ -3015,6 +3015,15 @@ end
                 )
                 @test isnan(Mooncake.primal(d))
                 @test Mooncake.tangent(d) === 0.0f0
+                # Same for empty slices along explicit dims, where mean of the tangent is NaN.
+                e = CuArray(zeros(Float32, 0, 3))
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; dims=1), Mooncake.NoTangent()),
+                    Mooncake.Dual(mean, Mooncake.NoTangent()),
+                    Mooncake.Dual(e, Mooncake.zero_tangent(e)),
+                )
+                @test Array(Mooncake.tangent(d)) == zeros(Float32, 1, 3)
             end
             @testset "dims=: gradient matches bare mean (Float16, n > 65504)" begin
                 # Regression: the Colon primal divides AFTER summing, so its true
@@ -3037,6 +3046,16 @@ end
                     Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
                 )
                 @test Mooncake.tangent(d) === Float16(0)
+            end
+            @testset "Float16 explicit dims follow the primal's arithmetic" begin
+                # The primal is linear, so each gradient entry is the primal at a one-hot
+                # input. At n = 70000 in Float16, dividing after summing gives 0 and
+                # prescaling gives 1.43e-5; the pullback must match whichever GPUArrays does.
+                x = CuArray(reshape(vcat(ones(Float16, 1), zeros(Float16, 69999)), :, 1))
+                y, (_, dx) = value_and_gradient!!(
+                    Mooncake.build_rrule(_mean_sum_d1, x), _mean_sum_d1, x
+                )
+                @test all(==(y), Array(dx))
             end
         end
 
@@ -3155,14 +3174,31 @@ end
                     perf_flag=:none,
                 )
             end
-            # The same reduction without `init` returns the eltype's identity, so
-            # test_rule cannot cover it: its finite differences subtract two infinite
-            # outputs and compare the resulting NaN against the rule's correct zero.
-            # What regressed was that AD threw at all, so check the value and the shape.
+            # Without `init`, GPUArrays 12 throws as Base does, and AD throws the same error.
+            # GPUArrays 11 returns the eltype's identity instead, which test_rule cannot
+            # cover: its finite differences subtract two infinite outputs and compare the
+            # resulting NaN against the rule's correct zero, so check the value and shape.
             @testset "empty slice, no init" begin
                 e = CuArray(zeros(Float32, 0, 3))
                 @testset "$f" for (f, expected) in
                                   ((_max_bare, -Inf32), (_max_d1, -Inf32), (_min_d1, Inf32))
+                    primal_err = try
+                        f(e)
+                        nothing
+                    catch ex
+                        ex
+                    end
+                    if primal_err !== nothing
+                        @test_throws typeof(primal_err) value_and_gradient!!(
+                            Mooncake.build_rrule(f, e), f, e
+                        )
+                        @test_throws typeof(primal_err) Mooncake.value_and_derivative!!(
+                            Mooncake.build_frule(f, e),
+                            Mooncake.Dual(f, Mooncake.NoTangent()),
+                            Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                        )
+                        continue
+                    end
                     val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
                     @test val == expected
                     @test size(grads[2]) == (0, 3)
