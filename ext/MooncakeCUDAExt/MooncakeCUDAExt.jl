@@ -1058,12 +1058,11 @@ end
 # findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
 _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 
-# Reducing over an empty extent has a well-defined primal — GPUArrays fills each slice with
-# `init`, or with the eltype's identity when there is none — but no argmax to report, and
-# findmax/findmin read out of bounds there: a device-side BoundsError that surfaces at some
-# later synchronisation.  A Colon reduction over an empty non-vector instead hands `_winner`
-# a linear index outside CartesianIndices.  Since no element competes, x's derivative is
-# zero and `init` takes all of it.
+# Reducing over an empty extent leaves no argmax to report, and findmax/findmin read out of
+# bounds there: a device-side BoundsError that surfaces at some later synchronisation.  A
+# Colon reduction over an empty non-vector instead hands `_winner` a linear index outside
+# CartesianIndices.  Since no element competes, x's derivative is zero and `init` takes all
+# of it.  The value, or the error when there is no `init`, comes from the primal.
 _empty_minmax_slice(px, ::Colon) = isempty(px)
 _empty_minmax_slice(px, dims::Integer) = size(px, dims) == 0
 _empty_minmax_slice(px, dims) = any(d -> size(px, d) == 0, dims)
@@ -4867,9 +4866,11 @@ function rrule!!(
     return CoDual(σ², NoFData()), varm_scalar_bare_pb!!
 end
 
-# mean(x; dims) on CuArrays, real and complex. GPUArrays' _mean uses a mapreduce with
-# a captured scalar Mooncake can't trace. dims=: returns a scalar (NoFData tangent);
-# an explicit dims returns a CuArray.
+# mean on CuArrays, real and complex. dims=: returns a scalar (NoFData tangent); an explicit
+# dims returns a CuArray. Bare mean(x) is overlaid onto mean(x; dims=:) so that it reaches
+# these rules instead of GPUArrays' _mean, whose conversion closure cannot run on NDual
+# inputs.
+Mooncake.@mooncake_overlay mean(x::CuMaybeComplexArray) = mean(x; dims=:)
 
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
@@ -4882,22 +4883,15 @@ function frule!!(
 )
     pkw = primal(kw)
     px = primal(x)
-    dx = tangent(x)
     μ = mean(px; pkw...)
-    raw_dims = get(pkw, :dims, :)
-    if raw_dims isa Colon
-        # The primal's Colon branch is sum(A)/length(A); dividing after summing keeps
-        # the gradient identical to the traced bare-mean decomposition (at Float16
-        # n > 65504 both give exactly zero, where a λ-prescale would not). n == 0:
-        # the primal is a constant NaN, so the JVP is the zero map, consistent with
-        # the rrule — 0/0 would manufacture a NaN tangent.
-        n = length(px)
-        return Dual(μ, n == 0 ? zero(μ) : sum(dx) / n)
-    end
-    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    n = prod(d -> size(px, d), unique(_dims); init=1)
-    λ = eltype(px)(inv(n))
-    return Dual(μ, sum(λ .* dx; dims=_dims))
+    # mean is linear, so its JVP is mean of the tangent, computed with the installed
+    # GPUArrays' own arithmetic (sum-then-divide or prescale; they differ in Float16).
+    # Over an empty extent the primal is a constant NaN, so the JVP is the zero map
+    # rather than mean's 0/0.
+    dims = get(pkw, :dims, :)
+    n = dims isa Colon ? length(px) : prod(d -> size(px, d), unique(dims); init=1)
+    n == 0 && return Dual(μ, zero(μ))
+    return Dual(μ, mean(tangent(x); pkw...))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -4924,14 +4918,16 @@ function rrule!!(
     λ = eltype(px)(inv(n))
     dμ = zero(μ)
     function mean_array_pb!!(::NoRData)
-        dx .+= dμ .* λ
+        # Match the primal's order of operations, which differs in Float16: GPUArrays
+        # 12.2 divides after summing along explicit dims, where earlier versions prescale.
+        @static if pkgversion(GPUArrays) >= v"12.2.0"
+            dx .+= dμ ./ n
+        else
+            dx .+= dμ .* λ
+        end
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(μ, dμ), mean_array_pb!!
 end
-
-# NOTE: no bare `mean(x)` primitive here, unlike scalar-m `varm` above. `mean`'s
-# Colon branch is just `sum(A)/length(A)`, with no closure over a differentiable
-# value, so ordinary decomposition already differentiates it correctly.
 
 end
