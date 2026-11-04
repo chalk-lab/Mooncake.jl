@@ -1152,22 +1152,7 @@ end
 # cycles terminate locally instead of recursing forever.
 @inline _fcache_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
 @inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
-@inline _fcache_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
 @inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
-)
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 1)
-        end
-        return total
-    end
-    return length(x)
-end
 @inline function _fcache_gradient_input_dof(
     x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
 )
@@ -1183,6 +1168,18 @@ end
     return 2 * length(x)
 end
 @inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
+    if _is_ieee_or_bfloat(eltype(x))
+        haskey(seen, x) && return 0
+        _fcache_mark_seen!(seen, x)
+        if x isa _BuiltinArrays
+            total = 0
+            for i in eachindex(x)
+                isassigned(x, i) && (total += 1)
+            end
+            return total
+        end
+        return length(x)
+    end
     tangent_type(typeof(x)) == NoTangent && return 0
     haskey(seen, x) && return 0
     _fcache_mark_seen!(seen, x)
@@ -1214,6 +1211,7 @@ end
     return total
 end
 @inline function _fcache_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
+    _is_ieee_or_bfloat(P) && return 1
     tangent_type(P) == NoTangent && return 0
     if x isa AbstractArray || Base.ismutabletype(P)
         haskey(seen, x) && return 0
@@ -1242,12 +1240,6 @@ end
     return NoTangent()
 end
 @inline function _fcache_gradient_seed_tangent(
-    x::IEEEFloat, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    cursor[] += 1
-    return cursor[] == slot ? one(x) : zero(x)
-end
-@inline function _fcache_gradient_seed_tangent(
     x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 ) where {T<:IEEEFloat}
     cursor[] += 1
@@ -1255,20 +1247,6 @@ end
     cursor[] += 1
     imag_part = cursor[] == slot ? one(T) : zero(T)
     return complex(real_part, imag_part)
-end
-
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        dx[I] = cursor[] == slot ? one(T) : zero(T)
-    end
-    return dx
 end
 
 function _fcache_gradient_seed_tangent(
@@ -1294,13 +1272,21 @@ end
 function _fcache_gradient_seed_tangent(
     x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 )
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    is_float = _is_ieee_or_bfloat(eltype(x))
+    !is_float && tangent_type(typeof(x)) == NoTangent && return NoTangent()
     existing = get(dict, x, nothing)
     !isnothing(existing) && return existing
     dx = zero_tangent(x)
     dict[x] = dx
-    for I in eachindex(x)
-        dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
+    if is_float
+        @inbounds for I in eachindex(x)
+            cursor[] += 1
+            dx[I] = cursor[] == slot ? one(eltype(x)) : zero(eltype(x))
+        end
+    else
+        for I in eachindex(x)
+            dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
+        end
     end
     return dx
 end
@@ -1328,6 +1314,10 @@ end
 function _fcache_gradient_seed_tangent(
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {P}
+    if _is_ieee_or_bfloat(P)
+        cursor[] += 1
+        return cursor[] == slot ? one(x) : zero(x)
+    end
     tangent_type(P) == NoTangent && return NoTangent()
     if x isa AbstractArray || Base.ismutabletype(P)
         existing = get(dict, x, nothing)

@@ -27,6 +27,12 @@ struct ScalarBox
     x::Float64
 end
 
+# AbstractFloat subtypes can have multiple differentiable fields requiring structural tangents.
+struct TwoFieldFloat <: AbstractFloat
+    hi::Float64
+    lo::Float64
+end
+
 mutable struct AliasedPair
     a::Vector{Float64}
     b::Vector{Float64}
@@ -837,6 +843,15 @@ end
             )
             @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x) ==
                 (f_scalar(x), (Mooncake.NoTangent(), 2 * x + cos(x)))
+
+            f_struct = v -> v[1].hi * v[1].lo
+            struct_x = [TwoFieldFloat(1.0, 2.0)]
+            struct_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                f_struct, struct_x; config=Mooncake.Config(; kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(
+                struct_cache_grad_fwd, f_struct, struct_x
+            ) == (2.0, (Mooncake.NoTangent(), [Mooncake.Tangent((; hi=2.0, lo=1.0))]))
 
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)

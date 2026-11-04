@@ -29,6 +29,25 @@ end
         test_tangent_splitting(rng, P(1.5))
     end
 
+    @testset "cache gradients ($prepare)" for prepare in (
+        Mooncake.prepare_derivative_cache, Mooncake.prepare_gradient_cache
+    )
+        for (f, x, expected) in (
+            (x -> Float32(x * x), P(3), P(6)),
+            (
+                x -> Float32(abs2(x)),
+                complex(P(1), P(2)),
+                Mooncake.Tangent((; re=P(2), im=P(4))),
+            ),
+            (x -> Float32(sum(x .* x)), P[1, 2, 3], P[2, 4, 6]),
+        )
+            cache = prepare(f, x)
+            y, (_, dx) = Mooncake.value_and_gradient!!(cache, f, x)
+            @test y == f(x)
+            @test dx == expected
+        end
+    end
+
     cases = [
         (
             mul!,

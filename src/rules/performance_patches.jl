@@ -162,23 +162,39 @@ end
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
 # Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
-const _CPUStridedMulSig = Tuple{
+const _CPUStridedMulSig{T} = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
     _CPUStridedOrAdjTransMatrix{T},
     _CPUStridedOrAdjTransVecOrMat{T},
     Union{Bool,IEEEFloat,T},
     Union{Bool,IEEEFloat,T},
-} where {T<:Union{BlasFloat,HalfFloat}}
+}
 
-@is_primitive MinimalCtx _CPUStridedMulSig
+@is_primitive MinimalCtx _CPUStridedMulSig{<:Union{BlasFloat,HalfFloat}}
 
 function may_match_primitive(
     ::Type{<:Union{MinimalCtx,DefaultCtx}},
     ::Type{<:Mode},
     @nospecialize(S::Type{<:Tuple{typeof(mul!),Any,Any,Any,Any,Any}}),
 )
-    return typeintersect(S, _CPUStridedMulSig) !== Union{}
+    typeintersect(S, _CPUStridedMulSig) === Union{} && return false
+    # `_CPUStridedMulSig` leaves `T` unbounded; re-impose the `@is_primitive` bound on
+    # exactly pinned array eltypes and concrete coefficients.
+    for i in 2:4
+        A = fieldtype(S, i)
+        T = eltype(A)
+        A <: AbstractArray{T} &&
+            !(T <: Union{BlasFloat,HalfFloat} || _is_ieee_or_bfloat(T)) &&
+            return false
+    end
+    for i in 5:6
+        T = fieldtype(S, i)
+        isconcretetype(T) &&
+            !(T <: Union{Bool,IEEEFloat,BlasFloat,HalfFloat} || _is_ieee_or_bfloat(T)) &&
+            return false
+    end
+    return true
 end
 
 @inline function frule!!(
@@ -189,6 +205,16 @@ end
     alpha::Dual{<:Union{Bool,IEEEFloat,T}},
     beta::Dual{<:Union{Bool,IEEEFloat,T}},
 ) where {T<:Union{BlasFloat,HalfFloat}}
+    return _mul_frule!!(c, a, b, alpha, beta)
+end
+
+@inline function _mul_frule!!(
+    c::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    a::Dual{<:_CPUStridedOrAdjTransMatrix{T}},
+    b::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    alpha::Dual{<:Union{Bool,IEEEFloat,T}},
+    beta::Dual{<:Union{Bool,IEEEFloat,T}},
+) where {T}
     C, dC = arrayify(c)
     A, dA = arrayify(a)
     B, dB = arrayify(b)
@@ -219,6 +245,16 @@ end
 ) where {
     T<:Union{BlasFloat,HalfFloat},S<:Union{Bool,IEEEFloat,T},U<:Union{Bool,IEEEFloat,T}
 }
+    return _mul_rrule!!(c, a, b, alpha, beta)
+end
+
+@inline function _mul_rrule!!(
+    c::CoDual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    a::CoDual{<:_CPUStridedOrAdjTransMatrix{T}},
+    b::CoDual{<:_CPUStridedOrAdjTransVecOrMat{T}},
+    alpha::CoDual{S},
+    beta::CoDual{U},
+) where {T,S<:Union{Bool,IEEEFloat,T},U<:Union{Bool,IEEEFloat,T}}
     C, dC = arrayify(c)
     A, dA = arrayify(a)
     B, dB = arrayify(b)
@@ -233,7 +269,7 @@ end
     mul!(C, A, B, pa, pb)
     function pullback(::NoRData)
         # Wider coefficients must not round through an input cotangent product.
-        da = pa isa Bool ? NoRData() : zero(T <: HalfFloat ? Float32 : T) + zero(pa)
+        da = pa isa Bool ? NoRData() : zero(promote_type(T, Float32)) + zero(pa)
         from_output = !(pa isa Bool) && isone(pa) && iszero(pb)
         reuse_A = !from_output && da isa T && !iszero(pa) && size(C) == size(A)
         reuse_B = !from_output && da isa T && !iszero(pa) && !reuse_A && size(C) == size(B)
@@ -275,7 +311,7 @@ end
             _mul_add!(dB, adjoint(A), dC, conj(pa))
         end
         large = something(old.large)
-        db = zero(eltype(C) <: HalfFloat ? Float32 : eltype(C)) + zero(pb)
+        db = zero(promote_type(T, Float32)) + zero(pb)
         @inbounds @simd for i in 1:length(C)
             v = (large === nothing ? old.small : large)[i]
             if !(pb isa Bool)
