@@ -39,29 +39,24 @@ end
                 test_tangent_interface(StableRNG(123), x)
                 test_tangent_splitting(StableRNG(123), x)
             end
-            @testset "$name" for (name, is_primitive, f, args) in [
-                ("sum", true, sum, (x,)),
-                ("sum dims", false, x -> sum(x; dims=1), (x,)),
-                ("matmul", true, *, (x, copy(x))),
-                ("matvec", true, *, (x, CuArray(P[-3, 0] ./ 2))),
-                ("reshape", true, reshape, (x, (4,))),
-                ("view", false, view, (x, :, 1:1)),
-                ("getindex", true, getindex, (x, 1:1, :)),
-                ("copyto!", false, copyto!, (copy(x), x)),
-                ("host-to-device copy", true, unsafe_copyto!, (copy(x), 1, Array(x), 1, 4)),
-            ]
-                test_rule(StableRNG(123), f, args...; is_primitive, atol=0.2, rtol=0.4)
-            end
-            @testset "vector-index getindex forward" begin
-                test_rule(
-                    StableRNG(123),
+            @testset "$name" for (name, f, args, opts) in [
+                ("sum", sum, (x,), (;)),
+                ("sum dims", x -> sum(x; dims=1), (x,), (; is_primitive=false)),
+                ("matmul", *, (x, copy(x)), (;)),
+                ("matvec", *, (x, CuArray(P[-3, 0] ./ 2)), (;)),
+                ("reshape", reshape, (x, (4,)), (;)),
+                ("view", view, (x, :, 1:1), (; is_primitive=false)),
+                ("getindex", getindex, (x, 1:1, :), (;)),
+                ("copyto!", copyto!, (copy(x), x), (; is_primitive=false)),
+                ("host-to-device copy", unsafe_copyto!, (copy(x), 1, Array(x), 1, 4), (;)),
+                (
+                    "vector-index getindex forward",
                     getindex,
-                    CuArray(P[1 2; 3 4]),
-                    [1, 3, 3];
-                    mode=Mooncake.ForwardMode,
-                    atol=0.2,
-                    rtol=0.4,
-                )
+                    (CuArray(P[1 2; 3 4]), [1, 3, 3]),
+                    (; mode=Mooncake.ForwardMode),
+                ),
+            ]
+                test_rule(StableRNG(123), f, args...; atol=0.2, rtol=0.4, opts...)
             end
             @testset "$name refuses" for (name, f, opts) in [
                 ("mean", mean, (; msg="IEEE float or complex arrays")),
