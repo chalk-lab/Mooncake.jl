@@ -756,7 +756,8 @@ end
 end
 
 function zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat}
-    return can_produce_zero_rdata_from_type(P) ? zero(P) : CannotProduceZeroRDataFromType()
+    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
+    return zero(P)
 end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()

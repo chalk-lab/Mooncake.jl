@@ -29,7 +29,8 @@ zero_tangent_internal(p::Complex{P}, ::MaybeCache) where {P<:IEEEFloat} = zero(p
 
 zero_rdata(p::CF) = zero_tangent(p)
 function zero_rdata_from_type(P::Type{<:CF})
-    return can_produce_zero_rdata_from_type(P) ? zero(P) : CannotProduceZeroRDataFromType()
+    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
+    return zero(P)
 end
 
 set_to_zero_internal!!(::SetToZeroCache, p::CF) = zero(p)
