@@ -665,7 +665,9 @@ obtained from `P` alone.
     end
 end
 
-@foldable can_produce_zero_rdata_from_type(::Type{<:IEEEFloat}) = true
+@foldable function can_produce_zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat}
+    return isconcretetype(P)
+end
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:Type}) = true
 
@@ -753,7 +755,10 @@ end
     end
 end
 
-zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)
+function zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat}
+    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
+    return zero(P)
+end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()
 

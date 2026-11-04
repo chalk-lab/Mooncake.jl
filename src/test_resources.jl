@@ -833,6 +833,7 @@ function generate_test_functions()
         (false, :none, nothing, globalref_tester_5),
         (false, :allocs, nothing, globalref_tester_6),
         (false, :none, (lb=1e-3, ub=1_000), type_unstable_tester_0, Ref{Any}(5.0)),
+        (false, :none, nothing, getindex, Ref{Union{Float32,Float64}}(5.0)),
         (false, :none, nothing, type_unstable_tester, Ref{Any}(5.0)),
         (false, :none, nothing, type_unstable_tester_2, Ref{Real}(5.0)),
         (false, :none, (lb=1e-3, ub=500), type_unstable_tester_3, Ref{Any}(5.0)),
