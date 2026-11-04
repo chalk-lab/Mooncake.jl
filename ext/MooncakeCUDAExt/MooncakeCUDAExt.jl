@@ -625,15 +625,20 @@ end
 # which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
 # x.dx and gradient accumulation propagates automatically — NoPullback is correct.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
+    MinimalCtx,
+    Tuple{typeof(reshape),Union{CuMaybeComplexArray,CuBFloatArray},NTuple{N,Int}} where {N},
 )
 function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuArray,<:CuArray}, dims::Dual{<:NTuple}
+    ::Dual{typeof(reshape)},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
+    dims::Dual{<:NTuple},
 )
     return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 function rrule!!(
-    ::CoDual{typeof(reshape)}, x::CoDual{<:CuArray,<:CuArray}, dims::CoDual{<:NTuple}
+    ::CoDual{typeof(reshape)},
+    x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
+    dims::CoDual{<:NTuple},
 )
     _dims = primal(dims)
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
@@ -664,11 +669,13 @@ function _check_derive_eltype(::Type{T}, pa) where {T}
         _UNIMPL_MSG,
     )
 end
-@is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuMaybeComplexArray,Dims,Int})
+@is_primitive(
+    MinimalCtx, Tuple{typeof(derive),Type,Union{CuMaybeComplexArray,CuBFloatArray},Dims,Int}
+)
 function frule!!(
     ::Dual{typeof(derive)},
     ::Dual{Type{T}},
-    a::Dual{<:CuArray,<:CuArray},
+    a::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     dims::Dual,
     offset::Dual,
 ) where {T}
@@ -680,7 +687,7 @@ end
 function rrule!!(
     ::CoDual{typeof(derive)},
     ::CoDual{Type{T}},
-    a::CoDual{<:CuArray,<:CuArray},
+    a::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     dims::CoDual,
     offset::CoDual,
 ) where {T}
@@ -889,12 +896,14 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Union{Integer,CartesianIndex}}
+        typeof(getindex),
+        Union{CuMaybeComplexArray,CuBFloatArray},
+        AbstractVector{<:Union{Integer,CartesianIndex}},
     },
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuArray,<:CuArray},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     idx::Dual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
     px, dx = arrayify(x)
@@ -921,7 +930,7 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
     MinimalCtx,
     Tuple{
         typeof(getindex),
-        CuMaybeComplexArray,
+        Union{CuMaybeComplexArray,CuBFloatArray},
         _CuSliceIndex,
         _CuSliceIndex,
         Vararg{_CuSliceIndex},
@@ -929,7 +938,7 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuArray,<:CuArray},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     i::Dual{<:_CuSliceIndex},
     j::Dual{<:_CuSliceIndex},
     inds::Vararg{Dual{<:_CuSliceIndex}},
@@ -941,7 +950,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
-    x::CoDual{<:CuArray,<:CuArray},
+    x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     i::CoDual{<:_CuSliceIndex},
     j::CoDual{<:_CuSliceIndex},
     inds::Vararg{CoDual{<:_CuSliceIndex}},
@@ -1556,9 +1565,9 @@ function rrule!!(
     return rrule!!(f, op, x)
 end
 
-# Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
+# `sum(x)` covers real IEEE, complex IEEE, and BFloat16 CuArrays.
 # See also `src/rules/performance_patches`.
-@is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
+@is_primitive(DefaultCtx, Tuple{typeof(sum),Union{CuMaybeComplexArray,CuBFloatArray}})
 function frule!!(
     ::Dual{typeof(sum)}, x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray}
 )
@@ -1842,6 +1851,10 @@ end
         Integer,
     },
 )
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,CuBFloatArray,Integer,Integer},
+)
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
     dest::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
@@ -1897,7 +1910,14 @@ end
 # into the CPU src tangent via a synchronous device-to-host transfer.
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
+    Tuple{
+        typeof(unsafe_copyto!),
+        <:Union{CuMaybeComplexArray,CuBFloatArray},
+        Integer,
+        <:Array,
+        Integer,
+        Integer,
+    },
 )
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
@@ -2635,7 +2655,10 @@ end
 # array gives a Float64 result), hence the output-typed zero seeding the tangent
 # reduction.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
+    MinimalCtx,
+    Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof(sum),Union{CuMaybeComplexArray,CuBFloatArray}
+    }
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
@@ -2969,12 +2992,12 @@ for BDim in (2, 1)
     @eval begin
         @is_primitive MinimalCtx Tuple{
             typeof(*),CuArray{P,2},CuArray{P,$BDim}
-        } where {P<:CuFloatOrComplex}
+        } where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
         function frule!!(
             ::Dual{typeof(*)},
             A::Dual{<:CuArray{P,2},<:CuArray{P,2}},
             B::Dual{<:CuArray{P,$BDim},<:CuArray{P,$BDim}},
-        ) where {P}
+        ) where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -2986,7 +3009,7 @@ for BDim in (2, 1)
             ::CoDual{typeof(*)},
             A::CoDual{<:CuArray{P,2},<:CuArray{P,2}},
             B::CoDual{<:CuArray{P,$BDim},<:CuArray{P,$BDim}},
-        ) where {P}
+        ) where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -4982,21 +5005,6 @@ function tangent_type(::Type{<:CuBFloatWrappedArray})
     )
 end
 _cu_isa_gpu_side(::Type{<:CuBFloatArray}) = true
-
-for sig in (
-    Tuple{typeof(reshape),CuBFloatArray,NTuple{N,Int}} where {N},
-    Tuple{typeof(derive),Type,CuBFloatArray,Dims,Int},
-    Tuple{typeof(getindex),CuBFloatArray,AbstractVector{<:Union{Integer,CartesianIndex}}},
-    Tuple{typeof(getindex),CuBFloatArray,_CuSliceIndex,_CuSliceIndex,Vararg{_CuSliceIndex}},
-    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,Array,Integer,Integer},
-    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,CuBFloatArray,Integer,Integer},
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuBFloatArray},
-    Tuple{typeof(*),CuArray{CUDACore.BFloat16,2},CuArray{CUDACore.BFloat16,2}},
-    Tuple{typeof(*),CuArray{CUDACore.BFloat16,2},CuArray{CUDACore.BFloat16,1}},
-)
-    @eval @is_primitive MinimalCtx $sig
-end
-@is_primitive DefaultCtx Tuple{typeof(sum),CuBFloatArray}
 
 # BFloat16 atomic scatter is unavailable for the reverse vector-index rule.
 function rrule!!(
