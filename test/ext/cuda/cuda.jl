@@ -84,7 +84,30 @@ end
                 (
                     "wrapped array",
                     x -> sum(transpose(x)),
-                    (; msg="wrapped CUDA BFloat16 arrays are unsupported"),
+                    (;
+                        msg=r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s
+                    ),
+                ),
+                (
+                    "mixed-eltype product reverse",
+                    x -> sum(x * CUDA.fill(1.0f0, 2, 2)),
+                    (;
+                        mode=Mooncake.ReverseMode,
+                        msg=r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s,
+                    ),
+                ),
+                (
+                    "mixed-eltype product forward",
+                    x -> sum(x * CUDA.fill(1.0f0, 2, 2)),
+                    (;
+                        mode=Mooncake.ForwardMode,
+                        # Julia 1.12+ infers `wrap`'s wrapper union before CUDA's pointer bitcast.
+                        msg=if VERSION >= v"1.12-"
+                            r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s
+                        else
+                            "It is not permissible to bitcast to a differentiable type"
+                        end,
+                    ),
                 ),
                 ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
                 (

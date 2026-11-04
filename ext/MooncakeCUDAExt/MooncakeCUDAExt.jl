@@ -4978,7 +4978,7 @@ const CuBFloatWrappedArray = Union{
 }
 function tangent_type(::Type{<:CuBFloatWrappedArray})
     return _throw_gpu_argument_error(
-        "Mooncake: wrapped CUDA BFloat16 arrays are unsupported; use a plain CuArray."
+        "Mooncake: wrapped CUDA BFloat16 arrays, including those CUDA builds for mixed-eltype products, are unsupported; use plain CuArrays of one eltype.",
     )
 end
 _cu_isa_gpu_side(::Type{<:CuBFloatArray}) = true
