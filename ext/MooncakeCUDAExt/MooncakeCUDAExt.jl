@@ -2293,11 +2293,15 @@ end
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Adjoint{<:IEEEFloat,<:CuFloatArray}})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Transpose{<:IEEEFloat,<:CuFloatArray}})
 
+# CUDA 6.4 loses inference through the multidimensional dot wrapper.
+# Remove the assertion when CUDA 6.4 support ends.
+_gpu_sum_abs2_jvp(px, dx) = 2 * real(dot(px, dx)::eltype(px))
+
 # `abs2` has a simple analytic derivative, so avoid the generic NDual reduction's temporary
 # arrays and partial-extraction kernels. This is the loss reduction used by Flux's model tests.
 function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:CuGpuSumFArray})
     px, dx = arrayify(x)
-    return Dual(sum(abs2, px), 2 * real(dot(px, dx)))
+    return Dual(sum(abs2, px), _gpu_sum_abs2_jvp(px, dx))
 end
 function rrule!!(::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:CuGpuSumFArray})
     px, dx = arrayify(x)
@@ -4928,68 +4932,135 @@ function rrule!!(
     return CoDual(σ², NoFData()), varm_scalar_bare_pb!!
 end
 
-# mean on CuArrays, real and complex. dims=: returns a scalar (NoFData tangent); an explicit
-# dims returns a CuArray. Bare mean(x) is overlaid onto mean(x; dims=:) so that it reaches
-# these rules instead of GPUArrays' _mean, whose conversion closure cannot run on NDual
-# inputs.
-Mooncake.@mooncake_overlay mean(x::CuMaybeComplexArray) = mean(x; dims=:)
+# GPUArrays before 12.2 prescales dimensional means; 12.2 divides after reduction.
+const _GPU_MEAN_PRESCALES = pkgversion(GPUArrays) < v"12.2.0"
 
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    kw::Dual{<:NamedTuple},
-    ::Dual{typeof(mean)},
-    x::Dual{<:CuMaybeComplexArray},
-)
-    pkw = primal(kw)
-    px = primal(x)
-    μ = mean(px; pkw...)
-    # mean is linear, so its JVP is mean of the tangent, computed with the installed
-    # GPUArrays' own arithmetic (sum-then-divide or prescale; they differ in Float16).
-    # Over an empty extent the primal is a constant NaN, so the JVP is the zero map
-    # rather than mean's 0/0.
-    dims = get(pkw, :dims, :)
-    n = dims isa Colon ? length(px) : prod(d -> size(px, d), unique(dims); init=1)
-    n == 0 && return Dual(μ, zero(μ))
-    return Dual(μ, mean(tangent(x); pkw...))
+function _gpu_mean_setup(f, px, dims)
+    _check_gpu_captured_state(f, "mean(f, x)")
+    n = if dims isa Colon
+        length(px)
+    else
+        prod(d -> size(px, d), unique(dims isa Integer ? (dims,) : dims); init=1)
+    end
+    prescale = _GPU_MEAN_PRESCALES && !(dims isa Colon)
+    # Float16 division by n > 65504 gives zero; prescaling would not.
+    λ = prescale ? eltype(px)(inv(n)) : nothing
+    mapper = f isa Type ? _CastTo{f}() : f
+    if prescale
+        mapper = Base.Fix1(*, λ) ∘ mapper
+    end
+    out = f === identity || f === abs2 ? nothing : _gpu_broadcast_dual(mapper, px)
+    return out, prescale ? nothing : n, λ
 end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    kw::CoDual{<:NamedTuple},
-    ::CoDual{typeof(mean)},
-    x::CoDual{<:CuMaybeComplexArray},
-)
-    pkw = primal(kw)
-    px, dx = arrayify(x)
-    μ = mean(px; pkw...)
-    raw_dims = get(pkw, :dims, :)
-    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    # Assigned once, outside the branch, so the pullbacks capture n un-boxed.
-    n = _dims isa Colon ? length(px) : prod(d -> size(px, d), unique(_dims); init=1)
-    if _dims isa Colon
-        # Scalar output: pullback receives scalar rdata. Same divide-after
-        # arithmetic as the frule above.
-        function mean_scalar_pb!!(dμ)
-            dx .+= dμ / n
-            return NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(μ, NoFData()), mean_scalar_pb!!
-    end
-    λ = eltype(px)(inv(n))
-    dμ = zero(μ)
-    function mean_array_pb!!(::NoRData)
-        # Match the primal's order of operations, which differs in Float16: GPUArrays
-        # 12.2 divides after summing along explicit dims, where earlier versions prescale.
-        @static if pkgversion(GPUArrays) >= v"12.2.0"
-            dx .+= dμ ./ n
+
+# Inline both mean helpers to avoid allocating intermediate results.
+@inline function _gpu_mean_frule(f, x, pkw)
+    px, dx = primal(x), tangent(x)
+    μ = f === identity ? mean(px; pkw...) : mean(f, px; pkw...)
+    dims = get(pkw, :dims, :)
+    out, n, λ = _gpu_mean_setup(f, px, dims)
+    # An empty mean is constant even when its primal is NaN.
+    dμ = if isempty(px)
+        zero(μ)
+    elseif f === identity
+        # Linearity lets native mean preserve GPUArrays' Float16 arithmetic.
+        mean(dx; pkw...)
+    elseif f === abs2
+        if dims isa Colon
+            _gpu_sum_abs2_jvp(px, dx) / n
+        elseif λ === nothing
+            sum(2 .* real.(conj.(px) .* dx); dims) ./ n
         else
-            dx .+= dμ .* λ
+            sum(λ .* (2 .* real.(conj.(px) .* dx)); dims)
         end
-        return NoRData(), NoRData(), NoRData(), NoRData()
+    else
+        reduced = _gpu_reduced_jvp(out, px, dx, μ, dims)
+        λ === nothing ? reduced ./ n : reduced
     end
-    return CoDual(μ, dμ), mean_array_pb!!
+    return Dual(μ, dμ)
+end
+
+@inline function _gpu_mean_rrule(f, x, pkw)
+    px, dx = arrayify(x)
+    μ = f === identity ? mean(px; pkw...) : mean(f, px; pkw...)
+    dims = get(pkw, :dims, :)
+    out, n, λ = _gpu_mean_setup(f, px, dims)
+    dμ = dims isa Colon ? NoFData() : zero(μ)
+    pb_x = f === identity ? nothing : px
+    function mean_pb!!(dy)
+        seed = dμ isa NoFData ? dy : dμ
+        if f === identity
+            if λ === nothing
+                dx .+= seed ./ n
+            else
+                dx .+= seed .* λ
+            end
+        elseif f === abs2
+            # Keep the scaled seed outside the accumulation broadcast for Julia 1.10 inference.
+            scale = λ === nothing ? 2 .* real.(seed ./ n) : 2 .* real.(seed .* conj(λ))
+            dx .+= scale .* pb_x
+        else
+            _gpu_reduced_pullback!(pb_x, dx, out, λ === nothing ? seed ./ n : seed)
+        end
+        return nothing
+    end
+    return CoDual(μ, dμ), mean_pb!!
+end
+
+# dims=: returns a scalar with NoFData; explicit dims returns a CuArray.
+for mapped in (false, true)
+    ftype = mapped ? (Any,) : ()
+    fdual = mapped ? (:(f::Dual),) : ()
+    fcodual = mapped ? (:(f::CoDual),) : ()
+    mapper = mapped ? :(primal(f)) : :identity
+    result = mapped ? :((NoRData(), NoRData(), NoRData())) : :((NoRData(), NoRData()))
+    kwresult = if mapped
+        :((NoRData(), NoRData(), NoRData(), NoRData(), NoRData()))
+    else
+        :((NoRData(), NoRData(), NoRData(), NoRData()))
+    end
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof(mean),$(ftype...),CuMaybeComplexArray}
+        function frule!!(::Dual{typeof(mean)}, $(fdual...), x::Dual{<:CuMaybeComplexArray})
+            return _gpu_mean_frule($mapper, x, NamedTuple())
+        end
+        function rrule!!(
+            ::CoDual{typeof(mean)}, $(fcodual...), x::CoDual{<:CuMaybeComplexArray}
+        )
+            y, pb!! = _gpu_mean_rrule($mapper, x, NamedTuple())
+            function mean_bare_pb!!(dy)
+                pb!!(dy)
+                return $result
+            end
+            return y, mean_bare_pb!!
+        end
+        @is_primitive MinimalCtx Tuple{
+            typeof(Core.kwcall),NamedTuple,typeof(mean),$(ftype...),CuMaybeComplexArray
+        }
+        function frule!!(
+            ::Dual{typeof(Core.kwcall)},
+            kw::Dual{<:NamedTuple},
+            ::Dual{typeof(mean)},
+            $(fdual...),
+            x::Dual{<:CuMaybeComplexArray},
+        )
+            return _gpu_mean_frule($mapper, x, primal(kw))
+        end
+        function rrule!!(
+            ::CoDual{typeof(Core.kwcall)},
+            kw::CoDual{<:NamedTuple},
+            ::CoDual{typeof(mean)},
+            $(fcodual...),
+            x::CoDual{<:CuMaybeComplexArray},
+        )
+            y, pb!! = _gpu_mean_rrule($mapper, x, primal(kw))
+            function mean_kw_pb!!(dy)
+                pb!!(dy)
+                return $kwresult
+            end
+            return y, mean_kw_pb!!
+        end
+    end
 end
 
 # MooncakeBFloat16sExt is absent while this extension precompiles: top-level code here must

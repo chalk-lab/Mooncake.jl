@@ -662,7 +662,6 @@ end
         _mean_sum_ddup(x) = sum(mean(x; dims=(1, 1)))
         _mean_sum_dempty(x) = sum(mean(x; dims=()))  # empty dims: see _varm_sum_dempty
         _mean_nodims(x) = mean(x; dims=:)
-        # Bare spelling: an overlay routes it to the keyword rule.
         _mean_bare(x) = mean(x)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
@@ -746,6 +745,35 @@ end
             end
         end
         test_cases = Any[
+            (false, :none, true, mean, CuArray(Float32[1, 2, 3])),
+            (false, :none, true, mean, abs2, CuArray(Float32[1, 2, 3])),
+            (false, :none, true, mean, Float64, CuArray(Float32[1, 2, 3])),
+            (
+                false,
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=1),
+                mean,
+                t -> 1.0 * t,
+                CuArray(Float32[1, 2, 3]),
+            ),
+            (
+                false,
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=1),
+                mean,
+                sin,
+                CuArray(ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
+            ),
+            [
+                (false, :none, true, Core.kwcall, (; dims), mean, f, CuArray(x)) for
+                x in (Float32[1, 2, 3], ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
+                f in (identity, abs2),
+                dims in (:, 1)
+            ]...,
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
             # similar
@@ -1947,6 +1975,16 @@ end
             end
         end
 
+        @testset "sum(abs2) forward inference" begin
+            X = CuArray{Float32,2,CUDA.DeviceMemory}
+            args = (
+                Mooncake.Dual{typeof(sum),Mooncake.NoTangent},
+                Mooncake.Dual{typeof(abs2),Mooncake.NoTangent},
+                Mooncake.Dual{X,X},
+            )
+            @test isconcretetype(only(Base.return_types(Mooncake.frule!!, args)))
+        end
+
         @testset "norm frule!! rescales an overflowing dot" begin
             # dot(px, dx) overflows once norm(px)*norm(dx) leaves the eltype's range,
             # while the JVP it divides down to is still representable. Float16 saturates
@@ -2177,6 +2215,20 @@ end
             m_row = _rand(rng, Float32, 1, 3)
             m_scalar = randn(StableRNG(28), Float32)
             @testset "$name" for (seed, name, f, args, kw) in [
+                (
+                    283,
+                    "mean, bad keyword",
+                    z -> mean(abs2, z; init=0),
+                    (CuArray(Float32[2]),),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    282,
+                    "mean, captured differentiable scale",
+                    (a, z) -> sum(mean(Base.Fix1(*, a) ∘ abs2, z; dims=1)),
+                    (0.25f0, CuArray(Float32[2])),
+                    (; msg=r"would silently be zero"),
+                ),
                 # Partials thread through GPU array elements and float scalars only, so
                 # anything the mapped function itself carries — a closure capture, a
                 # callable struct's field, a Ref argument — would come back an exact zero.
@@ -3025,8 +3077,6 @@ end
         end
 
         @testset "Statistics.mean GPU rule" begin
-            # GPUArrays._mean calls sum(Fix1(*,λ), x; dims), which Mooncake cannot trace;
-            # the rule calls it natively for the value and hand-rolls the derivative.
             @testset "dims=1 (Float32)" begin
                 x = _rand(rng, Float32, 4, 3)
                 test_rule(
@@ -3129,6 +3179,27 @@ end
                     Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
                 )
                 @test Mooncake.tangent(d) === Float16(0)
+                for f in (identity, abs2)
+                    d = Mooncake.frule!!(
+                        Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                        Mooncake.Dual((; dims=1), Mooncake.NoTangent()),
+                        Mooncake.Dual(mean, Mooncake.NoTangent()),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                    )
+                    expected = mean(
+                        CUDA.fill(Float16(f === identity ? 0.5 : 1), 70000); dims=1
+                    )
+                    @test isequal(Mooncake.tangent(d), expected)
+                    g = z -> sum(mean(f, z; dims=1))
+                    _, (_, dx) = value_and_gradient!!(Mooncake.build_rrule(g, x), g, x)
+                    scale = if pkgversion(CUDA.CUDACore.GPUArrays) < v"12.2.0"
+                        Float16(inv(length(x)))
+                    else
+                        inv(Float16(length(x)))
+                    end
+                    @test all(==(Float16(f === identity ? 1 : 2) * scale), Array(dx))
+                end
             end
             @testset "Float16 explicit dims follow the primal's arithmetic" begin
                 # The primal is linear, so each gradient entry is the primal at a one-hot
@@ -3361,6 +3432,17 @@ end
             _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
             @test H isa CuMatrix{Float32}
             @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
+            f = z -> mean(z)^2
+            _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+            @test isapprox(Array(h), fill(2 * sum(v) / length(x)^2, size(x)); rtol=1.0f-4)
+            for f in (z -> mean(abs2, z), z -> sum(mean(abs2, z; dims=1)))
+                _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                @test isapprox(Array(h), 2 .* Array(v) ./ length(x); rtol=1.0f-4)
+            end
+            f = z -> mean(sin, z)
+            @test_throws r"not yet supported" value_and_hvp!!(
+                prepare_hvp_cache(f, x), f, v, x
+            )
             # NDual-based elementwise rules error loudly under forward-over-reverse.
             f = z -> sum(abs2.(z))
             @test_throws r"not yet supported" value_and_hvp!!(
