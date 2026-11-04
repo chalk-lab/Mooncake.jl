@@ -34,7 +34,7 @@ end
     if cuda
         @testset "BFloat16" begin
             P = CUDA.CUDACore.BFloat16
-            x = CUDA.fill(P(0.25), 2, 2)
+            x = CuArray(P[1 -2; 3 4] ./ 2)
             @testset "tangent representation" begin
                 test_tangent_interface(StableRNG(123), x)
                 test_tangent_splitting(StableRNG(123), x)
@@ -43,7 +43,7 @@ end
                 ("sum", true, sum, (x,)),
                 ("sum dims", false, x -> sum(x; dims=1), (x,)),
                 ("matmul", true, *, (x, copy(x))),
-                ("matvec", true, *, (x, CUDA.fill(P(0.25), 2))),
+                ("matvec", true, *, (x, CuArray(P[-3, 0] ./ 2))),
                 ("reshape", true, reshape, (x, (4,))),
                 ("view", false, view, (x, :, 1:1)),
                 ("getindex", true, getindex, (x, 1:1, :)),
