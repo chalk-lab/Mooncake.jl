@@ -99,7 +99,7 @@ const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 # Wider signatures serve the plain BFloat16 arrays registered by MooncakeCUDABFloat16sExt.
-const CuTangentArray = CuArray{<:Union{AbstractFloat,Complex{<:IEEEFloat}}}
+const CuTangentArray = CuArray{<:Union{IEEEFloat,CUDACore.BFloat16,Complex{<:IEEEFloat}}}
 
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
