@@ -3257,41 +3257,35 @@ end
                     perf_flag=:none,
                 )
             end
-            # Without `init`, GPUArrays 12 throws as Base does, and AD throws the same error.
-            # GPUArrays 11 returns the eltype's identity instead, which test_rule cannot
-            # cover: its finite differences subtract two infinite outputs and compare the
-            # resulting NaN against the rule's correct zero, so check the value and shape.
+            # GPUArrays 11 identities give NaN finite differences; 12 throws without init.
             @testset "empty slice, no init" begin
                 e = CuArray(zeros(Float32, 0, 3))
-                @testset "$f" for (f, expected) in
+                @testset "$f" for (f, reduction_identity) in
                                   ((_max_bare, -Inf32), (_max_d1, -Inf32), (_min_d1, Inf32))
-                    primal_err = try
-                        f(e)
-                        nothing
-                    catch ex
-                        ex
-                    end
-                    if primal_err !== nothing
-                        @test_throws typeof(primal_err) value_and_gradient!!(
+                    if pkgversion(CUDA.CUDACore.GPUArrays) >= v"12"
+                        @test_throws "reducing over an empty collection" f(e)
+                        @test_throws "reducing over an empty collection" value_and_gradient!!(
                             Mooncake.build_rrule(f, e), f, e
                         )
-                        @test_throws typeof(primal_err) Mooncake.value_and_derivative!!(
+                        @test_throws "reducing over an empty collection" Mooncake.value_and_derivative!!(
                             Mooncake.build_frule(f, e),
                             Mooncake.Dual(f, Mooncake.NoTangent()),
                             Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
                         )
-                        continue
+                    else
+                        # GPUArrays 11 returns an identity; AD must preserve its value and shape.
+                        @test f(e) === reduction_identity
+                        val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
+                        @test val === reduction_identity
+                        @test size(grads[2]) == (0, 3)
+                        d = Mooncake.value_and_derivative!!(
+                            Mooncake.build_frule(f, e),
+                            Mooncake.Dual(f, Mooncake.NoTangent()),
+                            Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                        )
+                        @test Mooncake.primal(d) === reduction_identity
+                        @test Mooncake.tangent(d) == 0.0f0
                     end
-                    val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
-                    @test val == expected
-                    @test size(grads[2]) == (0, 3)
-                    d = Mooncake.value_and_derivative!!(
-                        Mooncake.build_frule(f, e),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
-                    )
-                    @test Mooncake.primal(d) == expected
-                    @test Mooncake.tangent(d) == 0.0f0
                 end
             end
             # An index array contributes nothing, so `init` carries the whole gradient.
