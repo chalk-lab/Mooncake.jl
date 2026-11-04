@@ -582,11 +582,16 @@ end
     typeof(nan_tangent_guard),L,T
 } where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
 function frule!!(
-    ::Dual{typeof(nan_tangent_guard)}, dy::Dual{L}, t::Dual{T}
-) where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
-    # Mask the direction only when both the factor and its direction are zero.
-    dt = iszero(primal(dy)) ? nan_tangent_guard(tangent(dy), tangent(t)) : tangent(t)
-    return Dual(nan_tangent_guard(primal(dy), primal(t)), dt)
+    ::Lifted{typeof(nan_tangent_guard),N}, dy::Lifted{L,N}, t::Lifted{T,N}
+) where {N,L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
+    dt = ntuple(Val(N)) do k
+        if iszero(primal(dy))
+            nan_tangent_guard(tangent(dy, k), tangent(t, k))
+        else
+            tangent(t, k)
+        end
+    end
+    return _lift_from_lanes(nan_tangent_guard(primal(dy), primal(t)), dt)
 end
 
 """

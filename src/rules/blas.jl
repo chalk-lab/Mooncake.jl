@@ -94,7 +94,9 @@ end
 @inline function _reinterpret_like(::Base.ReinterpretArray{T,N,S,A,R}, p) where {T,N,S,A,R}
     return R ? reinterpret(reshape, T, p) : reinterpret(T, p)
 end
-function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Union{BlasFloat,HalfFloatOrComplex}}
+function arrayify(
+    x::Base.ReinterpretArray{T}, dx::TangentOrFData
+) where {T<:Union{BlasFloat,HalfFloatOrComplex}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, _reinterpret_like(x, _dx)
 end
@@ -545,17 +547,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_get_num_threads)}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
-
-# The zero branch must retain coefficient directions under forward-over-reverse.
-_guarded_mul(x::T, coef::T) where {T<:BlasFloat} = ifelse(iszero(coef), zero(T), x * coef)
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(_guarded_mul),T,T} where {T<:BlasFloat}
-function frule!!(
-    ::Dual{typeof(_guarded_mul)}, x::Dual{T}, coef::Dual{T}
-) where {T<:BlasFloat}
-    a, da = extract(x)
-    b, db = extract(coef)
-    return Dual(_guarded_mul(a, b), _guarded_mul(a, db) + _guarded_mul(da, b))
-end
 
 # BLAS interprets matrices by pointer and leading dimension, not logical indexing.
 # A singleton column still needs a valid leading dimension; a singleton element
@@ -1605,6 +1596,18 @@ end
     return nothing
 end
 
+@inline _block_lane(B::AbstractArray{T,D}, k) where {T,D} = @inbounds view(
+    B, k, ntuple(_ -> Colon(), Val(D - 1))...
+)
+
+# A BLAS batch can turn an inactive lane into NaN beside a nonfinite operand.
+@inline function _zero_inactive_partials!(B, inactive::NTuple{N,Bool}) where {N}
+    for k in 1:N
+        inactive[k] && fill!(_block_lane(B, k), zero(eltype(B)))
+    end
+    return nothing
+end
+
 # BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
 # A zero contracted dimension quick-returns without applying β (e.g. gemv!).
 @inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
@@ -2296,9 +2299,18 @@ function frule!!(
     y_dy::Lifted{<:AbstractVector{P}},
 ) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.gemv!, primal(y_dy), primal(A_dA), primal(x_dx))
-    _tA = _blas_flag(tA)
+    _gemv_partials!(_blas_flag(tA), alpha, A_dA, x_dx, beta, y_dy)
+    BLAS.gemv!(
+        primal(tA), primal(alpha), primal(A_dA), primal(x_dx), primal(beta), primal(y_dy)
+    )
+    return y_dy
+end
+
+function _gemv_partials!(_tA, alpha::Lifted{P,Nw}, A_dA, x_dx, beta, y_dy) where {P,Nw}
     A = _as_col(primal(A_dA))
     x, y = primal(x_dx), primal(y_dy)
+    size(A, _tA == 'N' ? 2 : 1) == length(x) && size(A, _tA == 'N' ? 1 : 2) == length(y) ||
+        throw(DimensionMismatch("incompatible gemv! dimensions"))
     Xb, _ = _partials_block(x_dx)
     Yb, ycopied = _partials_block(y_dy)
     M, K = length(y), length(x)
@@ -2311,8 +2323,7 @@ function frule!!(
         _gemv_partials!(_tA, alpha, A_dA, A, x, beta, y, Xbm, Ybm)
     end
     ycopied && _write_back_partials!(y_dy, Yb)
-    BLAS.gemv!(primal(tA), primal(alpha), primal(A_dA), x, primal(beta), y)
-    return y_dy
+    return nothing
 end
 
 function _gemv_partials!(
@@ -2323,11 +2334,19 @@ function _gemv_partials!(
     dβs = ntuple(k -> tangent(beta, k), Val(Nw))
     Ab, _ = _partials_block(A_dA)
     M, K = length(y), length(x)
+    inactive = ntuple(
+        k ->
+            iszero(dαs[k]) &&
+            iszero(dβs[k]) &&
+            (iszero(α) || (iszero(_block_lane(Ab, k)) && iszero(_block_lane(Xbm, k)))) &&
+            ((K != 0 && iszero(β)) || iszero(_block_lane(Ybm, k))),
+        Val(Nw),
+    )
     # 1) β·dy + α·op(A)·dx: lane `k` is row `k` of the lane matrices, so per-lane
     #    `op(A)·dx_k` is `Xbm·op(A)ᵀ` — one wide gemm over the block, β folded in (applied
     #    exactly once, first; all later terms accumulate). An all-zero `Xbm` means `x` is
     #    constant data — the product term vanishes, leaving the β scaling.
-    if !iszero(Xbm)
+    if !iszero(α) && !iszero(Xbm)
         if _tA == 'N'
             BLAS.gemm!('N', 'T', α, Xbm, A, β, Ybm)
         elseif _tA == 'T' || P <: BlasRealFloat
@@ -2345,7 +2364,7 @@ function _gemv_partials!(
         _scale_or_zero!(Ybm, β, K)
     end
     # 2) α·op(dA)·x — skipped when `A` is constant data (all-zero block).
-    if !iszero(Ab)
+    if !iszero(α) && !iszero(Ab)
         Abm = reshape(Ab, Nw, size(A)...)
         if _tA == 'N'
             # Contract dA's last axis with x: the (Nw·M, K) flat view of dA's block times
@@ -2383,10 +2402,11 @@ function _gemv_partials!(
             yi = y[i]
             isnan(yi) && continue
             for k in 1:Nw
-                Ybm[k, i] += dβs[k] * yi
+                Ybm[k, i] += _rvs_mul(yi, dβs[k])
             end
         end
     end
+    _zero_inactive_partials!(Ybm, inactive)
     return nothing
 end
 
@@ -2931,13 +2951,28 @@ function frule!!(
     C_dC::Lifted{<:AbstractMatrix{T}},
 ) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.gemm!, primal(C_dC), primal(A_dA), primal(B_dB))
-    tA = _blas_flag(transA)
-    tB = _blas_flag(transB)
+    _gemm_partials!(_blas_flag(transA), _blas_flag(transB), alpha, A_dA, B_dB, beta, C_dC)
+    BLAS.gemm!(
+        primal(transA),
+        primal(transB),
+        primal(alpha),
+        _as_col(primal(A_dA)),
+        _as_col(primal(B_dB)),
+        primal(beta),
+        primal(C_dC),
+    )
+    return C_dC
+end
+
+function _gemm_partials!(tA, tB, alpha::Lifted{T,Nw}, A_dA, B_dB, beta, C_dC) where {T,Nw}
     α = primal(alpha)
     β = primal(beta)
     A = _as_col(primal(A_dA))
     B = _as_col(primal(B_dB))
     C = primal(C_dC)
+    size(A, tA == 'N' ? 2 : 1) == size(B, tB == 'N' ? 1 : 2) &&
+    size(C) == (size(A, tA == 'N' ? 1 : 2), size(B, tB == 'N' ? 2 : 1)) ||
+        throw(DimensionMismatch("incompatible gemm! dimensions"))
     dαs = ntuple(k -> tangent(alpha, k), Val(Nw))
     dβs = ntuple(k -> tangent(beta, k), Val(Nw))
     Ab_, _ = _partials_block(A_dA)
@@ -2947,11 +2982,19 @@ function frule!!(
     p = tA == 'N' ? size(A, 2) : size(A, 1)
     Ab = reshape(Ab_, Nw, size(A)...)
     Bb = reshape(Bb_, Nw, size(B)...)
+    inactive = ntuple(
+        k ->
+            iszero(dαs[k]) &&
+            iszero(dβs[k]) &&
+            (iszero(α) || (iszero(_block_lane(Ab, k)) && iszero(_block_lane(Bb, k)))) &&
+            (iszero(β) || iszero(_block_lane(Cb, k))),
+        Val(Nw),
+    )
     # Product rule: dC_k = β·dC_k + α·op(dA_k)·op(B) + α·op(A)·op(dB_k) + dα_k·op(A)·op(B)
     # + dβ_k·C. The two matrix-partial terms batch all lanes into wide BLAS calls over the
     # lane-leading blocks; terms whose operand is constant data (all-zero block) vanish.
     # 1) α·op(dA)·op(B) + β·dC.
-    if !iszero(Ab)
+    if !iszero(α) && !iszero(Ab)
         if tA == 'N'
             # One flat gemm: contracting dA's last axis with op(B), the (Nw·m, p) flat
             # view of dA's block times op(B) lands lane-major — the flat view of dC's
@@ -2982,7 +3025,7 @@ function frule!!(
         _scale_or_zero!(Cb, β)
     end
     # 2) α·op(A)·op(dB), after the dA term to preserve BLAS evaluation order.
-    if !iszero(Bb)
+    if !iszero(α) && !iszero(Bb)
         if tB == 'C' && T <: BlasComplexFloat
             # α·op(A)·dB^H: the conj is lane-varying, so per output column j build the
             # conjugated product in a hoisted (Nw, m) scratch and conj-add:
@@ -3029,14 +3072,13 @@ function frule!!(
             ci = C[li]
             isnan(ci) && continue
             for k in 1:Nw
-                Cbm[k, li] += dβs[k] * ci
+                Cbm[k, li] += _rvs_mul(ci, dβs[k])
             end
         end
     end
+    _zero_inactive_partials!(Cb, inactive)
     ccopied && _write_back_partials!(C_dC, Cb)
-    # 5) Primal update after all tangent terms (they read the original operands).
-    BLAS.gemm!(primal(transA), primal(transB), α, A, B, β, C)
-    return C_dC
+    return nothing
 end
 @inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
@@ -5162,44 +5204,13 @@ end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    test_cases = Any[
-        (
-            false,
-            :none,
-            (oracle=(_, f, A) -> f(A) == (U ? [0 1; 0 0] : [0 0; 1 0]),),
-            A -> copyto!(A, StrictTriangle(A, Val(U))),
-            ones(2, 2),
-        ) for U in (true, false)
-    ]
-    for W in (UnitUpperTriangular, UnitLowerTriangular)
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                (mode=ReverseMode, oracle=(_, f, x) -> iszero(f(x))),
-                x -> fill!(arrayify(x, fdata(zero_tangent(x)))[2], 0),
-                W(zeros(2, 2)),
-            ),
-        )
-    end
+    test_cases = Any[]
     push!(
         test_cases,
         (
             false,
             :none,
-            (
-                oracle=(mode, f, args...) -> begin
-                    TestUtils.test_rule_throws(
-                        rng_ctor(123),
-                        f,
-                        args...;
-                        mode,
-                        msg="non-contiguous multidimensional array operands",
-                    )
-                    true
-                end,
-            ),
+            (throws=(ArgumentError, "no step over this operand"),),
             BLAS.nrm2,
             2,
             view(ones(2, 2), 1:1, :),

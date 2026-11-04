@@ -1,4 +1,22 @@
 @testset "blas (basic)" begin
+    @testset "strict triangular copies" begin
+        for U in (true, false)
+            A = ones(2, 2)
+            @test copyto!(A, Mooncake.StrictTriangle(A, Val(U))) ==
+                (U ? [0 1; 0 0] : [0 0; 1 0])
+        end
+        for W in (UnitUpperTriangular, UnitLowerTriangular)
+            x = W(zeros(2, 2))
+            dx = Mooncake.arrayify(x, fdata(zero_tangent(x)))[2]
+            @test iszero(fill!(dx, 0))
+            seed = Tangent((data=ones(2, 2),))
+            _, projected = Mooncake.arrayify(x, seed)
+            @test projected == (W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0])
+            @test Base.mightalias(projected, seed.fields.data)
+            @test seed.fields.data == ones(2, 2)
+        end
+    end
+
     @testset "axpby! validates before writes" for P in (
             Float64, Float32, ComplexF64, ComplexF32
         ),

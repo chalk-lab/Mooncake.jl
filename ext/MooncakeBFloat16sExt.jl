@@ -49,7 +49,7 @@ Mooncake.rdata_type(::Type{P}) = P
 tangent(::NoFData, r::P) = r
 Mooncake._verify_rdata_value(::P, ::P) = nothing
 
-Mooncake.arrayify(x::Union{Dual{<:AbstractArray{P}},CoDual{<:AbstractArray{P}}}) =
+Mooncake.arrayify(x::CoDual{<:AbstractArray{P}}) =
     Mooncake.arrayify(primal(x), tangent(x))
 Mooncake.arrayify(x::A, dx::A) where {A<:Array{P}} = (x, dx)
 function Mooncake.arrayify(x::SubArray{P,B,C,D,E}, dx::Mooncake.TangentOrFData) where {B,C,D,E}
@@ -76,13 +76,13 @@ Mooncake._is_ieee_or_bfloat(::Type{P}) = true
 Mooncake.@is_primitive MinimalCtx Mooncake._CPUStridedMulSig{P}
 
 @inline function Mooncake.frule!!(
-    ::Dual{typeof(mul!)},
-    c::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
-    a::Dual{<:Mooncake._CPUStridedOrAdjTransMatrix{P}},
-    b::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
-    alpha::Dual{<:Union{Bool,Base.IEEEFloat,P}},
-    beta::Dual{<:Union{Bool,Base.IEEEFloat,P}},
-)
+    ::Lifted{typeof(mul!),N},
+    c::Lifted{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P},N},
+    a::Lifted{<:Mooncake._CPUStridedOrAdjTransMatrix{P},N},
+    b::Lifted{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P},N},
+    alpha::Lifted{<:Union{Bool,Base.IEEEFloat,P},N},
+    beta::Lifted{<:Union{Bool,Base.IEEEFloat,P},N},
+) where {N}
     return Mooncake._mul_frule!!(c, a, b, alpha, beta)
 end
 
@@ -101,6 +101,25 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     Mooncake.arrayify(x::A, dx::A) where {A<:Memory{P}} = (x, dx)
+end
+
+function Mooncake.arrayify(x::Lifted{<:AbstractArray{P},N}, mode::Val=Val(false)) where {N}
+    A = primal(x)
+    return A, ntuple(k -> Mooncake._arrayify_lane(A, tangent(x), k, mode), Val(N))
+end
+function Mooncake._arrayify_lane(
+    x::DenseArray{P}, v::DenseArray{NTuple{N,P}}, k::Integer, ::Val{dense}
+) where {N,dense}
+    lane = selectdim(reshape(reinterpret(P, vec(v)), N, size(x)...), 1, k)
+    return dense === true ? collect(lane) : lane
+end
+Mooncake._lift_from_lanes(y::P, ds::NTuple{N,P}) where {N} = Lifted{P,N}(y, ds)
+Mooncake._lift_from_lanes(::P, ::Tuple{}) = Mooncake._zero_lanes_error()
+
+function Mooncake._lift_from_lanes(
+    ::Mooncake.StructuralStorage, y::A, ds::NTuple{N,A}
+) where {A<:Array{P},N}
+    return Lifted{A,N}(y, map(tuple, ds...))
 end
 
 # Constructing BFloat16 zeros requires the arithmetic supplied by BFloat16s.jl.
@@ -246,8 +265,8 @@ end
 # Math rules
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(-),P}
-function Mooncake.frule!!(::Dual{typeof(-)}, x::Dual{P})
-    return Dual(-primal(x), -tangent(x))
+function Mooncake.frule!!(::Lifted{typeof(-),N}, x::Lifted{P,N}) where {N}
+    return Lifted{P,N}(-primal(x), map(-, tangent(x)))
 end
 function Mooncake.rrule!!(::CoDual{typeof(-)}, x::CoDual{P})
     pb(dy::P) = NoRData(), -dy

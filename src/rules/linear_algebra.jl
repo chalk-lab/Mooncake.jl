@@ -96,10 +96,25 @@ function _square_factor(A)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(inv),DenseMat{P}} where {P<:BlasRealFloat}
-function frule!!(::Dual{typeof(inv)}, A_dA::Dual{<:DenseMat{P}}) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    Y = inv(A)
-    return Dual(Y, mul!(similar(Y), Y, dA * Y, -one(P), zero(P)))
+function frule!!(
+    ::Lifted{typeof(inv),N}, A_dA::Lifted{<:DenseMat{P},N}
+) where {P<:BlasRealFloat,N}
+    Y = inv(primal(A_dA))
+    Ab, _ = _partials_block(A_dA)
+    Yb = NDualBlock{P,3}(undef, N, size(Y)...)
+    work = similar(Y)
+    dY = N == 1 ? reshape(Yb, size(Y)) : similar(Y)
+    for k in 1:N
+        dA = N == 1 ? reshape(Ab, size(Y)) : copyto!(dY, _block_lane(Ab, k))
+        mul!(work, dA, Y)
+        mul!(dY, Y, work, -one(P), zero(P))
+        if N != 1
+            for i in eachindex(dY)
+                @inbounds Yb[(i - 1) * N + k] = dY[i]
+            end
+        end
+    end
+    return Lifted{typeof(Y),N}(Y, dual_type(Val(N), typeof(Y))(Y, Yb))
 end
 function rrule!!(
     ::CoDual{typeof(inv)}, A_dA::CoDual{<:DenseMat{P}}
@@ -128,49 +143,59 @@ function _det_and_grad(A::AbstractMatrix{P}) where {P}
     return d, (det(U) * det(V)) .* (U * Diagonal(p) * V')
 end
 
-# For second derivatives, the forward-mode derivative of `_det_and_grad` uses the formula
-# rather than its code, whose triangular case would drop the dependence on the other entries:
-# with `G = det(A) * W` and `W = inv(A)'`, `dG = dot(G, dA) * W - det(A) * W * dA' * W`. At a
-# singular `A` it comes from the entries of `G` instead, see `_cofactor_derivative`.
+# Triangular shortcuts drop directions, so differentiate `G = det(A) * W`, `W = inv(A)'`:
+# `dG = dot(G, dA) * W - det(A) * W * dA' * W`.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
     Tuple{typeof(_det_and_grad),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
 )
 function frule!!(
-    ::Dual{typeof(_det_and_grad)}, A_dA::Dual{<:DenseMatOrAdj{P}}
-) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
+    ::Lifted{typeof(_det_and_grad),N}, A_dA::Lifted{<:DenseMatOrAdj{P},N}
+) where {P<:BlasRealFloat,N}
+    A = primal(A_dA)
+    Ab, _ = _partials_block(A_dA)
     d, G = _det_and_grad(A)
-    dd = dot(G, dA)
+    dd = ntuple(k -> dot(G, _block_lane(Ab, k)), Val(N))
+    Gb = NDualBlock{P,3}(undef, N, size(G)...)
     F = lu(Matrix{P}(A); check=false)
-    issuccess(F) || return Dual((d, G), (dd, _cofactor_derivative(A, dA)))
-    W = ldiv!(F', Matrix{P}(I, size(A)))
-    return Dual((d, G), (dd, dd .* W .- d .* (W * dA' * W)))
-end
-
-# The derivative of `G`, the transposed adjugate, along `dA`. Its entries are the cofactors
-# `(-1)^(i + j) * det(M)`, `M` being `A` without row `i` and column `j`, so their derivatives
-# are `(-1)^(i + j) * dot(∇det(M), dM)`.
-function _cofactor_derivative(A::AbstractMatrix{P}, dA::AbstractMatrix{P}) where {P}
-    n = size(A, 1)
-    dG = zeros(P, n, n)
-    n == 1 && return dG
-    for j in 1:n, i in 1:n
-        rows, cols = [1:(i - 1); (i + 1):n], [1:(j - 1); (j + 1):n]
-        _, GM = _det_and_grad(A[rows, cols])
-        dG[i, j] = (-1)^(i + j) * dot(GM, view(dA, rows, cols))
+    if issuccess(F)
+        W = ldiv!(F', Matrix{P}(I, size(A)))
+        work, dG = similar(G), similar(G)
+        for k in 1:N
+            copyto!(dG, _block_lane(Ab, k))
+            mul!(work, W, dG')
+            mul!(dG, work, W)
+            _block_lane(Gb, k) .= dd[k] .* W .- d .* dG
+        end
+    else
+        # At singular A, differentiate each cofactor `G[i,j] = (-1)^(i+j) * det(M)`,
+        # where M omits row i and column j: `dG[i,j] = (-1)^(i+j) * dot(∇det(M), dM)`.
+        n = size(A, 1)
+        fill!(Gb, zero(P))
+        if n > 1
+            for j in 1:n, i in 1:n
+                rows, cols = [1:(i - 1); (i + 1):n], [1:(j - 1); (j + 1):n]
+                _, GM = _det_and_grad(A[rows, cols])
+                for k in 1:N
+                    Gb[k, i, j] = (-1)^(i + j) * dot(GM, view(Ab, k, rows, cols))
+                end
+            end
+        end
     end
-    return dG
+    y = (d, G)
+    return Lifted{typeof(y),N}(
+        y, (tangent(_lift_from_lanes(d, dd)), dual_type(Val(N), typeof(G))(G, Gb))
+    )
 end
 
 @is_primitive MinimalCtx Tuple{typeof(det),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
 function frule!!(
-    ::Dual{typeof(det)}, A_dA::Dual{<:DenseMatOrAdj{P}}
-) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
+    ::Lifted{typeof(det),N}, A_dA::Lifted{<:DenseMatOrAdj{P},N}
+) where {P<:BlasRealFloat,N}
+    A, dAs = arrayify(A_dA)
     d, G = _det_and_grad(A)
-    return Dual(d, dot(G, dA))
+    return _lift_from_lanes(d, ntuple(k -> dot(G, dAs[k]), Val(N)))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, A_dA::CoDual{<:DenseMatOrAdj{P}}
@@ -203,21 +228,39 @@ end
     Tuple{typeof(_logabsdet_and_grad),DenseMatOrAdj{P}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(_logabsdet_and_grad)}, A_dA::Dual{<:DenseMatOrAdj{P}}
-) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    ld, s, G = _logabsdet_and_grad(A)
-    return Dual((ld, s, G), (dot(G, dA), zero(P), -G * dA' * G))
+    ::Lifted{typeof(_logabsdet_and_grad),N}, A_dA::Lifted{<:DenseMatOrAdj{P},N}
+) where {P<:BlasRealFloat,N}
+    Ab, _ = _partials_block(A_dA)
+    ld, s, G = _logabsdet_and_grad(primal(A_dA))
+    dld = ntuple(k -> dot(G, _block_lane(Ab, k)), Val(N))
+    Gb = NDualBlock{P,3}(undef, N, size(G)...)
+    work, dG = similar(G), similar(G)
+    for k in 1:N
+        copyto!(dG, _block_lane(Ab, k))
+        mul!(work, G, dG', -one(P), zero(P))
+        mul!(dG, work, G)
+        copyto!(_block_lane(Gb, k), dG)
+    end
+    y = (ld, s, G)
+    dy = (
+        tangent(_lift_from_lanes(ld, dld)),
+        tangent(zero_lifted(Val(N), s)),
+        dual_type(Val(N), typeof(G))(G, Gb),
+    )
+    return Lifted{typeof(y),N}(y, dy)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(logabsdet),DenseMatOrAdj{P}} where {P<:BlasRealFloat}
 function frule!!(
-    ::Dual{typeof(logabsdet)}, A_dA::Dual{<:DenseMatOrAdj{P}}
-) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
+    ::Lifted{typeof(logabsdet),N}, A_dA::Lifted{<:DenseMatOrAdj{P},N}
+) where {P<:BlasRealFloat,N}
+    A, dAs = arrayify(A_dA)
     ld, s, G = _logabsdet_and_grad(A)
-    _check_logabsdet(s, dA)
-    return Dual((ld, s), (dot(G, dA), zero(P)))
+    ds = ntuple(Val(N)) do k
+        _check_logabsdet(s, dAs[k])
+        (dot(G, dAs[k]), zero(P))
+    end
+    return _lift_from_lanes((ld, s), ds)
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, A_dA::CoDual{<:DenseMatOrAdj{P}}
@@ -281,28 +324,58 @@ _q_mul!(trans, F, x) = LAPACK.ormqr!('L', trans, getfield(F, :factors), getfield
     Tuple{typeof(\),DenseMatOrAdj{P},DenseVecOrMatArg{P}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(\)}, A_dA::Dual{<:DenseMatOrAdj{P}}, B_dB::Dual{<:DenseVecOrMatArg{P}}
-) where {P<:BlasRealFloat}
-    A, dA = map(_dense, arrayify(A_dA))
-    B, dB = matrixify(B_dB)
+    ::Lifted{typeof(\),N},
+    A_dA::Lifted{<:DenseMatOrAdj{P},N},
+    B_dB::Lifted{<:DenseVecOrMatArg{P},N},
+) where {P<:BlasRealFloat,N}
+    A = _dense(primal(A_dA))
+    B = reshape(_dense(primal(B_dB)), size(primal(B_dB), 1), :)
+    Ab, _ = _partials_block(A_dA)
+    Bb, _ = _partials_block(B_dB)
     m, n = size(A)
     size(B, 1) == m ||
         throw(DimensionMismatch("`A` and `B` must have the same number of rows."))
+    nrhs = size(B, 2)
     if m == n
         F = lu!(Matrix{P}(A))
         X = F \ B
-        dX = F \ (dB - dA * X)
-    elseif m > n
-        F = _tall_qr(A)
-        X = F \ B
-        dX = _pinv_ldiv(F, dB - dA * X) + _gram_ldiv(F, dA' * (B - A * X))
     else
-        F = _tall_qr(A')
-        X = _pinv_adj_ldiv(F, B)
-        W = dA' * _gram_ldiv(F, B)
-        dX = W + _pinv_adj_ldiv(F, dB - dA * X - A * W)
+        F = _tall_qr(m > n ? A : A')
+        X = m > n ? F \ B : _pinv_adj_ldiv(F, B)
     end
-    return Dual(_like(primal(B_dB), X), _like(primal(B_dB), dX))
+    Rb = Matrix{P}(undef, N * m, nrhs)
+    mul!(Rb, reshape(Ab, N * m, n), X)
+    Rb .= reshape(Bb, N * m, nrhs) .- Rb
+    R = reshape(permutedims(reshape(Rb, N, m, nrhs), (2, 3, 1)), m, N * nrhs)
+    if m == n
+        dX = F \ R
+    elseif m > n
+        dA = N == 1 ? _block_lane(Ab, 1) : Matrix{P}(undef, m, n)
+        residual = B - A * X
+        S = Matrix{P}(undef, n, N * nrhs)
+        for k in 1:N
+            N == 1 || copyto!(dA, _block_lane(Ab, k))
+            mul!(view(S, :, ((k - 1) * nrhs + 1):(k * nrhs)), dA', residual)
+        end
+        dX = _pinv_ldiv(F, R) + _gram_ldiv(F, S)
+    else
+        dA = N == 1 ? _block_lane(Ab, 1) : Matrix{P}(undef, m, n)
+        gram_B = _gram_ldiv(F, B)
+        W = Matrix{P}(undef, n, N * nrhs)
+        for k in 1:N
+            N == 1 || copyto!(dA, _block_lane(Ab, k))
+            Wk = view(W, :, ((k - 1) * nrhs + 1):(k * nrhs))
+            mul!(Wk, dA', gram_B)
+        end
+        mul!(R, A, W, -one(P), one(P))
+        dX = W + _pinv_adj_ldiv(F, R)
+    end
+    y = _like(primal(B_dB), X)
+    Xb = NDualBlock{P,ndims(y) + 1}(undef, N, size(y)...)
+    for k in 1:N
+        copyto!(_block_lane(Xb, k), view(dX, :, ((k - 1) * nrhs + 1):(k * nrhs)))
+    end
+    return Lifted{typeof(y),N}(y, dual_type(Val(N), typeof(y))(y, Xb))
 end
 
 # Undo `matrixify(B_dB)`, which avoids type-unstable matrix-vector products on Julia 1.10.

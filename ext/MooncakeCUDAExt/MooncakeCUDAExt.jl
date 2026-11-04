@@ -107,6 +107,7 @@ const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 const CuBFloatArray = CuArray{CUDACore.BFloat16}
+const CuBFloatPartials = CuArray{NTuple{N,CUDACore.BFloat16}} where {N}
 
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
@@ -303,7 +304,7 @@ end
 end
 # Avoid struct-lifting CuArray's DataRef/Ptr fields; cache the array-level V by
 # primal identity, as the host Array factories do.
-const _CuDualArray = Union{CuArray{<:IEEEFloat},CuArray{<:Complex{<:IEEEFloat}}}
+const _CuDualArray = Union{CuMaybeComplexArray,CuBFloatArray}
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval function Mooncake.$internal(w::Val{N}, x::_CuDualArray, d::MaybeCache) where {N}
@@ -1032,7 +1033,11 @@ end
 
 # CuDataRef field access — fields (`rc`, `freed`, `cached`) are
 # reference-counting internals with no derivative flow; Lifted V is `NoDual`.
-for X in (:(Lifted{<:CuDataRef,Nw,NoDual}), :(Lifted{<:CuArray,Nw,<:NDualArray}))
+for X in (
+    :(Lifted{<:CuDataRef,Nw,NoDual}),
+    :(Lifted{<:CuArray,Nw,<:NDualArray}),
+    :(Lifted{<:CuBFloatArray,Nw,<:CuArray}),
+)
     @eval function frule!!(
         ::Lifted{typeof(lgetfield),Nw},
         x::$X,
@@ -1451,16 +1456,31 @@ end
     MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(_minmax_find),Any,Any,CuFloatArray,Any}
 )
 function frule!!(
-    ::Dual{typeof(_minmax_find)}, op::Dual, find::Dual, x::Dual{<:CuFloatArray}, dims::Dual
-)
-    px, dx = arrayify(x)
+    ::Lifted{typeof(_minmax_find),Nw},
+    op::Lifted,
+    find::Lifted,
+    x::Lifted{<:CuFloatArray,Nw},
+    dims::Lifted,
+) where {Nw}
+    px, x_partials = arrayify(x)
     pdims = primal(dims)
     m, ind = _minmax_find(primal(op), primal(find), px, pdims)
-    dm = sum(
-        Base.broadcasted((d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind));
-        dims=pdims,
+    lanes = ntuple(
+        k -> sum(
+            Base.broadcasted(
+                (d, i, w) -> d * (i == w),
+                x_partials[k],
+                CartesianIndices(px),
+                _winner(ind),
+            );
+            dims=pdims,
+        ),
+        Val(Nw),
     )
-    return Dual((m, ind), (dm, zero_tangent(ind)))
+    y = (m, ind)
+    return Lifted{typeof(y),Nw}(
+        y, (_wrap_v_lanes(m, lanes), tangent(zero_lifted(Val(Nw), ind)))
+    )
 end
 
 for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
@@ -5420,12 +5440,14 @@ for f in (triu, tril)
             typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
         }
         function frule!!(
-            ::Dual{typeof($f)},
-            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
-            k::Dual{<:Integer},
-        )
-            dx = tangent(x)
-            return Dual($f(primal(x), primal(k)), dx isa NoTangent ? dx : $f(dx, primal(k)))
+            ::Lifted{typeof($f),N},
+            x::Lifted{<:CuArray{<:Union{CuFloatOrComplex,Integer},2},N},
+            k::Lifted{<:Integer,N},
+        ) where {N}
+            y = $f(primal(x), primal(k))
+            tangent(x) isa NoDual && return zero_lifted(Val(N), y)
+            _, dx = arrayify(x)
+            return Lifted{typeof(y),N}(y, _wrap_v_lanes(y, map(d -> $f(d, primal(k)), dx)))
         end
         function rrule!!(
             ::CoDual{typeof($f)},
@@ -5450,12 +5472,15 @@ for f in (triu!, tril!)
             typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
         }
         function frule!!(
-            ::Dual{typeof($f)},
-            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
-            k::Dual{<:Integer},
-        )
+            ::Lifted{typeof($f),N},
+            x::Lifted{<:CuArray{<:Union{CuFloatOrComplex,Integer},2},N},
+            k::Lifted{<:Integer,N},
+        ) where {N}
             $f(primal(x), primal(k))
-            tangent(x) isa NoTangent || $f(tangent(x), primal(k))
+            if !(tangent(x) isa NoDual)
+                _, dx = arrayify(x)
+                foreach(d -> $f(d, primal(k)), dx)
+            end
             return x
         end
         function rrule!!(
@@ -5954,7 +5979,7 @@ end
     typeof(Base.Broadcast.materialize!),CuBFloatArray,Broadcasted
 }
 
-for (D, rule) in ((Dual, :frule!!), (CoDual, :rrule!!))
+for (D, rule) in ((Lifted, :frule!!), (CoDual, :rrule!!))
     @eval begin
         function $rule(
             ::$D{typeof(Core.kwcall)},
@@ -5983,6 +6008,184 @@ for (D, rule) in ((Dual, :frule!!), (CoDual, :rrule!!))
             )
         end
     end
+end
+
+@foldable function dual_type(::Val{N}, ::Type{CuArray{CUDACore.BFloat16,D,M}}) where {N,D,M}
+    return CuArray{NTuple{N,CUDACore.BFloat16},D,M}
+end
+function Mooncake.zero_dual(::Val{N}, x::CuBFloatArray) where {N}
+    v = similar(x, NTuple{N,eltype(x)})
+    fill!(v, ntuple(_ -> zero(eltype(x)), Val(N)))
+    return v
+end
+Mooncake.uninit_dual(w::Val, x::CuBFloatArray) = Mooncake.zero_dual(w, x)
+function Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::CuBFloatArray) where {N}
+    lanes = ntuple(_ -> randn_tangent_internal(rng, x, IdDict()), Val(N))
+    return _wrap_v_lanes(x, lanes)
+end
+function Mooncake.lift(x::A, dx::A) where {A<:CuBFloatArray}
+    return Lifted{A,1}(x, map(tuple, dx))
+end
+function Mooncake.lift(x::A, dx::A, c::Union{Nothing,IdDict}) where {A<:CuBFloatArray}
+    c === nothing && return Mooncake.lift(x, dx)
+    v = get!(c, x) do
+        map(tuple, dx)
+    end
+    return Lifted{A,1}(x, v)
+end
+function arrayify(x::Lifted{<:CuBFloatArray,N}) where {N}
+    p = primal(x)
+    block = reshape(reinterpret(eltype(p), vec(tangent(x))), N, size(p)...)
+    return p, ntuple(k -> selectdim(block, 1, k), Val(N))
+end
+function Mooncake._materialise_lane(
+    x::Lifted{<:CuBFloatArray,N,<:CuArray{NTuple{N,CUDACore.BFloat16}}},
+    k::Integer,
+    cache::IdDict,
+) where {N}
+    return get!(cache, primal(x)) do
+        map(v -> v[k], tangent(x))
+    end
+end
+function _wrap_v_lanes(y::CuBFloatArray, ds::NTuple{N,Any}) where {N}
+    return map(tuple, ds...)
+end
+_wrap_scalar_v_lanes(y::CUDACore.BFloat16, ds::NTuple{N,CUDACore.BFloat16}) where {N} = ds
+
+function frule!!(
+    ::Lifted{typeof(reshape),N}, x::Lifted{<:CuBFloatArray,N}, dims::Lifted{<:Tuple}
+) where {N}
+    y = reshape(primal(x), primal(dims))
+    return Lifted{typeof(y),N}(y, reshape(tangent(x), primal(dims)))
+end
+@is_primitive MinimalCtx Mooncake.ForwardMode Tuple{typeof(view),CuBFloatArray,Vararg}
+function frule!!(
+    ::Lifted{typeof(view),N}, x::Lifted{<:CuBFloatArray,N}, inds::Vararg{Lifted}
+) where {N}
+    I = map(primal, inds)
+    y = view(primal(x), I...)
+    tangent_type(typeof(y))
+    return Lifted{typeof(y),N}(y, view(tangent(x), I...))
+end
+function frule!!(
+    ::Lifted{typeof(derive),N},
+    ::Lifted{Type{T}},
+    x::Lifted{<:CuBFloatArray,N},
+    dims::Lifted,
+    offset::Lifted,
+) where {T,N}
+    _check_derive_eltype(T, primal(x))
+    T === CUDACore.BFloat16 || _throw_gpu_argument_error(
+        "Mooncake: CUDA BFloat16 reinterpretation requires the same element type."
+    )
+    y = derive(T, primal(x), primal(dims), primal(offset))
+    v = derive(eltype(tangent(x)), tangent(x), primal(dims), primal(offset))
+    return Lifted{typeof(y),N}(y, v)
+end
+function frule!!(
+    ::Lifted{typeof(getindex),N},
+    x::Lifted{<:CuBFloatArray,N},
+    idx::Lifted{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
+) where {N}
+    y = primal(x)[primal(idx)]
+    return Lifted{typeof(y),N}(y, tangent(x)[primal(idx)])
+end
+function frule!!(
+    ::Lifted{typeof(getindex),N},
+    x::Lifted{<:CuBFloatArray,N},
+    i::Lifted{<:_CuSliceIndex},
+    j::Lifted{<:_CuSliceIndex},
+    inds::Vararg{Lifted{<:_CuSliceIndex}},
+) where {N}
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    y = primal(x)[I...]
+    return Lifted{typeof(y),N}(y, tangent(x)[I...])
+end
+function frule!!(::Lifted{typeof(sum),N}, x::Lifted{<:CuBFloatArray,N}) where {N}
+    p, ds = arrayify(x)
+    y = sum(p)
+    return Lifted{typeof(y),N}(y, _wrap_scalar_v_lanes(y, map(sum, ds)))
+end
+function frule!!(
+    ::Lifted{typeof(Core.kwcall),N},
+    kw::Lifted{<:NamedTuple},
+    ::Lifted{typeof(sum),N},
+    x::Lifted{<:CuBFloatArray,N},
+) where {N}
+    pkw = primal(kw)
+    _check_reduction_identity(sum, pkw)
+    foreach(k -> _check_reduction_init(tangent(kw, k)), 1:N)
+    p, ds = arrayify(x)
+    y = sum(p; pkw...)
+    dy = map(d -> sum(d; pkw...), ds)
+    return Lifted{typeof(y),N}(y, _wrap_v_lanes(y, dy))
+end
+for BDim in (1, 2)
+    @eval function frule!!(
+        ::Lifted{typeof(*),N},
+        A::Lifted{<:CuArray{CUDACore.BFloat16,2},N},
+        B::Lifted{<:CuArray{CUDACore.BFloat16,$BDim},N},
+    ) where {N}
+        pA, dAs = arrayify(A)
+        pB, dBs = arrayify(B)
+        C = pA * pB
+        dA, dB = similar(pA), similar(pB)
+        ds = ntuple(_ -> similar(C), Val(N))
+        for k in 1:N
+            copyto!(dA, dAs[k])
+            copyto!(dB, dBs[k])
+            mul!(ds[k], dA, pB)
+            mul!(ds[k], pA, dB, one(eltype(C)), one(eltype(C)))
+        end
+        return Lifted{typeof(C),N}(C, _wrap_v_lanes(C, ds))
+    end
+end
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{<:CuBFloatArray,N},
+    doffs::Lifted{<:Integer},
+    src::Lifted{<:Union{CuBFloatArray,Array{CUDACore.BFloat16}},N},
+    soffs::Lifted{<:Integer},
+    n::Lifted{<:Integer},
+) where {N}
+    d, s, len = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(primal(dest), d, primal(src), s, len)
+    unsafe_copyto!(tangent(dest), d, tangent(src), s, len)
+    return dest
+end
+
+function TestUtils._chunk_lane_checkable(
+    ::CuArray{<:Tuple{Vararg{CUDACore.BFloat16}}}, ::IdDict
+)
+    true
+end
+function TestUtils.has_equal_data_internal(
+    x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
+) where {P<:CuBFloatPartials}
+    return TestUtils.has_equal_data_internal(Array(x), Array(y), equal_undefs, d)
+end
+function TestUtils._chunked_v_invariant(p::CuBFloatArray, v::CuArray, ::IdDict)
+    return size(p) == size(v) && all(t -> all(isfinite, t), v)
+end
+function Mooncake.tangent_dim(x::CuBFloatArray, seen::IdDict{Any,Any})
+    haskey(seen, x) && return 0
+    seen[x] = nothing
+    return length(x)
+end
+function Mooncake._basis_seed!!(
+    v::CuArray{NTuple{N,CUDACore.BFloat16}}, slots::NTuple{N,Int}, cursor, dict
+) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    T = CUDACore.BFloat16
+    base = cursor[]
+    host = [
+        ntuple(k -> i + base == slots[k] ? one(T) : zero(T), Val(N)) for i in 1:length(v)
+    ]
+    copyto!(v, reshape(host, size(v)))
+    cursor[] += length(v)
+    return v
 end
 
 end

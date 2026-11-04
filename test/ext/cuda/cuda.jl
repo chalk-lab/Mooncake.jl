@@ -19,9 +19,12 @@ using LinearAlgebra, Statistics
 const _ci = get(ENV, "CI", "false") == "true"
 test_rule(args...; kw...) = Mooncake.TestUtils.test_rule(args...; skip_chunked=_ci, kw...)
 
-@testset "nonfinite tangents" for row in Mooncake.TestResources.cuda_tangent_cases(CuArray)
-    interface_only, perf_flag, opts, f, args... = row
-    test_rule(StableRNG(123), f, args...; interface_only, perf_flag, opts...)
+@testset "nonfinite tangents" begin
+    x = CuArray(fill(complex(Inf, 0.0), 1, 1))
+    expected = fill(complex(Inf, 0.0), 1, 1)
+    @test isequal(Array(Mooncake._add_to_primal(x, zero(x), true)), expected)
+    @test isequal(Array(Mooncake._scale(1.0, x)), expected)
+    @test Mooncake._dot(vec(x), CuArray(ones(ComplexF64, 1))) === Inf
 end
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
@@ -140,7 +143,7 @@ end
                     (; msg="does not support element type $P"),
                 ),
             ]
-                test_rule_throws(StableRNG(123), f, x; msg="does not support $P", opts...)
+                _test_rule_throws(StableRNG(123), f, x; msg="does not support $P", opts...)
             end
         end
 
@@ -2004,9 +2007,9 @@ end
         @testset "sum(abs2) forward inference" begin
             X = CuArray{Float32,2,CUDA.DeviceMemory}
             args = (
-                Mooncake.Dual{typeof(sum),Mooncake.NoTangent},
-                Mooncake.Dual{typeof(abs2),Mooncake.NoTangent},
-                Mooncake.Dual{X,X},
+                typeof(Mooncake.zero_lifted(Val(1), sum)),
+                typeof(Mooncake.zero_lifted(Val(1), abs2)),
+                Mooncake.Lifted{X,1,Mooncake.dual_type(Val(1), X)},
             )
             @test isconcretetype(only(Base.return_types(Mooncake.frule!!, args)))
         end
@@ -2277,7 +2280,7 @@ end
             @testset "$(typeof(args))" for (msg, args) in rows
                 copyto!(idx, Int32[1, 2])
                 copyto!(x, Float32[2, 3])
-                test_rule_throws(StableRNG(290), args...; msg)
+                _test_rule_throws(StableRNG(290), args...; msg)
                 @test Array(idx) == Int32[1, 2]
                 @test Array(x) == Float32[2, 3]
             end
@@ -2391,16 +2394,29 @@ end
                         StableRNG(seed), f, args...; is_primitive=false, perf_flag=:none
                     )
                 else
-                    test_rule_throws(StableRNG(seed), f, args...; kw...)
+                    _test_rule_throws(StableRNG(seed), f, args...; kw...)
                 end
             end
             @testset "$name" for (seed, name, f, args, kw) in [
                 (
                     263,
-                    "kernel launch without a rule",
+                    "kernel launch without a rule, forward",
                     x -> sum(reverse(x)),
                     (x32,),
-                    (; msg="It is not permissible to bitcast to a differentiable type"),
+                    (;
+                        msg="cannot load from or store to a `Ptr`",
+                        mode=Mooncake.ForwardMode,
+                    ),
+                ),
+                (
+                    263,
+                    "kernel launch without a rule, reverse",
+                    x -> sum(reverse(x)),
+                    (x32,),
+                    (;
+                        msg="Cannot differentiate a load or store through a `Ptr`",
+                        mode=Mooncake.ReverseMode,
+                    ),
                 ),
                 (
                     283,
@@ -3153,12 +3169,12 @@ end
                 # Same for empty slices along explicit dims, where mean of the tangent is NaN.
                 e = CuArray(zeros(Float32, 0, 3))
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; dims=1), Mooncake.NoTangent()),
-                    Mooncake.Dual(mean, Mooncake.NoTangent()),
-                    Mooncake.Dual(e, Mooncake.zero_tangent(e)),
+                    Mooncake.lift(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.lift((; dims=1), Mooncake.NoTangent()),
+                    Mooncake.lift(mean, Mooncake.NoTangent()),
+                    Mooncake.lift(e, Mooncake.zero_tangent(e)),
                 )
-                @test Array(Mooncake.tangent(d)) == zeros(Float32, 1, 3)
+                @test Array(Mooncake.tangent(d, 1)) == zeros(Float32, 1, 3)
             end
             @testset "dims=: gradient matches bare mean (Float16, n > 65504)" begin
                 # Regression: the Colon primal divides AFTER summing, so its true
@@ -3183,16 +3199,16 @@ end
                 @test Mooncake.tangent(d, 1) === Float16(0)
                 for f in (identity, abs2)
                     d = Mooncake.frule!!(
-                        Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                        Mooncake.Dual((; dims=1), Mooncake.NoTangent()),
-                        Mooncake.Dual(mean, Mooncake.NoTangent()),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                        Mooncake.zero_lifted(Val(1), Core.kwcall),
+                        Mooncake.zero_lifted(Val(1), (; dims=1)),
+                        Mooncake.zero_lifted(Val(1), mean),
+                        Mooncake.zero_lifted(Val(1), f),
+                        Mooncake.lift(x, CUDA.fill(Float16(0.5), 70000)),
                     )
                     expected = mean(
                         CUDA.fill(Float16(f === identity ? 0.5 : 1), 70000); dims=1
                     )
-                    @test isequal(Mooncake.tangent(d), expected)
+                    @test isequal(Mooncake.tangent(d, 1), expected)
                     g = z -> sum(mean(f, z; dims=1))
                     _, (_, dx) = value_and_gradient!!(Mooncake.build_rrule(g, x), g, x)
                     scale = if pkgversion(CUDA.CUDACore.GPUArrays) < v"12.2.0"
@@ -3245,11 +3261,12 @@ end
                     y = f(x)
                     d = Mooncake.value_and_derivative!!(
                         Mooncake.build_frule(f, x),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(x, CUDA.ones(Float32, shape)),
+                        Mooncake.zero_lifted(Val(1), f),
+                        Mooncake.lift(x, CUDA.ones(Float32, shape)),
                     )
                     @test isequal(Mooncake.primal(d), y)
-                    @test typeof(Mooncake.tangent(d)) === Mooncake.tangent_type(typeof(y))
+                    @test typeof(Mooncake.tangent(d, 1)) ===
+                        Mooncake.tangent_type(typeof(y))
                     seed = if Mooncake.tangent_type(typeof(y)) === Mooncake.NoTangent
                         Mooncake.NoTangent()
                     else
@@ -3281,12 +3298,12 @@ end
                     kw = (; dims, init=2.0f0)
                     d = Mooncake.frule!!(
                         Mooncake.zero_dual(Core.kwcall),
-                        Mooncake.Dual(kw, (; dims=Mooncake.NoTangent(), init=1.0f0)),
+                        Mooncake.lift(kw, (; dims=Mooncake.NoTangent(), init=1.0f0)),
                         Mooncake.zero_dual(op),
                         Mooncake.zero_dual(x),
                     )
                     @test all(==(2.0f0), Array(Mooncake.primal(d)))
-                    @test all(isone, Array(Mooncake.tangent(d)))
+                    @test all(isone, Array(Mooncake.tangent(d, 1)))
                     y, pb = Mooncake.rrule!!(
                         Mooncake.zero_fcodual(Core.kwcall),
                         Mooncake.zero_fcodual(kw),
@@ -3344,10 +3361,10 @@ end
                     d = Mooncake.value_and_derivative!!(
                         Mooncake.build_frule(f, a, x),
                         Mooncake.zero_dual(f),
-                        Mooncake.Dual(a, 1.0),
+                        Mooncake.lift(a, 1.0),
                         Mooncake.zero_dual(x),
                     )
-                    @test Mooncake.tangent(d) == expected
+                    @test Mooncake.tangent(d, 1) == expected
                 end
             end
             @testset "init derivative follows reduction semantics" begin
@@ -3435,8 +3452,8 @@ end
                         )
                         @test_throws "reducing over an empty collection" Mooncake.value_and_derivative!!(
                             Mooncake.build_frule(f, e),
-                            Mooncake.Dual(f, Mooncake.NoTangent()),
-                            Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                            Mooncake.lift(f, Mooncake.NoTangent()),
+                            Mooncake.lift(e, CuArray(zeros(Float32, 0, 3))),
                         )
                     else
                         # GPUArrays 11 returns an identity; AD must preserve its value and shape.
@@ -3446,11 +3463,11 @@ end
                         @test size(grads[2]) == (0, 3)
                         d = Mooncake.value_and_derivative!!(
                             Mooncake.build_frule(f, e),
-                            Mooncake.Dual(f, Mooncake.NoTangent()),
-                            Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                            Mooncake.lift(f, Mooncake.NoTangent()),
+                            Mooncake.lift(e, CuArray(zeros(Float32, 0, 3))),
                         )
                         @test Mooncake.primal(d) === reduction_identity
-                        @test Mooncake.tangent(d) == 0.0f0
+                        @test Mooncake.tangent(d, 1) == 0.0f0
                     end
                 end
             end

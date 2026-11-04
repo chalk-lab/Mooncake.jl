@@ -57,10 +57,16 @@ const _complex_derivatives = (
 for (f, a) in _complex_derivatives
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),Complex{P}} where {P<:IEEEFloat}
-        function frule!!(::Dual{typeof($f)}, z::Dual{Complex{P}}) where {P<:IEEEFloat}
-            x, dx = primal(z), tangent(z)
+        function frule!!(
+            ::Lifted{typeof($f),N}, z::Lifted{Complex{P},N}
+        ) where {P<:IEEEFloat,N}
+            x = primal(z)
             y = $f(x)
-            return Dual(y, nan_tangent_guard.(dx, $a .* dx))
+            a = $a
+            dx = ntuple(k -> tangent(z, k), Val(N))
+            a isa Tuple || return _lift_from_lanes(y, _fwd_guarded_scale(dx, a))
+            dys = map(ai -> _fwd_guarded_scale(dx, ai), a)
+            return _lift_from_lanes(y, ntuple(k -> map(d -> d[k], dys), Val(N)))
         end
         function rrule!!(::CoDual{typeof($f)}, z::CoDual{Complex{P}}) where {P<:IEEEFloat}
             x = primal(z)
@@ -76,15 +82,18 @@ end
 } where {P<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{typeof(Base._cpow),P,Complex{P}} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(Base._cpow)},
-    z::Dual{<:Union{P,Complex{P}}},
-    p::Dual{<:Union{P,Complex{P}}},
-) where {P<:IEEEFloat}
-    x, q, dx, dq = primal(z), primal(p), tangent(z), tangent(p)
+    ::Lifted{typeof(Base._cpow),N},
+    z::Lifted{<:Union{P,Complex{P}},N},
+    p::Lifted{<:Union{P,Complex{P}},N},
+) where {P<:IEEEFloat,N}
+    x, q = primal(z), primal(p)
     y = Base._cpow(x, q)
     a = iszero(q) ? zero(y) : q * x^(q - 1)
     b = iszero(x) && real(q) > 0 ? zero(y) : y * log(complex(x))
-    return Dual(y, nan_tangent_guard(dx, a * dx) + nan_tangent_guard(dq, b * dq))
+    dx = ntuple(k -> oftype(y, tangent(z, k)), Val(N))
+    dq = ntuple(k -> oftype(y, tangent(p, k)), Val(N))
+    dy = map(+, _fwd_guarded_scale(dx, oftype(y, a)), _fwd_guarded_scale(dq, oftype(y, b)))
+    return _lift_from_lanes(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(Base._cpow)},

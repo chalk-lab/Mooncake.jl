@@ -141,7 +141,7 @@ foo_throws(e) = throw(e)
             missing_load,
         ]
         @testset "$f" for f in fs
-            TestUtils.test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
+            TestUtils._test_rule_throws(StableRNG(123), f, 1.0; err=ArgumentError)
         end
         function objptr_null_diff(x)
             v = [("a", [x])]
@@ -150,7 +150,7 @@ foo_throws(e) = throw(e)
             )
             return (unsafe_pointer_to_objref(q)::Vector{Float64})[1]
         end
-        TestUtils.test_rule_throws(
+        TestUtils._test_rule_throws(
             StableRNG(123),
             objptr_null_diff,
             1.0;

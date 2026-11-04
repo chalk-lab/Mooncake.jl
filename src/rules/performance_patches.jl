@@ -319,10 +319,7 @@ end
 # Stdlib `mul!` skips A·B when α = 0; its generic kernels skip α at one and C at β = 0.
 # Exception to convention 2: strided coefficient correctness requires an open signature;
 # every named element type and wrapper kind is tested.
-# The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
-# lose coefficient derivatives; #1340 removes that path, which fixes this.
-# Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
-# Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
+# The strided `mul!` rules preserve coefficient derivatives through shortcut branches.
 const _CPUStridedMulSig{T} = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
@@ -359,38 +356,85 @@ function may_match_primitive(
 end
 
 @inline function frule!!(
-    ::Dual{typeof(mul!)},
-    c::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
-    a::Dual{<:_CPUStridedOrAdjTransMatrix{T}},
-    b::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
-    alpha::Dual{<:Union{Bool,IEEEFloat,T}},
-    beta::Dual{<:Union{Bool,IEEEFloat,T}},
-) where {T<:Union{BlasFloat,HalfFloat}}
+    ::Lifted{typeof(mul!),N},
+    c::Lifted{<:_CPUStridedOrAdjTransVecOrMat{T},N},
+    a::Lifted{<:_CPUStridedOrAdjTransMatrix{T},N},
+    b::Lifted{<:_CPUStridedOrAdjTransVecOrMat{T},N},
+    alpha::Lifted{<:Union{Bool,IEEEFloat,T},N},
+    beta::Lifted{<:Union{Bool,IEEEFloat,T},N},
+) where {T<:Union{BlasFloat,HalfFloat},N}
     return _mul_frule!!(c, a, b, alpha, beta)
 end
 
+@inline function _mul_blas_operand(a::Lifted{P,N}) where {P,N}
+    if P <: Union{Transpose,Adjoint} && parent(primal(a)) isa StridedMatrix
+        p = frule!!(zero_lifted(Val(N), lgetfield), a, zero_lifted(Val(N), Val(:parent)))
+        return P <: Transpose ? 'T' : 'C', p
+    end
+    return 'N', a
+end
+
 @inline function _mul_frule!!(
-    c::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
-    a::Dual{<:_CPUStridedOrAdjTransMatrix{T}},
-    b::Dual{<:_CPUStridedOrAdjTransVecOrMat{T}},
-    alpha::Dual{<:Union{Bool,IEEEFloat,T}},
-    beta::Dual{<:Union{Bool,IEEEFloat,T}},
-) where {T}
-    C, dC = arrayify(c)
-    A, dA = arrayify(a)
-    B, dB = arrayify(b)
+    c::Lifted{<:_CPUStridedOrAdjTransVecOrMat{T},N},
+    a::Lifted{<:_CPUStridedOrAdjTransMatrix{T},N},
+    b::Lifted{<:_CPUStridedOrAdjTransVecOrMat{T},N},
+    alpha::Lifted{<:Union{Bool,IEEEFloat,T},N},
+    beta::Lifted{<:Union{Bool,IEEEFloat,T},N},
+) where {T,N}
+    C, A, B = primal(c), primal(a), primal(b)
     _check_mul_alias(C, A, B)
-    dC = B isa AbstractVector && dC isa AbstractMatrix ? view(dC, :, 1) : dC
-    pa, pb = primal(alpha), primal(beta)
-    da = pa isa Bool ? zero(T) : tangent(alpha)
-    db = pb isa Bool ? zero(T) : tangent(beta)
-    mul!(dC, dA, B, pa, pb)
-    mul!(dC, A, dB, pa, one(T))
-    iszero(da) || mul!(dC, A, B, da, one(T))
-    if !iszero(db)
-        @inbounds @simd for i in eachindex(IndexLinear(), C, dC)
-            dC[i] += db * C[i]
+    size(A, 2) == size(B, 1) && size(C, 1) == size(A, 1) && size(C, 2) == size(B, 2) ||
+        throw(DimensionMismatch("incompatible mul! dimensions"))
+    # mul! must keep its own zero-alpha shortcut; BLAS can still reference nonfinite inputs.
+    if T <: BlasFloat && promote_type(T, typeof(primal(alpha)), typeof(primal(beta))) === T
+        ta, aa = _mul_blas_operand(a)
+        tb, bb = _mul_blas_operand(b)
+        if C isa StridedVecOrMat &&
+            primal(aa) isa StridedMatrix &&
+            primal(bb) isa StridedVecOrMat &&
+            stride(C, 1) == stride(primal(aa), 1) == stride(primal(bb), 1) == 1 &&
+            stride(primal(aa), 2) >= max(size(primal(aa), 1), 1) &&
+            stride(primal(bb), 2) >= max(size(primal(bb), 1), 1) &&
+            stride(C, 2) >= max(size(C, 1), 1)
+            alpha, beta = _fwd_blas_alpha(T, alpha), _fwd_blas_alpha(T, beta)
+            if C isa AbstractMatrix
+                _gemm_partials!(ta, tb, alpha, aa, bb, beta, c)
+                mul!(C, A, B, primal(alpha), primal(beta))
+                return c
+            elseif B isa AbstractVector && size(A, 2) != 0
+                _gemv_partials!(ta, alpha, aa, bb, beta, c)
+                mul!(C, A, B, primal(alpha), primal(beta))
+                return c
+            end
         end
+    end
+    C, c_lanes = arrayify(c)
+    A, a_lanes = arrayify(a)
+    B, b_lanes = arrayify(b)
+    pa, pb = primal(alpha), primal(beta)
+    dC, dA, dB = similar(C), similar(A), similar(B)
+    for k in 1:N
+        copyto!(dC, c_lanes[k])
+        copyto!(dA, a_lanes[k])
+        copyto!(dB, b_lanes[k])
+        da = pa isa Bool ? zero(T) : tangent(alpha, k)
+        db = pb isa Bool ? zero(T) : tangent(beta, k)
+        if iszero(da) &&
+            iszero(db) &&
+            (iszero(pa) || (iszero(dA) && iszero(dB))) &&
+            (iszero(pb) || iszero(dC))
+            fill!(c_lanes[k], zero(T))
+            continue
+        end
+        mul!(dC, dA, B, pa, pb)
+        mul!(dC, A, dB, pa, one(T))
+        iszero(da) || mul!(dC, A, B, da, one(T))
+        if !iszero(db)
+            @inbounds for i in eachindex(IndexLinear(), C, dC)
+                dC[i] += db * C[i]
+            end
+        end
+        copyto!(c_lanes[k], dC)
     end
     mul!(C, A, B, pa, pb)
     return c

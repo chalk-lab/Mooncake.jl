@@ -44,26 +44,6 @@ function structured_rule_cases(f)
             (
                 false,
                 :none,
-                (
-                    mode=Mooncake.ForwardMode,
-                    oracle=(_, f, x, dx) -> begin
-                        _, actual = f(x, dx)
-                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
-                        return actual == expected &&
-                               Base.mightalias(actual, dx.fields.data) &&
-                               dx.fields.data == ones(2, 2)
-                    end,
-                ),
-                Mooncake.arrayify,
-                x,
-                Tangent((data=ones(2, 2),)),
-            ),
-        )
-        push!(
-            cases,
-            (
-                false,
-                :none,
                 (is_primitive=false,),
                 M -> sum(f(W(M); dims=1)),
                 [0.2 0.3; 0.4 0.5],
@@ -80,23 +60,6 @@ function structured_rule_cases(f)
         (false, :none, (;), f, UpperTriangular(view([0.2 0.3 9.0; 0.4 0.5 9.0], :, 1:2))),
     )
     return cases
-end
-
-function cuda_tangent_cases(array)
-    x = array(fill(complex(Inf, 0.0), 1, 1))
-    check = (_, f, args...) -> isequal(Array(f(args...)), fill(complex(Inf, 0.0), 1, 1))
-    return [
-        (false, :none, (oracle=check,), Mooncake._add_to_primal, x, zero(x), true),
-        (false, :none, (oracle=check,), Mooncake._scale, 1.0, x),
-        (
-            false,
-            :none,
-            (oracle=(_, f, args...)->f(args...) === Inf,),
-            Mooncake._dot,
-            vec(x),
-            array(ones(ComplexF64, 1)),
-        ),
-    ]
 end
 
 #

@@ -1,3 +1,91 @@
+@testset "mul! lane independence and rejected dimensions" for N in (1, 2, 8)
+    for bad in (Inf, NaN), op in (identity, transpose, adjoint)
+        C = Mooncake.zero_lifted(Val(N), zeros(2, 2))
+        A = Mooncake.zero_lifted(Val(N), ones(2, 2))
+        B = Mooncake.zero_lifted(Val(N), op([bad 1.0; 1.0 1.0]))
+        N > 1 && fill!(Mooncake.Nfwd.tangent_view(A, 1), 1.0)
+        Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), mul!),
+            C,
+            A,
+            B,
+            Mooncake.zero_lifted(Val(N), true),
+            Mooncake.zero_lifted(Val(N), false),
+        )
+        @test iszero(Mooncake.Nfwd.tangent_view(C, N))
+    end
+    C = Mooncake.zero_lifted(Val(N), fill(NaN, 2))
+    A = Mooncake.zero_lifted(Val(N), fill(Inf, 2, 2))
+    B = Mooncake.zero_lifted(Val(N), ones(2))
+    for k in 1:N
+        fill!(Mooncake.Nfwd.tangent_view(C, k), NaN)
+    end
+    N > 1 && fill!(Mooncake.Nfwd.tangent_view(B, 1), 1.0)
+    Mooncake.frule!!(
+        Mooncake.zero_lifted(Val(N), mul!),
+        C,
+        A,
+        B,
+        Mooncake.zero_lifted(Val(N), 1.0),
+        Mooncake.zero_lifted(Val(N), 0.0),
+    )
+    @test iszero(Mooncake.Nfwd.tangent_view(C, N))
+    for bad in (Inf, NaN)
+        C = Mooncake.zero_lifted(Val(N), ones(2, 2))
+        A = Mooncake.zero_lifted(Val(N), fill(bad, 2, 2))
+        B = Mooncake.zero_lifted(Val(N), ones(2, 2))
+        Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), mul!),
+            C,
+            A,
+            B,
+            Mooncake.zero_lifted(Val(N), 0.0),
+            Mooncake.zero_lifted(Val(N), 3.0),
+        )
+        @test primal(C) == fill(3.0, 2, 2)
+        @test iszero(Mooncake.Nfwd.tangent_view(C, N))
+    end
+    C = Mooncake.zero_lifted(Val(N), ones(1, 2))
+    A = Mooncake.zero_lifted(Val(N), ones(1, 2))
+    B = Mooncake.zero_lifted(Val(N), ones(1, 2))
+    for k in 1:N
+        fill!(Mooncake.Nfwd.tangent_view(C, k), 1.0)
+        fill!(Mooncake.Nfwd.tangent_view(B, k), 1.0)
+    end
+    @test_throws DimensionMismatch Mooncake.frule!!(
+        Mooncake.zero_lifted(Val(N), mul!),
+        C,
+        A,
+        B,
+        Mooncake.zero_lifted(Val(N), 2.0),
+        Mooncake.zero_lifted(Val(N), 3.0),
+    )
+    @test primal(C) == ones(1, 2)
+    @test all(k -> Mooncake.Nfwd.tangent_view(C, k) == ones(1, 2), 1:N)
+end
+
+@testset "mul! forward block allocations" for N in (1, 8), wrap in (identity, transpose)
+    C, A, B = [ones(64, 64) for _ in 1:3]
+    f = (C, A, B) -> mul!(C, wrap(A), B)
+    rule = build_frule(f, C, A, B; chunk_size=N)
+    slots = (
+        Mooncake.zero_lifted(Val(N), f),
+        map((C, A, B)) do x
+            slot = Mooncake.zero_lifted(Val(N), x)
+            for k in 1:N
+                fill!(Mooncake.Nfwd.tangent_view(slot, k), 1.0)
+            end
+            slot
+        end...,
+    )
+    sink = Ref(0.0)
+    consume() =
+        (y=rule(slots...); sink[]=primal(y)[1] + Mooncake.Nfwd.tangent_view(y, 1)[1])
+    consume()
+    @test (@allocated consume()) <= sizeof(C) + 1024
+    @test sink[] == 192.0
+end
+
 @testset "performance_patches" begin
     @test !Mooncake.may_match_primitive(
         MinimalCtx, ForwardMode, Tuple{typeof(mul!),Any,Any,Any,Int,Int}
