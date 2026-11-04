@@ -3,18 +3,17 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
+using Mooncake: CRC
 using LinearAlgebra: mul!
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
-# Core.BFloat16 requires Julia >= 1.11.
-# BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
-if VERSION < v"1.11-" || BFloat16s.BFloat16 !== Core.BFloat16
-    @info "Skipping Core.BFloat16 tests: BFloat16s.BFloat16 !== Core.BFloat16 on this platform/Julia version."
-    exit(0)
-end
-
 const sr = StableRNG
-const P = Core.BFloat16
+const P = BFloat16s.BFloat16
+
+double(x) = 2 .* x
+CRC.rrule(::typeof(double), x) = double(x), dy -> (CRC.NoTangent(), 2 .* dy)
+CRC.frule((_, dx), ::typeof(double), x) = double(x), double(dx)
+Mooncake.@from_chainrules Mooncake.DefaultCtx Tuple{typeof(double),Union{P,Array{P}}}
 
 # NNlib's `sigmoid` shape: `exp(-abs(x))` under an `ifelse`, smooth at zero even though
 # `abs` is not, because the kink cancels between the two branches.
@@ -49,6 +48,9 @@ end
     end
 
     cases = [
+        (double, P(0.25)),
+        (double, P[0.125, 0.25]),
+        (-, P(0.25)),
         (
             mul!,
             zeros(P, 2, 2),

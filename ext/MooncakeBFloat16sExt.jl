@@ -1,13 +1,14 @@
 module MooncakeBFloat16sExt
-# `Core.BFloat16` methods that need the arithmetic BFloat16s.jl defines.
+# BFloat16 arithmetic is supplied by BFloat16s.jl.
 
 using Mooncake
+using LinearAlgebra
 using Random: AbstractRNG
 
 #! format: off
 using BFloat16s: BFloat16s
 
-using Mooncake: @foldable
+using Mooncake: @foldable, CRC
 
 import Mooncake:
     MaybeCache,
@@ -36,18 +37,74 @@ import Mooncake:
     zero_fcodual,
     MinimalCtx
 
-# Core.BFloat16 requires Julia >= 1.11.
-# BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
-@static if VERSION >= v"1.11-" && BFloat16s.BFloat16 === Core.BFloat16
+const P = BFloat16s.BFloat16
 
-# On x86_64 with LLVM >= 15, BFloat16s.BFloat16 === Core.BFloat16.
-# On other platforms, BFloat16s.BFloat16 is a distinct type.
-# All methods below are defined on Core.BFloat16 directly (always available on Julia >= 1.11).
+# These P specialisations track core's HalfFloat/IEEEOrBFloat methods for first-order AD.
+# __verify_fdata_value uses the NoFData fallback; the ForwardMode nan_tangent_guard
+# primitive for forward-over-reverse is not mirrored here.
+@static if !isdefined(Core, :BFloat16) || P !== Core.BFloat16
+@foldable Mooncake.tangent_type(::Type{P}) = P
+Mooncake.fdata_type(::Type{P}) = NoFData
+Mooncake.rdata_type(::Type{P}) = P
+@foldable Mooncake.tangent_type(::Type{NoFData}, ::Type{P}) = P
+tangent(::NoFData, r::P) = r
+Mooncake._verify_rdata_value(::P, ::P) = nothing
 
-const P = Core.BFloat16
+Mooncake.arrayify(x::Union{Dual{<:AbstractArray{P}},CoDual{<:AbstractArray{P}}}) =
+    Mooncake.arrayify(primal(x), tangent(x))
+Mooncake.arrayify(x::A, dx::A) where {A<:Array{P}} = (x, dx)
+function Mooncake.arrayify(x::SubArray{P,B,C,D,E}, dx::Mooncake.TangentOrFData) where {B,C,D,E}
+    _, dt = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
+    return x, SubArray{P,B,typeof(dt),D,E}(dt, x.indices, x.offset1, x.stride1)
+end
+function Mooncake.arrayify(x::Base.ReshapedArray{P,B,C,D}, dx::Mooncake.TangentOrFData) where {B,C,D}
+    _, dt = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
+    return x, Base.ReshapedArray{P,B,typeof(dt),D}(dt, x.dims, x.mi)
+end
+function Mooncake.arrayify(x::Base.ReinterpretArray{P,N,S,A,R}, dx::Mooncake.TangentOrFData) where {N,S,A,R}
+    _, dt = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
+    return x, R ? reinterpret(reshape, P, dt) : reinterpret(P, dt)
+end
+for (Wrapper, wrap) in ((LinearAlgebra.Adjoint, adjoint), (LinearAlgebra.Transpose, transpose))
+    @eval function Mooncake.arrayify(x::$Wrapper{P,<:AbstractArray{P}}, dx::Mooncake.TangentOrFData)
+        _, dt = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
+        return x, $wrap(dt)
+    end
+end
 
-# zero(P) calls P(0), which requires BFloat16s.jl to define convert(Core.BFloat16, ::Int).
-# These therefore live here rather than in src/rules/bfloat16.jl.
+Mooncake._is_ieee_or_bfloat(::Type{P}) = true
+
+Mooncake.@is_primitive MinimalCtx Mooncake._CPUStridedMulSig{P}
+
+@inline function Mooncake.frule!!(
+    ::Dual{typeof(mul!)},
+    c::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    a::Dual{<:Mooncake._CPUStridedOrAdjTransMatrix{P}},
+    b::Dual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    alpha::Dual{<:Union{Bool,Base.IEEEFloat,P}},
+    beta::Dual{<:Union{Bool,Base.IEEEFloat,P}},
+)
+    return Mooncake._mul_frule!!(c, a, b, alpha, beta)
+end
+
+@inline function Mooncake.rrule!!(
+    ::CoDual{typeof(mul!)},
+    c::CoDual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    a::CoDual{<:Mooncake._CPUStridedOrAdjTransMatrix{P}},
+    b::CoDual{<:Mooncake._CPUStridedOrAdjTransVecOrMat{P}},
+    alpha::CoDual{S},
+    beta::CoDual{U},
+) where {S<:Union{Bool,Base.IEEEFloat,P},U<:Union{Bool,Base.IEEEFloat,P}}
+    return Mooncake._mul_rrule!!(c, a, b, alpha, beta)
+end
+
+end
+
+@static if VERSION >= v"1.11-rc4"
+    Mooncake.arrayify(x::A, dx::A) where {A<:Memory{P}} = (x, dx)
+end
+
+# Constructing BFloat16 zeros requires the arithmetic supplied by BFloat16s.jl.
 zero_tangent_internal(::P, ::MaybeCache) = zero(P)
 
 randn_tangent_internal(rng::AbstractRNG, ::P, ::MaybeCache) = P(randn(rng, Float32))
@@ -77,6 +134,21 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
 
 # Conversions
+
+Mooncake.to_cr_tangent(t::P) = t
+Mooncake.to_cr_tangent(t::Array{P}) = t
+@static if VERSION >= v"1.11-rc4"
+    Mooncake.to_cr_tangent(t::Memory{P}) = t
+end
+Mooncake.mooncake_tangent(p, t::P) = t
+Mooncake.mooncake_tangent(p::Array, t::Array{P}) = t
+Mooncake.mooncake_tangent(::P, ::CRC.NotImplemented) = P(NaN)
+Mooncake.increment_and_get_rdata!(::NoFData, r::P, t::P) = r + t
+function Mooncake.increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P})
+    Mooncake.increment!!(f, t)
+    return NoRData()
+end
+Mooncake.increment_and_get_rdata!(f, r::P, ::CRC.NotImplemented) = P(NaN)
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
 function Mooncake.frule!!(::Dual{Type{Float32}}, x::Dual{P})
@@ -115,6 +187,15 @@ function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
 end
 
 # Math rules
+
+Mooncake.@is_primitive MinimalCtx Tuple{typeof(-),P}
+function Mooncake.frule!!(::Dual{typeof(-)}, x::Dual{P})
+    return Dual(-primal(x), -tangent(x))
+end
+function Mooncake.rrule!!(::CoDual{typeof(-)}, x::CoDual{P})
+    pb(dy::P) = NoRData(), -dy
+    return zero_fcodual(-primal(x)), pb
+end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sqrt),P}
 function Mooncake.frule!!(::Dual{typeof(sqrt)}, x::Dual{P})
@@ -475,7 +556,6 @@ function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     return zero_fcodual(prevfloat(primal(x))), pb
 end
 
-end # @static if BFloat16s.BFloat16 === Core.BFloat16
 #! format: on
 
 end # module MooncakeBFloat16sExt

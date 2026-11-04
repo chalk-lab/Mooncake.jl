@@ -32,6 +32,89 @@ end
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
+        @testset "BFloat16" begin
+            P = CUDA.CUDACore.BFloat16
+            x = CuArray(P[1 -2; 3 4] ./ 2)
+            @testset "tangent representation" begin
+                test_tangent_interface(StableRNG(123), x)
+                test_tangent_splitting(StableRNG(123), x)
+            end
+            @testset "$name" for (name, f, args, opts) in [
+                ("sum", sum, (x,), (;)),
+                ("sum dims", x -> sum(x; dims=1), (x,), (; is_primitive=false)),
+                ("matmul", *, (x, copy(x)), (;)),
+                ("matvec", *, (x, CuArray(P[-3, 0] ./ 2)), (;)),
+                ("reshape", reshape, (x, (4,)), (;)),
+                ("view", view, (x, :, 1:1), (; is_primitive=false)),
+                ("getindex", getindex, (x, 1:1, :), (;)),
+                ("copyto!", copyto!, (copy(x), x), (; is_primitive=false)),
+                ("host-to-device copy", unsafe_copyto!, (copy(x), 1, Array(x), 1, 4), (;)),
+                (
+                    "vector-index getindex forward",
+                    getindex,
+                    (CuArray(P[1 2; 3 4]), [1, 3, 3]),
+                    (; mode=Mooncake.ForwardMode),
+                ),
+            ]
+                test_rule(StableRNG(123), f, args...; atol=0.2, rtol=0.4, opts...)
+            end
+            @testset "$name refuses" for (name, f, opts) in [
+                ("mean", mean, (; msg="IEEE float or complex arrays")),
+                ("sum(abs2)", x -> sum(abs2, x), (; msg="IEEE float or complex arrays")),
+                (
+                    "sum(abs2; dims)",
+                    x -> Float32(sum(sum(abs2, x; dims=1))),
+                    (; msg="IEEE float or complex arrays"),
+                ),
+                (
+                    "vector-index getindex",
+                    x -> Float32(sum(x[[1, 3]])),
+                    (; mode=Mooncake.ReverseMode),
+                ),
+                (
+                    "concatenation",
+                    x -> sum(vcat(x, x)),
+                    (; msg="CUDA concatenation does not support BFloat16"),
+                ),
+                (
+                    "wrapped array",
+                    x -> sum(transpose(x)),
+                    (;
+                        msg=r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s
+                    ),
+                ),
+                (
+                    "mixed-eltype product reverse",
+                    x -> sum(x * CUDA.fill(1.0f0, 2, 2)),
+                    (;
+                        mode=Mooncake.ReverseMode,
+                        msg=r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s,
+                    ),
+                ),
+                (
+                    "mixed-eltype product forward",
+                    x -> sum(x * CUDA.fill(1.0f0, 2, 2)),
+                    (;
+                        mode=Mooncake.ForwardMode,
+                        # Julia 1.12+ infers `wrap`'s wrapper union before CUDA's pointer bitcast.
+                        msg=if VERSION >= v"1.12-"
+                            r"wrapped CUDA BFloat16 arrays.*mixed-eltype products.*use plain CuArrays of one eltype"s
+                        else
+                            "It is not permissible to bitcast to a differentiable type"
+                        end,
+                    ),
+                ),
+                ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
+                (
+                    "broadcast",
+                    x -> Float32(sum(x .* x)),
+                    (; msg="does not support element type $P"),
+                ),
+            ]
+                test_rule_throws(StableRNG(123), f, x; msg="does not support $P", opts...)
+            end
+        end
+
         # TODO: move test case definitions to `src/ext/MooncakeCUDAExt.jl`, in line
         # with other rules.
         #
