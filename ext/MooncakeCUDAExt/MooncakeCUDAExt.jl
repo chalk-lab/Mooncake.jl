@@ -2298,8 +2298,7 @@ function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
         _gpu_reduced_jvp(out, flat_px, flat_dx, decoded.primal_out, get(pkw, :dims, :))
     else
-        T = tangent_type(typeof(decoded.primal_out))
-        T === NoTangent ? NoTangent() : zero_tangent(decoded.primal_out)
+        zero_tangent(decoded.primal_out)
     end
     return Dual(decoded.primal_out, dy)
 end
