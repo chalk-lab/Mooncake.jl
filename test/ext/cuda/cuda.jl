@@ -1746,6 +1746,20 @@ end
             ),
         )
         if _MooncakeCUDAExt._GPUARRAYS_12
+            for f in (sum, prod), dims in (:, 1)
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims, init=2.0f0 + im),
+                        f,
+                        CuArray(Float32[2, 3]),
+                    ),
+                )
+            end
             append!(
                 test_cases,
                 [

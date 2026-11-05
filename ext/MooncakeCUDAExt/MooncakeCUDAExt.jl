@@ -1324,7 +1324,7 @@ function rrule!!(
     init_partial = conj.(_prod_init_partial(px, pkw, y))
     if dims isa Colon
         function prod_kw_scalar_pb!!(dy)
-            dx .+= dy .* excl
+            dx .+= _realprojector(eltype(dx)).(dy .* excl)
             dkw = _kw_init_rdata(kw_rdata, dy, init_partial)
             return NoRData(), dkw, NoRData(), NoRData()
         end
@@ -1332,7 +1332,7 @@ function rrule!!(
     end
     dy_out = zero(y)
     function prod_kw_array_pb!!(::NoRData)
-        dx .+= dy_out .* excl
+        dx .+= _realprojector(eltype(dx)).(dy_out .* excl)
         dkw = _kw_init_rdata(kw_rdata, dy_out, init_partial)
         return NoRData(), dkw, NoRData(), NoRData()
     end
@@ -2728,7 +2728,7 @@ function rrule!!(
     tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
     if get(pkw, :dims, :) isa Colon
         function sum_kw_scalar_pb!!(dy)
-            dx .+= dy
+            dx .+= _realprojector(eltype(dx)).(dy)
             dkw = _kw_init_rdata(kw_rdata, dy, _GPUARRAYS_12)
             return NoRData(), dkw, NoRData(), NoRData()
         end
@@ -2736,7 +2736,7 @@ function rrule!!(
     end
     dy_out = zero(y)
     function sum_kw_array_pb!!(::NoRData)
-        dx .+= dy_out
+        dx .+= _realprojector(eltype(dx)).(dy_out)
         dkw = _kw_init_rdata(kw_rdata, dy_out, _GPUARRAYS_12)
         return NoRData(), dkw, NoRData(), NoRData()
     end
