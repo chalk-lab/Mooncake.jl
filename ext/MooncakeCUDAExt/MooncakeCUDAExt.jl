@@ -115,12 +115,9 @@ const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 # `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
 const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
-# Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
-# Julia-visible fields — wrong for GPU arrays.
-Mooncake._copy_output(x::Union{CuMaybeComplexArray,CuBFloatArray}) = copy(x)
-function Mooncake._copy_to_output!!(
-    dst::P, src::P
-) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
+# Copy GPU storage through CUDA; generic struct copying would descend into GPU contexts.
+Mooncake._copy_output(x::CuArray) = copy(x)
+function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuArray}
     copyto!(dst, src)
     return dst
 end
@@ -1109,11 +1106,8 @@ end
 # findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
 _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 
-# Reducing over an empty extent leaves no argmax to report, and findmax/findmin read out of
-# bounds there: a device-side BoundsError that surfaces at some later synchronisation.  A
-# Colon reduction over an empty non-vector instead hands `_winner` a linear index outside
-# CartesianIndices.  Since no element competes, x's derivative is zero and `init` takes all
-# of it.  The value, or the error when there is no `init`, comes from the primal.
+# Empty slices have no argmax: findmax/findmin can raise a device-side BoundsError
+# at a later synchronisation. The primal supplies the identity, init, or exception.
 _empty_minmax_slice(px, ::Colon) = isempty(px)
 _empty_minmax_slice(px, dims::Integer) = size(px, dims) == 0
 _empty_minmax_slice(px, dims) = any(d -> size(px, d) == 0, dims)
@@ -1141,11 +1135,8 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         return CoDual(y, NoFData()), minmax_pb!!
     end
 
-    # Any keyword beyond `dims` needs the value from the primal call: `init` can beat every
-    # element, leaving the result independent of x, and it also fixes the output eltype, so
-    # the tangent is converted to follow it.  A keyword the primal rejects then still raises
-    # its MethodError.  `won` is a negated comparison so that a slice whose max is NaN keeps
-    # the argmax gradient, where the keyword-free rule puts it.
+    # Read the primal for init's value/type and rejected keywords' MethodError.
+    # Negated comparisons keep NaN slices on the keyword-free argmax gradient.
     @eval function frule!!(
         ::Dual{typeof(Core.kwcall)},
         kw::Dual{<:NamedTuple},
@@ -1157,13 +1148,16 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dims = get(pkw, :dims, :)
         if _empty_minmax_slice(px, dims)
             y_e = $_fn(px; pkw...)
-            return Dual(y_e, _kw_init_jvp(zero(y_e), _kw_init_tangent(tangent(kw)), true))
+            return Dual(
+                y_e, _kw_init_jvp(zero_tangent(y_e), _kw_init_tangent(tangent(kw)), true)
+            )
         end
         m, ind = $_find(px; dims=dims)
         if _minmax_kw_is_plain(pkw)
             return Dual(m, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
         end
         y = $_fn(px; pkw...)
+        tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
         won = .!broadcast($_beat, m, y)
         dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims)
         return Dual(
@@ -1182,6 +1176,8 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dims = get(pkw, :dims, :)
         if _empty_minmax_slice(px, dims)
             y_e = $_fn(px; pkw...)
+            tangent_type(typeof(y_e)) === NoTangent &&
+                return zero_fcodual(y_e), _nopb(Val(4))
             if dims isa Colon
                 function minmax_empty_scalar_pb!!(dy)
                     dkw = _kw_init_rdata(kw_rdata, dy, true)
@@ -1203,6 +1199,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
             y_kw = $_fn(px; pkw...)
             y_kw, .!broadcast($_beat, m, y_kw)
         end
+        tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
         if dims isa Colon
             function minmax_kw_scalar_pb!!(dy)
                 dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
@@ -1260,10 +1257,8 @@ function _prod_exclusive(px, dims, kw)
     pnz = prod(nonzero; kw...)
     nzeros = sum(iszero.(px); dims=dims)
     contributes = ifelse.(iszero.(px), nzeros .== 1, iszero.(nzeros))
-    # `pnz` follows `init`'s type when there is one, since GPUArrays takes the output eltype
-    # from it, so the zero has to come from the quotient rather than from either side: `T`
-    # would join two eltypes into an `AbstractFloat` the kernel cannot hold, and `eltype(pnz)`
-    # would do the same the other way round when `init` is the narrower of the two.
+    # Derive zero from q: either input's precision can differ from the quotient's;
+    # mixing them would produce an AbstractFloat element type that GPU kernels cannot hold.
     q = pnz ./ nonzero
     return ifelse.(contributes, q, zero(eltype(q)))
 end
@@ -1302,9 +1297,9 @@ function frule!!(
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
-    # `init` fixes the output eltype, and the tangent has to follow it.  Converting after
-    # the reduction rather than seeding it: a widening seed over a broadcast fails to
-    # compile a kernel.
+    tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
+    # Convert after reducing: init can change the result type, but a widening
+    # seed over a broadcast can fail to compile a GPU kernel.
     dy = sum(dx .* _prod_exclusive(px, dims, pkw); dims=dims)
     dinit = _kw_init_tangent(tangent(kw))
     if !(dinit isa NoTangent || iszero(dinit))
@@ -1324,6 +1319,7 @@ function rrule!!(
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
+    tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
     excl = conj.(_prod_exclusive(px, dims, pkw))
     init_partial = conj.(_prod_init_partial(px, pkw, y))
     if dims isa Colon
@@ -2297,6 +2293,8 @@ function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(f, flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
+    tangent_type(typeof(decoded.primal_out)) === NoTangent &&
+        return Dual(decoded.primal_out, NoTangent())
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
         _gpu_reduced_jvp(out, flat_px, flat_dx, decoded.primal_out, get(pkw, :dims, :))
     else
@@ -2713,6 +2711,7 @@ function frule!!(
     _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
     y = sum(px; pkw...)
+    tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
     dy = sum(dx; dims=get(pkw, :dims, :), init=zero(eltype(y)))
     return Dual(y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), _GPUARRAYS_12))
 end
@@ -2727,6 +2726,7 @@ function rrule!!(
     kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
     y = sum(px; pkw...)
+    tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
     if get(pkw, :dims, :) isa Colon
         function sum_kw_scalar_pb!!(dy)
             dx .+= dy

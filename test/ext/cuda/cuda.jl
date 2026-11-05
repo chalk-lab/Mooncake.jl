@@ -142,14 +142,14 @@ end
         # Check we can operate on CuArrays of various element types.
 
         @testset "_copy_output / _copy_to_output!! for CuArray{$ET}" for ET in (
-            Float32, Float64, ComplexF32, ComplexF64
+            Float32, Float64, ComplexF32, ComplexF64, Int, Bool
         )
-            p = CuArray(randn(ET, 4, 4))
+            p = CuArray(ET <: Integer ? rand(ET, 4, 4) : randn(ET, 4, 4))
             p_copy = Mooncake._copy_output(p)
             @test p_copy == p
             @test p_copy !== p
             @test typeof(p_copy) == typeof(p)
-            p2 = CuArray(randn(ET, 4, 4))
+            p2 = CuArray(ET <: Integer ? rand(ET, 4, 4) : randn(ET, 4, 4))
             Mooncake._copy_to_output!!(p_copy, p2)
             @test p_copy == p2
         end
@@ -3287,6 +3287,51 @@ end
                 (52, "init=0.0 widens", _sum_kw_init_wide, _rand(rng, Float32, 4, 3)),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
+            end
+            # Integer outputs have no tangent; finite-difference perturbations can make their conversion throw.
+            @testset "integer init preserves result tangent types" begin
+                mapped_sum(x; kw...) = sum(identity, x; kw...)
+                for op in (sum, mapped_sum, prod, maximum, minimum),
+                    dims in (:, 1),
+                    shape in ((0, 3), (2, 3))
+
+                    x = CuArray(reshape(Float32.(1:prod(shape)), shape))
+                    init = if op === prod
+                        1
+                    elseif op === minimum
+                        10
+                    else
+                        0
+                    end
+                    f = z -> op(z; dims, init)
+                    y = f(x)
+                    d = Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, x),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(x, CUDA.ones(Float32, shape)),
+                    )
+                    @test isequal(Mooncake.primal(d), y)
+                    @test typeof(Mooncake.tangent(d)) === Mooncake.tangent_type(typeof(y))
+                    seed = if Mooncake.tangent_type(typeof(y)) === Mooncake.NoTangent
+                        Mooncake.NoTangent()
+                    else
+                        one.(y)
+                    end
+                    v, (_, dx) = Mooncake.value_and_pullback!!(
+                        Mooncake.build_rrule(f, x), seed, f, x
+                    )
+                    @test isequal(v, y)
+                    expected = if Mooncake.tangent_type(typeof(y)) === Mooncake.NoTangent
+                        zeros(Float32, shape)
+                    elseif op === prod
+                        Array(prod(x; dims) ./ x)
+                    elseif op in (maximum, minimum)
+                        Array(x) .== op(Array(x); dims)
+                    else
+                        ones(Float32, shape)
+                    end
+                    @test Array(dx) ≈ expected
+                end
             end
             @testset "GPUArrays 12 init derivatives" begin
                 if _MooncakeCUDAExt._GPUARRAYS_12
