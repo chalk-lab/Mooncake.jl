@@ -351,6 +351,11 @@ end
 
 _register_cuda_opaque_types!()
 
+@static if isdefined(CUDACore.GPUCompiler, :LookupCacheEntry)
+    # LookupCacheEntry.next is self-referential; generic tangent_type has no cycle handling.
+    tangent_type(::Type{<:CUDACore.GPUCompiler.LookupCacheEntry}) = NoTangent
+end
+
 # CUDA @cenum types are primitive types (integer-backed C enums) — never differentiable.
 # Mooncake's generic tangent_type @generated function errors on primitive types with no
 # registered method, so we register all of them here programmatically.
@@ -446,6 +451,12 @@ _register_cudataref_internal_types!()
 # active_state() wraps task_local_state!() and returns a NamedTuple{device,context,stream,
 # math_mode}.  Registering it separately covers call sites that bypass task_local_state!.
 @zero_derivative MinimalCtx Tuple{typeof(active_state)}
+@static if isdefined(CUDACore, :current_capture_scope)
+    # Capture scope is task-local runtime state with no derivative.
+    @zero_derivative MinimalCtx Tuple{typeof(CUDACore.current_capture_scope)}
+end
+# Device capability is a static query, not a differentiable value.
+@zero_derivative MinimalCtx Tuple{typeof(CUDACore.capability),CuDevice}
 # cuBLAS.version() queries the runtime library version via cublasGetProperty (a ccall).
 # Returns a constant VersionNumber — not differentiable.
 @zero_derivative MinimalCtx Tuple{typeof(cuBLAS.version)}

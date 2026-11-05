@@ -104,6 +104,27 @@ end
                         end,
                     ),
                 ),
+                (
+                    if VERSION >= v"1.12-"
+                        # Julia 1.10 raises UndefRefError from an empty UpsilonNode here.
+                        [(
+                            "mixed-eltype dot forward",
+                            x -> dot(x, CUDA.fill(1.0f0, size(x))),
+                            (;
+                                mode=Mooncake.ForwardMode,
+                                # CUDACore's occupancy query builds a closure `@cfunction`
+                                # only on x86; forward mode refuses it before the bitcast.
+                                msg=if Sys.ARCH === :x86_64
+                                    "Expressions of type `:cfunction` are not yet supported in forward mode"
+                                else
+                                    "It is not permissible to bitcast to a differentiable type"
+                                end,
+                            ),
+                        ),]
+                    else
+                        []
+                    end
+                )...,
                 ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
                 (
                     "broadcast",
@@ -2215,6 +2236,13 @@ end
             m_row = _rand(rng, Float32, 1, 3)
             m_scalar = randn(StableRNG(28), Float32)
             @testset "$name" for (seed, name, f, args, kw) in [
+                (
+                    263,
+                    "kernel launch without a rule",
+                    x -> sum(reverse(x)),
+                    (x32,),
+                    (; msg="It is not permissible to bitcast to a differentiable type"),
+                ),
                 (
                     283,
                     "mean, bad keyword",
