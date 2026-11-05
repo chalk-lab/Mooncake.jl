@@ -138,11 +138,74 @@ const NDAC_VecC64 = NDualArray{
     Mooncake.NDualBlock{ComplexF64,2},
 }
 
+@eval struct LiftedTest_Wide{T}
+    $([:($(Symbol(:x, i))::T) for i in 1:48]...)
+    LiftedTest_Wide{T}() where {T} = new{T}()
+    LiftedTest_Wide(xs::Vararg{T}) where {T} = new{T}(xs...)
+end
+
+@noinline function lifted_read_last(sink, w, p, v)
+    out = Mooncake._read_lifted(w, p, v)
+    sink[] =
+        out !== nothing && if v isa ImmutableDual
+            getfield(tangent(out), :fields) === getfield(v, :fields)
+        else
+            getfield(tangent(out), nfields(p)) === getfield(v, nfields(p))
+        end
+    return nothing
+end
+
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
     # `Base._stable_typeof` P (`Type{T}` for type-valued primals, matching rule dispatch).
     sl(N, p, v=NoDual()) = Lifted{Base._stable_typeof(p),N}(p, v)
     nd(v::T, parts::Vararg{T,N}) where {T,N} = NDual{T,N}(v, parts)
+
+    @testset "wide aggregate reads" begin
+        for n in (33, 128), width in (1, 8)
+            a = ones(4)
+            ps = ntuple(_ -> a, n)
+            names = ntuple(i -> Symbol(:x, i), n)
+            for p in (ps, NamedTuple{names}(ps))
+                v = tangent(zero_lifted(Val(width), p))
+                sink = Ref(false)
+                lifted_read_last(sink, Val(width), p, v)
+                @test sink[]
+                @test TestUtils.count_allocs(lifted_read_last, sink, Val(width), p, v) == 0
+                replacement = Base.setindex(ps, copy(a), n)
+                changed = p isa NamedTuple ? NamedTuple{names}(replacement) : replacement
+                @test Mooncake._read_lifted(Val(width), changed, v) === nothing
+            end
+        end
+        p = ntuple(i -> float(i), 128)
+        v = tangent(lift(p, ntuple(_ -> 1.0, 128)))
+        changed = map(x -> -x, p)
+        out = Mooncake._read_lifted(Val(1), changed, v)
+        @test typeof(tangent(out)) === typeof(v)
+        @test all(i -> tangent(out)[i].value === changed[i], eachindex(p))
+        @test all(i -> tangent(out)[i].partials === (1.0,), eachindex(p))
+        for n in (0, 48)
+            a = ones(4)
+            p = if n == 0
+                LiftedTest_Wide{Tuple{typeof(a),eltype(a)}}()
+            else
+                LiftedTest_Wide(ntuple(i -> (a, float(i)), n)...)
+            end
+            v = tangent(zero_lifted(Val(1), p))
+            sink = Ref(false)
+            lifted_read_last(sink, Val(1), p, v)
+            @test sink[]
+            @test TestUtils.count_allocs(lifted_read_last, sink, Val(1), p, v) == 0
+            changed = n == 0 ? p : LiftedTest_Wide(ntuple(i -> (a, -float(i)), n)...)
+            out = Mooncake._read_lifted(Val(1), changed, v)
+            @test typeof(tangent(out)) === typeof(v)
+            @test all(
+                i -> Mooncake.val(getfield(tangent(out).fields, i))[2].value === -float(i),
+                1:n,
+            )
+            @test all(f -> Mooncake.is_init(f) == (n == 48), tangent(out).fields)
+        end
+    end
 
     @testset "cyclic MutableDual tangent arithmetic" begin
         # A self-referential mutable struct lifts to a cyclic `MutableDual` V; the

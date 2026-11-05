@@ -109,12 +109,20 @@ end
 )
 @inline function _read_refreshed(::Val{N}, p::P, v) where {N,P}
     v isa dual_type(Val(N), P) || return nothing
-    r = _refresh_leaves(Val(N), p, v)
+    # Initialized Vector/NamedTuple structs allocate at 34 fields on Julia 1.10/1.12.
+    cutoff = v isa ImmutableDual ? 33 : 32
+    # Julia 1.10 nested 40×40 reads compile in 47/126 s at widths 1/8 (recursive: 4.4 s).
+    r = if fieldcount(P) <= cutoff
+        _refresh_leaves(Val(N), p, v)
+    elseif v isa ImmutableDual
+        fields = @inline _refresh_bounded_fields(Val(N), p, getfield(v, :fields), Val(true))
+        fields === nothing ? nothing : ImmutableDual(fields)
+    else
+        @inline _refresh_bounded_fields(Val(N), p, v, Val(false))
+    end
     r === nothing && return nothing
     return Lifted{P,N}(p, r)
 end
-# The refreshed V keeps `typeof(v)`: a leaf's canonical element type can be abstract (`Any`),
-# and `Lifted` is invariant in V, so a tuple typed from its values would not be the slot's V.
 @inline _refresh_leaves(::Val{N}, ::Tuple{}, ::Tuple{}) where {N} = ()
 @inline function _refresh_leaves(::Val{N}, p::Tuple, v::Tuple) where {N}
     h = _read_lifted(Val(N), p[1], v[1])
@@ -157,6 +165,77 @@ end
     t = _refresh_fields(Val(N), p, fields, Base.tail(names))
     t === nothing && return nothing
     return (r, t...)
+end
+
+@inline function _refresh_leaf(w, p, v, ::Val{false})
+    h = _read_lifted(w, p, v)
+    return h === nothing ? nothing : tangent(h)
+end
+@inline function _refresh_leaf(w, p, v, ::Val{true})
+    if v isa PossiblyUninitTangent
+        h = _read_lifted(w, p, val(v))
+        h === nothing && return nothing
+        t = tangent(h)
+        return t === val(v) ? v : typeof(v)(t)
+    end
+    return _refresh_leaf(w, p, v, Val(false))
+end
+
+# Bound tuple specialization while retaining canonical extraction and assembly.
+const _REFRESH_GROUP_SIZE = 16
+@noinline @generated function _refresh_group(w, p::Tuple, v::Tuple)
+    body = Expr(:block)
+    result = [gensym(:r) for _ in 1:fieldcount(v)]
+    for (i, r) in enumerate(result)
+        push!(
+            body.args,
+            :($r = _refresh_leaf(w, getfield(p, $i), getfield(v, $i), Val(false))),
+        )
+        push!(body.args, :($r === nothing && return nothing))
+    end
+    push!(body.args, :(return ($(result...),)))
+    return body
+end
+
+# Preserve declared field types: inferring them from values narrows `Any`.
+@inline @generated function _refresh_bounded_fields(
+    w::Val, p, fields::V, ::Val{wrapped}
+) where {V,wrapped}
+    body = Expr(:block)
+    result = Any[]
+    # Optional-field groups box on return; reuse unchanged wrappers individually.
+    group_size = wrapped ? 1 : _REFRESH_GROUP_SIZE
+    for start in 1:group_size:fieldcount(V)
+        inds = start:min(start + group_size - 1, fieldcount(V))
+        group = gensym(:group)
+        keys = V <: NamedTuple ? map(i -> QuoteNode(fieldname(V, i)), inds) : inds
+        vs = [:(getfield(fields, $i)) for i in inds]
+        ps = [:(getfield(p, $key)) for key in keys]
+        if wrapped
+            call = :(_refresh_leaf(w, $(only(ps)), $(only(vs)), Val(true)))
+            call = :(@noinline $call)
+            v = only(vs)
+            key = only(keys)
+            call = :(
+                if $v isa PossiblyUninitTangent && (!is_init($v) || !isdefined(p, $key))
+                    $v
+                else
+                    $call
+                end
+            )
+        else
+            call = :(_refresh_group(w, ($(ps...),), ($(vs...),)))
+        end
+        push!(body.args, :($group = $call))
+        push!(body.args, :($group === nothing && return nothing))
+        if wrapped
+            push!(result, group)
+        else
+            append!(result, [:(getfield($group, $i)) for i in 1:length(inds)])
+        end
+    end
+    push!(body.args, :(return V(($(result...),))))
+    return body
 end
 # The rebuild takes the slot, not the loaded `p`, and returns boxed: a rooted argument or an
 # unboxed `Lifted` return would put a GC frame on every read's fast path.
