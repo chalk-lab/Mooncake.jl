@@ -110,6 +110,10 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
+# Derived forward rules for `promote_op(::Function, ::Type)` segfault: the opaque closure's
+# `specptr` expects an argument array, but compiled callers pass arguments separately.
+@zero_derivative MinimalCtx Tuple{typeof(Base.promote_op),Vararg}
+
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function _objref_tangent(y, dx::Ptr)
     tangent_type(typeof(y)) == NoTangent && return NoTangent()
@@ -514,6 +518,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
+        (false, :none, nothing, Base.promote_op, abs2, Float64),
         (
             false,
             :none,
