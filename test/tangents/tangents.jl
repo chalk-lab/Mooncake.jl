@@ -600,3 +600,13 @@ end
 #     test_many_tangents(Xoshiro(123456))
 #     test_tricky_tangents(Xoshiro(123456))
 # end
+
+@testset "strict tangent field writes" for a in (5.0, PossiblyUninitTangent(5.0))
+    t = MutableTangent((a=a, b=NoTangent()))
+    for field in (:a, 1)
+        @test_throws r"ArgumentError:.*Cannot write a `Float32`" Mooncake.set_tangent_field!(
+            t, field, 3.0f0
+        )
+        @test Mooncake.get_tangent_field(t, :a) === 5.0
+    end
+end

@@ -91,6 +91,16 @@ were actually fields of `t`. This is the moral equivalent of `getfield` for
     return get_tangent_field(t, _sym_to_int(F, Val(s)))
 end
 
+# NamedTuple construction would silently convert mismatched field values.
+@noinline function _tangent_field_write_error(::Type{T}, i::Int, x) where {T}
+    throw(
+        ArgumentError(
+            "Cannot write a `$(typeof(x))` into field `$(fieldname(T, i))` of type `$(fieldtype(T, i))`. " *
+            "Mooncake does not convert implicitly; convert at the call site.",
+        ),
+    )
+end
+
 """
     set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
 
@@ -98,11 +108,14 @@ Sets the value of the `i`th field of the data in `t` to value `x`.
 
 Has the same semantics that `setfield!` would have if the data in the `fields` field of `t`
 were actually fields of `t`. This is the moral equivalent of `setfield!` for
-[`MutableTangent`](@ref).
+[`MutableTangent`](@ref): `x` must already have the field's tangent type; otherwise,
+throw an `ArgumentError` rather than converting.
 """
 @inline function set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
     fields = t.fields
     Ti = fieldtype(Tfields, i)
+    x isa (Ti <: PossiblyUninitTangent ? fieldtype(Ti, 1) : Ti) ||
+        _tangent_field_write_error(Tfields, i, x)
     new_val = Ti <: PossiblyUninitTangent ? Ti(x) : x
     new_fields = Tfields(ntuple(n -> n == i ? new_val : fields[n], fieldcount(Tfields)))
     t.fields = new_fields
