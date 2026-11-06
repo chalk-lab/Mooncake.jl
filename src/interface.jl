@@ -581,7 +581,7 @@ end
                     (Any, Csize_t, Any),
                     temp,
                     i - 1,
-                    _copy_output(getfield(x, i)),
+                    _copy_output(_getfield_possibly_uninit(x, Val(i))),
                 )
             end
         )
@@ -602,7 +602,12 @@ end
 @generated function _copy_output_immutable_cartesian_upto(x::P, ::Val{idx}) where {P,idx}
     idx == 0 && return :(x)
     return quote
-        flds = collect(Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i))))
+        flds = collect(
+            Any,
+            Base.Cartesian.@ntuple(
+                $idx, i -> _copy_output(_getfield_possibly_uninit(x, Val(i)))
+            )
+        )
         # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
         return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, $idx)::P
     end

@@ -29,6 +29,16 @@ _copy(x::P) where {P<:PossiblyUninitTangent} = is_init(x) ? P(_copy(x.tangent)) 
 @inline is_init(t::PossiblyUninitTangent) = isdefined(t, :tangent)
 is_init(t) = true
 
+# Julia 1.10/1.11 miscompile an inlined guarded getfield of an unset field; drop at 1.12.
+@static if VERSION < v"1.12-"
+    @inline function _getfield_possibly_uninit(x::P, ::Val{n}) where {P,n}
+        return always_initialised(P)[n] ? getfield(x, n) : _getfield_out_of_line(x, Val(n))
+    end
+    @noinline _getfield_out_of_line(x, ::Val{n}) where {n} = getfield(x, n)
+else
+    @inline _getfield_possibly_uninit(x, ::Val{n}) where {n} = getfield(x, n)
+end
+
 @unstable @inline val(x::PossiblyUninitTangent) =
     (!is_init(x) && error("Uninitialised"); x.tangent)
 @inline val(x) = x
@@ -582,7 +592,9 @@ end
             T_field_expr = :(PossiblyUninitTangent{tangent_type($P_field)})
             return quote
                 if isdefined(x, $n)
-                    $T_field_expr(zero_tangent_internal(getfield(x, $n), d))
+                    $T_field_expr(
+                        zero_tangent_internal(_getfield_possibly_uninit(x, Val($n)), d)
+                    )
                 else
                     $T_field_expr()
                 end
@@ -699,7 +711,11 @@ end
             T_field_expr = :(PossiblyUninitTangent{tangent_type($P_field)})
             return quote
                 if isdefined(x, $n)
-                    $T_field_expr(randn_tangent_internal(rng, getfield(x, $n), d))
+                    $T_field_expr(
+                        randn_tangent_internal(
+                            rng, _getfield_possibly_uninit(x, Val($n)), d
+                        ),
+                    )
                 else
                     $T_field_expr()
                 end
@@ -1447,7 +1463,7 @@ live in `src/rules/linear_algebra.jl`.
                 # returns dest[$i] as-is when both the primal and tangent fields are undefined.
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(_getfield_possibly_uninit(x, Val($i)))
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
@@ -1483,7 +1499,7 @@ live in `src/rules/linear_algebra.jl`.
             else
                 :(
                     if isdefined(x, $i)
-                        friendly_tangent_cache(getfield(x, $i))
+                        friendly_tangent_cache(_getfield_possibly_uninit(x, Val($i)))
                     else
                         FriendlyTangentCache{AsRaw}(nothing)
                     end
@@ -1601,9 +1617,10 @@ end
                 end
             end
         else
+            fp_i = :(_getfield_possibly_uninit(primal, Val($i)))
             quote
                 if isdefined(primal, $i)
-                    let fp = getfield(primal, $i), ft_raw = tangent.fields[$i]
+                    let fp = $fp_i, ft_raw = tangent.fields[$i]
                         tangent_to_friendly!!(
                             dest.buffer[$i],
                             fp,
@@ -1656,12 +1673,9 @@ end
     zero_field_exprs = map(1:n) do i
         :(
             if isdefined(primal, $i)
-                tangent_to_friendly!!(
-                    dest[$i],
-                    getfield(primal, $i),
-                    zero_tangent(getfield(primal, $i)),
-                    c,
-                )
+                let fp = _getfield_possibly_uninit(primal, Val($i))
+                    tangent_to_friendly!!(dest[$i], fp, zero_tangent(fp), c)
+                end
             else
                 dest[$i]
             end
@@ -1678,7 +1692,10 @@ end
             quote
                 if is_init(tangent.fields[$i])
                     tangent_to_friendly!!(
-                        dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
+                        dest[$i],
+                        _getfield_possibly_uninit(primal, Val($i)),
+                        val(tangent.fields[$i]),
+                        c,
                     )
                 else
                     # PossiblyUninitTangent with isInit=false: field had zero contribution.
@@ -1902,7 +1919,7 @@ end
                         x,
                         $(n-1),
                         tangent_to_primal_internal!!(
-                            getfield(x, $n), val(tx.fields[$n]), c
+                            _getfield_possibly_uninit(x, Val($n)), val(tx.fields[$n]), c
                         ),
                     )
                 end
@@ -1926,7 +1943,8 @@ end
         end
     else
         ttp_exprs = map(1:fieldcount(P)) do n
-            return :(tangent_to_primal_internal!!(getfield(x, $n), val(tx.fields[$n]), c))
+            x_n = :(_getfield_possibly_uninit(x, Val($n)))
+            return :(tangent_to_primal_internal!!($x_n, val(tx.fields[$n]), c))
         end
         # Generate a chain of if statements to handle partially-initialized structs
         ninit = CC.datatype_min_ninitialized(P)
@@ -1965,7 +1983,7 @@ end
                     )
                     $T_field_expr(
                         primal_to_tangent_internal!!(
-                            val(tx.fields[$n]), getfield(x, $n), c
+                            val(tx.fields[$n]), _getfield_possibly_uninit(x, Val($n)), c
                         ),
                     )
                 else

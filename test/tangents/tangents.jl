@@ -242,6 +242,20 @@ using DispatchDoctor: allow_unstable
         end
     end
 
+    # A child process, because the failure is a codegen segfault.
+    @testset "zero_tangent of a constant partially initialised struct compiles" begin
+        script = """
+            using Mooncake
+            struct Inner; x::Float64; v::Vector{Float64}; end
+            struct Outer; a::Float64; b::Inner; Outer(a) = new(a); end
+            f() = Mooncake.zero_tangent(Outer(3.0))
+            Mooncake.is_init(f().fields.b) && exit(1)
+        """
+        project = Base.active_project()
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project -e $script`
+        @test success(pipeline(cmd; stderr=stderr))
+    end
+
     # For Symmetric and Hermitian, tangent_to_friendly_internal!! copies the raw backing
     # data matrix directly: the stored triangle holds the tangent, the other is zero/junk.
     # For SymTridiagonal, dv and ev are copied into the appropriate diagonals; all other

@@ -608,7 +608,11 @@ zero_rdata(p::IEEEFloat) = zero(p)
         else
             return quote
                 R_field = $R
-                isdefined(p, $n) ? R_field(zero_rdata(getfield(p, $n))) : R_field()
+                if isdefined(p, $n)
+                    R_field(zero_rdata(_getfield_possibly_uninit(p, Val($n))))
+                else
+                    R_field()
+                end
             end
         end
     end
