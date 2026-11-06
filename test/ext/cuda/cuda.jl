@@ -762,24 +762,20 @@ end
                 )
             end
         end
+        case(fargs...; interface_only=false, is_primitive=false) = (
+            interface_only, is_primitive, fargs...
+        )
+        primitive_case(fargs...; interface_only=false) = case(
+            fargs...; interface_only, is_primitive=true
+        )
         test_cases = Any[
-            (false, :none, true, mean, CuArray(Float32[1, 2, 3])),
-            (false, :none, true, mean, abs2, CuArray(Float32[1, 2, 3])),
-            (false, :none, true, mean, Float64, CuArray(Float32[1, 2, 3])),
-            (
-                false,
-                :none,
-                true,
-                Core.kwcall,
-                (; dims=1),
-                mean,
-                t -> 1.0 * t,
-                CuArray(Float32[1, 2, 3]),
+            primitive_case(mean, CuArray(Float32[1, 2, 3])),
+            primitive_case(mean, abs2, CuArray(Float32[1, 2, 3])),
+            primitive_case(mean, Float64, CuArray(Float32[1, 2, 3])),
+            primitive_case(
+                Core.kwcall, (; dims=1), mean, t -> 1.0 * t, CuArray(Float32[1, 2, 3])
             ),
-            (
-                false,
-                :none,
-                true,
+            primitive_case(
                 Core.kwcall,
                 (; dims=1),
                 mean,
@@ -787,443 +783,332 @@ end
                 CuArray(ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
             ),
             [
-                (false, :none, true, Core.kwcall, (; dims), mean, f, CuArray(x)) for
+                primitive_case(Core.kwcall, (; dims), mean, f, CuArray(x)) for
                 x in (Float32[1, 2, 3], ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
                 f in (identity, abs2),
                 dims in (:, 1)
             ]...,
             # sum
-            (false, :none, false, sum, _rand(rng, 64, 32)),
+            case(sum, _rand(rng, 64, 32)),
             # similar
-            (true, :none, false, similar, _rand(rng, 64, 32)),
+            case(similar, _rand(rng, 64, 32); interface_only=true),
             # adjoint
-            (false, :none, false, adjoint, _rand(rng, 64, 32)),
-            (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
+            case(adjoint, _rand(rng, 64, 32)),
+            case(adjoint, _rand(rng, ComplexF64, 64, 32)),
             # transpose
-            (false, :none, false, transpose, _rand(rng, 64, 32)),
-            (false, :none, false, transpose, _rand(rng, ComplexF64, 64, 32)),
+            case(transpose, _rand(rng, 64, 32)),
+            case(transpose, _rand(rng, ComplexF64, 64, 32)),
             # reshape — exercises the DataRef-based _new_ rule
-            (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, 64, 32)),
-            (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, ComplexF64, 64, 32)),
+            case(x -> reshape(x, 32, 64), _rand(rng, 64, 32)),
+            case(x -> reshape(x, 32, 64), _rand(rng, ComplexF64, 64, 32)),
             # lgetfield
             # `data` is an opaque storage handle, so only test the AD interface for these.
-            (true, :none, true, lgetfield, _rand(rng, 64, 32), Val(1)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(2)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(3)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(4)),
-            (true, :none, true, lgetfield, _rand(rng, 64, 32), Val(:data)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:maxsize)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:offset)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:dims)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(1); interface_only=true),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(2)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(3)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(4)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(:data); interface_only=true),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(:maxsize)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(:offset)),
+            primitive_case(lgetfield, _rand(rng, 64, 32), Val(:dims)),
             # mul! (matrix × matrix, Float64)
-            (
-                false,
-                :none,
-                false,
-                mul!,
-                _rand(rng, 16, 32),
-                _rand(rng, 16, 8),
-                _rand(rng, 8, 32),
-            ),
+            case(mul!, _rand(rng, 16, 32), _rand(rng, 16, 8), _rand(rng, 8, 32)),
             # mul!(C, A, B, alpha, beta) with the scalars as differentiable arguments: their
             # cotangents are the inner products against A*B and C_old.
-            (
-                false,
-                :none,
-                false,
-                _mul_scalars,
-                _rand(rng, 4, 5),
-                _rand(rng, 4, 3),
-                _rand(rng, 3, 5),
-                2.0,
-                0.5,
+            case(
+                _mul_scalars, _rand(rng, 4, 5), _rand(rng, 4, 3), _rand(rng, 3, 5), 2.0, 0.5
             ),
-            (
-                false,
-                :none,
-                false,
-                _mulv_scalars,
-                _rand(rng, 4),
-                _rand(rng, 4, 3),
-                _rand(rng, 3),
-                2.0,
-                0.5,
-            ),
+            case(_mulv_scalars, _rand(rng, 4), _rand(rng, 4, 3), _rand(rng, 3), 2.0, 0.5),
             # mul! (matrix × vector, Float64)
-            (false, :none, false, mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
+            case(mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
             # mul! (matrix × matrix, ComplexF64) — cuBLAS bug on Julia ≤ 1.10, skip.
             (if VERSION >= v"1.11"
-                [(
-                    false,
-                    :none,
-                    false,
-                    mul!,
-                    _rand(rng, ComplexF64, 16, 32),
-                    _rand(rng, ComplexF64, 16, 8),
-                    _rand(rng, ComplexF64, 8, 32),
-                ),]
+                [
+                    case(
+                        mul!,
+                        _rand(rng, ComplexF64, 16, 32),
+                        _rand(rng, ComplexF64, 16, 8),
+                        _rand(rng, ComplexF64, 8, 32),
+                    ),
+                ]
             else
                 []
             end)...,
             # mul! (matrix × vector, Float32)
-            (
-                false,
-                :none,
-                false,
+            case(
                 mul!,
                 _rand(rng, Float32, 16),
                 _rand(rng, Float32, 16, 8),
                 _rand(rng, Float32, 8),
             ),
             # CPU→GPU transfer (cu)
-            (false, :none, false, _free_intermediate, _rand(rng, 4)),
-            (false, :none, false, _free_nodiff, _rand(rng, Float32, 3)),
-            (false, :none, false, _free_gathered_idx, _rand(rng, Float32, 3)),
-            (false, :none, false, _cu_sum, _host_rand(rng, 16)),
+            case(_free_intermediate, _rand(rng, 4)),
+            case(_free_nodiff, _rand(rng, Float32, 3)),
+            case(_free_gathered_idx, _rand(rng, Float32, 3)),
+            case(_cu_sum, _host_rand(rng, 16)),
             # `cu` of an argument that is already on the device: the cotangent must come back
             # to the device buffer rather than being pulled to the host.
-            (false, :none, false, _cu_sum, _rand(rng, Float32, 4)),
-            (false, :none, false, _cu_sum, _rand(rng, Float64, 4)),
+            case(_cu_sum, _rand(rng, Float32, 4)),
+            case(_cu_sum, _rand(rng, Float64, 4)),
             # GPU→CPU transfer (Array)
-            (false, :none, false, _array_sum, _rand(rng, 16)),
+            case(_array_sum, _rand(rng, 16)),
             # GPU Diagonal construction
-            (false, :none, false, _cu_adjoint, _rand(rng, Float32, 2, 3)),
-            (false, :none, false, _cu_transpose, _rand(rng, Float32, 2, 3)),
-            (false, :none, false, _cu_diagonal, _rand(rng, Float32, 3)),
-            (false, :none, false, _diagonal_of_matrix, _rand(rng, Float32, 2, 3)),
-            (false, :none, false, _diagonal_sum, _rand(rng, 16)),
+            case(_cu_adjoint, _rand(rng, Float32, 2, 3)),
+            case(_cu_transpose, _rand(rng, Float32, 2, 3)),
+            case(_cu_diagonal, _rand(rng, Float32, 3)),
+            case(_diagonal_of_matrix, _rand(rng, Float32, 2, 3)),
+            case(_diagonal_sum, _rand(rng, 16)),
             # sum(::CuComplexArray) — 1-arg widened rule, sum itself is the primitive
-            (false, :none, true, sum, _rand(rng, ComplexF64, 16)),
+            primitive_case(sum, _rand(rng, ComplexF64, 16)),
             # sum(f, ::CuFloatArray)
-            (false, :none, false, _sum_f_sin, _rand(rng, 16)),
-            (false, :none, false, _sum_f_exp, _rand(rng, 16)),
+            case(_sum_f_sin, _rand(rng, 16)),
+            case(_sum_f_exp, _rand(rng, 16)),
             # GPU broadcasts (materialize rule, real CuArrays)
-            (false, :none, false, _bcast_sum_sin, _rand(rng, 16)),
-            (false, :none, false, _bcast_sum_pow7, _rand(rng, 16)),
-            (false, :none, false, _bcast_sum_log, _rand_pos(rng, 16)),
-            (false, :none, false, _bcast_sum_exp, _rand(rng, 16)),
-            (false, :none, false, _bcast_sum_lit_mul, _rand(rng, 16)),
-            (false, :none, false, _bcast_sum_mul, _rand(rng, 16), _rand(rng, 16)),
-            (false, :none, false, _bcast_sum_sin_pow2, _rand(rng, 16)),
+            case(_bcast_sum_sin, _rand(rng, 16)),
+            case(_bcast_sum_pow7, _rand(rng, 16)),
+            case(_bcast_sum_log, _rand_pos(rng, 16)),
+            case(_bcast_sum_exp, _rand(rng, 16)),
+            case(_bcast_sum_lit_mul, _rand(rng, 16)),
+            case(_bcast_sum_mul, _rand(rng, 16), _rand(rng, 16)),
+            case(_bcast_sum_sin_pow2, _rand(rng, 16)),
             # Float32 broadcast variants — same functions, different element type
-            (false, :none, false, _bcast_sum_sin, _rand(rng, Float32, 16)),
-            (false, :none, false, _bcast_sum_lit_mul, _rand(rng, Float32, 16)),
-            (
-                false,
-                :none,
-                false,
-                _bcast_sum_mul,
-                _rand(rng, Float32, 16),
-                _rand(rng, Float32, 16),
-            ),
+            case(_bcast_sum_sin, _rand(rng, Float32, 16)),
+            case(_bcast_sum_lit_mul, _rand(rng, Float32, 16)),
+            case(_bcast_sum_mul, _rand(rng, Float32, 16), _rand(rng, Float32, 16)),
             # 2D broadcast inputs — exercises _unbroadcast and reshape paths
-            (false, :none, false, _bcast_sum_sin, _rand(rng, 8, 4)),
-            (false, :none, false, _bcast_sum_exp, _rand(rng, 8, 4)),
-            (false, :none, false, _bcast_sum_abs2, _rand(rng, Float32, 16)),
+            case(_bcast_sum_sin, _rand(rng, 8, 4)),
+            case(_bcast_sum_exp, _rand(rng, 8, 4)),
+            case(_bcast_sum_abs2, _rand(rng, Float32, 16)),
             # sum(f, ::CuFloatArray) — Float32 variant
-            (false, :none, false, _sum_f_sin, _rand(rng, Float32, 16)),
+            case(_sum_f_sin, _rand(rng, Float32, 16)),
             # sum(f, ::CuComplexArray) — 2-wide Duals, f:ℂ→ℝ and f:ℂ→ℂ
-            (false, :none, false, _sum_f_cx_abs2, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _sum_f_cx_sin_re, _rand(rng, ComplexF64, 16)),
+            case(_sum_f_cx_abs2, _rand(rng, ComplexF64, 16)),
+            case(_sum_f_cx_sin_re, _rand(rng, ComplexF64, 16)),
             # sum(f, ::CuComplexArray) — ComplexF32 variant
-            (false, :none, false, _sum_f_cx_abs2, _rand(rng, ComplexF32, 16)),
+            case(_sum_f_cx_abs2, _rand(rng, ComplexF32, 16)),
             # GPU broadcasts on complex CuArrays
-            (false, :none, false, _bcast_cx_abs2, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _bcast_cx_sin_re, _rand(rng, ComplexF64, 16)),
-            (
-                false,
-                :none,
-                false,
-                _bcast_cx_mul_re,
-                _rand(rng, ComplexF64, 16),
-                _rand(rng, ComplexF64, 16),
-            ),
+            case(_bcast_cx_abs2, _rand(rng, ComplexF64, 16)),
+            case(_bcast_cx_sin_re, _rand(rng, ComplexF64, 16)),
+            case(_bcast_cx_mul_re, _rand(rng, ComplexF64, 16), _rand(rng, ComplexF64, 16)),
             # ComplexF32 broadcast variants
-            (false, :none, false, _bcast_cx_abs2, _rand(rng, ComplexF32, 16)),
-            (false, :none, false, _bcast_cx_sin_re, _rand(rng, ComplexF32, 16)),
+            case(_bcast_cx_abs2, _rand(rng, ComplexF32, 16)),
+            case(_bcast_cx_sin_re, _rand(rng, ComplexF32, 16)),
             # GPU broadcasts through Adjoint/Transpose leaves
-            (false, :none, false, _bcast_adj_lit_add, _rand(rng, 16)),
-            (false, :none, false, _bcast_adj_cx_abs2, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _bcast_tp_lit_add, _rand(rng, 16)),
+            case(_bcast_adj_lit_add, _rand(rng, 16)),
+            case(_bcast_adj_cx_abs2, _rand(rng, ComplexF64, 16)),
+            case(_bcast_tp_lit_add, _rand(rng, 16)),
             # Non-contiguous SubArray broadcast leaf (rows 1:2 of a 4x3 stay a SubArray)
-            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
+            case(_bcast_noncontig_view, _rand(rng, 4, 3)),
             # Shape-broadcasting: vector vs matrix — exercises _unbroadcast in pullback
-            (false, :none, false, _bcast_vec_mat_add, _rand(rng, 8), _rand(rng, 8, 4)),
-            (false, :none, false, _bcast_vec_mat_mul, _rand(rng, 8), _rand(rng, 8, 4)),
+            case(_bcast_vec_mat_add, _rand(rng, 8), _rand(rng, 8, 4)),
+            case(_bcast_vec_mat_mul, _rand(rng, 8), _rand(rng, 8, 4)),
             # map(f, ::CuArray) — transitive via materialize rule (CUDA.jl dispatches to broadcast)
-            (false, :none, false, _map_sin, _rand(rng, 16)),
-            (false, :none, false, _map_mul, _rand(rng, 16), _rand(rng, 16)),
-            (false, :none, false, _map_cx_abs2, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _map_cx_sin_re, _rand(rng, ComplexF64, 16)),
+            case(_map_sin, _rand(rng, 16)),
+            case(_map_mul, _rand(rng, 16), _rand(rng, 16)),
+            case(_map_cx_abs2, _rand(rng, ComplexF64, 16)),
+            case(_map_cx_sin_re, _rand(rng, ComplexF64, 16)),
             # sum(f, x) — exercises mapreduce(f, add_sum, x) path (Julia 1.11 specific)
-            (false, :none, false, _sum_f_sin, _rand(rng, 16)),
-            (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
-            (false, :none, false, _sum_f_abs2, _rand(rng, ComplexF64, 16)),
+            case(_sum_f_sin, _rand(rng, 16)),
+            case(_sum_f_abs2, _rand(rng, 16)),
+            case(_sum_f_abs2, _rand(rng, ComplexF64, 16)),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
-            (false, :none, false, _reduce_plus_d1, _rand(rng, Float32, 4, 3)),
-            (false, :none, false, _reduce_plus_init, _rand(rng, Float32, 6)),
-            (false, :none, false, _reduce_mul_init, _rand_pos(rng, 6)),
-            (false, :none, false, _mapreduce_abs2_init, _rand(rng, Float32, 6)),
-            (false, :none, false, _mapreduce_sin, _rand(rng, 16)),
-            (false, :none, false, _mapreduce_exp, _rand(rng, 16)),
-            (false, :none, false, _mapreduce_cx_abs2, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _mapreduce_cx_sin_re, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _sum_f_abs2_d1, _rand(rng, Float32, 4, 3)),
-            (false, :none, false, _sum_f_sin_d12, _rand(rng, Float64, 4, 3, 2)),
-            (false, :none, false, _sum_f_cx_abs2_d1, _rand(rng, ComplexF32, 4, 3)),
-            (false, :none, false, _sum_f_cx_sin_d2, _rand(rng, ComplexF64, 4, 3)),
-            (false, :none, false, _mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
-            (false, :none, false, _mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
-            (
-                false,
-                :none,
-                false,
-                z -> mapreduce(abs2, +, z; init=0.0),
-                _rand(rng, Float32, 6),
-            ),
+            case(_reduce_plus_d1, _rand(rng, Float32, 4, 3)),
+            case(_reduce_plus_init, _rand(rng, Float32, 6)),
+            case(_reduce_mul_init, _rand_pos(rng, 6)),
+            case(_mapreduce_abs2_init, _rand(rng, Float32, 6)),
+            case(_mapreduce_sin, _rand(rng, 16)),
+            case(_mapreduce_exp, _rand(rng, 16)),
+            case(_mapreduce_cx_abs2, _rand(rng, ComplexF64, 16)),
+            case(_mapreduce_cx_sin_re, _rand(rng, ComplexF64, 16)),
+            case(_sum_f_abs2_d1, _rand(rng, Float32, 4, 3)),
+            case(_sum_f_sin_d12, _rand(rng, Float64, 4, 3, 2)),
+            case(_sum_f_cx_abs2_d1, _rand(rng, ComplexF32, 4, 3)),
+            case(_sum_f_cx_sin_d2, _rand(rng, ComplexF64, 4, 3)),
+            case(_mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
+            case(_mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
+            case(z -> mapreduce(abs2, +, z; init=0.0), _rand(rng, Float32, 6)),
             # reduce(+, x) — explicit rule, redirects to sum machinery
-            (false, :none, false, _reduce_plus, _rand(rng, 16)),
-            (false, :none, false, _reduce_plus, _rand(rng, Float32, 16)),
-            (false, :none, false, _reduce_plus_cx, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _reduce_plus_cx, _rand(rng, ComplexF32, 16)),
+            case(_reduce_plus, _rand(rng, 16)),
+            case(_reduce_plus, _rand(rng, Float32, 16)),
+            case(_reduce_plus_cx, _rand(rng, ComplexF64, 16)),
+            case(_reduce_plus_cx, _rand(rng, ComplexF32, 16)),
             # reduce(*, x) — explicit rule, redirects to prod machinery
-            (false, :none, false, _reduce_mul, _rand_pos(rng, 16)),
-            (false, :none, false, _reduce_mul, _rand_pos(rng, Float32, 16)),
-            (false, :none, false, _reduce_mul_cx, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _reduce_mul_cx, _rand(rng, ComplexF32, 16)),
+            case(_reduce_mul, _rand_pos(rng, 16)),
+            case(_reduce_mul, _rand_pos(rng, Float32, 16)),
+            case(_reduce_mul_cx, _rand(rng, ComplexF64, 16)),
+            case(_reduce_mul_cx, _rand(rng, ComplexF32, 16)),
             # norm — cuBLAS rule (real and complex)
-            (false, :none, false, _norm, _rand(rng, 16)),
-            (false, :none, false, _norm_cx, _rand(rng, ComplexF64, 16)),
+            case(_norm, _rand(rng, 16)),
+            case(_norm_cx, _rand(rng, ComplexF64, 16)),
             # dot — cuBLAS rule (real vectors)
-            (false, :none, false, _dot, _rand(rng, 16), _rand(rng, 16)),
+            case(_dot, _rand(rng, 16), _rand(rng, 16)),
             # prod — explicit rule (real and complex)
-            (false, :none, false, _prod, _rand_pos(rng, 16)),
-            (false, :none, false, _prod_cx, _rand(rng, ComplexF64, 16)),
+            case(_prod, _rand_pos(rng, 16)),
+            case(_prod_cx, _rand(rng, ComplexF64, 16)),
             # An exact zero is where reading the derivative off as y/xᵢ used to break: the
             # zero's own derivative is the product of the rest, and a second zero in the
             # slice takes the whole slice to zero.  prod is a polynomial, so finite
             # differences pin these exactly.
-            (false, :none, false, _prod, CuArray([1.0, 0.0, 3.0])),
-            (false, :none, false, _prod, CuArray([1.0, 0.0, 0.0])),
-            (false, :none, false, _prod_cx, CuArray(ComplexF64[1 + 2im, 0, 3 - 1im])),
+            case(_prod, CuArray([1.0, 0.0, 3.0])),
+            case(_prod, CuArray([1.0, 0.0, 0.0])),
+            case(_prod_cx, CuArray(ComplexF64[1 + 2im, 0, 3 - 1im])),
             # cumsum — explicit rule (real and complex)
-            (false, :none, false, _cumsum_sum, _rand(rng, 16)),
-            (false, :none, false, _cumsum_cx_sum, _rand(rng, ComplexF64, 16)),
+            case(_cumsum_sum, _rand(rng, 16)),
+            case(_cumsum_cx_sum, _rand(rng, ComplexF64, 16)),
             # cumprod — explicit rule (real and complex, nonzero inputs)
-            (false, :none, false, _cumprod_sum, _rand_pos(rng, 16)),
-            (false, :none, false, _cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
+            case(_cumprod_sum, _rand_pos(rng, 16)),
+            case(_cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
             # A zero: every prefix from it on is zero, but the zero's own derivative is the
             # rest of its prefix, and a second zero takes the tail to zero.
-            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0])),
-            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0, 0.0, 5.0])),
-            (
-                false,
-                :none,
-                false,
-                _cumprod_cx_sum,
-                CuArray(ComplexF64[1 + 2im, 0, 3 - 1im]),
-            ),
+            case(_cumprod_sum, CuArray([2.0, 0.0, 3.0])),
+            case(_cumprod_sum, CuArray([2.0, 0.0, 3.0, 0.0, 5.0])),
+            case(_cumprod_cx_sum, CuArray(ComplexF64[1 + 2im, 0, 3 - 1im])),
             # accumulate(+) — explicit rule (real and complex)
-            (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
-            (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
+            case(_accumulate_plus_sum, _rand(rng, 16)),
+            case(_accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
             # The `dims` spellings. prod has its own rule per reduced slice, so it gets the
             # complex arm and both output branches; the others forward to the rules above.
-            (false, :none, false, _prod_d1, _rand_pos(rng, 4, 3)),
-            (false, :none, false, _prod_d1, CuArray([1.0 2.0; 0.0 4.0])),
-            (false, :none, false, _prod_d1, CuArray([0.0 2.0; 0.0 4.0])),
-            (false, :none, false, _prod_colon, CuArray([1.0 0.0; 3.0 4.0])),
-            (false, :none, false, _prod_d2, _rand_pos(rng, 4, 3)),
-            (false, :none, false, _prod_colon, _rand_pos(rng, 4, 3)),
-            (false, :none, false, _prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
-            (false, :none, false, _cumsum_d1, _rand(rng, 4, 3)),
-            (false, :none, false, _cumprod_d1, _rand_pos(rng, 4, 3)),
-            (false, :none, false, _cumprod_d1, CuArray([1.0 2.0; 0.0 4.0])),
-            (false, :none, false, _accumulate_plus_d1, _rand(rng, 4, 3)),
-            (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
-            (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
-            (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
-            (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
-            (false, :none, false, _prod_init_wider, _rand(rng, Float32, 2, 2)),
-            (false, :none, false, _prod_init_wider, CuArray(Float32[1 0; 3 2])),
-            (false, :none, false, _cumsum_empty, CuArray{Float32}(undef, 0, 3)),
-            (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
-            (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
-            (false, :none, false, _accumulate_empty, CuArray{Float32}(undef, 0)),
-            (false, :none, false, _reinterpret_cx_to_real, _rand(rng, ComplexF64, 3)),
-            (false, :none, false, _reinterpret_real_to_cx, _rand(rng, Float64, 4)),
-            (false, :none, false, _map_predicate, _rand(rng, Float32, 4)),
-            (false, :none, false, _max_dtuple, _rand(rng, Float32, 2, 3)),
-            (false, :none, false, _min_dtuple, _rand(rng, Float32, 2, 3)),
+            case(_prod_d1, _rand_pos(rng, 4, 3)),
+            case(_prod_d1, CuArray([1.0 2.0; 0.0 4.0])),
+            case(_prod_d1, CuArray([0.0 2.0; 0.0 4.0])),
+            case(_prod_colon, CuArray([1.0 0.0; 3.0 4.0])),
+            case(_prod_d2, _rand_pos(rng, 4, 3)),
+            case(_prod_colon, _rand_pos(rng, 4, 3)),
+            case(_prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
+            case(_cumsum_d1, _rand(rng, 4, 3)),
+            case(_cumprod_d1, _rand_pos(rng, 4, 3)),
+            case(_cumprod_d1, CuArray([1.0 2.0; 0.0 4.0])),
+            case(_accumulate_plus_d1, _rand(rng, 4, 3)),
+            case(_accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
+            case(_accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
+            case(_accumulate_init_widens, _rand(rng, Float64, 6)),
+            case(_accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            case(_prod_init_wider, _rand(rng, Float32, 2, 2)),
+            case(_prod_init_wider, CuArray(Float32[1 0; 3 2])),
+            case(_cumsum_empty, CuArray{Float32}(undef, 0, 3)),
+            case(_cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
+            case(_cumprod_empty, CuArray{Float32}(undef, 0, 3)),
+            case(_accumulate_empty, CuArray{Float32}(undef, 0)),
+            case(_reinterpret_cx_to_real, _rand(rng, ComplexF64, 3)),
+            case(_reinterpret_real_to_cx, _rand(rng, Float64, 4)),
+            case(_map_predicate, _rand(rng, Float32, 4)),
+            case(_max_dtuple, _rand(rng, Float32, 2, 3)),
+            case(_min_dtuple, _rand(rng, Float32, 2, 3)),
             # init above every element, then below: it takes the whole derivative or none.
-            (false, :none, false, _max_dtuple_init, 9.0f0, CuArray(Float32[1 5 2; 3 2 4])),
-            (false, :none, false, _max_dtuple_init, 0.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            case(_max_dtuple_init, 9.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            case(_max_dtuple_init, 0.0f0, CuArray(Float32[1 5 2; 3 2 4])),
             # every reduced slice empty, so `init` decides the output alone.
-            (false, :none, false, _max_dtuple_init, -9.0f0, CuArray{Float32}(undef, 0, 3)),
-            (false, :none, false, _accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
-            (false, :none, false, _accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
-            (
-                false,
-                :none,
-                false,
-                _accumulate_nodiff_init_outdim,
-                1.0,
-                CuArray(Int32[1, 2, 3]),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _accumulate_init_outdim3,
-                1.0f0,
-                _rand(rng, Float32, 2, 3),
-            ),
-            (false, :none, false, _bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
-            (false, :none, false, _bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
-            (false, :none, false, _bcast_kill_view, CuArray([0.3, -0.7, 1.2, 2.5])),
-            (false, :none, false, _bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
-            (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
-            (false, :none, false, _int_capture, _rand(rng, 4)),
-            (false, :none, false, _cumsum_trailing, _rand(rng, 4)),
-            (false, :none, false, _cumprod_trailing, _rand_pos(rng, 4)),
-            (false, :none, false, _accumulate_trailing, _rand(rng, 2, 3)),
-            (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
-            (false, :none, false, _accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
+            case(_max_dtuple_init, -9.0f0, CuArray{Float32}(undef, 0, 3)),
+            case(_accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
+            case(_accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
+            case(_accumulate_nodiff_init_outdim, 1.0, CuArray(Int32[1, 2, 3])),
+            case(_accumulate_init_outdim3, 1.0f0, _rand(rng, Float32, 2, 3)),
+            case(_bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
+            case(_bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
+            case(_bcast_kill_view, CuArray([0.3, -0.7, 1.2, 2.5])),
+            case(_bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
+            case(_hoisted_capture, 3.0, _rand(rng, 4)),
+            case(_int_capture, _rand(rng, 4)),
+            case(_cumsum_trailing, _rand(rng, 4)),
+            case(_cumprod_trailing, _rand_pos(rng, 4)),
+            case(_accumulate_trailing, _rand(rng, 2, 3)),
+            case(_accumulate_flat, _rand(rng, 4, 3)),
+            case(_accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback
-            (
-                false,
-                :none,
-                false,
-                _gather_sum,
-                _rand(rng, 16),
-                CuArray(Int32[2, 5, 7, 3, 1, 8]),
-            ),
-            (false, :none, false, _gather_dup, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_dup_weighted, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_dup_host, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_dup_cx, _rand(rng, ComplexF32, 4)),
-            (false, :none, false, _gather_dup_cartesian, _rand(rng, Float32, 2, 2)),
-            (false, :none, false, _gather_mask, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_mask_weighted, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_mask_host, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
-            (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
-            (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
-            (false, :none, false, _view_sum, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_weighted, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
-            (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
-            (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
-            (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
-            (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_top, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_cast_top_narrow, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_top_chain, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_cast_top_nodiff, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_chain_exp, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_chain_sq, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_chain_same, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_cast_chain_cx, _rand(rng, ComplexF64, 4)),
-            (false, :none, false, _bcast_setscalar, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_setscalar_live, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_setscalar_expr, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_setscalar_int, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_int_range, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_materialised_range, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
-            (
-                false,
-                :none,
-                false,
-                _bcast_narrow_scalar_cx,
-                1.5f0 + 0.5f0im,
-                _rand(rng, ComplexF64, 4),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _bcast_narrow_scalar_cx,
-                1.5f0,
-                _rand(rng, ComplexF64, 4),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _gather_sum_cx,
-                _rand(rng, ComplexF64, 16),
-                CuArray(Int32[2, 5, 7, 3, 1, 8]),
+            case(_gather_sum, _rand(rng, 16), CuArray(Int32[2, 5, 7, 3, 1, 8])),
+            case(_gather_dup, _rand(rng, Float32, 4)),
+            case(_gather_dup_weighted, _rand(rng, Float32, 4)),
+            case(_gather_dup_host, _rand(rng, Float32, 4)),
+            case(_gather_dup_cx, _rand(rng, ComplexF32, 4)),
+            case(_gather_dup_cartesian, _rand(rng, Float32, 2, 2)),
+            case(_gather_mask, _rand(rng, Float32, 4)),
+            case(_gather_mask_weighted, _rand(rng, Float32, 4)),
+            case(_gather_mask_host, _rand(rng, Float32, 4)),
+            case(_gather_mask_bits, _rand(rng, Float32, 4)),
+            case(_gather_mask_cx, _rand(rng, ComplexF32, 4)),
+            case(_gather_mask_none, _rand(rng, Float32, 4)),
+            case(_view_sum, view(_rand(rng, Float32, 8), 3:8)),
+            case(_view_weighted, view(_rand(rng, Float32, 8), 3:8)),
+            case(_view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
+            case(_view_of_view, view(_rand(rng, Float32, 8), 3:8)),
+            case(_view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
+            case(_view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            case(_bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
+            case(_bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
+            case(_bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
+            case(_bcast_cast_top, _rand(rng, Float32, 4)),
+            case(_bcast_cast_top_narrow, _rand(rng, Float64, 4)),
+            case(_bcast_cast_top_chain, _rand(rng, Float32, 4)),
+            case(_bcast_cast_top_nodiff, _rand(rng, Float64, 4)),
+            case(_bcast_cast_chain_exp, _rand(rng, Float64, 4)),
+            case(_bcast_cast_chain_sq, _rand(rng, Float64, 4)),
+            case(_bcast_cast_chain_same, _rand(rng, Float64, 4)),
+            case(_bcast_cast_chain_cx, _rand(rng, ComplexF64, 4)),
+            case(_bcast_setscalar, _rand(rng, Float32, 4)),
+            case(_bcast_setscalar_live, _rand(rng, Float32, 4)),
+            case(_bcast_setscalar_expr, _rand(rng, Float32, 4)),
+            case(_bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
+            case(_bcast_setscalar_int, _rand(rng, Float32, 4)),
+            case(_bcast_int_range, _rand(rng, Float32, 4)),
+            case(_bcast_materialised_range, _rand(rng, Float32, 4)),
+            case(_bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
+            case(_bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
+            case(_bcast_narrow_scalar_cx, 1.5f0 + 0.5f0im, _rand(rng, ComplexF64, 4)),
+            case(_bcast_narrow_scalar_cx, 1.5f0, _rand(rng, ComplexF64, 4)),
+            case(
+                _gather_sum_cx, _rand(rng, ComplexF64, 16), CuArray(Int32[2, 5, 7, 3, 1, 8])
             ),
             # Gather with Cartesian indices: without the CartesianIndex arm of the claim
             # the trace falls into checkbounds, which reduces with `&`.
-            (
-                false,
-                :none,
-                false,
+            case(
                 _gather_sum,
                 _rand(rng, 4, 4),
                 CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
             ),
             # Multidimensional slicing with integers, ranges and colons.
-            (false, :none, true, getindex, _rand(rng, 4, 5), :, 2:3),
-            (false, :none, true, getindex, _rand(rng, 4, 5), 2:3, :),
-            (false, :none, true, getindex, _rand(rng, 4, 5), 1:2:4, 5:-2:1),
-            (false, :none, true, getindex, _rand(rng, 4, 5), 2, :),
-            (false, :none, true, getindex, _rand(rng, 4, 5), 3:2, :),
-            (false, :none, true, getindex, _rand(rng, 4, 5), StepRangeLen(2, 0, 3), 1:2),
-            (
-                false,
-                :none,
-                true,
-                getindex,
-                _rand(rng, ComplexF64, 4, 5),
-                :,
-                StepRangeLen(2, 0, 3),
+            primitive_case(getindex, _rand(rng, 4, 5), :, 2:3),
+            primitive_case(getindex, _rand(rng, 4, 5), 2:3, :),
+            primitive_case(getindex, _rand(rng, 4, 5), 1:2:4, 5:-2:1),
+            primitive_case(getindex, _rand(rng, 4, 5), 2, :),
+            primitive_case(getindex, _rand(rng, 4, 5), 3:2, :),
+            primitive_case(getindex, _rand(rng, 4, 5), StepRangeLen(2, 0, 3), 1:2),
+            primitive_case(
+                getindex, _rand(rng, ComplexF64, 4, 5), :, StepRangeLen(2, 0, 3)
             ),
-            (false, :none, true, getindex, _rand(rng, Float32, 3, 4, 2), :, 2:3, 2),
-            (false, :none, true, getindex, _rand(rng, ComplexF64, 4, 5), 2:4, 1:2),
-            (false, :none, false, _slice_gram, _rand(rng, 5, 4)),
+            primitive_case(getindex, _rand(rng, Float32, 3, 4, 2), :, 2:3, 2),
+            primitive_case(getindex, _rand(rng, ComplexF64, 4, 5), 2:4, 1:2),
+            case(_slice_gram, _rand(rng, 5, 4)),
             # Non-differentiable device arrays: copy, fill and reductions had no rule.
-            (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
-            (false, :none, false, _nodiff_fill, _rand(rng, 8)),
-            (false, :none, false, _nodiff_sum, _rand(rng, 8)),
-            (false, :none, false, _nodiff_sum_dims, _rand(rng, 8)),
-            (false, :none, false, _nodiff_sum_mask, _rand(rng, 8)),
-            (false, :none, false, _nodiff_prod, _rand(rng, 8)),
-            (false, :none, false, _nodiff_max, _rand(rng, 8)),
-            (false, :none, false, _nodiff_min_dims, _rand(rng, 8)),
-            (false, :none, false, _nodiff_count, _rand(rng, 8)),
-            (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
-            (false, :none, false, _count_init_identity, _rand(rng, 8)),
-            (false, :none, false, _nodiff_diff, _rand(rng, 8)),
-            (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
-            (false, :none, false, _cumsum_idx_gather, _rand(rng, Float32, 4)),
-            (false, :none, false, _cumsum_idx_kw, _rand(rng, Float32, 4)),
-            (false, :none, false, _accumulate_idx_gather, _rand(rng, Float32, 4)),
-            (false, :none, false, _cumsum_mask_gather, _rand(rng, Float32, 4)),
-            (false, :none, false, _sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
-            (false, :none, false, _sortperm_rev, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
-            (
-                false,
-                :none,
-                false,
+            case(_nodiff_index_copy, _rand(rng, 8)),
+            case(_nodiff_fill, _rand(rng, 8)),
+            case(_nodiff_sum, _rand(rng, 8)),
+            case(_nodiff_sum_dims, _rand(rng, 8)),
+            case(_nodiff_sum_mask, _rand(rng, 8)),
+            case(_nodiff_prod, _rand(rng, 8)),
+            case(_nodiff_max, _rand(rng, 8)),
+            case(_nodiff_min_dims, _rand(rng, 8)),
+            case(_nodiff_count, _rand(rng, 8)),
+            case(_nodiff_count_float, _rand(rng, 8)),
+            case(_count_init_identity, _rand(rng, 8)),
+            case(_nodiff_diff, _rand(rng, 8)),
+            case(_nodiff_sortperm, _rand(rng, 8)),
+            case(_cumsum_idx_gather, _rand(rng, Float32, 4)),
+            case(_cumsum_idx_kw, _rand(rng, Float32, 4)),
+            case(_accumulate_idx_gather, _rand(rng, Float32, 4)),
+            case(_cumsum_mask_gather, _rand(rng, Float32, 4)),
+            case(_sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            case(_sortperm_rev, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            case(
                 _sortperm_weighted,
                 CuArray(Float32[0.3, 0.7, 0.2, 0.9]),
                 CuArray(Float32[1, 2, 3, 4]),
             ),
-            (false, :none, false, _nodiff_sort_rev, _rand(rng, 8)),
+            case(_nodiff_sort_rev, _rand(rng, 8)),
             # geam! called directly (is_primitive=true): the only case that reaches the
             # restore of C and the consumption of its cotangent, since `+`/`-` always
             # allocate a fresh C.  Bool alpha/beta, as MulAddMul supplies them to the gemm!
             # rules, have no tangent and so take the no-derivative arm of the scalars.
-            (
-                false,
-                :none,
-                true,
+            primitive_case(
                 CUDA.cuBLAS.geam!,
                 'N',
                 'N',
@@ -1235,10 +1120,7 @@ end
             ),
             # Differentiable alpha/beta, real and complex.  The complex case is also the
             # only one where the 'C' flag's unconjugated alpha differs from conj(alpha).
-            (
-                false,
-                :none,
-                true,
+            primitive_case(
                 CUDA.cuBLAS.geam!,
                 'T',
                 'N',
@@ -1248,10 +1130,7 @@ end
                 _rand(rng, Float32, 3, 3),
                 _rand(rng, Float32, 3, 3),
             ),
-            (
-                false,
-                :none,
-                true,
+            primitive_case(
                 CUDA.cuBLAS.geam!,
                 'C',
                 'T',
@@ -1262,149 +1141,66 @@ end
                 _rand(rng, ComplexF64, 3, 3),
             ),
             # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
-            (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
-            (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
-            (
-                false,
-                :none,
-                false,
-                _geam_add_cx,
-                _rand(rng, ComplexF64, 3, 3),
-                _rand(rng, ComplexF64, 3, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _geam_alias,
-                _rand(rng, Float32, 3, 3),
-                _rand(rng, Float32, 3, 3),
-            ),
+            case(_geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            case(_geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            case(_geam_add_cx, _rand(rng, ComplexF64, 3, 3), _rand(rng, ComplexF64, 3, 3)),
+            case(_geam_alias, _rand(rng, Float32, 3, 3), _rand(rng, Float32, 3, 3)),
             # repeat: counts, counts that add a dimension, and the keyword spelling.
-            (false, :none, false, _repeat_counts, _rand(rng, 2, 3)),
-            (false, :none, false, _repeat_extends, _rand(rng, 2, 3)),
-            (false, :none, false, _repeat_inner_outer, _rand(rng, 2, 3)),
-            (false, :none, false, _repeat_nothing, _rand(rng, 2, 3)),
+            case(_repeat_counts, _rand(rng, 2, 3)),
+            case(_repeat_extends, _rand(rng, 2, 3)),
+            case(_repeat_inner_outer, _rand(rng, 2, 3)),
+            case(_repeat_nothing, _rand(rng, 2, 3)),
             # A real argument concatenated with a complex one, and a real->complex cast leaf:
             # both hand a real fdata buffer a complex cotangent.
-            (
-                false,
-                :none,
-                false,
-                _vcat_mixed,
-                _rand(rng, Float32, 3),
-                _rand(rng, ComplexF32, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _cat_mixed,
-                _rand(rng, Float32, 3),
-                _rand(rng, ComplexF32, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _hcat_mixed,
-                _rand(rng, Float32, 3, 2),
-                _rand(rng, ComplexF32, 3, 2),
-            ),
-            (false, :none, false, _cast_to_complex, _rand(rng, Float32, 3)),
+            case(_vcat_mixed, _rand(rng, Float32, 3), _rand(rng, ComplexF32, 3)),
+            case(_cat_mixed, _rand(rng, Float32, 3), _rand(rng, ComplexF32, 3)),
+            case(_hcat_mixed, _rand(rng, Float32, 3, 2), _rand(rng, ComplexF32, 3, 2)),
+            case(_cast_to_complex, _rand(rng, Float32, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
-            (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
-            (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
-            (false, :none, false, _diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
-            (false, :none, false, _bcast_nodiff_ratio, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_nodiff_float, _rand(rng, Float64, 4)),
-            (false, :none, false, _bcast_nodiff_bool, _rand(rng, Float64, 4)),
-            (
-                false,
-                :none,
-                false,
-                _fill_real_into_cx,
-                CuArray(ComplexF32[0, 0, 0, 0]),
-                2.0f0,
-            ),
-            (
-                false,
-                :none,
-                false,
-                _fill_cx_into_cx,
-                CuArray(ComplexF32[0, 0, 0, 0]),
-                2.0f0 + 0.5f0im,
-            ),
+            case(_diagonal_field_bcast, _rand_pos(rng, 16)),
+            case(_diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
+            case(_diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
+            case(_bcast_nodiff_ratio, _rand(rng, Float64, 4)),
+            case(_bcast_nodiff_float, _rand(rng, Float64, 4)),
+            case(_bcast_nodiff_bool, _rand(rng, Float64, 4)),
+            case(_fill_real_into_cx, CuArray(ComplexF32[0, 0, 0, 0]), 2.0f0),
+            case(_fill_cx_into_cx, CuArray(ComplexF32[0, 0, 0, 0]), 2.0f0 + 0.5f0im),
             # sum(f, x) with non-smooth f (abs)
-            (false, :none, false, _sum_f_abs, _rand(rng, 16)),
+            case(_sum_f_abs, _rand(rng, 16)),
             # sum(f, Adjoint) — tests sum(f, x) dispatch when input is an Adjoint wrapper
-            (false, :none, false, _sum_adj_pow3, _rand(rng, 16)),
+            case(_sum_adj_pow3, _rand(rng, 16)),
             # sum(A') / sum(transpose(A)) for complex arrays
-            (false, :none, false, _sum_cx_adj, _rand(rng, ComplexF64, 16)),
-            (false, :none, false, _sum_cx_tr, _rand(rng, ComplexF64, 16)),
+            case(_sum_cx_adj, _rand(rng, ComplexF64, 16)),
+            case(_sum_cx_tr, _rand(rng, ComplexF64, 16)),
             # scalar variable in a broadcast — gradient w.r.t. both the CuArray and the scalar
-            (false, :none, false, _bcast_scalar_mul, _rand(rng, 16), randn(rng)),
-            (false, :none, false, _bcast_scalar_add, _rand(rng, 16), randn(rng)),
+            case(_bcast_scalar_mul, _rand(rng, 16), randn(rng)),
+            case(_bcast_scalar_add, _rand(rng, 16), randn(rng)),
             # Float32 scalar broadcast variants
-            (
-                false,
-                :none,
-                false,
-                _bcast_scalar_mul,
-                _rand(rng, Float32, 16),
-                randn(rng, Float32),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _bcast_scalar_add,
-                _rand(rng, Float32, 16),
-                randn(rng, Float32),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _bcast_cx_scalar_mul,
-                _rand(rng, ComplexF64, 16),
-                randn(rng),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _bcast_cx_cx_scalar_mul,
-                _rand(rng, ComplexF64, 16),
-                randn(rng, ComplexF64),
+            case(_bcast_scalar_mul, _rand(rng, Float32, 16), randn(rng, Float32)),
+            case(_bcast_scalar_add, _rand(rng, Float32, 16), randn(rng, Float32)),
+            case(_bcast_cx_scalar_mul, _rand(rng, ComplexF64, 16), randn(rng)),
+            case(
+                _bcast_cx_cx_scalar_mul, _rand(rng, ComplexF64, 16), randn(rng, ComplexF64)
             ),
             # slicing CPU array then adjoint+matmul on GPU — goes through generic_matvecmul!
             # (cuBLAS gemv path); forward mode now works because cuBLAS.handle is a primitive.
-            (
-                false,
-                :none,
-                false,
-                _cu_slice_adj_mul,
-                _host_rand(rng, Float32, 3, 3),
-                _rand(rng, Float32, 3, 3),
+            case(
+                _cu_slice_adj_mul, _host_rand(rng, Float32, 3, 3), _rand(rng, Float32, 3, 3)
             ),
             # copy(CuArray) → copyto! → unsafe_copyto! — regression for UpsilonNode error.
-            (false, :none, false, _copy_sum, _rand(rng, 16)),
-            (false, :none, false, _copy_sum_cx, _rand(rng, ComplexF64, 16)),
+            case(_copy_sum, _rand(rng, 16)),
+            case(_copy_sum_cx, _rand(rng, ComplexF64, 16)),
             # UnifiedMemory and HostMemory CuArrays — same unsafe_copyto! rule, different M.
-            (false, :none, false, _copy_sum, _rand_unified(rng, 16)),
-            (false, :none, false, _copy_sum, _rand_host(rng, 16)),
+            case(_copy_sum, _rand_unified(rng, 16)),
+            case(_copy_sum, _rand_host(rng, 16)),
             # Direct unsafe_copyto!(dest, doffs, src, soffs, n) tests (is_primitive=true).
             # Full-array copy: doffs=soffs=1, n=length(src).
-            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
+            primitive_case(unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
             # Sub-range copy: only elements 2..5 of dest are overwritten; rest unchanged.
-            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
-            (false, :none, false, _copy_overlap, _rand(rng, 4), 1, 1, 4),
+            primitive_case(unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
+            case(_copy_overlap, _rand(rng, 4), 1, 1, 4),
             # Complex full-array copy.
-            (
-                false,
-                :none,
-                true,
+            primitive_case(
                 unsafe_copyto!,
                 _rand(rng, ComplexF64, 8),
                 1,
@@ -1413,62 +1209,44 @@ end
                 8,
             ),
             # GPU→CPU transfer: Array(x::CuArray) path.
-            (false, :none, false, _gpu_to_cpu, _rand(rng, 16)),
+            case(_gpu_to_cpu, _rand(rng, 16)),
             # CPU→GPU transfer: copyto!(CuArray, Array) → unsafe_copyto!(GPU, CPU).
-            (false, :none, false, _cpu_to_gpu_sum, _rand(rng, 16)),
+            case(_cpu_to_gpu_sum, _rand(rng, 16)),
             # CuPtr{T} + Integer — differentiable T (Float32): view(x, range) internally
             # calls unsafe_convert(CuPtr{Float32}, SubArray) = unsafe_convert(parent) + offset.
-            (false, :none, false, _view_sum, _rand(rng, 16)),
-            (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
+            case(_view_sum, _rand(rng, 16)),
+            case(_view_sum_cx, _rand(rng, ComplexF64, 16)),
             # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
             # Test both Float32 (original) and Float64 (regression for DataRef zero_tangent).
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
+            case(_view_bool_gate_sum, _rand_pos(rng, 16)),
+            case(_view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
             # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
             # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
             # Also test float value to exercise gradient propagation through x.
-            (false, :none, true, fill!, _rand(rng, 16), 0.0f0),
-            (false, :none, true, fill!, _rand(rng, 4, 4), 0.0f0),
+            primitive_case(fill!, _rand(rng, 16), 0.0f0),
+            primitive_case(fill!, _rand(rng, 4, 4), 0.0f0),
             # Complex CuArray: tests rdata_type(ComplexF64) + sum(da) on complex tangent.
-            (false, :none, true, fill!, _rand(rng, ComplexF64, 8), 0.5 + 0.5im),
+            primitive_case(fill!, _rand(rng, ComplexF64, 8), 0.5 + 0.5im),
             # Wrapped destinations fell through to the untraceable `cufunction` until the
             # bound became `CuMaybeWrappedArray`; summing and restoring go through the wrapper.
-            (false, :none, true, fill!, _rand(rng, 4, 4)', 0.0f0),
-            (false, :none, true, fill!, transpose(_rand(rng, 4, 4)), 0.0f0),
-            (false, :none, true, fill!, view(_rand(rng, 4, 4), 1:2, :), 0.0f0),
-            (false, :none, true, fill!, _rand(rng, ComplexF64, 4, 4)', 0.5 + 0.5im),
+            primitive_case(fill!, _rand(rng, 4, 4)', 0.0f0),
+            primitive_case(fill!, transpose(_rand(rng, 4, 4)), 0.0f0),
+            primitive_case(fill!, view(_rand(rng, 4, 4), 1:2, :), 0.0f0),
+            primitive_case(fill!, _rand(rng, ComplexF64, 4, 4)', 0.5 + 0.5im),
             # Lambda wrapper: not itself a primitive; is_primitive=false so test_rule does not
             # assert that the built rule is frule!!/rrule!!.
-            (false, :none, false, (a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
+            case((a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
             # in-place broadcast — exercises materialize! frule!! / rrule!!.
             # Cover a basic expression, an aliased destination, an expanded right-hand side,
             # and real output stored in a complex destination.
-            (false, :none, false, _inplace_sin!, _rand(rng, 16), _rand(rng, 16)),
-            (false, :none, false, _inplace_add_alias!, _rand(rng, 16), _rand(rng, 16)),
-            (false, :none, false, _inplace_vec_to_mat!, _rand(rng, 4, 3), _rand(rng, 4)),
-            (
-                false,
-                :none,
-                false,
-                _inplace_cx_abs2!,
-                _rand(rng, ComplexF64, 16),
-                _rand(rng, ComplexF64, 16),
-            ),
+            case(_inplace_sin!, _rand(rng, 16), _rand(rng, 16)),
+            case(_inplace_add_alias!, _rand(rng, 16), _rand(rng, 16)),
+            case(_inplace_vec_to_mat!, _rand(rng, 4, 3), _rand(rng, 4)),
+            case(_inplace_cx_abs2!, _rand(rng, ComplexF64, 16), _rand(rng, ComplexF64, 16)),
             # Dense-layer-style forward pass: W*x + b → relu → sum.
             # Exercises the 7-arg generic_matmatmul! rule + bias broadcast + mightalias.
-            (
-                false,
-                :none,
-                false,
-                _linear,
-                _rand(rng, 4, 4),
-                _rand(rng, 4, 4),
-                _rand(rng, 4),
-            ),
-            (
-                false,
-                :none,
-                false,
+            case(_linear, _rand(rng, 4, 4), _rand(rng, 4, 4), _rand(rng, 4)),
+            case(
                 _linear_cx,
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4, 4),
@@ -1476,254 +1254,92 @@ end
             ),
             # Non-mutating matrix multiplication avoids the output restoration required by
             # the lower-level mul! rules.
-            (false, :none, true, *, _rand(rng, 4, 3), _rand(rng, 3)),
-            (false, :none, true, *, _rand(rng, 4, 3), _rand(rng, 3, 2)),
-            (
-                false,
-                :none,
-                true,
-                *,
-                _rand(rng, ComplexF64, 4, 3),
-                _rand(rng, ComplexF64, 3),
-            ),
+            primitive_case(*, _rand(rng, 4, 3), _rand(rng, 3)),
+            primitive_case(*, _rand(rng, 4, 3), _rand(rng, 3, 2)),
+            primitive_case(*, _rand(rng, ComplexF64, 4, 3), _rand(rng, ComplexF64, 3)),
             # vcat on CuArrays
-            (
-                false,
-                :none,
-                false,
-                _vcat_cu_sum,
-                _rand(rng, Float32, 8),
-                _rand(rng, Float32, 4),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _vcat_cu_sum,
-                _rand(rng, Float32, 8, 3),
-                _rand(rng, Float32, 4, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _vcat_cu_sum,
-                _rand(rng, Float64, 6),
-                _rand(rng, Float64, 6),
-            ),
+            case(_vcat_cu_sum, _rand(rng, Float32, 8), _rand(rng, Float32, 4)),
+            case(_vcat_cu_sum, _rand(rng, Float32, 8, 3), _rand(rng, Float32, 4, 3)),
+            case(_vcat_cu_sum, _rand(rng, Float64, 6), _rand(rng, Float64, 6)),
             # hcat on CuArrays
-            (
-                false,
-                :none,
-                false,
-                _hcat_cu_sum,
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 4, 2),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _hcat_cu_sum,
-                _rand(rng, Float64, 4, 3),
-                _rand(rng, Float64, 4, 2),
-            ),
+            case(_hcat_cu_sum, _rand(rng, Float32, 4, 3), _rand(rng, Float32, 4, 2)),
+            case(_hcat_cu_sum, _rand(rng, Float64, 4, 3), _rand(rng, Float64, 4, 2)),
             # cat on CuArrays (dims kwarg)
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum(1),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 2, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum(2),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 4, 2),
-            ),
+            case(_cat_cu_sum(1), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 2, 3)),
+            case(_cat_cu_sum(2), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 4, 2)),
             # cat on CuArrays (dims kwarg as Val{N}, per _unwrap_cat_dim(::Val{N}))
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum(Val(1)),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 2, 3),
-            ),
+            case(_cat_cu_sum(Val(1)), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 2, 3)),
             # cat on CuArrays (Tuple dims kwarg: block-diagonal concatenation)
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum((1, 2)),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 2, 5),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum((1, 2)),
-                _rand(rng, Float64, 3, 2),
-                _rand(rng, Float64, 5, 4),
-            ),
+            case(_cat_cu_sum((1, 2)), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 2, 5)),
+            case(_cat_cu_sum((1, 2)), _rand(rng, Float64, 3, 2), _rand(rng, Float64, 5, 4)),
             # UnitRange dims: a spelling Base accepts, as for `varm` above.
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum(1:2),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 2, 5),
-            ),
+            case(_cat_cu_sum(1:2), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 2, 5)),
             # Tuple dims, N-arg: exercises the running-offsets tuple in _cu_concat_pb!.
-            (
-                false,
-                :none,
-                false,
+            case(
                 _cat_cu_sum((1, 2)),
                 _rand(rng, Float32, 4, 3),
                 _rand(rng, Float32, 2, 5),
                 _rand(rng, Float32, 3, 2),
             ),
             # Complex CuArrays: CuMaybeWrappedArray covers them via CuFloatOrComplex.
-            (
-                false,
-                :none,
-                false,
-                _vcat_cu_sum,
-                _rand(rng, ComplexF32, 4, 3),
-                _rand(rng, ComplexF32, 2, 3),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _hcat_cu_sum,
-                _rand(rng, ComplexF64, 4, 3),
-                _rand(rng, ComplexF64, 4, 2),
-            ),
-            (
-                false,
-                :none,
-                false,
+            case(_vcat_cu_sum, _rand(rng, ComplexF32, 4, 3), _rand(rng, ComplexF32, 2, 3)),
+            case(_hcat_cu_sum, _rand(rng, ComplexF64, 4, 3), _rand(rng, ComplexF64, 4, 2)),
+            case(
                 _cat_cu_sum((1, 2)),
                 _rand(rng, ComplexF64, 3, 2),
                 _rand(rng, ComplexF64, 5, 4),
             ),
             # Wrapped and mixed arguments: each is canonicalised independently via
             # `arrayify`, so any combination works.
-            (
-                false,
-                :none,
-                false,
-                _vcat_cu_sum,
-                adjoint(_rand(rng, Float32, 3, 4)),
-                _rand(rng, Float32, 2, 3),
+            case(
+                _vcat_cu_sum, adjoint(_rand(rng, Float32, 3, 4)), _rand(rng, Float32, 2, 3)
             ),
-            (
-                false,
-                :none,
-                false,
+            case(
                 _vcat_cu_sum,
                 transpose(_rand(rng, Float32, 3, 4)),
                 transpose(_rand(rng, Float32, 3, 4)),
             ),
-            (
-                false,
-                :none,
-                false,
+            case(
                 _vcat_cu_sum,
                 view(_rand(rng, Float32, 8, 3), 1:4, :),
                 _rand(rng, Float32, 2, 3),
             ),
-            (
-                false,
-                :none,
-                false,
+            case(
                 _hcat_cu_sum,
                 transpose(_rand(rng, Float32, 3, 4)),
                 view(_rand(rng, Float32, 4, 2), :, :),
             ),
             # N-arg: Vararg{CuMaybeWrappedArray} matches each argument independently
             # rather than requiring a uniform type.
-            (
-                false,
-                :none,
-                false,
+            case(
                 _cat_cu_sum(1),
                 _rand(rng, Float32, 4, 3),
                 adjoint(_rand(rng, Float32, 3, 2)),
                 transpose(_rand(rng, Float32, 3, 5)),
             ),
-            (
-                false,
-                :none,
-                false,
+            case(
                 _hcat_cu_sum,
                 adjoint(_rand(rng, Float32, 3, 4)),
                 transpose(_rand(rng, Float32, 2, 4)),
                 view(_rand(rng, Float32, 4, 6), :, 1:5),
             ),
             # permutedims on CuArrays
-            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
-            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
-            (
-                false,
-                :none,
-                false,
-                _permutedims_sum((2, 1)),
-                adjoint(_rand(rng, Float32, 3, 4)),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _permutedims_sum((2, 1)),
-                transpose(_rand(rng, Float32, 3, 4)),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _permutedims_sum((2, 1)),
-                view(_rand(rng, Float32, 8, 4), 1:4, :),
-            ),
-            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, ComplexF32, 8, 4)),
-            (
-                false,
-                :none,
-                false,
-                _permutedims_sum((2, 1, 3)),
-                _rand(rng, Float32, 4, 6, 3),
-            ),
+            case(_permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
+            case(_permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
+            case(_permutedims_sum((2, 1)), adjoint(_rand(rng, Float32, 3, 4))),
+            case(_permutedims_sum((2, 1)), transpose(_rand(rng, Float32, 3, 4))),
+            case(_permutedims_sum((2, 1)), view(_rand(rng, Float32, 8, 4), 1:4, :)),
+            case(_permutedims_sum((2, 1)), _rand(rng, ComplexF32, 8, 4)),
+            case(_permutedims_sum((2, 1, 3)), _rand(rng, Float32, 4, 6, 3)),
             # cat with dims beyond either 2-D input's own ndims (new trailing axis).
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_sum(3),
-                _rand(rng, Float32, 4, 3),
-                _rand(rng, Float32, 4, 3),
-            ),
+            case(_cat_cu_sum(3), _rand(rng, Float32, 4, 3), _rand(rng, Float32, 4, 3)),
             # hcat of two bare CuVectors, not matrices.
-            (
-                false,
-                :none,
-                false,
-                _hcat_cu_sum,
-                _rand(rng, Float32, 5),
-                _rand(rng, Float32, 5),
-            ),
+            case(_hcat_cu_sum, _rand(rng, Float32, 5), _rand(rng, Float32, 5)),
         ]
         append!(
             test_cases,
             [
-                (false, :none, true, f, CuArray(rand(rng, T, 3, 4)), k) for
+                primitive_case(f, CuArray(rand(rng, T, 3, 4)), k) for
                 (f, k) in ((triu, 1), (tril, -4), (triu!, -1), (tril!, 4)),
                 T in (Bool, Float32)
             ],
@@ -1731,16 +1347,13 @@ end
         append!(
             test_cases,
             [
-                (false, :none, false, f, CuArray(rand(rng, Float32, 4, 3))) for
+                case(f, CuArray(rand(rng, Float32, 4, 3))) for
                 f in (triu, tril, triu!, tril!)
             ],
         )
         push!(
             test_cases,
-            (
-                false,
-                :none,
-                false,
+            case(
                 x -> sum(x .* triu(fill!(similar(x, Bool), true))),
                 _rand(rng, Float32, 3, 4),
             ),
@@ -1749,24 +1362,15 @@ end
             for f in (sum, prod), dims in (:, 1)
                 push!(
                     test_cases,
-                    (
-                        false,
-                        :none,
-                        true,
-                        Core.kwcall,
-                        (; dims, init=2.0f0 + im),
-                        f,
-                        CuArray(Float32[2, 3]),
+                    primitive_case(
+                        Core.kwcall, (; dims, init=2.0f0 + im), f, CuArray(Float32[2, 3])
                     ),
                 )
             end
             append!(
                 test_cases,
                 [
-                    (
-                        false,
-                        :none,
-                        true,
+                    primitive_case(
                         Core.kwcall,
                         (; dims, init=T <: Complex && !(dims isa Colon) ? T(2) : 2.0f0),
                         f,
@@ -1777,19 +1381,13 @@ end
             append!(
                 test_cases,
                 [
-                    (
-                        false,
-                        :none,
-                        true,
-                        Core.kwcall,
-                        (; dims, init=0.0f0),
-                        prod,
-                        CuArray(Float32[0, 2, 3]),
+                    primitive_case(
+                        Core.kwcall, (; dims, init=0.0f0), prod, CuArray(Float32[0, 2, 3])
                     ) for dims in (:, 1)
                 ],
             )
         end
-        @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
+        @testset "$(typeof(fargs))" for (interface_only, is_primitive, fargs...) in
                                         test_cases
 
             argtypes = join(string.(typeof.(fargs[2:end])), ", ")
@@ -2789,78 +2387,67 @@ end
             end
         end
 
+        stats_x32 = _rand(rng, Float32, 4, 3)
+        stats_m32 = _rand(rng, Float32, 1, 3)
+        @testset "$f $(typeof.(args))" for (seed, f, args...) in [
+            (1, _varm_sum_d1, stats_x32, stats_m32),
+            (2, _varm_sum_d2, stats_x32, _rand(rng, Float32, 4, 1)),
+            (3, _varm_sum_d1, _rand(rng, Float64, 4, 3), _rand(rng, Float64, 1, 3)),
+            (8, _varm_nodims_scalar, stats_x32, randn(StableRNG(8), Float32)),
+            (
+                14,
+                _varm_sum_dtuple,
+                _rand(rng, Float32, 4, 3, 2),
+                _rand(rng, Float32, 1, 1, 2),
+            ),
+            (
+                16,
+                _varm_sum_drange,
+                _rand(rng, Float32, 4, 3, 2),
+                _rand(rng, Float32, 1, 1, 2),
+            ),
+            (20, _varm_sum_dcolon_arraymean, stats_x32, _rand(rng, Float32, 1, 1)),
+            (22, _varm_bare_nodims_scalar, stats_x32, randn(StableRNG(22), Float32)),
+            (
+                23,
+                _varm_bare_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(23), ComplexF32),
+            ),
+            (
+                24,
+                _varm_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(24), Float32),
+            ),
+            (25, _varm_nodims_scalar, stats_x32, randn(StableRNG(25), ComplexF32)),
+            (26, _varm_sum_d1, stats_x32, _rand(rng, Float32, 4, 3)),
+            (27, _varm_sum_d1, stats_x32, _rand(rng, Float32, 1, 1)),
+            (29, _varm_sum_d1, stats_m32, stats_x32),
+            (30, _varm_sum_d1, stats_x32, _rand(rng, Float64, 1, 3)),
+            (31, _varm_sum_dempty, stats_x32, stats_m32),
+            (4, _mean_sum_d1, stats_x32),
+            (5, _mean_sum_d2, stats_x32),
+            (6, _mean_sum_d1, _rand(rng, Float64, 4, 3)),
+            (9, _mean_nodims, stats_x32),
+            (15, _mean_sum_dtuple, _rand(rng, Float32, 4, 3, 2)),
+            (17, _mean_sum_drange, _rand(rng, Float32, 4, 3, 2)),
+            (32, _mean_sum_dempty, stats_x32),
+            (
+                10,
+                _varm_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(10), ComplexF32),
+            ),
+            (12, _mean_cx_nodims, _rand(rng, ComplexF32, 4, 3)),
+            (13, _mean_cx_sum_d1, _rand(rng, ComplexF32, 4, 3)),
+        ]
+            test_rule(StableRNG(seed), f, args...; is_primitive=false, perf_flag=:none)
+        end
+
         @testset "Statistics.varm GPU rule" begin
             # varm(x, m; dims, corrected): used by LayerNorm / GroupNorm / InstanceNorm via
             # LuxLib.Impl.mean_var → var → varm. is_primitive=false: the wrapper is not one.
-            @testset "dims=1, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                test_rule(
-                    StableRNG(1), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=2, corrected=true (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 4, 1)
-                test_rule(
-                    StableRNG(2), _varm_sum_d2, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1, corrected=false (Float64)" begin
-                x = _rand(rng, Float64, 4, 3)
-                m = _rand(rng, Float64, 1, 3)
-                test_rule(
-                    StableRNG(3), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "no dims, scalar mean (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m_scalar = randn(StableRNG(8), Float32)
-                test_rule(
-                    StableRNG(8),
-                    _varm_nodims_scalar,
-                    x,
-                    m_scalar;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=(1,2) tuple, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                m = _rand(rng, Float32, 1, 1, 2)
-                test_rule(
-                    StableRNG(14),
-                    _varm_sum_dtuple,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=1:2 UnitRange, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                m = _rand(rng, Float32, 1, 1, 2)
-                test_rule(
-                    StableRNG(16),
-                    _varm_sum_drange,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=:, array-shaped mean, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 1)
-                test_rule(
-                    StableRNG(20),
-                    _varm_sum_dcolon_arraymean,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
             @testset "repeated dims=(1,1), corrected=false (Float32)" begin
                 # Regression: denominator must count dim 1 once, not size(x,1)^2.
                 x = _rand(rng, Float32, 4, 3)
@@ -2870,122 +2457,12 @@ end
                 )
                 @test _varm_sum_ddup(x, m) ≈ _varm_sum_d1(x, m)
             end
-            @testset "bare 2-arg spelling, no keywords (Float32)" begin
-                # Regression: `varm(x, m)` with no keyword syntax at all bypasses
-                # Core.kwcall entirely; without the dedicated bare-call primitive it
-                # falls through to Statistics' captured-mean mapreduce, which Mooncake
-                # can't trace on GPU.
-                x = _rand(rng, Float32, 4, 3)
-                m_scalar = randn(StableRNG(22), Float32)
-                test_rule(
-                    StableRNG(22),
-                    _varm_bare_nodims_scalar,
-                    x,
-                    m_scalar;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "bare 2-arg spelling, no keywords (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                m_cx = randn(StableRNG(23), ComplexF32)
-                test_rule(
-                    StableRNG(23),
-                    _varm_bare_nodims_scalar,
-                    x,
-                    m_cx;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "mixed real/complex scalar mean" begin
-                # Regression: a real-valued rdata/fdata slot must project a mismatched
-                # complex intermediate onto its real part rather than throwing
-                # InexactError on the implicit conversion.
-                @testset "complex x, real m" begin
-                    x = _rand(rng, ComplexF32, 4, 3)
-                    m = randn(StableRNG(24), Float32)
-                    test_rule(
-                        StableRNG(24),
-                        _varm_nodims_scalar,
-                        x,
-                        m;
-                        is_primitive=false,
-                        perf_flag=:none,
-                    )
-                end
-                @testset "real x, complex m" begin
-                    x = _rand(rng, Float32, 4, 3)
-                    m = randn(StableRNG(25), ComplexF32)
-                    test_rule(
-                        StableRNG(25),
-                        _varm_nodims_scalar,
-                        x,
-                        m;
-                        is_primitive=false,
-                        perf_flag=:none,
-                    )
-                end
-            end
             # No complex/mixed array-mean tests: GPUArrays' accelerated varm needs Real
             # eltypes on both arguments, and anything else falls to a generic
             # scalar-indexing path that cannot run on GPU, so there is no ground truth.
             # The array-m rules are restricted to real eltypes to match, since a wider
             # signature would make AD succeed where the primal throws; the norm layers only
             # ever pass x and its own real mean.
-            @testset "m broadcast against x: full-shape m, dims=1 (Float32)" begin
-                # Regression: the primal broadcasts m against x, so m's gradient must
-                # reduce over exactly the dims m is broadcast along (none, here) rather than
-                # over `dims`, which used to column-sum it.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(26), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "m broadcast against x: (1,1) m, dims=1 (Float32)" begin
-                # Regression: m broadcast along a dim outside `dims` (dim 2 here) used
-                # to throw DimensionMismatch in the pullback.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 1)
-                test_rule(
-                    StableRNG(27), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "x broadcast against m: (1,3) x, full m, dims=1 (Float32)" begin
-                # Regression: x can be the broadcast-expanded operand too, so the pullback
-                # must unbroadcast to BOTH shapes (dx used to throw DimensionMismatch here).
-                x = _rand(rng, Float32, 1, 3)
-                m = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(29), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "cross-precision arrays: Float32 x, Float64 m, dims=1" begin
-                # Claimed by the array-m signature (no precision tie, unlike scalar-m
-                # below): GPUArrays' method has no n==0 type bifurcation, so the
-                # output type is concrete and mixed real precisions just work.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float64, 1, 3)
-                test_rule(
-                    StableRNG(30), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "empty dims=() collection (Float32)" begin
-                # Regression: the primal reduces over nothing and returns the full
-                # array; the rule's denominator must mirror _mean_denom's `init=1`
-                # instead of throwing on a prod over an empty collection.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                test_rule(
-                    StableRNG(31),
-                    _varm_sum_dempty,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
                 # Regression: an empty input must give NaN, not 0/(0-1) = -0.0, matching the
                 # guard in Statistics._varm(A, m, corrected, ::Colon) — scalar m is not
@@ -3143,42 +2620,6 @@ end
         end
 
         @testset "Statistics.mean GPU rule" begin
-            @testset "dims=1 (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(4), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=2 (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(5), _mean_sum_d2, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1 (Float64)" begin
-                x = _rand(rng, Float64, 4, 3)
-                test_rule(
-                    StableRNG(6), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=: scalar output (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(9), _mean_nodims, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=(1,2) tuple (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                test_rule(
-                    StableRNG(15), _mean_sum_dtuple, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1:2 UnitRange (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                test_rule(
-                    StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
-                )
-            end
             @testset "repeated dims=(1,1) (Float32)" begin
                 # Regression: denominator must count dim 1 once, not size(x,1)^2.
                 x = _rand(rng, Float32, 4, 3)
@@ -3186,13 +2627,6 @@ end
                     StableRNG(18), _mean_sum_ddup, x; is_primitive=false, perf_flag=:none
                 )
                 @test _mean_sum_ddup(x) ≈ _mean_sum_d1(x)
-            end
-            @testset "empty dims=() collection (Float32)" begin
-                # Regression: same `init=1` denominator mirror as the varm test above.
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(32), _mean_sum_dempty, x; is_primitive=false, perf_flag=:none
-                )
             end
             @testset "empty array, dims=: gives NaN (Float32)" begin
                 # Regression: the primal is sum/length = 0/0 = NaN; the rule takes its
@@ -3276,37 +2710,6 @@ end
                     Mooncake.build_rrule(_mean_sum_d1, x), _mean_sum_d1, x
                 )
                 @test all(==(y), Array(dx))
-            end
-        end
-
-        @testset "Statistics.varm GPU rule (complex)" begin
-            # Complex scalar m of matching precision: σ² = sum(abs2(x-m))/n is always real.
-            @testset "no dims, scalar mean (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                m_cx = randn(StableRNG(10), ComplexF32)
-                test_rule(
-                    StableRNG(10),
-                    _varm_nodims_scalar,
-                    x,
-                    m_cx;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-        end
-
-        @testset "Statistics.mean GPU rule (complex)" begin
-            @testset "dims=: scalar output (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                test_rule(
-                    StableRNG(12), _mean_cx_nodims, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1 (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                test_rule(
-                    StableRNG(13), _mean_cx_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
             end
         end
 
