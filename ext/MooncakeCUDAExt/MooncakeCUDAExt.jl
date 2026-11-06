@@ -513,7 +513,7 @@ function randn_tangent_internal(
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     # Use `similar` to match the memory kind of `x` (DeviceMemory, UnifiedMemory, or
     # HostMemory), then populate from a CPU-side randn so we don't need a GPU RNG.
-    t = copyto!(similar(x), randn(rng, eltype(x), size(x)...))
+    t = copyto!(similar(x), randn(rng, eltype(x), size(x)))
     dict[x] = t
     return t
 end
@@ -557,7 +557,8 @@ function _add_to_primal_internal(
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
     # `.+`, not `+`: CUBLAS `geam` scales by complex `one(T)`, giving `Inf + 0im` a NaN.
-    x′ = x .+ y
+    x′ = similar(x)
+    x′ .= x .+ y
     c[key] = x′
     return x′
 end
@@ -592,7 +593,8 @@ function _scale_internal(
 ) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     haskey(c, y) && return c[y]::P
     # Scale by a real `x`: a complex `x + 0im` turns `Inf + 0im` into `Inf + NaN*im`.
-    t′ = real(eltype(P))(x) .* y
+    t′ = similar(y)
+    t′ .= real(eltype(P))(x) .* y
     c[y] = t′
     return t′
 end
@@ -1092,6 +1094,12 @@ _kw_init_jvp(dy, ::NoTangent, from_init) = dy
 function _kw_init_jvp(dy, dinit::Number, from_init)
     return iszero(dinit) ? dy : dy .+ dinit .* from_init
 end
+function _kw_init_jvp(dy::AbstractArray, dinit::Number, from_init)
+    iszero(dinit) && return dy
+    out = similar(dy)
+    out .= dy .+ dinit .* from_init
+    return out
+end
 # Takes dy rather than a finished cotangent so that a call with no differentiable `init`
 # never launches the reduction.  `sum` also covers the scalar branch, where dy is a number.
 _kw_init_rdata(kw_rdata::NoRData, dy, from_init) = kw_rdata
@@ -1109,6 +1117,14 @@ _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 _empty_minmax_slice(px, ::Colon) = isempty(px)
 _empty_minmax_slice(px, dims::Integer) = size(px, dims) == 0
 _empty_minmax_slice(px, dims) = any(d -> size(px, d) == 0, dims)
+
+function _minmax_find(op, find, px, dims)
+    # GPUArrays 11 scalarises zero-dimensional inputs inside findmax/findmin.
+    if !_GPUARRAYS_12 && ndims(px) == 0 && !(dims isa Colon)
+        return op(px; dims=dims), CartesianIndex()
+    end
+    return find(px; dims=dims)
+end
 
 for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
@@ -1148,19 +1164,36 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
                 y_e, _kw_init_jvp(zero_tangent(y_e), _kw_init_tangent(tangent(kw)), true)
             )
         end
-        m, ind = $_find(px; dims=dims)
+        m, ind = _minmax_find($_fn, $_find, px, dims)
         if _minmax_kw_is_plain(pkw)
-            return Dual(m, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
+            return Dual(
+                m,
+                sum(
+                    Base.broadcasted(
+                        (d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind)
+                    );
+                    dims=dims,
+                ),
+            )
         end
         # Preserve init's value/type and unsupported-keyword errors.
         y = $_fn(px; pkw...)
         tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
         # Negated comparisons preserve NaN slices' argmax gradients.
         won = .!broadcast($_beat, m, y)
-        dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims)
-        return Dual(
-            y, _kw_init_jvp(eltype(y).(dy) .* won, _kw_init_tangent(tangent(kw)), .!won)
+        dy = sum(
+            Base.broadcasted(
+                (d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind)
+            );
+            dims=dims,
         )
+        if dy isa AbstractArray
+            masked = similar(y)
+            masked .= dy .* won
+        else
+            masked = eltype(y)(dy) * won
+        end
+        return Dual(y, _kw_init_jvp(masked, _kw_init_tangent(tangent(kw)), .!won))
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -1184,7 +1217,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
             end
             return CoDual(y_e, dy_e), minmax_empty_pb!!
         end
-        m, ind = $_find(px; dims=dims)
+        m, ind = _minmax_find($_fn, $_find, px, dims)
         y, won = if _minmax_kw_is_plain(pkw)
             m, true
         else
@@ -1237,10 +1270,9 @@ end
 # Both quantities come from the same reduction the primal ran, over `px` with its zeros
 # replaced by ones, so a folded `init` scales the derivative exactly as it scaled the value.
 function _prod_exclusive(px, dims, kw)
-    T = eltype(px)
-    nonzero = ifelse.(iszero.(px), one(T), px)
+    nonzero = Base.broadcasted(x -> ifelse(iszero(x), one(x), x), px)
     pnz = prod(nonzero; kw...)
-    nzeros = sum(iszero.(px); dims=dims)
+    nzeros = sum(Base.broadcasted(iszero, px); dims=dims)
     contributes = ifelse.(iszero.(px), nzeros .== 1, iszero.(nzeros))
     # Use the quotient's zero: mixed precisions can produce an abstract GPU eltype.
     q = pnz ./ nonzero
@@ -1283,12 +1315,13 @@ function frule!!(
     y = prod(px; pkw...)
     tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
     # Convert after reduction: a widening broadcast seed can fail GPU compilation.
-    dy = sum(dx .* _prod_exclusive(px, dims, pkw); dims=dims)
+    dy = sum(Base.broadcasted(*, dx, _prod_exclusive(px, dims, pkw)); dims=dims)
     dinit = _kw_init_tangent(tangent(kw))
     if !(dinit isa NoTangent || iszero(dinit))
         dy = _kw_init_jvp(dy, dinit, _prod_init_partial(px, pkw, y))
     end
-    return Dual(y, eltype(y).(dy))
+    dy = dims isa Colon ? eltype(y)(dy) : broadcast!(identity, similar(y), dy)
+    return Dual(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1354,8 +1387,8 @@ end
 #   dx[i] += (Σ over k ≥ i of dy[k]·pnz[k], masked to the prefixes i contributes to) / denom[i]
 function _cumprod_pieces(px, d)
     T = eltype(px)
-    zero_at = iszero.(px)
-    denom = ifelse.(zero_at, one(T), px)
+    zero_at = broadcast!(iszero, similar(px, Bool), px)
+    denom = broadcast!(ifelse, similar(px), zero_at, one(T), px)
     return zero_at, cumsum(zero_at; dims=d), cumprod(denom; dims=d), denom
 end
 
@@ -1365,14 +1398,18 @@ function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     d = get(kw, :dims, 1)
     y = cumprod(px; kw...)
     zero_at, nzeros, pnz, denom = _cumprod_pieces(px, d)
-    from_nonzeros = cumsum(dx ./ denom; dims=d)
-    from_the_zero = cumsum(ifelse.(zero_at, dx, zero(eltype(dx))); dims=d)
-    contribution = ifelse.(
-        iszero.(nzeros),
-        from_nonzeros,
-        ifelse.(nzeros .== 1, from_the_zero, zero(eltype(dx))),
+    from_nonzeros = cumsum(broadcast!(/, similar(dx), dx, denom); dims=d)
+    from_the_zero = cumsum(
+        broadcast!(ifelse, similar(dx), zero_at, dx, zero(eltype(dx))); dims=d
     )
-    return Dual(y, pnz .* contribution)
+    dy = similar(y)
+    dy .=
+        pnz .* ifelse.(
+            iszero.(nzeros),
+            from_nonzeros,
+            ifelse.(nzeros .== 1, from_the_zero, zero(eltype(dx))),
+        )
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1391,8 +1428,8 @@ function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw
         dx .+=
             ifelse.(
                 zero_at,
-                _scan_pullback(weighted .* only_zero, d),
-                _scan_pullback(weighted .* clean, d),
+                _scan_pullback(broadcast!(*, similar(dy_out), weighted, only_zero), d),
+                _scan_pullback(broadcast!(*, similar(dy_out), weighted, clean), d),
             ) ./ cdenom
         return NoRData(), NoRData()
     end
@@ -1512,7 +1549,8 @@ function frule!!(
     px, dx = arrayify(x)
     d = get(pkw, :dims, nothing)
     y = accumulate(+, px; pkw...)
-    dy = eltype(y).(_scan_jvp(dx, d))
+    dy = similar(y)
+    dy .= _scan_jvp(dx, d)
     return Dual(
         y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), _scan_applies_init(px, d))
     )
@@ -2266,7 +2304,7 @@ function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_px, pkw)
     tangent_type(typeof(decoded.primal_out)) === NoTangent &&
         return Dual(decoded.primal_out, NoTangent())
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
@@ -2282,7 +2320,7 @@ function _gpu_sum_f_rrule(f, x, pkw=NamedTuple())
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_px, pkw)
     result = zero_fcodual(decoded.primal_out)
     tangent_type(typeof(decoded.primal_out)) === NoTangent && return result, _nopb(Val(3))
     dy_out = tangent(result)
@@ -3536,7 +3574,7 @@ end
 # added to the parent array's gradient.
 #
 # Intercept point: `Base.Broadcast.materialize` (not `broadcasted`) because:
-#   - `materialize` : Broadcasted -> CuArray (types match rrule signature)
+#   - `materialize` evaluates the Broadcasted and returns an array or scalar.
 #   - `Base.Broadcast.flatten` fuses nested broadcast trees into one function,
 #     so a single kernel handles arbitrarily deep `.`-fusion (e.g. sin.(x .^ 2)).
 #
@@ -3717,7 +3755,10 @@ end
     return dest
 end
 
-@inline function _gpu_decode_ndual_output(::Val{:sum}, out, pkw=NamedTuple())
+@inline function _gpu_decode_ndual_output(
+    ::Val{:sum}, out, x::AbstractArray, pkw=NamedTuple()
+)
+    out isa Number && (out = fill!(similar(x, typeof(out)), out))
     is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
     reduction_kw = merge((; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))), pkw)
     primal_out = sum(Nfwd._nfwd_dual_value, out; reduction_kw...)
@@ -4184,13 +4225,13 @@ function _gpu_reduced_jvp(out, px, dx, y, dims)
     meta = _gpu_leaf_slot_meta(px, 0)
     if meta.dof == 1
         return sum(
-            broadcast((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
+            Base.broadcasted((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
             dims,
             init=zero(eltype(y)),
         )
     elseif meta.dof == 2
         return sum(
-            broadcast(
+            Base.broadcasted(
                 (o, t) ->
                     Nfwd._nfwd_dual_partial(o, meta.slot1) * real(t) +
                     Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(t),
@@ -4285,7 +4326,7 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
         contrib = broadcast(
             (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out, dy
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        dx .+= contrib
     elseif meta.dof == 2
         contrib = broadcast(
             (o, d) -> complex(
@@ -4295,7 +4336,7 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
             dual_out,
             dy,
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        dx .+= contrib
     end
     return nothing
 end
@@ -4337,18 +4378,12 @@ function frule!!(
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
-    # `is_diff` says the kernel's element type carried no partials, which is not the same as
-    # the output being non-differentiable: a float array built only from index arrays, say
-    # `cnt ./ 2`, carries a tangent type even though nothing flows into it. Bool output from
-    # a comparison is the case this branch was written for, and there tangent_type really is
-    # NoTangent.
-    if !decoded.is_diff
-        T = tangent_type(typeof(out))
-        return Dual(out, T === NoTangent ? NoTangent() : zero_tangent(out))
-    end
+    decoded.is_diff || return Mooncake.zero_dual(out)
 
-    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
-    return Dual(decoded.primal_out, dy)
+    dy = zero(decoded.primal_out)
+    dy isa Number && (dy = CuArray(fill(dy)))
+    _gpu_accumulate_jvp!(dy, flat_pargs, flat_ts, out)
+    return Dual(decoded.primal_out, decoded.primal_out isa Number ? sum(dy) : dy)
 end
 
 function rrule!!(
@@ -4367,23 +4402,24 @@ function rrule!!(
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
-    # As in the frule: a float output with no differentiable leaf still needs an fdata of
-    # its declared type, or the caller is handed a NoFData where it expects a CuArray.
-    if !decoded.is_diff
-        fd = tangent_type(typeof(out)) === NoTangent ? NoFData() : zero_tangent(out)
-        return CoDual(out, fd), NoPullback(mat_fn, bc)
-    end
+    decoded.is_diff || return zero_fcodual(out), NoPullback(mat_fn, bc)
 
-    dy_out = zero(decoded.primal_out)  # accumulated into by the downstream reverse pass
+    y = zero_fcodual(decoded.primal_out)
 
-    function materialize_pb!!(::NoRData)
+    function materialize_pb!!(dy)
         r_bc = _gpu_accum_pullback!(
-            flat_pargs, flat_fdatas, out, dy_out, bc_primal, scalar_map, scalar_count
+            flat_pargs,
+            flat_fdatas,
+            out,
+            tangent(tangent(y), dy),
+            bc_primal,
+            scalar_map,
+            scalar_count,
         )
         return NoRData(), r_bc
     end
 
-    return CoDual(decoded.primal_out, dy_out), materialize_pb!!
+    return y, materialize_pb!!
 end
 
 # Julia 1.10 can expose the `copy` inside `materialize` as the call boundary.  Claim that
@@ -4669,7 +4705,15 @@ function frule!!(
     _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
     n = prod(d -> size(px, d), unique(_dims); init=1)
     λ = convert(T, inv(n - Int(corrected)))
-    return Dual(σ², sum((2λ) .* (px .- pm) .* (dx .- dm); dims=_dims))
+    return Dual(
+        σ²,
+        sum(
+            Base.broadcasted(
+                (x, m, dx, dm, λ) -> (2λ) * (x - m) * (dx - dm), px, pm, dx, dm, λ
+            );
+            dims=_dims,
+        ),
+    )
 end
 
 function rrule!!(
@@ -4686,7 +4730,10 @@ function rrule!!(
     _raw_dims = pkw.dims  # required by GPUArrays' method; validated by the call above
     corrected = get(pkw, :corrected, true)
     T = eltype(px)
-    diff = px .- pm
+    diff = similar(
+        px, promote_type(eltype(px), eltype(pm)), Base.Broadcast.combine_axes(px, pm)
+    )
+    diff .= px .- pm
     _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
     # Same denominator and Float64-inverted λ as the frule above. Assigned once,
     # outside the branch, so the pullbacks capture coeff as a typed closure field
@@ -4702,7 +4749,8 @@ function rrule!!(
         # Scalar output: σ² gets NoFData, and the pullback receives its cotangent
         # functionally rather than via a pre-accumulated fdata mutation.
         function varm_colon_pb!!(dσ²)
-            g = coeff * dσ² .* diff
+            g = similar(diff)
+            g .= coeff * dσ² .* diff
             dx .+= _unbroadcast(g, size(px))
             dm .-= _unbroadcast(g, size(pm))
             return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
@@ -4713,7 +4761,8 @@ function rrule!!(
     function varm_pb!!(::NoRData)
         # dσ² varies along the non-reduced dims, so it must sit inside the
         # unbroadcast reductions rather than factoring out.
-        g = coeff .* dσ² .* diff
+        g = similar(diff)
+        g .= coeff .* dσ² .* diff
         dx .+= _unbroadcast(g, size(px))
         dm .-= _unbroadcast(g, size(pm))
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
@@ -4886,13 +4935,13 @@ end
         if dims isa Colon
             _gpu_sum_abs2_jvp(px, dx) / n
         elseif λ === nothing
-            sum(2 .* real.(conj.(px) .* dx); dims) ./ n
+            sum(Base.broadcasted((x, dx) -> 2 * real(conj(x) * dx), px, dx); dims) / n
         else
-            sum(λ .* (2 .* real.(conj.(px) .* dx)); dims)
+            sum(Base.broadcasted((x, dx) -> λ * (2 * real(conj(x) * dx)), px, dx); dims)
         end
     else
         reduced = _gpu_reduced_jvp(out, px, dx, μ, dims)
-        λ === nothing ? reduced ./ n : reduced
+        λ === nothing ? reduced / n : reduced
     end
     return Dual(μ, dμ)
 end
