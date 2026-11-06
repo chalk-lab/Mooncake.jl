@@ -2387,78 +2387,67 @@ end
             end
         end
 
+        stats_x32 = _rand(rng, Float32, 4, 3)
+        stats_m32 = _rand(rng, Float32, 1, 3)
+        @testset "$f $(typeof.(args))" for (seed, f, args...) in [
+            (1, _varm_sum_d1, stats_x32, stats_m32),
+            (2, _varm_sum_d2, stats_x32, _rand(rng, Float32, 4, 1)),
+            (3, _varm_sum_d1, _rand(rng, Float64, 4, 3), _rand(rng, Float64, 1, 3)),
+            (8, _varm_nodims_scalar, stats_x32, randn(StableRNG(8), Float32)),
+            (
+                14,
+                _varm_sum_dtuple,
+                _rand(rng, Float32, 4, 3, 2),
+                _rand(rng, Float32, 1, 1, 2),
+            ),
+            (
+                16,
+                _varm_sum_drange,
+                _rand(rng, Float32, 4, 3, 2),
+                _rand(rng, Float32, 1, 1, 2),
+            ),
+            (20, _varm_sum_dcolon_arraymean, stats_x32, _rand(rng, Float32, 1, 1)),
+            (22, _varm_bare_nodims_scalar, stats_x32, randn(StableRNG(22), Float32)),
+            (
+                23,
+                _varm_bare_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(23), ComplexF32),
+            ),
+            (
+                24,
+                _varm_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(24), Float32),
+            ),
+            (25, _varm_nodims_scalar, stats_x32, randn(StableRNG(25), ComplexF32)),
+            (26, _varm_sum_d1, stats_x32, _rand(rng, Float32, 4, 3)),
+            (27, _varm_sum_d1, stats_x32, _rand(rng, Float32, 1, 1)),
+            (29, _varm_sum_d1, stats_m32, stats_x32),
+            (30, _varm_sum_d1, stats_x32, _rand(rng, Float64, 1, 3)),
+            (31, _varm_sum_dempty, stats_x32, stats_m32),
+            (4, _mean_sum_d1, stats_x32),
+            (5, _mean_sum_d2, stats_x32),
+            (6, _mean_sum_d1, _rand(rng, Float64, 4, 3)),
+            (9, _mean_nodims, stats_x32),
+            (15, _mean_sum_dtuple, _rand(rng, Float32, 4, 3, 2)),
+            (17, _mean_sum_drange, _rand(rng, Float32, 4, 3, 2)),
+            (32, _mean_sum_dempty, stats_x32),
+            (
+                10,
+                _varm_nodims_scalar,
+                _rand(rng, ComplexF32, 4, 3),
+                randn(StableRNG(10), ComplexF32),
+            ),
+            (12, _mean_cx_nodims, _rand(rng, ComplexF32, 4, 3)),
+            (13, _mean_cx_sum_d1, _rand(rng, ComplexF32, 4, 3)),
+        ]
+            test_rule(StableRNG(seed), f, args...; is_primitive=false, perf_flag=:none)
+        end
+
         @testset "Statistics.varm GPU rule" begin
             # varm(x, m; dims, corrected): used by LayerNorm / GroupNorm / InstanceNorm via
             # LuxLib.Impl.mean_var → var → varm. is_primitive=false: the wrapper is not one.
-            @testset "dims=1, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                test_rule(
-                    StableRNG(1), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=2, corrected=true (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 4, 1)
-                test_rule(
-                    StableRNG(2), _varm_sum_d2, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1, corrected=false (Float64)" begin
-                x = _rand(rng, Float64, 4, 3)
-                m = _rand(rng, Float64, 1, 3)
-                test_rule(
-                    StableRNG(3), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "no dims, scalar mean (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m_scalar = randn(StableRNG(8), Float32)
-                test_rule(
-                    StableRNG(8),
-                    _varm_nodims_scalar,
-                    x,
-                    m_scalar;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=(1,2) tuple, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                m = _rand(rng, Float32, 1, 1, 2)
-                test_rule(
-                    StableRNG(14),
-                    _varm_sum_dtuple,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=1:2 UnitRange, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                m = _rand(rng, Float32, 1, 1, 2)
-                test_rule(
-                    StableRNG(16),
-                    _varm_sum_drange,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=:, array-shaped mean, corrected=false (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 1)
-                test_rule(
-                    StableRNG(20),
-                    _varm_sum_dcolon_arraymean,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
             @testset "repeated dims=(1,1), corrected=false (Float32)" begin
                 # Regression: denominator must count dim 1 once, not size(x,1)^2.
                 x = _rand(rng, Float32, 4, 3)
@@ -2468,122 +2457,12 @@ end
                 )
                 @test _varm_sum_ddup(x, m) ≈ _varm_sum_d1(x, m)
             end
-            @testset "bare 2-arg spelling, no keywords (Float32)" begin
-                # Regression: `varm(x, m)` with no keyword syntax at all bypasses
-                # Core.kwcall entirely; without the dedicated bare-call primitive it
-                # falls through to Statistics' captured-mean mapreduce, which Mooncake
-                # can't trace on GPU.
-                x = _rand(rng, Float32, 4, 3)
-                m_scalar = randn(StableRNG(22), Float32)
-                test_rule(
-                    StableRNG(22),
-                    _varm_bare_nodims_scalar,
-                    x,
-                    m_scalar;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "bare 2-arg spelling, no keywords (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                m_cx = randn(StableRNG(23), ComplexF32)
-                test_rule(
-                    StableRNG(23),
-                    _varm_bare_nodims_scalar,
-                    x,
-                    m_cx;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "mixed real/complex scalar mean" begin
-                # Regression: a real-valued rdata/fdata slot must project a mismatched
-                # complex intermediate onto its real part rather than throwing
-                # InexactError on the implicit conversion.
-                @testset "complex x, real m" begin
-                    x = _rand(rng, ComplexF32, 4, 3)
-                    m = randn(StableRNG(24), Float32)
-                    test_rule(
-                        StableRNG(24),
-                        _varm_nodims_scalar,
-                        x,
-                        m;
-                        is_primitive=false,
-                        perf_flag=:none,
-                    )
-                end
-                @testset "real x, complex m" begin
-                    x = _rand(rng, Float32, 4, 3)
-                    m = randn(StableRNG(25), ComplexF32)
-                    test_rule(
-                        StableRNG(25),
-                        _varm_nodims_scalar,
-                        x,
-                        m;
-                        is_primitive=false,
-                        perf_flag=:none,
-                    )
-                end
-            end
             # No complex/mixed array-mean tests: GPUArrays' accelerated varm needs Real
             # eltypes on both arguments, and anything else falls to a generic
             # scalar-indexing path that cannot run on GPU, so there is no ground truth.
             # The array-m rules are restricted to real eltypes to match, since a wider
             # signature would make AD succeed where the primal throws; the norm layers only
             # ever pass x and its own real mean.
-            @testset "m broadcast against x: full-shape m, dims=1 (Float32)" begin
-                # Regression: the primal broadcasts m against x, so m's gradient must
-                # reduce over exactly the dims m is broadcast along (none, here) rather than
-                # over `dims`, which used to column-sum it.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(26), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "m broadcast against x: (1,1) m, dims=1 (Float32)" begin
-                # Regression: m broadcast along a dim outside `dims` (dim 2 here) used
-                # to throw DimensionMismatch in the pullback.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 1)
-                test_rule(
-                    StableRNG(27), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "x broadcast against m: (1,3) x, full m, dims=1 (Float32)" begin
-                # Regression: x can be the broadcast-expanded operand too, so the pullback
-                # must unbroadcast to BOTH shapes (dx used to throw DimensionMismatch here).
-                x = _rand(rng, Float32, 1, 3)
-                m = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(29), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "cross-precision arrays: Float32 x, Float64 m, dims=1" begin
-                # Claimed by the array-m signature (no precision tie, unlike scalar-m
-                # below): GPUArrays' method has no n==0 type bifurcation, so the
-                # output type is concrete and mixed real precisions just work.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float64, 1, 3)
-                test_rule(
-                    StableRNG(30), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "empty dims=() collection (Float32)" begin
-                # Regression: the primal reduces over nothing and returns the full
-                # array; the rule's denominator must mirror _mean_denom's `init=1`
-                # instead of throwing on a prod over an empty collection.
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                test_rule(
-                    StableRNG(31),
-                    _varm_sum_dempty,
-                    x,
-                    m;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
                 # Regression: an empty input must give NaN, not 0/(0-1) = -0.0, matching the
                 # guard in Statistics._varm(A, m, corrected, ::Colon) — scalar m is not
@@ -2741,42 +2620,6 @@ end
         end
 
         @testset "Statistics.mean GPU rule" begin
-            @testset "dims=1 (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(4), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=2 (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(5), _mean_sum_d2, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1 (Float64)" begin
-                x = _rand(rng, Float64, 4, 3)
-                test_rule(
-                    StableRNG(6), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=: scalar output (Float32)" begin
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(9), _mean_nodims, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=(1,2) tuple (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                test_rule(
-                    StableRNG(15), _mean_sum_dtuple, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1:2 UnitRange (Float32)" begin
-                x = _rand(rng, Float32, 4, 3, 2)
-                test_rule(
-                    StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
-                )
-            end
             @testset "repeated dims=(1,1) (Float32)" begin
                 # Regression: denominator must count dim 1 once, not size(x,1)^2.
                 x = _rand(rng, Float32, 4, 3)
@@ -2784,13 +2627,6 @@ end
                     StableRNG(18), _mean_sum_ddup, x; is_primitive=false, perf_flag=:none
                 )
                 @test _mean_sum_ddup(x) ≈ _mean_sum_d1(x)
-            end
-            @testset "empty dims=() collection (Float32)" begin
-                # Regression: same `init=1` denominator mirror as the varm test above.
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(
-                    StableRNG(32), _mean_sum_dempty, x; is_primitive=false, perf_flag=:none
-                )
             end
             @testset "empty array, dims=: gives NaN (Float32)" begin
                 # Regression: the primal is sum/length = 0/0 = NaN; the rule takes its
@@ -2874,37 +2710,6 @@ end
                     Mooncake.build_rrule(_mean_sum_d1, x), _mean_sum_d1, x
                 )
                 @test all(==(y), Array(dx))
-            end
-        end
-
-        @testset "Statistics.varm GPU rule (complex)" begin
-            # Complex scalar m of matching precision: σ² = sum(abs2(x-m))/n is always real.
-            @testset "no dims, scalar mean (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                m_cx = randn(StableRNG(10), ComplexF32)
-                test_rule(
-                    StableRNG(10),
-                    _varm_nodims_scalar,
-                    x,
-                    m_cx;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-        end
-
-        @testset "Statistics.mean GPU rule (complex)" begin
-            @testset "dims=: scalar output (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                test_rule(
-                    StableRNG(12), _mean_cx_nodims, x; is_primitive=false, perf_flag=:none
-                )
-            end
-            @testset "dims=1 (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                test_rule(
-                    StableRNG(13), _mean_cx_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
             end
         end
 
