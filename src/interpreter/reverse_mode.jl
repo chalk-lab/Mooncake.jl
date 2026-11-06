@@ -1110,9 +1110,12 @@ Create the `:new` statements which initialise the reverse-data `Ref`s. Interpola
 initial rdata directly into the statement, which is safe because it is always a bits type.
 """
 function reverse_data_ref_stmts(info::ADInfo)
-    function make_ref_stmt(id::ID, P::Type)
-        ref_type = Base.RefValue{P<:Type ? NoRData : zero_like_rdata_type(P)}
-        init_ref_val = P <: Type ? NoRData() : Mooncake.zero_like_rdata_from_type(P)
+    function make_ref_stmt(id::ID, P::Type, is_phi::Bool=false)
+        # An unused phi's inferred type can exclude its incoming value.
+        init_ref_val =
+            is_phi ? ZeroRData() : (P <: Type ? NoRData() : zero_like_rdata_from_type(P))
+        R = P <: Type ? NoRData : zero_like_rdata_type(P)
+        ref_type = Base.RefValue{Union{R,typeof(init_ref_val)}}
         return (id, new_inst(Expr(:new, ref_type, QuoteNode(init_ref_val))))
     end
     return vcat(
@@ -1120,7 +1123,8 @@ function reverse_data_ref_stmts(info::ADInfo)
             return make_ref_stmt(id, CC.widenconst(info.arg_types[k]))
         end,
         map(collect(info.ssa_rdata_ref_ids)) do (k, id)
-            return make_ref_stmt(id, CC.widenconst(info.ssa_insts[k].type))
+            inst = info.ssa_insts[k]
+            return make_ref_stmt(id, CC.widenconst(inst.type), inst.stmt isa IDPhiNode)
         end,
     )
 end
@@ -1373,7 +1377,9 @@ function make_ad_stmts!(stmt::PiNode, line::ID, info::ADInfo)
         # Get the rdata from the output_rdata_ref, and set its new value to zero, and
         # increment the output ref.
         output_rdata_id = ID()
-        deref_stmts = deref_and_zero_stmts(P, output_rdata_ref_id, output_rdata_id)
+        deref_stmts = deref_and_zero_stmts(
+            zero_like_rdata_from_type(P), output_rdata_ref_id, output_rdata_id
+        )
         inc_exprs = increment_ref_stmts(val_rdata_ref_id, output_rdata_id)
         rvs = vcat(deref_stmts, inc_exprs)
     else
@@ -2600,9 +2606,8 @@ function conclude_rvs_block(
     # Create statements which extract + zero the rdata refs associated to them.
     rdata_ids = map(_ -> ID(), phi_ids)
     tmp = map(phi_ids, rdata_ids) do phi_id, deref_id
-        P = get_primal_type(info, phi_id)
         r = get_rev_data_id(info, phi_id)
-        return deref_and_zero_stmts(P, r, deref_id)
+        return deref_and_zero_stmts(ZeroRData(), r, deref_id)
     end
     deref_stmts = reduce(vcat, tmp; init=IDInstPair[])
 
@@ -2629,18 +2634,17 @@ function __get_value(edge::ID, x::IDPhiNode)
 end
 
 """
-    deref_and_zero_stmts(P, ref_id, val_id)
+    deref_and_zero_stmts(zero, ref_id, val_id)
 
 Equivalent to something like
 ```julia
 val = ref[]
-ref[] = zero_rdata_from_type(P)
+ref[] = zero
 ```
 """
-function deref_and_zero_stmts(P, ref_id, val_id)
+function deref_and_zero_stmts(zero, ref_id, val_id)
     val = (val_id, new_inst(Expr(:call, getfield, ref_id, QuoteNode(:x))))
-    r = Mooncake.zero_like_rdata_from_type(P)
-    set_ref = (ID(), new_inst(Expr(:call, setfield!, ref_id, QuoteNode(:x), r)))
+    set_ref = (ID(), new_inst(Expr(:call, setfield!, ref_id, QuoteNode(:x), zero)))
     return IDInstPair[val, set_ref]
 end
 
