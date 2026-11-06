@@ -360,9 +360,9 @@ end
 # Matrices only: `kron(::Vector, ::Vector)` returns a `Vector`, which these rules would
 # widen to a `Matrix` by matrixifying their factors.
 const KronFactor{T} = Union{
-    StridedMatrix{T},
-    UpperTriangular{T,<:StridedMatrix{T}},
-    LowerTriangular{T,<:StridedMatrix{T}},
+    _CPUStridedArray{T,2},
+    UpperTriangular{T,<:_CPUStridedArray{T,2}},
+    LowerTriangular{T,<:_CPUStridedArray{T,2}},
 }
 
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
@@ -395,11 +395,11 @@ end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),StridedMatrix{T},KronFactor{T},KronFactor{T}
+    typeof(LinearAlgebra._kron!),_CPUStridedArray{T,2},KronFactor{T},KronFactor{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:StridedMatrix{<:T}},
+    out::Dual{<:_CPUStridedArray{<:T,2}},
     x1::Dual{<:KronFactor{<:T}},
     x2::Dual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
@@ -422,7 +422,7 @@ function Mooncake.frule!!(
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
-    out::CoDual{<:StridedMatrix{<:T}},
+    out::CoDual{<:_CPUStridedArray{<:T,2}},
     x1::CoDual{<:KronFactor{<:T}},
     x2::CoDual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}

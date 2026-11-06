@@ -2017,6 +2017,13 @@ end
                     (0.25f0, CuArray(Float32[2])),
                     (; msg=r"would silently be zero"),
                 ),
+                (
+                    284,
+                    "kron, triangular GPU factor",
+                    (a, b) -> sum(kron(a, b)),
+                    (UpperTriangular(_rand(rng, Float64, 2, 2)), _rand(rng, Float64, 1, 1)),
+                    (; err=ArgumentError, msg=r"scalar indexing of CuArray"),
+                ),
                 # Partials thread through GPU array elements and float scalars only, so
                 # anything the mapped function itself carries — a closure capture, a
                 # callable struct's field, a Ref argument — would come back an exact zero.
@@ -2292,6 +2299,24 @@ end
                 tgpu3 = Mooncake.zero_tangent(gpu3)
                 s = 1.0f0
                 wc = Base.get_world_counter()
+
+                @test !Mooncake.is_primitive(
+                    Mooncake.DefaultCtx,
+                    Mooncake.ReverseMode,
+                    Tuple{typeof(kron),CuMatrix{Float64},CuMatrix{Float64}},
+                    wc,
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.DefaultCtx,
+                    Mooncake.ForwardMode,
+                    Tuple{
+                        typeof(LinearAlgebra._kron!),
+                        CuMatrix{Float64},
+                        CuMatrix{Float64},
+                        CuMatrix{Float64},
+                    },
+                    wc,
+                )
 
                 @test Mooncake.is_primitive(
                     Mooncake.MinimalCtx,
