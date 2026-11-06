@@ -142,14 +142,14 @@ end
         # Check we can operate on CuArrays of various element types.
 
         @testset "_copy_output / _copy_to_output!! for CuArray{$ET}" for ET in (
-            Float32, Float64, ComplexF32, ComplexF64
+            Float32, Float64, ComplexF32, ComplexF64, Int, Bool
         )
-            p = CuArray(randn(ET, 4, 4))
+            p = CuArray(ET <: Integer ? rand(ET, 4, 4) : randn(ET, 4, 4))
             p_copy = Mooncake._copy_output(p)
             @test p_copy == p
             @test p_copy !== p
             @test typeof(p_copy) == typeof(p)
-            p2 = CuArray(randn(ET, 4, 4))
+            p2 = CuArray(ET <: Integer ? rand(ET, 4, 4) : randn(ET, 4, 4))
             Mooncake._copy_to_output!!(p_copy, p2)
             @test p_copy == p2
         end
@@ -557,8 +557,7 @@ end
         _nodiff_sum(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(sum(i)))
         _nodiff_sum_dims(x) = (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(sum(i; dims=1))))
         _nodiff_sum_mask(x) = (m=CuArray([true, false, true]); sum(x) * Float32(sum(m)))
-        # A float `init` makes the output differentiable, and GPUArrays folds init into a
-        # backend-defined number of partial reductions, so the frule rejects its derivative.
+        # A float init makes an integer reduction's output differentiable.
         _nodiff_sum_init(a, x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=a))
         _nodiff_sum_init_const(x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=0.0))
         # The other reductions over an index or mask array. `count` returns an Integer for
@@ -572,8 +571,6 @@ end
         # predicate whose value can flip within a finite-difference step would leave
         # test_rule comparing a zero rule derivative against a 1/h estimate.
         _nodiff_count_float(x) = sum(x) * Float32(count(isfinite, x))
-        # count's keyword spellings sum `init` like `sum` does, so a non-identity one
-        # corrupts the count itself: count(>(0.0), x; init=1.0) is 98.0 where the count is 3.
         _count_init_identity(x) = Float64(count(>(0.0), x; init=0)) * sum(x)
         # Orderings over an index array: no derivative, and the catch-all error rules keep
         # reporting float arrays.
@@ -1748,6 +1745,50 @@ end
                 _rand(rng, Float32, 3, 4),
             ),
         )
+        if _MooncakeCUDAExt._GPUARRAYS_12
+            for f in (sum, prod), dims in (:, 1)
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims, init=2.0f0 + im),
+                        f,
+                        CuArray(Float32[2, 3]),
+                    ),
+                )
+            end
+            append!(
+                test_cases,
+                [
+                    (
+                        false,
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims, init=T <: Complex && !(dims isa Colon) ? T(2) : 2.0f0),
+                        f,
+                        CuArray(reshape(T[1, 2, 3, 4], 2, 2) .+ (T <: Complex ? im : 0)),
+                    ) for f in (sum, prod), dims in (:, 1), T in (Float32, ComplexF32, Int)
+                ],
+            )
+            append!(
+                test_cases,
+                [
+                    (
+                        false,
+                        :none,
+                        true,
+                        Core.kwcall,
+                        (; dims, init=0.0f0),
+                        prod,
+                        CuArray(Float32[0, 2, 3]),
+                    ) for dims in (:, 1)
+                ],
+            )
+        end
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
                                         test_cases
 
@@ -1973,13 +2014,7 @@ end
         end
 
         @testset "count's keyword rdata slot, reverse only" begin
-            # Reverse mode cannot tell a constant `init` from one the caller wants a gradient
-            # for, so it fills the slot with a zero rather than refusing as forward does --
-            # which means the slot has to be filled at all: a float `init` makes the count a
-            # float, and the keyword rdata is then a NamedTuple, not NoRData.  Interfaces
-            # only, because that zero is what finite differences disagree with: GPUArrays
-            # folds `init` into a backend-defined number of partial reductions, so FD reads
-            # the fold count, around 49 here, off a value that is itself meaningless.
+            # GPUArrays 11 treats init as constant; only its rdata interface can be tested.
             @testset "$name" for (seed, name, f) in [
                 (270, "predicate", _count_init), (271, "mask", _count_init_mask)
             ]
@@ -2237,6 +2272,93 @@ end
             m_scalar = randn(StableRNG(28), Float32)
             @testset "$name" for (seed, name, f, args, kw) in [
                 (
+                    211,
+                    "count init, predicate",
+                    (i, z) -> count(>(0.0), z; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    212,
+                    "count init, mask",
+                    (i, z) -> count(z .> 0; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    213,
+                    "sum init",
+                    z -> sum(z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    214,
+                    "sum init, dims",
+                    z -> sum(sum(z; dims=1, init=5.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    215,
+                    "prod init, dims",
+                    z -> sum(prod(z; dims=1, init=2.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    216,
+                    "sum init over an index array",
+                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    217,
+                    "reduce init",
+                    z -> reduce(+, z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    262,
+                    "count, differentiated init",
+                    (c, z) -> count(>(0.0f0), z; init=c),
+                    (0.0, _rand(rng, Float32, 4)),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    250,
+                    "mapreduce, differentiated init",
+                    (c, z) -> mapreduce(abs2, +, z; init=c),
+                    (0.0f0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    236,
+                    "differentiated init, float",
+                    _sum_kw_init_active,
+                    (0.0f0, M32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    237,
+                    "differentiated init, index array",
+                    _nodiff_sum_init,
+                    (0.0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+            ]
+                if _MooncakeCUDAExt._GPUARRAYS_12
+                    test_rule(
+                        StableRNG(seed), f, args...; is_primitive=false, perf_flag=:none
+                    )
+                else
+                    test_rule_throws(StableRNG(seed), f, args...; kw...)
+                end
+            end
+            @testset "$name" for (seed, name, f, args, kw) in [
+                (
                     263,
                     "kernel launch without a rule",
                     x -> sum(reverse(x)),
@@ -2341,58 +2463,6 @@ end
                     z -> (z[1]=0.0f0; sum(z)),
                     (x32,),
                     (; msg=r"scalar indexing"),
-                ),
-                # `init` is folded into a backend-defined number of partial reductions, so
-                # for the non-idempotent ops it changes the value itself, not just its
-                # derivative: count gives 98.0 where the count is 3.
-                (
-                    211,
-                    "count init, predicate",
-                    (i, z) -> count(>(0.0), z; init=i),
-                    (1.0, counted),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    212,
-                    "count init, mask",
-                    (i, z) -> count(z .> 0; init=i),
-                    (1.0, counted),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    213,
-                    "sum init",
-                    z -> sum(z; init=1.0f0),
-                    (x32,),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    214,
-                    "sum init, dims",
-                    z -> sum(sum(z; dims=1, init=5.0)),
-                    (x32,),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    215,
-                    "prod init, dims",
-                    z -> sum(prod(z; dims=1, init=2.0)),
-                    (x32,),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    216,
-                    "sum init over an index array",
-                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
-                    (x32,),
-                    (; msg=r"not its identity"),
-                ),
-                (
-                    217,
-                    "reduce init",
-                    z -> reduce(+, z; init=1.0f0),
-                    (x32,),
-                    (; msg=r"not its identity"),
                 ),
                 # Before the keyword claims these escaped to GPUArrays' reduction kernel and
                 # failed inside cufunction; unsupported operators have to say so themselves.
@@ -2547,38 +2617,6 @@ end
                     z -> Float32(sum(reinterpret(Int32, z))),
                     (_rand(rng, Float32, 4),),
                     (; msg=r"is not differentiable"),
-                ),
-                # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
-                (
-                    262,
-                    "count, differentiated init",
-                    (c, z) -> count(>(0.0f0), z; init=c),
-                    (0.0, _rand(rng, Float32, 4)),
-                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
-                ),
-                # A differentiated `init` would be dropped instead of folded.
-                (
-                    250,
-                    "mapreduce, differentiated init",
-                    (c, z) -> mapreduce(abs2, +, z; init=c),
-                    (0.0f0, x32),
-                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
-                ),
-                # Forward mode alone refuses a differentiated `init` the rule treats as a
-                # constant; reverse mode reports a zero derivative for it instead.
-                (
-                    236,
-                    "differentiated init, float",
-                    _sum_kw_init_active,
-                    (0.0f0, M32),
-                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
-                ),
-                (
-                    237,
-                    "differentiated init, index array",
-                    _nodiff_sum_init,
-                    (0.0, x32),
-                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
                 ),
             ]
                 test_rule_throws(StableRNG(seed), f, args...; kw...)
@@ -3283,16 +3321,138 @@ end
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
-            @testset "init is a non-differentiated constant" begin
-                # Not a test_rule case: finite differences see the backend's init
-                # folding (nonzero ∂/∂init) while the rule deliberately treats
-                # init as a constant. debug_mode verifies the kw rdata type.
+            # Finite differences can make integer conversion throw.
+            @testset "integer init preserves result tangent types" begin
+                mapped_sum(x; kw...) = sum(identity, x; kw...)
+                for op in (sum, mapped_sum, prod, maximum, minimum),
+                    dims in (:, 1),
+                    shape in ((0, 3), (2, 3))
+
+                    x = CuArray(reshape(Float32.(1:prod(shape)), shape))
+                    init = if op === prod
+                        1
+                    elseif op === minimum
+                        10
+                    else
+                        0
+                    end
+                    f = z -> op(z; dims, init)
+                    y = f(x)
+                    d = Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, x),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(x, CUDA.ones(Float32, shape)),
+                    )
+                    @test isequal(Mooncake.primal(d), y)
+                    @test typeof(Mooncake.tangent(d)) === Mooncake.tangent_type(typeof(y))
+                    seed = if Mooncake.tangent_type(typeof(y)) === Mooncake.NoTangent
+                        Mooncake.NoTangent()
+                    else
+                        one.(y)
+                    end
+                    v, (_, dx) = Mooncake.value_and_pullback!!(
+                        Mooncake.build_rrule(f, x), seed, f, x
+                    )
+                    @test isequal(v, y)
+                    expected = if Mooncake.tangent_type(typeof(y)) === Mooncake.NoTangent
+                        zeros(Float32, shape)
+                    elseif op === prod
+                        Array(prod(x; dims) ./ x)
+                    elseif op in (maximum, minimum)
+                        Array(x) .== op(Array(x); dims)
+                    else
+                        ones(Float32, shape)
+                    end
+                    @test Array(dx) ≈ expected
+                end
+            end
+            if _MooncakeCUDAExt._GPUARRAYS_12
+                @testset "multi-block init $op dims=$dims" for op in (sum, prod),
+                    dims in (1, 2)
+
+                    # Few outputs force GPUArrays to split each reduction across blocks.
+                    shape = dims == 1 ? (4096, 4) : (4, 4096)
+                    x = CUDA.fill(op === sum ? 0.0f0 : 1.0f0, shape...)
+                    kw = (; dims, init=2.0f0)
+                    d = Mooncake.frule!!(
+                        Mooncake.zero_dual(Core.kwcall),
+                        Mooncake.Dual(kw, (; dims=Mooncake.NoTangent(), init=1.0f0)),
+                        Mooncake.zero_dual(op),
+                        Mooncake.zero_dual(x),
+                    )
+                    @test all(==(2.0f0), Array(Mooncake.primal(d)))
+                    @test all(isone, Array(Mooncake.tangent(d)))
+                    y, pb = Mooncake.rrule!!(
+                        Mooncake.zero_fcodual(Core.kwcall),
+                        Mooncake.zero_fcodual(kw),
+                        Mooncake.zero_fcodual(op),
+                        Mooncake.zero_fcodual(x),
+                    )
+                    fill!(Mooncake.tangent(y), 1)
+                    @test pb(Mooncake.NoRData())[2].init == length(Mooncake.primal(y))
+                end
+                @testset "unused nonfinite init partial" for op in (sum, prod)
+                    x = CuArray(Float32[Inf 1; 2 3])
+                    y, pb = Mooncake.rrule!!(
+                        Mooncake.zero_fcodual(Core.kwcall),
+                        Mooncake.zero_fcodual((; dims=1, init=2.0f0)),
+                        Mooncake.zero_fcodual(op),
+                        Mooncake.zero_fcodual(x),
+                    )
+                    copyto!(Mooncake.tangent(y), Float32[0 1])
+                    @test pb(Mooncake.NoRData())[2].init == (op === prod ? 3.0f0 : 1.0f0)
+                end
+                @testset "inactive init preserves the output tangent" begin
+                    dy = CuArray(Float32[-0.0 1])
+                    @test _MooncakeCUDAExt._kw_init_jvp(
+                        dy, 0.0f0, CuArray(Float32[Inf 3])
+                    ) === dy
+                end
+                @testset "identity init partial stays independent of init" begin
+                    partial =
+                        (a, x) -> sum(
+                            _MooncakeCUDAExt._prod_init_partial(
+                                x, (; dims=1, init=a), prod(x; dims=1, init=a)
+                            ),
+                        )
+                    test_rule(
+                        StableRNG(123),
+                        partial,
+                        1.0f0,
+                        CuArray(Float32[2, 3]);
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+                @testset "init sets product accumulator precision" for x in (
+                        CuArray([typemax(Int), 2]), CuArray(Float16[300, 300])
+                    ),
+                    dims in (:, 1),
+                    a in (1.0, 2.0)
+
+                    f = (a, z) -> sum(prod(z; dims, init=a))
+                    expected = sum(prod(x; dims, init=1.0))
+                    _, (_, da, _) = value_and_gradient!!(
+                        Mooncake.build_rrule(f, a, x), f, a, x
+                    )
+                    @test da == expected
+                    d = Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, a, x),
+                        Mooncake.zero_dual(f),
+                        Mooncake.Dual(a, 1.0),
+                        Mooncake.zero_dual(x),
+                    )
+                    @test Mooncake.tangent(d) == expected
+                end
+            end
+            @testset "init derivative follows reduction semantics" begin
+                # Check keyword rdata in debug mode on both GPUArrays versions.
                 a, x = 0.0f0, _rand(rng, Float32, 4, 3)
                 rule = Mooncake.build_rrule(_sum_kw_init_active, a, x; debug_mode=true)
                 _, (_, da, _) = Mooncake.value_and_gradient!!(
                     rule, _sum_kw_init_active, a, x
                 )
-                @test da == 0.0f0
+                @test da == (_MooncakeCUDAExt._GPUARRAYS_12 ? size(x, 2) : 0.0f0)
             end
             @testset "a constant init still differentiates in reverse" begin
                 # Reverse mode cannot tell this literal from an init the caller wants a
