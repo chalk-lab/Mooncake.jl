@@ -3731,9 +3731,24 @@ end
 _seed_array_inputs(::NoDual, x) = ()
 _seed_array_inputs(::Nfwd.NDualArray, x) = (x,)
 _seed_array_inputs(v::Union{ImmutableDual,MutableDual}, x) = _seed_array_inputs(v.fields, x)
-_seed_array_inputs(v::Tuple, x) = _cat_leaves(map(_seed_array_inputs, v, x))
+function _seed_array_inputs(v::Tuple, x)
+    length(v) > 32 && return _seed_array_groups(v, x)
+    return _cat_leaves(map(_seed_array_inputs, v, x))
+end
 function _seed_array_inputs(v::NamedTuple{ns}, x) where {ns}
+    length(ns) > 32 && return _seed_array_groups(v, x)
     return _cat_leaves(map(n -> _seed_array_inputs(getfield(v, n), getfield(x, n)), ns))
+end
+@inline @generated function _seed_array_groups(v::V, x) where {V}
+    groups = Any[]
+    for start in 1:16:fieldcount(V)
+        inds = start:min(start + 15, fieldcount(V))
+        keys = V <: NamedTuple ? map(i -> QuoteNode(fieldname(V, i)), inds) : inds
+        vs = [:(getfield(v, $i)) for i in inds]
+        xs = [:(getfield(x, $key)) for key in keys]
+        push!(groups, :(_seed_array_inputs(($(vs...),), ($(xs...),))))
+    end
+    return :(_cat_leaves(($(groups...),)))
 end
 
 function _structured_gradient!!(
@@ -3807,8 +3822,13 @@ end
     # `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
+@inline _scatter_isbits_field(c, v, ::Val{I}, coeffs, s) where {I} = _scatter_isbits_leaves(
+    getfield(v, I), coeffs, s, c
+)
+
 @inline _scatter_isbits_leaves(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
 @inline function _scatter_isbits_leaves(g::Tuple, coeffs, s, c::Int)
+    length(g) > 32 && return _walk_fields(_scatter_isbits_field, c, g, coeffs, s)
     h, c = _scatter_isbits_leaves(first(g), coeffs, s, c)
     t, c = _scatter_isbits_leaves(Base.tail(g), coeffs, s, c)
     return ((h, t...), c)
@@ -5182,7 +5202,19 @@ end
     return total
 end
 
-@inline _cat_leaves(t::Tuple) = _any_nothing(t) ? nothing : _flatten_leaves(t)
+@inline function _cat_leaves(t::Tuple)
+    length(t) > 32 && return _cat_leaf_groups(t)
+    return _any_nothing(t) ? nothing : _flatten_leaves(t)
+end
+@inline @generated function _cat_leaf_groups(t::T) where {T}
+    groups = Any[]
+    for start in 1:16:fieldcount(T)
+        inds = start:min(start + 15, fieldcount(T))
+        fields = [:(getfield(t, $i)) for i in inds]
+        push!(groups, :(_cat_leaves(($(fields...),))))
+    end
+    return :(_cat_leaves(($(groups...),)))
+end
 @inline _any_nothing(::Tuple{}) = false
 @inline _any_nothing(t::Tuple) = first(t) === nothing || _any_nothing(Base.tail(t))
 @inline _flatten_leaves(::Tuple{}) = ()

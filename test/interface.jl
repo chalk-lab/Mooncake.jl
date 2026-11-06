@@ -237,6 +237,20 @@ const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
 @testset "interface" begin
+    @testset "wide scalar tuple gradient" begin
+        tuple40 = ntuple(Float64, 40)
+        sum40 = tuple40 -> sum(tuple40)
+        cache40 = Mooncake.prepare_derivative_cache(
+            sum40, tuple40; config=Mooncake.Config(; chunk_size=1)
+        )
+        value40, gradient40 = Mooncake.value_and_gradient!!(cache40, sum40, tuple40)
+        @test value40 == sum(tuple40)
+        @test gradient40[2] == ntuple(_ -> 1.0, 40)
+        bytes40 = @allocated Mooncake.value_and_gradient!!(cache40, sum40, tuple40)
+        # Recursive suffix seeding and scattering allocate over 2 MB at 40 elements.
+        @test bytes40 < 1_000_000
+    end
+
     @testset "emptied backing storage on reverse reuse" begin
         @static if VERSION >= v"1.11-rc4"
             for (wrap, read) in (

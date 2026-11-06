@@ -2309,8 +2309,26 @@ end
     im, c = _basis_seed_isbits(imag(v), slots, c)
     return (Complex(re, im), c)
 end
+@inline @generated function _walk_fields(f, state, x::X, args::Vararg{Any,K}) where {X,K}
+    body = Expr(:block)
+    result = [gensym(:r) for _ in 1:fieldcount(X)]
+    for (i, r) in enumerate(result)
+        push!(
+            body.args,
+            :(($r, state) = @inline f(state, x, Val($i), $([:(args[$j]) for j in 1:K]...))),
+        )
+    end
+    push!(body.args, :(return (($(result...),), state)))
+    return body
+end
+
+@inline _basis_seed_field(c, v, ::Val{I}, slots) where {I} = _basis_seed_isbits(
+    getfield(v, I), slots, c
+)
+
 @inline _basis_seed_isbits(::Tuple{}, _slots::NTuple{N,Int}, c::Int) where {N} = ((), c)
 @inline function _basis_seed_isbits(v::Tuple, slots::NTuple{N,Int}, c::Int) where {N}
+    length(v) > 32 && return _walk_fields(_basis_seed_field, c, v, slots)
     h, c = _basis_seed_isbits(first(v), slots, c)
     t, c = _basis_seed_isbits(Base.tail(v), slots, c)
     return ((h, t...), c)
