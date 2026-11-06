@@ -1236,28 +1236,6 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     end
 end
 
-# maximum(f, x) / minimum(f, x) are separate methods that escape the claims
-# above. A real rule needs sum(f, x)'s NDual machinery plus winner selection.
-for _fn in (:maximum, :minimum)
-    _msg = "Mooncake: $_fn(f, x) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Any,CuArray})
-    @eval @is_primitive(
-        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),Any,CuArray}
-    )
-    @eval frule!!(::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval rrule!!(::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-end
-
 # Rules for `prod(x)` on GPU arrays, bare and `dims`.
 #
 # ∂prod/∂xᵢ is the product of xᵢ's slice excluding xᵢ.  Reading that off as y/xᵢ divides by
@@ -1696,17 +1674,14 @@ function rrule!!(
     return out, accumulate_nodiff_kw_pb!!
 end
 
-# `count` returns an Integer for every array, float included, so it never has a derivative.
-# It reaches GPUArrays through `mapreduce(pred, add_sum, A; init=0)`, a Core.kwcall the
-# positional mapreduce catch-all does not claim, so claim `count` itself.
 @zero_derivative MinimalCtx Tuple{typeof(count),CuArray}
-@zero_derivative MinimalCtx Tuple{typeof(count),Any,CuArray}
 
 # GPUArrays 11 repeats count's init just like sum's; GPUArrays 12 adds it once.
 for _n_args in (0, 1)
     _pred_d = _n_args == 1 ? (:(pred::Dual),) : ()
     _pred_c = _n_args == 1 ? (:(pred::CoDual),) : ()
     _pred_v = _n_args == 1 ? (:(primal(pred)),) : ()
+    _pred_check = _n_args == 1 ? (:pred,) : ()
     _slot = _n_args == 1 ? (:Any,) : ()
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),$(_slot...),CuArray}
@@ -1718,6 +1693,7 @@ for _n_args in (0, 1)
         $(_pred_d...),
         x::Dual{<:CuArray},
     )
+        _check_gpu_nondiff_reduction(($(_pred_check...),))
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
         _check_reduction_init(tangent(kw))
@@ -1733,6 +1709,7 @@ for _n_args in (0, 1)
         $(_pred_c...),
         x::CoDual{<:CuArray},
     )
+        _check_gpu_nondiff_reduction(($(_pred_check...),))
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
         # A floating init needs the keyword slot's NamedTuple rdata.
@@ -2434,83 +2411,137 @@ for (reduction, op, target, mapped) in (
     end
 end
 
-# Catch-all rules for unsupported operators — give a clear error rather than letting
-# Mooncake attempt to trace into an opaque CUDA reduction kernel.
-@is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
-function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "IEEE float or complex arrays; got op=$(primal(op)) over " *
-        "$(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
+@foldable function _may_contain_gpu_array(::Type{T}) where {T}
+    isbitstype(T) || return true
+    T <: Union{GPUArrays.AbstractGPUArray,CUDACore.CuDeviceArray} && return true
+    return any(_may_contain_gpu_array, fieldtypes(T))
 end
-function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
+
+function _has_gpu_capture(x, seen=nothing)
+    x isa Union{GPUArrays.AbstractGPUArray,CUDACore.CuDeviceArray} && return true
+    # Raw device pointers do not expose the GPU arrays they address.
+    (x isa Type || !_may_contain_gpu_array(typeof(x))) && return false
+    seen === nothing && (seen = Base.IdSet{Any}())
+    if ismutabletype(typeof(x))
+        x in seen && return false
+        push!(seen, x)
+    end
+    return any(1:fieldcount(typeof(x))) do i
+        isdefined(x, i) && _has_gpu_capture(getfield(x, i), seen)
+    end
+end
+
+function _check_gpu_nondiff_reduction(fs::Tuple)
+    any(f -> _has_gpu_capture(primal(f)), fs) || return nothing
     return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "IEEE float or complex arrays; got op=$(primal(op)) over " *
-        "$(eltype(primal(x))). " *
+        "Mooncake: CuArray reductions do not support captured GPU arrays in the mapper " *
+        "or reduction operator. " *
         _UNIMPL_MSG,
     )
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
-function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
-        "got op=$(primal(op)). " *
+function _check_gpu_nondiff_reduction(y, x, fs...; kw=NamedTuple())
+    if tangent_type(typeof(y)) === NoTangent
+        # Refuse fdata-holding captures: reads cannot be distinguished from writes.
+        all(f -> fdata_type(tangent_type(typeof(primal(f)))) === NoFData, fs) && return true
+    else
+        tangent_type(eltype(primal(x))) === NoTangent || return false
+    end
+    all(f -> tangent_type(typeof(primal(f))) === NoTangent, fs) ||
+        return _throw_gpu_argument_error(
+            "Mooncake: CuArray reductions do not support " *
+            "differentiable captured state in the mapper or reduction operator. " *
+            _UNIMPL_MSG,
+        )
+    tangent_type(typeof(kw)) === NoTangent || return _throw_gpu_argument_error(
+        "Mooncake: non-differentiable CuArray reductions do not support differentiable " *
+        "keyword arguments. " *
         _UNIMPL_MSG,
     )
-end
-function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
-        "got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
+    return true
 end
 
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mapreduce),Any,Any,CuArray}
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    f::Dual{typeof(mapreduce)},
-    mf::Dual,
-    op::Dual,
-    x::Dual{<:CuArray},
-)
-    return frule!!(f, mf, op, x)
+for op in (all, any)
+    @eval @zero_derivative MinimalCtx Tuple{typeof($op),CuArray{Bool}}
+    @eval @zero_derivative MinimalCtx Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof($op),CuArray{Bool}
+    }
 end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    f::CoDual{typeof(mapreduce)},
-    mf::CoDual,
-    op::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return rrule!!(f, mf, op, x)
-end
-@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(reduce),Any,CuArray})
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    f::Dual{typeof(reduce)},
-    op::Dual,
-    x::Dual{<:CuArray},
-)
-    return frule!!(f, op, x)
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    f::CoDual{typeof(reduce)},
-    op::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return rrule!!(f, op, x)
+
+# Opaque GPU reductions need explicit rules even when their derivatives are zero.
+# Differentiable mapped extrema need sum(f, x)'s NDual machinery plus winner selection.
+for (reduction, slots) in (
+        (:mapreduce, (:f, :op)),
+        (:reduce, (:op,)),
+        (:maximum, (:f,)),
+        (:minimum, (:f,)),
+        (:sum, (:f,)),
+        (:count, (:f,)),
+        (:all, (:f,)),
+        (:any, (:f,)),
+    ),
+    keywords in (false, true)
+
+    # Positional sum(f, x) reaches mapreduce; keyword count has its own init-derivative rules.
+    (reduction === :sum && !keywords || reduction === :count && keywords) && continue
+    slot_type = reduction in (:all, :any) ? :Function : :Any
+    prefix = keywords ? (:(typeof(Core.kwcall)), :NamedTuple) : ()
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{$(prefix...),typeof($reduction),$(fill(slot_type, length(slots))...),CuArray}
+    )
+    message = if reduction === :mapreduce
+        :(
+            "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
+            "IEEE float or complex arrays; got op=$(primal(op)) over $(eltype(primal(x))). "
+        )
+    elseif reduction === :reduce
+        :(
+            "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
+            "got op=$(primal(op)). "
+        )
+    elseif reduction === :sum
+        :(
+            "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; " *
+            "got $(eltype(primal(x))). "
+        )
+    elseif reduction in (:maximum, :minimum)
+        "Mooncake: $reduction(f, x) on CuArray is not yet differentiable. "
+    end
+    for (rule, wrapper, zero_rule) in
+        ((:frule!!, :Dual, :zero_derivative), (:rrule!!, :CoDual, :zero_adjoint))
+        prefix_args = if keywords
+            (:(kc::$wrapper{typeof(Core.kwcall)}), :(kw::$wrapper{<:NamedTuple}))
+        else
+            ()
+        end
+        slot_args = [:($slot::$wrapper{<:$slot_type}) for slot in slots]
+        args = ((keywords ? (:kc, :kw) : ())..., :r, slots..., :x)
+        output = rule === :frule!! ? :result : :(result[1])
+        primal_kw = keywords ? :(primal(kw)) : :(NamedTuple())
+        check = if message === nothing
+            nothing
+        else
+            quote
+                if !_check_gpu_nondiff_reduction(
+                    primal($output), x, $(slots...); kw=($primal_kw)
+                )
+                    _throw_gpu_argument_error($message * _UNIMPL_MSG)
+                end
+            end
+        end
+        @eval function $rule(
+            $(prefix_args...),
+            r::$wrapper{typeof($reduction)},
+            $(slot_args...),
+            x::$wrapper{<:CuArray},
+        )
+            _check_gpu_nondiff_reduction(($(slots...),))
+            result = $zero_rule($(args...))
+            $check
+            return result
+        end
+    end
 end
 
 # repeat on GPU arrays, both the `counts...` and the `inner=`/`outer=` spellings.
@@ -2689,34 +2720,6 @@ function rrule!!(
         return NoRData(), dkw, NoRData(), r_f, r_x
     end
     return y, sum_f_kw_pb!!
-end
-
-@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),Any,CuArray})
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    ::Dual{typeof(sum)},
-    ::Dual,
-    x::Dual{<:CuArray},
-)
-    return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; " *
-        "got $(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(sum)},
-    ::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; " *
-        "got $(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
 end
 
 # vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that

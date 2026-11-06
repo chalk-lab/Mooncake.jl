@@ -23,6 +23,11 @@ end
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
+struct _WriteIndex{A}
+    a::A
+end
+(w::_WriteIndex)(i) = (w.a[i]=Int32(1); true)
+
 # A callable struct carrying a differentiable field, for the captured-state tests.
 struct _CapScale{T}
     a::T
@@ -932,6 +937,43 @@ end
             case(_mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
             case(_mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
             case(z -> mapreduce(abs2, +, z; init=0.0), _rand(rng, Float32, 6)),
+            primitive_case(mapreduce, i -> 0.5f0 * i, +, CuArray(Int32[1, 2])),
+            primitive_case(
+                Core.kwcall, (; dims=1), mapreduce, identity, max, CuArray(Int32[1 0; 0 1])
+            ),
+            primitive_case(reduce, max, CuArray(Int32[1, 2])),
+            primitive_case(
+                Core.kwcall,
+                (; dims=1, init=Int32(0)),
+                reduce,
+                max,
+                CuArray(Int32[1 0; 0 1]),
+            ),
+            primitive_case(
+                Core.kwcall, (; dims=1), sum, identity, CuArray(Int32[1 0; 0 1])
+            ),
+            case(
+                (x, idx) -> mapreduce(>(0), &, idx) ? sum(x) : zero(eltype(x)),
+                _rand(rng, Float32, 2),
+                CuArray(Int32[1, 2]),
+            ),
+            case(x -> mapreduce(isfinite, &, x), _rand(rng, Float32, 2)),
+            case(x -> all(isfinite, x), _rand(rng, Float32, 2)),
+            case(
+                (x, idx) -> all(>(0), idx) ? sum(x) : zero(eltype(x)),
+                _rand(rng, Float32, 2),
+                CuArray(Int32[1, 2]),
+            ),
+            case(
+                (x, idx) -> any(>(0), idx) ? sum(x) : zero(eltype(x)),
+                _rand(rng, Float32, 2),
+                CuArray(Int32[1, 2]),
+            ),
+            primitive_case(maximum, abs, CuArray(Int32[1, 2])),
+            primitive_case(Core.kwcall, (; dims=1), maximum, abs, CuArray(Int32[1 0; 0 1])),
+            case((a, idx) -> mapreduce(>(a), &, idx), 0.0f0, CuArray(Int32[1, 2])),
+            primitive_case(minimum, abs, CuArray(Int32[1, 2])),
+            primitive_case(Core.kwcall, (; dims=1), minimum, abs, CuArray(Int32[1 0; 0 1])),
             # reduce(+, x) — explicit rule, redirects to sum machinery
             case(_reduce_plus, _rand(rng, 16)),
             case(_reduce_plus, _rand(rng, Float32, 16)),
@@ -1427,6 +1469,19 @@ end
                 ],
             )
         end
+        for op in (count, all, any)
+            idx, x, mask = CuArray(Int32[1, 2]),
+            CuArray(Float32[2, 3]),
+            CuArray([true, false])
+            for args in ((>(0), idx), (isfinite, x), (mask,))
+                push!(test_cases, primitive_case(op, args...))
+            end
+            if _MooncakeCUDAExt._GPUARRAYS_12 || op === count
+                for dims in (:, 1), args in ((isfinite, x), (mask,))
+                    push!(test_cases, primitive_case(Core.kwcall, (; dims), op, args...))
+                end
+            end
+        end
         @testset "$(typeof(fargs))" for (interface_only, is_primitive, fargs...) in
                                         test_cases
 
@@ -1882,6 +1937,74 @@ end
             @test val ≈ sum(Array(x) .+ c .* mask)
             @test Array(grads[3]) ≈ ones(length(mask))
             @test grads[4] ≈ sum(mask)
+        end
+
+        @testset "GPU capture traversal cost" begin
+            f = let t=ntuple(Float32, 512)
+                i -> t[1] > i
+            end
+            @test !_MooncakeCUDAExt._has_gpu_capture(f)
+            @test Mooncake.TestUtils.count_allocs(_MooncakeCUDAExt._has_gpu_capture, f) == 0
+            n = Ref{Any}(nothing)
+            for _ in 1:12
+                n = Ref{Any}((n, n))
+            end
+            @test !_MooncakeCUDAExt._has_gpu_capture(n)
+            @test (@allocated _MooncakeCUDAExt._has_gpu_capture(n)) < 12 * 1024
+            n[] = (n, CuArray(Int32[1, 2]))
+            @test _MooncakeCUDAExt._has_gpu_capture(n)
+        end
+
+        @testset "rejected reduction preserves captured storage" for (rule, wrap) in (
+            (Mooncake.frule!!, Mooncake.zero_dual),
+            (Mooncake.rrule!!, Mooncake.zero_fcodual),
+        )
+            idx = CuArray(Int32[1, 2])
+            f = i -> (idx[i]=Int32(1); true)
+            args = map(wrap, (mapreduce, f, &, CuArray(Int32[1, 2])))
+            @test_throws r"captured GPU arrays" rule(args...)
+            @test Array(idx) == Int32[1, 2]
+        end
+
+        @testset "reduction refusals" begin
+            idx, x = CuArray(Int32[1, 2]), CuArray(Float32[2, 3])
+            d = CUDA.cudaconvert(idx)
+            captured = r"captured GPU arrays"
+            rows = Any[
+                (r"only supports op", (mapreduce, identity, max, x)),
+                (r"differentiable captured state", (mapreduce, _CapScale(1.0f0), +, idx)),
+                (
+                    r"differentiable keyword",
+                    (Core.kwcall, (; init=3.0f0), mapreduce, identity, max, idx),
+                ),
+                (captured, (mapreduce, i -> (x[i]=2.0f0; true), &, idx)),
+                (captured, (mapreduce, i -> (idx[i]=Int32(1); true), &, idx)),
+                (captured, (mapreduce, i -> idx[i] > 0, &, idx)),
+                (captured, (reduce, (a, b) -> idx[a], idx)),
+                (
+                    r"only supports op",
+                    (Core.kwcall, (; init=2.0f0), mapreduce, isfinite, max, x),
+                ),
+            ]
+            for f in (
+                i -> (d[i]=Int32(1); true),
+                _WriteIndex(d),
+                Base.Fix1((a, i) -> (a[i]=Int32(1); true), d),
+            )
+                push!(rows, (captured, (Core.kwcall, (; init=true), mapreduce, f, &, idx)))
+            end
+            for op in (count, all, any)
+                pred = i -> (idx[i]=Int32(1); true)
+                push!(rows, (captured, (op, pred, idx)))
+                push!(rows, (captured, (Core.kwcall, (; dims=:), op, pred, idx)))
+            end
+            @testset "$(typeof(args))" for (msg, args) in rows
+                copyto!(idx, Int32[1, 2])
+                copyto!(x, Float32[2, 3])
+                test_rule_throws(StableRNG(290), args...; msg)
+                @test Array(idx) == Int32[1, 2]
+                @test Array(x) == Float32[2, 3]
+            end
         end
 
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
