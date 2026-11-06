@@ -519,6 +519,9 @@ Base.setindex!(::NoCache, v, x) = nothing
 
 const MaybeCache = Union{NoCache,IdDict{Any,Any}}
 
+# Bounds compilation of field-wise scaling.
+const TANGENT_UNROLL_LIMIT = 16
+
 """
     zero_tangent(x)
 
@@ -1016,7 +1019,12 @@ Implementation for [`_scale`](@ref). Use `c` to handle circular references and a
 _scale_internal(::MaybeCache, ::Float64, ::NoTangent) = NoTangent()
 _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:IEEEFloat} = T(a * t)
 @unstable function _scale_internal(c::MaybeCache, a::Float64, t::Union{Tuple,NamedTuple})
-    return map(ti -> _scale_internal(c, a, ti)::typeof(ti), t)
+    f = ti -> _scale_internal(c, a, ti)::typeof(ti)
+    return if t isa NamedTuple && length(t) <= TANGENT_UNROLL_LIMIT
+        tuple_map(f, t)
+    else
+        map(f, t)
+    end
 end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:PossiblyUninitTangent}
     return is_init(t) ? T(_scale_internal(c, a, val(t))) : T()
