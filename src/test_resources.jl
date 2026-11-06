@@ -24,6 +24,10 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function shared_array_headers(a)
+    b = reshape(reshape(a, 1, length(a)), size(a))
+    return (a, a, b, b)
+end
 repeated_svec() = (s=Core.svec(1.0); (s, s))
 
 function structured_output_cases(f)

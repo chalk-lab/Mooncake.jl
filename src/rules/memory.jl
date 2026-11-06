@@ -14,6 +14,9 @@
 
 const Maybe{T} = Union{Nothing,T}
 
+_storage_ids(x::Memory{T}) where {T} = isbitstype(T) ? (x,) : nothing
+_storage_ids(x::Array{T}) where {T} = isbitstype(T) ? (x.ref.mem,) : nothing
+
 @foldable tangent_type(::Type{<:Memory{P}}) where {P} = Memory{tangent_type(P)}
 
 function zero_tangent_internal(x::Memory{P}, dict::MaybeCache) where {P}
@@ -63,12 +66,6 @@ function TestUtils.has_equal_data_internal(
         end
     end
     return all(equality)
-end
-
-function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
-    return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
 function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
@@ -175,10 +172,42 @@ function randn_tangent_internal(rng::AbstractRNG, x::Array, dict::MaybeCache)
     return dx::T
 end
 
-function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
-    _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Union{Array,Memory}}
+    x === y && return x
+    # Deduplicate source-to-target pairings; independent sources both contribute.
+    full() = _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    c isa NoCache && return full()
+    buf, off, len = _storage_region(x)
+    source, source_offset, _ = _storage_region(y)
+    first_source = get(c, buf, nothing)
+    first_source === source && off == source_offset && return x
+    if first_source === nothing
+        # Full aligned pairs need only the source identity; other pairs retain coverage.
+        if off == source_offset == 1 && len == length(buf) == length(source)
+            c[buf] = source
+            return full()
+        end
+        c[buf] = false
+    end
+    key = (buf, source, off - source_offset)
+    prev = get(c, key, nothing)
+    prev === true && return x
+    want = off:(off + len - 1)
+    prev === want && return x
+    if prev === nothing
+        c[key] = off == 1 && len == length(buf) ? true : want
+        return full()
+    end
+    covered = prev isa UnitRange{Int} ? [prev] : prev::Vector{UnitRange{Int}}
+    todo = _uncovered(covered, want)
+    push!(covered, want)
+    c[key] = covered
+    for piece in todo, p in piece
+        i = p - off + 1
+        if isbitstype(eltype(T)) || (isassigned(x, i) && isassigned(y, i))
+            x[i] = increment_internal!!(c, x[i], y[i])
+        end
+    end
     return x
 end
 
@@ -189,22 +218,78 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
+    # Partial or reference buffers retain only repeated-header identity.
+    tr = getfield(t, :ref)
+    if !(c isa NoCache) && _spans_memory(t, tr)
+        t′ = Base.wrap(Array, construct_ref(tr, _scale_internal(c, a, tr.mem)), size(t))::T
+        c[t] = t′
+        return t′
+    end
     t′ = T(undef, size(t)...)
     c[t] = t′
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
+# Storage identity distinguishes independent buffers with equal contents.
+@inline function _storage_region(x::Array)
+    r = getfield(x, :ref)
+    return (r.mem, Core.memoryrefoffset(r), length(x))
+end
+@inline _storage_region(x::Memory) = (x, 1, length(x))
+
+# Overlap deduplicates only positions with the same source-to-target pairing.
+function _uncovered(covered::Vector{UnitRange{Int}}, r::UnitRange{Int})
+    pieces = [r]
+    for cr in covered
+        isempty(pieces) && break
+        next = UnitRange{Int}[]
+        for p in pieces
+            lo, hi = max(first(p), first(cr)), min(last(p), last(cr))
+            if lo > hi
+                push!(next, p)
+            else
+                first(p) < lo && push!(next, first(p):(lo - 1))
+                hi < last(p) && push!(next, (hi + 1):last(p))
+            end
+        end
+        pieces = next
+    end
+    return pieces
+end
+
 for A in (Array, Memory)
     @eval function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:$A}
-        key = (t, s)
-        haskey(c, key) && return c[key]::Float64
-        c[key] = 0.0
         bitstype = Val(isbitstype(eltype(T)))
-        return sum(eachindex(t, s); init=0.0) do i
-            if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
-                _dot_internal(c, t[i], s[i])::Float64
-            else
-                0.0
+        tb, to, tl = _storage_region(t)
+        sb, so, _ = _storage_region(s)
+        full() =
+            sum(eachindex(t, s); init=0.0) do i
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
+            end
+        c isa NoCache && return full()
+        k = (:dot_positions, tb, sb, to - so)
+        prev = get(c, k, nothing)
+        want = to:(to + tl - 1)
+        if prev === nothing
+            c[k] = want
+            return full()
+        end
+        covered = prev isa UnitRange{Int} ? [prev] : prev::Vector{UnitRange{Int}}
+        pieces = _uncovered(covered, want)
+        push!(covered, want)
+        c[k] = covered
+        return sum(pieces; init=0.0) do piece
+            sum(piece; init=0.0) do pos
+                i = eachindex(t, s)[pos - to + 1]
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
             end
         end
     end
@@ -215,9 +300,23 @@ function _add_to_primal_internal(
 ) where {P,N}
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::Array{P,N}
+    # Spare capacity may differ between primal and tangent.
+    xr, tr = getfield(x, :ref), getfield(t, :ref)
+    if !(c isa NoCache) && _spans_memory(x, xr) && _spans_memory(t, tr)
+        mem = _add_to_primal_internal(c, xr.mem, tr.mem, unsafe)
+        x′ = Base.wrap(Array, construct_ref(xr, mem), size(x))::Array{P,N}
+        c[key] = x′
+        return x′
+    end
     x′ = Array{P,N}(undef, size(x)...)
     c[key] = x′
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
+end
+
+# Both callers recurse before caching the new array; reference eltypes could form cycles.
+@inline function _spans_memory(x::Array, r::MemoryRef)
+    isbitstype(eltype(x)) || return false
+    return Core.memoryrefoffset(r) == 1 && length(r.mem) == length(x)
 end
 
 function tangent_to_primal_internal!!(

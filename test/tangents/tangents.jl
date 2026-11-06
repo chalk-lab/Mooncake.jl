@@ -629,3 +629,89 @@ end
         @test t[1] === t[2]
     end
 end
+
+@testset "bounded storage scan" begin
+    @test Mooncake._storage_ids(ntuple(_ -> ones(1), 17)) === nothing
+    @test Mooncake._storage_cache(ntuple(_ -> ones(1), 16)) isa Mooncake.NoCache
+    p = ntuple(_ -> ntuple(_ -> ones(1), 5), 4)
+    @test Mooncake._storage_ids(p) === nothing
+end
+
+@testset "shared tangent storage" begin
+    @testset "container identity $(size(a))" for a in (
+        ones(2, 2), ones(4), ones(2, 3, 4), fill(1.0)
+    )
+        p = TestResources.shared_array_headers(a)
+        VERSION >= v"1.11-" && TestUtils.test_tangent_splitting(Xoshiro(123), p)
+        for t in (
+            (
+                if VERSION >= v"1.11-"
+                    (zero_tangent(p), randn_tangent(StableRNG(123), p))
+                else
+                    ()
+                end
+            )...,
+            _scale(0.5, p),
+            _add_to_primal(p, p, true),
+        )
+            @test t[1] === t[2] && t[3] === t[4] && t[1] !== t[3]
+            @test pointer(t[1]) == pointer(t[3])
+            @test size(t[1]) == size(t[3]) == size(a)
+        end
+    end
+    @testset "storage arithmetic" for pair in (
+        a -> (a, reshape(a, 2, 2)),
+        a -> (a, copy(a)),
+        (VERSION >= v"1.11-" ? (a -> (a, a.ref.mem),) : ())...,
+    )
+        a = collect(1.0:4.0)
+        p = pair(a)
+        shared = pointer(p[1]) == pointer(p[2])
+        t = pair(ones(4))
+        @test _dot(t, t) == (shared ? 4.0 : 8.0)
+        s = _scale(0.5, t)
+        for q in (_add_to_primal(p, t, true), _add_to_primal(p, s, true))
+            @test (pointer(q[1]) == pointer(q[2])) == shared
+        end
+        @test all(x -> vec(collect(x)) == a .+ 1, _add_to_primal(p, t, true))
+        @test (pointer(s[1]) == pointer(s[2])) == shared
+        @test increment!!(t, pair(ones(4)))[1] == fill(2.0, 4)
+    end
+    @static if VERSION >= v"1.11-"
+        @testset "partial storage" begin
+            a = ones(4)
+            popfirst!(a)
+            @test _dot((a, a), _scale(1.0, (a, a))) == 3.0
+            b = copy(a)
+            aa = Base.wrap(Array, memoryref(a.ref, 2), (2,))
+            bb = Base.wrap(Array, memoryref(b.ref, 2), (2,))
+            bc = Base.wrap(Array, b.ref, (2,))
+            @test _dot((a, aa), (b, bb)) == 3.0
+            @test _dot((a, aa), (b, bc)) == 5.0
+            @test increment!!((aa, a), (bb, b))[2] == fill(2.0, 3)
+            w = Float64[]
+            sizehint!(w, 16)
+            append!(w, [1.0, 2.0, 3.0])
+            @test length(w.ref.mem) > length(w)
+            @test _add_to_primal(w, zero_tangent(w) .+ 0.5, true) == [1.5, 2.5, 3.5]
+        end
+    end
+end
+
+@testset "independent sources into shared storage" begin
+    a = zeros(2)
+    @test increment!!((a, reshape(a, 2, 1)), (ones(2), fill(2.0, 2, 1)))[1] == [3.0, 3.0]
+end
+@testset "shared storage differentiation" for pair in (
+    VERSION >= v"1.11-" ? (a -> (a, reshape(a, 2, 1)), a -> (a, a.ref.mem)) : ()
+)
+    f(t) = (t[1][1] += t[2][1]; sum(t[1]) + sum(t[2]))
+    p = pair([1.0, 2.0])
+    test_rule(StableRNG(123), f, p; is_primitive=false)
+    cache = prepare_gradient_cache(f, p)
+    value, gradient = value_and_gradient!!(cache, f, p)
+    @test value == 8.0
+    @test all(g -> vec(collect(g)) == [4.0, 2.0], gradient[2])
+    @test pointer(gradient[2][1]) == pointer(gradient[2][2])
+    @test p[1] == [1.0, 2.0]
+end

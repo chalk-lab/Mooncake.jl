@@ -519,8 +519,33 @@ Base.setindex!(::NoCache, v, x) = nothing
 
 const MaybeCache = Union{NoCache,IdDict{Any,Any}}
 
-# Bounds compilation of field-wise scaling.
+# Bounds recursive storage scans and field-wise scaling to avoid excessive compilation.
 const TANGENT_UNROLL_LIMIT = 16
+
+# Unknown containers retain caching; these leaves cannot contain cycles.
+_storage_ids(x::T) where {T} = isbitstype(T) ? () : nothing
+_storage_ids(x::Tangent) = _storage_ids(x.fields)
+_storage_ids(x::PossiblyUninitTangent) = is_init(x) ? _storage_ids(val(x)) : ()
+function _storage_ids(x::Union{Tuple,NamedTuple})
+    isbitstype(typeof(x)) && return ()
+    length(x) > TANGENT_UNROLL_LIMIT && return nothing
+    ids = map(_storage_ids, Tuple(x))
+    any(isnothing, ids) && return nothing
+    sum(length, ids) > TANGENT_UNROLL_LIMIT && return nothing
+    return _flatten_storage_ids(ids)
+end
+
+_flatten_storage_ids(::Tuple{}) = ()
+_flatten_storage_ids(ids::Tuple) = (first(ids)..., _flatten_storage_ids(Base.tail(ids))...)
+
+_distinct_storage(::Nothing) = false
+_distinct_storage(::Tuple{}) = true
+function _distinct_storage(ids::Tuple)
+    tail = Base.tail(ids)
+    return all(x -> x !== first(ids), tail) && _distinct_storage(tail)
+end
+
+_storage_cache(x) = _distinct_storage(_storage_ids(x)) ? NoCache() : IdDict{Any,Any}()
 
 """
     zero_tangent(x)
@@ -889,7 +914,7 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+const IncCache = Union{NoCache,IdDict{Any,Any}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
@@ -916,7 +941,7 @@ That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
 function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Bool}(), x, y)
+    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Any}(), x, y)
 end
 
 """
@@ -1008,7 +1033,7 @@ Should be defined for all standard tangent types.
 Multiply tangent `t` by scalar `a`. Always possible because any given tangent type must
 correspond to a vector field. Not using `*` in order to avoid piracy.
 """
-_scale(a::Float64, t) = _scale_internal(IdDict{Any,Any}(), a, t)
+_scale(a::Float64, t) = _scale_internal(_storage_cache(t), a, t)
 
 """
     _scale_internal(c::MaybeCache, a::Float64, t)
@@ -1051,7 +1076,7 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(t::T, s::T) where {T} = _dot_internal(_storage_cache(t), t, s)::Float64
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}
@@ -1104,7 +1129,7 @@ Here, the value returned by `_add_to_primal` will satisfy the invariant asserted
 inner constructor for `Foo`.
 """
 function _add_to_primal(p, t, unsafe::Bool=false)
-    return _add_to_primal_internal(IdDict{Any,Any}(), p, t, unsafe)::typeof(p)
+    return _add_to_primal_internal(_storage_cache(t), p, t, unsafe)::typeof(p)
 end
 
 """

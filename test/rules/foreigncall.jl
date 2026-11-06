@@ -49,3 +49,15 @@
         )
     end
 end
+
+@static if VERSION >= v"1.11-"
+    @testset "deepcopy of shared storage" begin
+        h(t) = (u=deepcopy(t); sum(u[1]) + sum(u[2]))
+        a = [1.0, 2.0]
+        p = (a, reshape(a, 2, 1))
+        cache = prepare_gradient_cache(h, p)
+        value, gradient = value_and_gradient!!(cache, h, p)
+        @test value == 6.0
+        @test all(g -> vec(g) == [2.0, 2.0], gradient[2])
+    end
+end

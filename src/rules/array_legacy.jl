@@ -1,3 +1,13 @@
+_storage_ids(x::Array{T}) where {T} = isbitstype(T) ? (first(Base.dataids(x)),) : nothing
+
+# Callers root arrays so storage addresses remain valid throughout each traversal.
+@inline _legacy_storage(x::Array) = (Base.dataids(x), length(x))
+# `reshape` can reuse headers of the same shape, coupling independent resizes.
+@inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}
+    return ccall(
+        :jl_reshape_array, Array{T,N}, (Any, Any, Any), Array{T,N}, cached::Vector{T}, sz
+    )
+end
 @inline function zero_tangent_internal(x::Array{P,N}, dict::MaybeCache) where {P,N}
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
 
@@ -19,8 +29,18 @@ function randn_tangent_internal(
 end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {P,N,T<:Array{P,N}}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
+    x === y && return x
+    target = Base.dataids(x)
+    pair = (length(x), _legacy_storage(y))
+    first_pair = c isa NoCache ? nothing : get(c, target, nothing)
+    if first_pair === nothing
+        c[target] = pair
+    else
+        first_pair::typeof(pair) === pair && return x
+        key = (_legacy_storage(x), _legacy_storage(y))
+        haskey(c, key) && return x
+        c[key] = true
+    end
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
@@ -31,13 +51,16 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::Array{T,N}) where {T,N}
     haskey(c, t) && return c[t]::Array{T,N}
+    k = _legacy_storage(t)
+    haskey(c, k) && return (c[t] = _legacy_reshape(c[k], T, size(t)))
     t′ = Array{T,N}(undef, size(t)...)
     c[t] = t′
+    c isa NoCache || (c[k] = vec(t′))
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
-    key = (t, s)
+    key = (_legacy_storage(t), _legacy_storage(s))
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
     bitstype = Val(isbitstype(eltype(T)))
@@ -53,10 +76,13 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, x::Array{P,N}, t::Array{<:Any,N}, unsafe::Bool
 ) where {P,N}
-    key = (x, t, unsafe)
-    haskey(c, key) && return c[key]::Array{P,N}
+    object_key = (x, t, unsafe)
+    haskey(c, object_key) && return c[object_key]::Array{P,N}
+    key = (_legacy_storage(x), _legacy_storage(t), unsafe)
+    haskey(c, key) && return (c[object_key] = _legacy_reshape(c[key], P, size(x)))
     x′ = Array{P,N}(undef, size(x)...)
-    c[key] = x′
+    c[object_key] = x′
+    c isa NoCache || (c[key] = vec(x′))
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
