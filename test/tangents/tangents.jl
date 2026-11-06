@@ -715,3 +715,9 @@ end
     @test pointer(gradient[2][1]) == pointer(gradient[2][2])
     @test p[1] == [1.0, 2.0]
 end
+
+@testset "increment cache selection" begin
+    @test TestUtils.count_allocs(increment!!, zeros(2), ones(2)) == 0
+    a, b = zeros(2), ones(2)
+    @test increment!!((a, a), (b, b))[1] == ones(2)
+end
