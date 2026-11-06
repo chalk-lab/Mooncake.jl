@@ -620,3 +620,12 @@ end
     @test Mooncake.primal_to_tangent!!(zero_tangent(p), p) == fill(NoTangent(), 2)
     @test Mooncake._map_if_assigned!((x, y) -> x + 1, zeros(2), ones(2), p) == [0.0, 2.0]
 end
+
+@testset "repeated SimpleVector" begin
+    p = TestResources.repeated_svec()
+    TestUtils.test_tangent_splitting(Xoshiro(123), p)
+    for seed in (zero_tangent, x -> randn_tangent(StableRNG(123), x))
+        t = seed(p)
+        @test t[1] === t[2]
+    end
+end

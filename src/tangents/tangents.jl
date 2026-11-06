@@ -578,9 +578,10 @@ function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
     return bitcast(Ptr{tangent_type(P)}, x)
 end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
-    return map!(
-        n -> zero_tangent_internal(x[n], dict), Vector{Any}(undef, length(x)), eachindex(x)
-    )
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> zero_tangent_internal(x[n], dict), t, eachindex(x))
 end
 @inline @generated function zero_tangent_internal(x::P, d::MaybeCache) where {P}
 
@@ -695,9 +696,10 @@ function randn_tangent_internal(rng::AbstractRNG, x::NamedTuple, dict::MaybeCach
     return tuple_map(x -> randn_tangent_internal(rng, x, dict), x)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::SimpleVector, dict::MaybeCache)
-    return map!(Vector{Any}(undef, length(x)), eachindex(x)) do n
-        return randn_tangent_internal(rng, x[n], dict)
-    end
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> randn_tangent_internal(rng, x[n], dict), t, eachindex(x))
 end
 @generated function randn_tangent_internal(rng::AbstractRNG, x::P, d::MaybeCache) where {P}
 

@@ -24,6 +24,8 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+repeated_svec() = (s=Core.svec(1.0); (s, s))
+
 function structured_output_cases(f)
     cases = Any[]
     for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
