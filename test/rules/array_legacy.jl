@@ -1,3 +1,5 @@
+using Mooncake: frule!!
+
 @testset "array_legacy" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:array_legacy))
 end
@@ -21,4 +23,40 @@ end
     val, grad = value_and_gradient!!(cache, f_arrayset_ptr, 3.0)
     @test val ≈ 6.0
     @test grad[2] ≈ 2.0
+end
+
+# test_rule_throws cannot seed shared tangents or assert the post-throw state.
+@testset "shared tangent resize refusal" begin
+    for mode in (frule!!, rrule!!),
+        borrowed in (false, true),
+        (f, args, capacity, refuses) in (
+            (Base._growbeg!, (1,), 2, true),
+            (Base._growend!, (1,), 2, true),
+            (Base._growat!, (2, 1), 2, true),
+            (Base._deletebeg!, (1,), 2, true),
+            (Base._deleteend!, (1,), 2, true),
+            (Base._deleteat!, (2, 1), 2, true),
+            (sizehint!, (100,), 2, true),
+            (sizehint!, (2,), 2, false),
+            (sizehint!, (2,), 1000, true),
+        )
+
+        a, da = [1.0, 2.0], zeros(2)
+        sizehint!(a, borrowed ? capacity : 2)
+        sizehint!(da, capacity)
+        alias = reshape(reshape(da, 2, 1), 2)
+        dual = mode === frule!! ? Dual : CoDual
+        zero = mode === frule!! ? zero_dual : zero_fcodual
+        d = dual(a, borrowed ? alias : da)
+        if refuses
+            @test_throws r"ArgumentError:.*array.*copy.*before resizing" mode(
+                zero(f), d, map(zero, args)...
+            )
+        else
+            mode(zero(f), d, map(zero, args)...)
+            @test pointer(da) == pointer(alias)
+        end
+        @test a == [1.0, 2.0]
+        @test da == zeros(2)
+    end
 end
