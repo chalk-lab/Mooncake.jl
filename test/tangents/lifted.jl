@@ -144,6 +144,10 @@ const NDAC_VecC64 = NDualArray{
     LiftedTest_Wide(xs::Vararg{T}) where {T} = new{T}(xs...)
 end
 
+@eval struct LiftedTest_WideInit{T}
+    $([:($(Symbol(:x, i))::T) for i in 1:34]...)
+end
+
 @noinline function lifted_read_last(sink, w, p, v)
     out = Mooncake._read_lifted(w, p, v)
     sink[] =
@@ -162,6 +166,14 @@ end
     nd(v::T, parts::Vararg{T,N}) where {T,N} = NDual{T,N}(v, parts)
 
     @testset "wide aggregate reads" begin
+        for width in (1, 8)
+            p = LiftedTest_WideInit(ntuple(_ -> ones(4), 34)...)
+            v = tangent(zero_lifted(Val(width), p))
+            sink = Ref(false)
+            lifted_read_last(sink, Val(width), p, v)
+            @test sink[]
+            @test TestUtils.count_allocs(lifted_read_last, sink, Val(width), p, v) == 0
+        end
         for n in (33, 128), width in (1, 8)
             a = ones(4)
             ps = ntuple(_ -> a, n)

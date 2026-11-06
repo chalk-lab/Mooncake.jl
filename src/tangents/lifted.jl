@@ -109,10 +109,8 @@ end
 )
 @inline function _read_refreshed(::Val{N}, p::P, v) where {N,P}
     v isa dual_type(Val(N), P) || return nothing
-    # Initialized Vector/NamedTuple structs allocate at 34 fields on Julia 1.10/1.12.
-    cutoff = v isa ImmutableDual ? 33 : 32
-    # Julia 1.10 nested 40×40 reads compile in 47/126 s at widths 1/8 (recursive: 4.4 s).
-    r = if fieldcount(P) <= cutoff
+    # Julia 1.10 nested 40×40 tuple reads compile in 47/126 s at widths 1/8 (recursive: 4.4 s).
+    r = if fieldcount(P) <= 32
         _refresh_leaves(Val(N), p, v)
     elseif v isa ImmutableDual
         fields = @inline _refresh_bounded_fields(Val(N), p, getfield(v, :fields), Val(true))
@@ -204,14 +202,16 @@ end
     body = Expr(:block)
     result = Any[]
     # Optional-field groups box on return; reuse unchanged wrappers individually.
-    group_size = wrapped ? 1 : _REFRESH_GROUP_SIZE
+    optional = wrapped && any(T -> T <: PossiblyUninitTangent, fieldtypes(V))
+    # Nested 40×40 structs compile in 19–20 s on Julia 1.10 (per-field reads: ~14 s).
+    group_size = optional ? 1 : (wrapped ? 4 : _REFRESH_GROUP_SIZE)
     for start in 1:group_size:fieldcount(V)
         inds = start:min(start + group_size - 1, fieldcount(V))
         group = gensym(:group)
         keys = V <: NamedTuple ? map(i -> QuoteNode(fieldname(V, i)), inds) : inds
         vs = [:(getfield(fields, $i)) for i in inds]
         ps = [:(getfield(p, $key)) for key in keys]
-        if wrapped
+        if optional
             call = :(_refresh_leaf(w, $(only(ps)), $(only(vs)), Val(true)))
             call = :(@noinline $call)
             v = only(vs)
@@ -228,7 +228,7 @@ end
         end
         push!(body.args, :($group = $call))
         push!(body.args, :($group === nothing && return nothing))
-        if wrapped
+        if optional
             push!(result, group)
         else
             append!(result, [:(getfield($group, $i)) for i in 1:length(inds)])
