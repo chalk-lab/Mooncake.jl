@@ -610,3 +610,13 @@ end
         @test Mooncake.get_tangent_field(t, :a) === 5.0
     end
 end
+
+@testset "sparse second operand" for make in (
+    n -> Vector{Symbol}(undef, n),
+    (VERSION >= v"1.11-" ? (n -> Memory{Symbol}(undef, n),) : ())...,
+)
+    p = make(2)
+    p[2] = :assigned
+    @test Mooncake.primal_to_tangent!!(zero_tangent(p), p) == fill(NoTangent(), 2)
+    @test Mooncake._map_if_assigned!((x, y) -> x + 1, zeros(2), ones(2), p) == [0.0, 2.0]
+end
