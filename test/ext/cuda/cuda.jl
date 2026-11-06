@@ -104,6 +104,27 @@ end
                         end,
                     ),
                 ),
+                (
+                    if VERSION >= v"1.12-"
+                        # Julia 1.10 raises UndefRefError from an empty UpsilonNode here.
+                        [(
+                            "mixed-eltype dot forward",
+                            x -> dot(x, CUDA.fill(1.0f0, size(x))),
+                            (;
+                                mode=Mooncake.ForwardMode,
+                                # CUDACore's occupancy query builds a closure `@cfunction`
+                                # only on x86; forward mode refuses it before the bitcast.
+                                msg=if Sys.ARCH === :x86_64
+                                    "Expressions of type `:cfunction` are not yet supported in forward mode"
+                                else
+                                    "It is not permissible to bitcast to a differentiable type"
+                                end,
+                            ),
+                        ),]
+                    else
+                        []
+                    end
+                )...,
                 ("in-place broadcast", x -> (x .*= x; Float32(sum(x))), (;)),
                 (
                     "broadcast",
@@ -662,7 +683,6 @@ end
         _mean_sum_ddup(x) = sum(mean(x; dims=(1, 1)))
         _mean_sum_dempty(x) = sum(mean(x; dims=()))  # empty dims: see _varm_sum_dempty
         _mean_nodims(x) = mean(x; dims=:)
-        # Bare spelling: an overlay routes it to the keyword rule.
         _mean_bare(x) = mean(x)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
@@ -746,6 +766,35 @@ end
             end
         end
         test_cases = Any[
+            (false, :none, true, mean, CuArray(Float32[1, 2, 3])),
+            (false, :none, true, mean, abs2, CuArray(Float32[1, 2, 3])),
+            (false, :none, true, mean, Float64, CuArray(Float32[1, 2, 3])),
+            (
+                false,
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=1),
+                mean,
+                t -> 1.0 * t,
+                CuArray(Float32[1, 2, 3]),
+            ),
+            (
+                false,
+                :none,
+                true,
+                Core.kwcall,
+                (; dims=1),
+                mean,
+                sin,
+                CuArray(ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
+            ),
+            [
+                (false, :none, true, Core.kwcall, (; dims), mean, f, CuArray(x)) for
+                x in (Float32[1, 2, 3], ComplexF32[1 + im, 2 + 2im, 3 + 3im]),
+                f in (identity, abs2),
+                dims in (:, 1)
+            ]...,
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
             # similar
@@ -1947,6 +1996,16 @@ end
             end
         end
 
+        @testset "sum(abs2) forward inference" begin
+            X = CuArray{Float32,2,CUDA.DeviceMemory}
+            args = (
+                Mooncake.Dual{typeof(sum),Mooncake.NoTangent},
+                Mooncake.Dual{typeof(abs2),Mooncake.NoTangent},
+                Mooncake.Dual{X,X},
+            )
+            @test isconcretetype(only(Base.return_types(Mooncake.frule!!, args)))
+        end
+
         @testset "norm frule!! rescales an overflowing dot" begin
             # dot(px, dx) overflows once norm(px)*norm(dx) leaves the eltype's range,
             # while the JVP it divides down to is still representable. Float16 saturates
@@ -2177,6 +2236,27 @@ end
             m_row = _rand(rng, Float32, 1, 3)
             m_scalar = randn(StableRNG(28), Float32)
             @testset "$name" for (seed, name, f, args, kw) in [
+                (
+                    263,
+                    "kernel launch without a rule",
+                    x -> sum(reverse(x)),
+                    (x32,),
+                    (; msg="It is not permissible to bitcast to a differentiable type"),
+                ),
+                (
+                    283,
+                    "mean, bad keyword",
+                    z -> mean(abs2, z; init=0),
+                    (CuArray(Float32[2]),),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    282,
+                    "mean, captured differentiable scale",
+                    (a, z) -> sum(mean(Base.Fix1(*, a) ∘ abs2, z; dims=1)),
+                    (0.25f0, CuArray(Float32[2])),
+                    (; msg=r"would silently be zero"),
+                ),
                 # Partials thread through GPU array elements and float scalars only, so
                 # anything the mapped function itself carries — a closure capture, a
                 # callable struct's field, a Ref argument — would come back an exact zero.
@@ -3025,8 +3105,6 @@ end
         end
 
         @testset "Statistics.mean GPU rule" begin
-            # GPUArrays._mean calls sum(Fix1(*,λ), x; dims), which Mooncake cannot trace;
-            # the rule calls it natively for the value and hand-rolls the derivative.
             @testset "dims=1 (Float32)" begin
                 x = _rand(rng, Float32, 4, 3)
                 test_rule(
@@ -3129,6 +3207,27 @@ end
                     Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
                 )
                 @test Mooncake.tangent(d) === Float16(0)
+                for f in (identity, abs2)
+                    d = Mooncake.frule!!(
+                        Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                        Mooncake.Dual((; dims=1), Mooncake.NoTangent()),
+                        Mooncake.Dual(mean, Mooncake.NoTangent()),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                    )
+                    expected = mean(
+                        CUDA.fill(Float16(f === identity ? 0.5 : 1), 70000); dims=1
+                    )
+                    @test isequal(Mooncake.tangent(d), expected)
+                    g = z -> sum(mean(f, z; dims=1))
+                    _, (_, dx) = value_and_gradient!!(Mooncake.build_rrule(g, x), g, x)
+                    scale = if pkgversion(CUDA.CUDACore.GPUArrays) < v"12.2.0"
+                        Float16(inv(length(x)))
+                    else
+                        inv(Float16(length(x)))
+                    end
+                    @test all(==(Float16(f === identity ? 1 : 2) * scale), Array(dx))
+                end
             end
             @testset "Float16 explicit dims follow the primal's arithmetic" begin
                 # The primal is linear, so each gradient entry is the primal at a one-hot
@@ -3257,41 +3356,35 @@ end
                     perf_flag=:none,
                 )
             end
-            # Without `init`, GPUArrays 12 throws as Base does, and AD throws the same error.
-            # GPUArrays 11 returns the eltype's identity instead, which test_rule cannot
-            # cover: its finite differences subtract two infinite outputs and compare the
-            # resulting NaN against the rule's correct zero, so check the value and shape.
+            # GPUArrays 11 identities give NaN finite differences; 12 throws without init.
             @testset "empty slice, no init" begin
                 e = CuArray(zeros(Float32, 0, 3))
-                @testset "$f" for (f, expected) in
+                @testset "$f" for (f, reduction_identity) in
                                   ((_max_bare, -Inf32), (_max_d1, -Inf32), (_min_d1, Inf32))
-                    primal_err = try
-                        f(e)
-                        nothing
-                    catch ex
-                        ex
-                    end
-                    if primal_err !== nothing
-                        @test_throws typeof(primal_err) value_and_gradient!!(
+                    if pkgversion(CUDA.CUDACore.GPUArrays) >= v"12"
+                        @test_throws "reducing over an empty collection" f(e)
+                        @test_throws "reducing over an empty collection" value_and_gradient!!(
                             Mooncake.build_rrule(f, e), f, e
                         )
-                        @test_throws typeof(primal_err) Mooncake.value_and_derivative!!(
+                        @test_throws "reducing over an empty collection" Mooncake.value_and_derivative!!(
                             Mooncake.build_frule(f, e),
                             Mooncake.Dual(f, Mooncake.NoTangent()),
                             Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
                         )
-                        continue
+                    else
+                        # GPUArrays 11 returns an identity; AD must preserve its value and shape.
+                        @test f(e) === reduction_identity
+                        val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
+                        @test val === reduction_identity
+                        @test size(grads[2]) == (0, 3)
+                        d = Mooncake.value_and_derivative!!(
+                            Mooncake.build_frule(f, e),
+                            Mooncake.Dual(f, Mooncake.NoTangent()),
+                            Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                        )
+                        @test Mooncake.primal(d) === reduction_identity
+                        @test Mooncake.tangent(d) == 0.0f0
                     end
-                    val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
-                    @test val == expected
-                    @test size(grads[2]) == (0, 3)
-                    d = Mooncake.value_and_derivative!!(
-                        Mooncake.build_frule(f, e),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
-                    )
-                    @test Mooncake.primal(d) == expected
-                    @test Mooncake.tangent(d) == 0.0f0
                 end
             end
             # An index array contributes nothing, so `init` carries the whole gradient.
@@ -3367,6 +3460,17 @@ end
             _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
             @test H isa CuMatrix{Float32}
             @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
+            f = z -> mean(z)^2
+            _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+            @test isapprox(Array(h), fill(2 * sum(v) / length(x)^2, size(x)); rtol=1.0f-4)
+            for f in (z -> mean(abs2, z), z -> sum(mean(abs2, z; dims=1)))
+                _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                @test isapprox(Array(h), 2 .* Array(v) ./ length(x); rtol=1.0f-4)
+            end
+            f = z -> mean(sin, z)
+            @test_throws r"not yet supported" value_and_hvp!!(
+                prepare_hvp_cache(f, x), f, v, x
+            )
             # NDual-based elementwise rules error loudly under forward-over-reverse.
             f = z -> sum(abs2.(z))
             @test_throws r"not yet supported" value_and_hvp!!(
