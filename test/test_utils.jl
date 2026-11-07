@@ -1,6 +1,60 @@
+struct JETTestSet <: Test.AbstractTestSet
+    description::String
+    results::Vector{Any}
+end
+JETTestSet(description; kws...) = JETTestSet(description, Any[])
+Test.record(ts::JETTestSet, result) = push!(ts.results, result)
+Test.finish(ts::JETTestSet) = ts
+
+jet_cache_target(x::Vector{Any}) = x[1](1)
+
 @testset "test_utils" begin
+    @testset "JET report cache" begin
+        tt = Tuple{typeof(jet_cache_target),Vector{Any}}
+        report = TestUtils.report_opt(tt)
+        @test report === TestUtils.report_opt(tt)
+        failures = @testset JETTestSet "cached instability" begin
+            TestUtils.test_opt(jet_cache_target, (Vector{Any},))
+            TestUtils.test_opt(tt)
+        end
+        @test typeof.(failures.results) == [JET.JETTestFailure, JET.JETTestFailure]
+        @test failures.results[1].result === report
+        @test failures.results[2].result === report
+
+        filtered = TestUtils.report_opt(tt; ignored_modules=(Main,))
+        @test filtered !== report
+        @test isempty(JET.get_reports(filtered))
+        @test filtered === TestUtils.report_opt(tt; ignored_modules=(Main,))
+        @test report === TestUtils.report_opt(jet_cache_target, (Vector{Any},))
+
+        @eval jet_cache_target(x::Vector{Any}) = 1
+        updated = Base.invokelatest(TestUtils.report_opt, tt)
+        @test updated !== report
+        @test isempty(JET.get_reports(updated))
+        @test updated === Base.invokelatest(TestUtils.report_opt, tt)
+        passes = @testset JETTestSet "redefined method" begin
+            Base.invokelatest(TestUtils.test_opt, tt)
+            Base.invokelatest(TestUtils.test_opt, tt)
+        end
+        @test typeof.(passes.results) == [Test.Pass, Test.Pass]
+
+        oc1 = Base.Experimental.@opaque (f::Any) -> 1
+        oc2 = Base.Experimental.@opaque (f::Any) -> (f(1); 1)
+        @test typeof(oc1) === typeof(oc2)
+        @test isempty(JET.get_reports(TestUtils.report_opt(oc1)))
+        @test length(JET.get_reports(TestUtils.report_opt(oc2))) == 1
+    end
+
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
+        # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s
+        # `rtol`, so a fixed relative error used to pass at 1e5 and fail at 1e6.
+        @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
+        @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
+        # `exact_floats` drops the tolerance, and reaches the leaves through the structural
+        # recursion rather than only the top level.
+        @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
+        @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
         @test has_equal_data(5.0, 5.0)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
@@ -22,6 +76,31 @@
         @test !has_equal_data(Complex(5.0, 4.0), Complex(5.0, 5.0))
         @test !has_equal_data(Diagonal(randn(5)), Diagonal(randn(5)))
         @test has_equal_data(Diagonal(ones(5)), Diagonal(ones(5)))
+        for W in (
+            Symmetric,
+            Hermitian,
+            UpperTriangular,
+            LowerTriangular,
+            UnitUpperTriangular,
+            UnitLowerTriangular,
+        )
+            a, b = W(Matrix{Real}(undef, 2, 2)), W(Matrix{Real}(undef, 2, 2))
+            @test has_equal_data(a, b)
+            i = W in (LowerTriangular, UnitLowerTriangular) ? (2, 1) : (1, 2)
+            parent(a)[i...] = 2
+            @test !has_equal_data(a, b)
+            @test !has_equal_data(b, a)
+            @test has_equal_data(a, b; equal_undefs=false)
+            parent(b)[i...] = 2
+            @test has_equal_data(a, b)
+            parent(b)[i...] = 3
+            @test !has_equal_data(a, b)
+        end
+        a, b = UpperTriangular(Matrix{Any}(undef, 1, 1)),
+        UpperTriangular(Matrix{Any}(undef, 1, 1))
+        parent(a)[1] = a
+        parent(b)[1] = b
+        @test has_equal_data(a, b)
         @test has_equal_data("hello", "hello")
         @test !has_equal_data("hello", "goodbye")
         @test has_equal_data(
@@ -168,5 +247,43 @@
             print_results=false,
             max_fd_step=1e-3,
         )
+    end
+    @testset "_deepcopy_all preserves cross-argument aliasing" begin
+        # Per-element copies would sever cross-argument aliases before a rule sees them.
+        x = [1.0, 2.0]
+        c = Mooncake.TestUtils._deepcopy_all((sum, x, x))
+        @test c[2] === c[3]                    # aliasing between slots survives
+        @test c[2] !== x                       # ...and it is still a copy, not the caller's array
+        c[2][1] = 99.0
+        @test c[3][1] == 99.0                  # a write through one slot is seen by the other
+        @test x[1] == 1.0                      # ...and never reaches the caller
+        # Distinct objects must stay distinct: a shared cache merges only what was already identical.
+        y = [1.0, 2.0]
+        d = Mooncake.TestUtils._deepcopy_all((sum, x, y))
+        @test d[2] !== d[3]
+        # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
+        @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
+    end
+    @testset "test_rule seeds coherent aliases" begin
+        seen = Tuple{Bool,Bool}[]
+        f = (a, b) -> nothing
+        function frule(f, a, b)
+            push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
+            return Mooncake.zero_dual(nothing)
+        end
+        function rrule(f, a, b)
+            push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
+            return zero_fcodual(nothing), Mooncake.NoPullback(f, a, b)
+        end
+        x = [1.0]
+        TestUtils.test_rule(StableRNG(123), f, x, x; frule, rrule, interface_only=true)
+        @test length(seen) == 2
+        @test all(p == t for (p, t) in seen)
+        empty!(seen)
+        d = Mooncake.zero_dual(x)
+        TestUtils.test_frule_interface(Mooncake.zero_dual(f), d, d; frule)
+        c = zero_codual(x)
+        TestUtils.test_rrule_interface(zero_codual(f), c, c; rrule)
+        @test seen == [(true, true), (true, true)]
     end
 end
