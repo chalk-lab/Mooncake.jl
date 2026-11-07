@@ -4,12 +4,14 @@
 Apply a sequence of standardising transformations to `ir` which leaves its semantics
 unchanged, but makes AD more straightforward. In particular, replace
 1. `:foreigncall` `Expr`s with `:call`s to `Mooncake._foreigncall_`,
-2. `:new` `Expr`s with `:call`s to `Mooncake._new_`,
-3. `:splatnew` Expr`s with `:call`s to `Mooncake._splat_new_`,
-4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
-5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
-6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+2. `:foreignglobal` `Expr`s with calls to `IntrinsicsWrappers.__cglobal`,
+3. `:static_parameter` `Expr`s with their specialised values,
+4. `:new` `Expr`s with `:call`s to `Mooncake._new_`,
+5. `:splatnew` Expr`s with `:call`s to `Mooncake._splat_new_`,
+6. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
+7. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
+8. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
+9. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
 With `preserve_gc=true`, leave native GC preservation scopes intact for forward AD,
 which maps the preserved owners to `Dual`s to retain both primal and tangent storage.
@@ -29,6 +31,8 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
     ir = fix_up_invoke_inference!(ir)
     for (n, inst) in enumerate(stmt(ir.stmts))
         inst = foreigncall_to_call(inst, sp_map)
+        inst = foreignglobal_to_call(inst)
+        inst = static_parameter_to_value(inst, ir.sptypes)
         inst = new_to_call(inst)
         inst = splatnew_to_call(inst)
         inst = intrinsic_to_function(inst)
@@ -45,6 +49,25 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
     verify_no_constant_gotoifnots(ir)
 
     return ir
+end
+
+function foreignglobal_to_call(x)
+    Meta.isexpr(x, :foreignglobal) || return x
+    name = __extract_foreigncall_name(only(x.args))
+    return Expr(:call, IntrinsicsWrappers.__cglobal, name)
+end
+
+function static_parameter_to_value(x, sptypes::Vector{CC.VarState})
+    Meta.isexpr(x, :static_parameter) || return x
+    typ = sptypes[only(x.args)].typ
+    value = if typ isa Core.Const
+        typ.val
+    elseif typ === Core.TypeofBottom
+        Union{}
+    else
+        only(typ.parameters)
+    end
+    return Expr(:call, identity, QuoteNode(value))
 end
 
 """
@@ -176,7 +199,13 @@ function __extract_foreigncall_name(x::Expr)
 end
 __extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
 function __extract_foreigncall_name(v::Tuple)
-    Val((Symbol(v[1]), Symbol(v[2])))
+    Val((Symbol(v[1]), foreigncall_library_name(v[2])))
+end
+foreigncall_library_name(lib) = Symbol(lib)
+@static if isdefined(Base.Libc.Libdl, :LazyLibrary)
+    function foreigncall_library_name(lib::Base.Libc.Libdl.LazyLibrary)
+        return Symbol(Base.Libc.Libdl.dlpath(lib))
+    end
 end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)

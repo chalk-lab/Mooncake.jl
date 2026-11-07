@@ -21,6 +21,15 @@ function Mooncake.rrule!!(::CoDual{typeof(fake_grad_955)}, x::CoDual, y::CoDual)
     return CoDual(x.x, y.dx), fake_grad_955_pullback
 end
 
+# The function an `:invoke` statement calls. Julia 1.14 IR names it by a `BindingPartition`.
+function invoked_function(inst)
+    f = inst.args[2]
+    isdefined(Core, :BindingPartition) &&
+        f isa Core.BindingPartition &&
+        return Base.partition_restriction(f)
+    return f isa GlobalRef ? getglobal(f.mod, f.name) : f
+end
+
 @testset "abstract_interpretation" begin
     # Check that inlining doesn't / does happen as expected.
     @testset "MooncakeInterpreter" begin
@@ -34,13 +43,13 @@ end
             # Pre-condition: must inline away under usual compilation.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
-            @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
+            @assert invoked_function(stmt(usual_ir.stmts)[invoke_line]) === sin
 
             # Should continue to inline away under AD compilation.
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
-            @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
+            @test invoked_function(stmt(ad_ir.stmts)[invoke_line]) === sin
         end
         @testset "primitive is no longer inlined away" begin
 
@@ -51,13 +60,13 @@ end
             # Pre-condition: must inline away under usual compilation.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
-            @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
+            @assert invoked_function(stmt(usual_ir.stmts)[invoke_line]) === sin
 
             # Should not inline away under AD compilation.
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
-            @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :a_primitive)
+            @test invoked_function(stmt(ad_ir.stmts)[invoke_line]) === a_primitive
         end
         @testset "deep primitive is not inlined away" begin
 
@@ -70,13 +79,13 @@ end
             # Pre-condition: both functions should be inlined away under usual conditions.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
-            @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
+            @assert invoked_function(stmt(usual_ir.stmts)[invoke_line]) === sin
 
             # Should not inline away under AD compilation.
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
-            @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :a_primitive)
+            @test invoked_function(stmt(ad_ir.stmts)[invoke_line]) === a_primitive
         end
         @testset "no inline away union splitting" begin
 
@@ -95,14 +104,14 @@ end
             # Pre-condition: a invoke sites inline away to reveal calls to `sin`.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
             for line in findall(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
-                @assert stmt(usual_ir.stmts)[line].args[2] == GlobalRef(Main, :sin)
+                @assert invoked_function(stmt(usual_ir.stmts)[line]) === sin
             end
 
             # Should not inline away under AD compilation.
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             for line in findall(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
-                @test stmt(ad_ir.stmts)[line].args[2] != GlobalRef(Main, :sin)
+                @test invoked_function(stmt(ad_ir.stmts)[line]) !== sin
             end
         end
 
@@ -145,5 +154,35 @@ end
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
+
+        # Clear populated caches in both modes, including the Julia 1.14 lookup index.
+        Mooncake.prepare_derivative_cache(f, x; config=Mooncake.Config(enable_nfwd=false))
+        for interp in values(Mooncake.GLOBAL_INTERPRETERS)
+            @static if isdefined(CC, :InferenceCache)
+                @test !isempty(interp.inf_cache)
+                @test !isempty(interp.inf_cache.index)
+            end
+        end
+        Mooncake.empty_mooncake_caches!()
+        for interp in values(Mooncake.GLOBAL_INTERPRETERS)
+            @test isempty(interp.oc_cache)
+            @test isempty(interp.code_cache.dict)
+            @test isempty(interp.inf_cache)
+            @static if isdefined(CC, :InferenceCache)
+                @test isempty(interp.inf_cache.index)
+            end
+        end
+
+        # Re-infer the same functions after clearing; a stale index must not be reused.
+        cache = Mooncake.prepare_gradient_cache(f, x)
+        @test last(Mooncake.value_and_gradient!!(cache, f, x))[2] ≈ [cos(x[1]), 2x[2]]
+        fcache = Mooncake.prepare_derivative_cache(
+            f, x; config=Mooncake.Config(enable_nfwd=false)
+        )
+        val, deriv = Mooncake.value_and_derivative!!(
+            fcache, (f, NoTangent()), (x, [3.0, -2.0])
+        )
+        @test val ≈ sin(x[1]) + x[2]^2
+        @test deriv ≈ 3cos(x[1]) - 4x[2]
     end
 end

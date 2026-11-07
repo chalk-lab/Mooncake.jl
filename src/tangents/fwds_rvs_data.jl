@@ -226,13 +226,16 @@ fdata_type(::Type{T}) where {T<:Ptr} = T
     end
 end
 
-function fdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if fdata_type(T) == NoFData
-        return NoFData
-    elseif isconcretetype(fdata_type(T))
-        return NamedTuple{names,fdata_type(T)}
-    else
-        return Any
+@generated function fdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
+    return quote
+        FT = fdata_type($T)
+        if FT == NoFData
+            return NoFData
+        elseif isconcretetype(FT)
+            return NamedTuple{$names,FT}
+        else
+            return Any
+        end
     end
 end
 
@@ -513,13 +516,16 @@ rdata_type(::Type{<:Ptr}) = NoRData
     end
 end
 
-function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if rdata_type(T) == NoRData
-        return NoRData
-    elseif isconcretetype(rdata_type(T))
-        return NamedTuple{names,rdata_type(T)}
-    else
-        return Any
+@generated function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
+    return quote
+        RT = rdata_type($T)
+        if RT == NoRData
+            return NoRData
+        elseif isconcretetype(RT)
+            return NamedTuple{$names,RT}
+        else
+            return Any
+        end
     end
 end
 
