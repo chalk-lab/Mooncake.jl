@@ -863,6 +863,11 @@ end
             # sum(f, ::CuFloatArray)
             case(_sum_f_sin, _rand(rng, 16)),
             case(_sum_f_exp, _rand(rng, 16)),
+            # Zero-dimensional results.
+            case(_sum_f_sin, CuArray(fill(0.5))),
+            case(x -> sum(sin, x; dims=(1,)), cu(fill(0.5); unified=true)),
+            case((x, a) -> x .* a, CuArray(fill(2.0)), 3.0),
+            case(x -> Float64.(x), CuArray(fill(2))),
             # GPU broadcasts (materialize rule, real CuArrays)
             case(_bcast_sum_sin, _rand(rng, 16)),
             case(_bcast_sum_pow7, _rand(rng, 16)),
@@ -1358,7 +1363,42 @@ end
                 _rand(rng, Float32, 3, 4),
             ),
         )
+        for f in (
+            (a, x) -> accumulate(+, x; init=a),
+            (a, x) -> accumulate(+, x; dims=1, init=a),
+            (a, x) -> maximum(x; dims=(1,), init=a),
+            (a, x) -> minimum(x; dims=(1,), init=a),
+        )
+            push!(test_cases, case(f, 1.0, CuArray(fill(0.5))))
+        end
+        for f in (
+            x -> cumprod(x; dims=1),
+            x -> mean(sin, x; dims=(1,)),
+            x -> mean(abs2, x; dims=(1,)),
+        )
+            push!(test_cases, case(f, CuArray(fill(0.5))))
+        end
+        for dims in (:, (1,))
+            push!(
+                test_cases,
+                case(
+                    (x, m) -> varm(x, m; dims, corrected=false),
+                    CuArray(fill(0.5)),
+                    CuArray(fill(0.2)),
+                ),
+            )
+        end
         if _MooncakeCUDAExt._GPUARRAYS_12
+            push!(
+                test_cases,
+                case((a, x) -> prod(x; dims=(1,), init=a), 1.0, CuArray(fill(0.5))),
+            )
+            for f in (
+                (a, x) -> sum(sin, x; dims=(1,), init=a),
+                (a, x) -> sum(x; dims=(1,), init=a),
+            )
+                push!(test_cases, case(f, 1.0, CuArray(fill(0.5))))
+            end
             for f in (sum, prod), dims in (:, 1)
                 push!(
                     test_cases,
