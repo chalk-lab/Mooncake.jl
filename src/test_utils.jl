@@ -695,11 +695,18 @@ function test_frule_correctness(
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
-    ẋ = map(normalize_tangent ∘ last ∘ unlift, x_ẋ)
-    # One direction per mutable object: `_add_to_primal` caches on primal AND tangent, so two
-    # slots over one object would otherwise be perturbed as two separate arrays.
+    lanes = IdDict{Any,Any}()
+    ẋ = map(s -> Mooncake._materialise_lane(s, 1, lanes), x_ẋ)
+    # Norm comparisons can hide small shared components; use the traversal's storage keys.
     seen = IdDict{Any,Any}()
-    ẋ = map((xi, ẋi) -> ismutable(xi) ? get!(seen, xi, ẋi) : ẋi, x, ẋ)
+    shares_a_buffer = false
+    for t in ẋ
+        c = IdDict{Any,Any}()
+        Mooncake._dot_internal(c, t, t)
+        shares_a_buffer |= any(k -> haskey(seen, k), keys(c))
+        merge!(seen, c)
+    end
+    ẋ = shares_a_buffer ? normalize_tangent(ẋ) : map(normalize_tangent, ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -732,16 +739,9 @@ function test_frule_correctness(
         )
     end
 
-    # Use AD to compute Frechet derivative at ẋ. Two slots holding one mutable object get one slot,
-    # as `_seed_lifteds` seeds them; lifting each from its own copy would test an unaliased call.
+    # Copy and lift the whole argument graph with shared caches.
     d = IdDict{Any,Any}()
-    x_ẋ_rule = map(x, ẋ) do xi, ẋi
-        if ismutable(xi)
-            get!(() -> lift(_deepcopy(xi), ẋi), d, xi)
-        else
-            lift(_deepcopy(xi), ẋi)
-        end
-    end
+    x_ẋ_rule = map((xi, ẋi) -> lift(xi, ẋi, d), _deepcopy_all(x), ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )

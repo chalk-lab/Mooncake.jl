@@ -424,6 +424,28 @@ end
         @test seen == [(true, true), (true, true)]
     end
 
+    @testset "forward correctness preserves descendant aliases" begin
+        f(a, b) = (a .*= 2; b[1][1] + b[2])
+        function frule(_, a, b)
+            primal(a) .*= 2
+            tangent_view(a, 1) .*= 2
+            dy = tangent(b)[1][1] + tangent(b)[2]
+            return Lifted{Float64,1}(dy.value, dy)
+        end
+        for direction in (1.0, 1e10)
+            a, da = [1.0], [1.0]
+            c = IdDict{Any,Any}()
+            slots = (
+                Mooncake.zero_lifted(Val(1), f),
+                Mooncake.lift(a, da, c),
+                Mooncake.lift((a, 2.0), (da, direction), c),
+            )
+            TestUtils.test_frule_correctness(
+                Xoshiro(2), slots...; frule, unsafe_perturb=false
+            )
+        end
+    end
+
     @testset "a pinned tangent spreads over distinct lanes" begin
         # Identical directions would let broadcasting lane 1 pass the comparison with each
         # width-1 result.
