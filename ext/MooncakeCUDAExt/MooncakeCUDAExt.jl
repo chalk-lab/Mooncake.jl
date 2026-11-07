@@ -1126,6 +1126,22 @@ function _minmax_find(op, find, px, dims)
     return find(px; dims=dims)
 end
 
+@is_primitive(
+    MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(_minmax_find),Any,Any,CuFloatArray,Any}
+)
+function frule!!(
+    ::Dual{typeof(_minmax_find)}, op::Dual, find::Dual, x::Dual{<:CuFloatArray}, dims::Dual
+)
+    px, dx = arrayify(x)
+    pdims = primal(dims)
+    m, ind = _minmax_find(primal(op), primal(find), px, pdims)
+    dm = sum(
+        Base.broadcasted((d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind));
+        dims=pdims,
+    )
+    return Dual((m, ind), (dm, zero_tangent(ind)))
+end
+
 for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
     @eval @is_primitive(
@@ -1141,7 +1157,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval function rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuFloatArray})
         px, dx = arrayify(x)
         isempty(px) && return CoDual($_fn(px), NoFData()), _nopb(Val(2))
-        y, ind = $_find(px)
+        y, ind = _minmax_find($_fn, $_find, px, :)
         function minmax_pb!!(dy)
             dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
             return NoRData(), NoRData()
@@ -1228,7 +1244,14 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dy_out = y isa AbstractArray ? zero(y) : NoFData()
         function minmax_kw_pb!!(dy)
             dy = dy isa NoRData ? dy_out : dy
-            dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
+            # A scalar lambda keeps this fused broadcast inferable on Julia 1.10.
+            dx .+= Base.broadcasted(
+                (d, i, w, b) -> d * (i == w) * b,
+                dy,
+                CartesianIndices(px),
+                _winner(ind),
+                won,
+            )
             dkw = _kw_init_rdata(kw_rdata, dy, .!won)
             return NoRData(), dkw, NoRData(), NoRData()
         end
