@@ -426,13 +426,13 @@ end
 
     @testset "forward correctness preserves descendant aliases" begin
         f(a, b) = (a .*= 2; b[1][1] + b[2])
-        function frule(_, a, b)
-            primal(a) .*= 2
-            tangent_view(a, 1) .*= 2
-            dy = tangent(b)[1][1] + tangent(b)[2]
-            return Lifted{Float64,1}(dy.value, dy)
-        end
-        for direction in (1.0, 1e10)
+        for direction in (1.0, 1e3), scale in (1, 2)
+            function frule(_, a, b)
+                primal(a) .*= 2
+                tangent_view(a, 1) .*= scale
+                dy = tangent(b)[1][1] + tangent(b)[2]
+                return Lifted{Float64,1}(dy.value, dy)
+            end
             a, da = [1.0], [1.0]
             c = IdDict{Any,Any}()
             slots = (
@@ -440,9 +440,33 @@ end
                 Mooncake.lift(a, da, c),
                 Mooncake.lift((a, 2.0), (da, direction), c),
             )
-            TestUtils.test_frule_correctness(
-                Xoshiro(2), slots...; frule, unsafe_perturb=false
-            )
+            ts = @testset ReferenceTestSet "tangent mutation" begin
+                TestUtils.test_frule_correctness(
+                    Xoshiro(2), slots...; frule, unsafe_perturb=false
+                )
+            end
+            @test reference_result_count(ts, Test.Error) == 0
+            @test (reference_result_count(ts, Test.Fail) > 0) == (scale == 1)
+        end
+    end
+
+    @testset "forward correctness isolates independent directions" begin
+        f(s, a, b) = s + sum(a) + sum(b)
+        a = randn(Xoshiro(3), 10_000)
+        for seed in 1:5, scale in (1, 2)
+            function frule(_, s, a, b)
+                y = f(primal(s), primal(a), primal(b))
+                dy = scale * tangent(s) + sum(tangent(a)) + sum(tangent(b))
+                return Lifted{typeof(y),1}(y, dy)
+            end
+            slots = TestUtils._seed_lifteds(Val(1), Xoshiro(seed), (f, 1.5, a, a))
+            ts = @testset ReferenceTestSet "independent scalar" begin
+                TestUtils.test_frule_correctness(
+                    Xoshiro(seed), slots...; frule, unsafe_perturb=false
+                )
+            end
+            @test reference_result_count(ts, Test.Error) == 0
+            @test (reference_result_count(ts, Test.Fail) > 0) == (scale == 2)
         end
     end
 

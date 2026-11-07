@@ -698,15 +698,22 @@ function test_frule_correctness(
     lanes = IdDict{Any,Any}()
     ẋ = map(s -> Mooncake._materialise_lane(s, 1, lanes), x_ẋ)
     # Norm comparisons can hide small shared components; use the traversal's storage keys.
-    seen = IdDict{Any,Any}()
-    shares_a_buffer = false
-    for t in ẋ
+    seen = IdDict{Any,Int}()
+    groups = collect(eachindex(ẋ))
+    for (i, t) in enumerate(ẋ)
         c = IdDict{Any,Any}()
         Mooncake._dot_internal(c, t, t)
-        shares_a_buffer |= any(k -> haskey(seen, k), keys(c))
-        merge!(seen, c)
+        for k in keys(c)
+            j = get!(seen, k, i)
+            groups[j] == groups[i] || replace!(groups, groups[j] => groups[i])
+        end
     end
-    ẋ = shares_a_buffer ? normalize_tangent(ẋ) : map(normalize_tangent, ẋ)
+    normalised = Any[ẋ...]
+    for group in unique(groups)
+        indices = findall(==(group), groups)
+        normalised[indices] .= normalize_tangent(Tuple(ẋ[i] for i in indices))
+    end
+    ẋ = Tuple(normalised)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
