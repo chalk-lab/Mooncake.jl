@@ -1018,6 +1018,7 @@ function test_frule(
         if !isnothing(reference) && haskey(reference, :value)
             _test_reference(primal(y_ẏ), reference.value, reference, "reference.value")
         end
+        @test has_equal_data(yp, map(primal, seeds); float_precision=prec)
         @test has_equal_data(y_true, primal(y_ẏ); float_precision=prec)
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
         frule1 = build_frule(interp, sig; chunk_size=1)

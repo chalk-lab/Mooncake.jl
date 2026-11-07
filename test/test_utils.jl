@@ -759,6 +759,22 @@ end
         end
     end
 
+    @testset "chunked input primals match the primal execution" begin
+        for (bad_width, failures) in ((8, 1), (9, 0))
+            captured = @testset JETTestSet "input primal mutation" begin
+                TestUtils.test_frule(
+                    Xoshiro(1),
+                    wrong_primal_mutation!,
+                    [1.0],
+                    bad_width;
+                    sig=Tuple{typeof(wrong_primal_mutation!),Vector{Float64},Int},
+                )
+            end
+            @test count(r -> r isa Test.Fail, captured.results) == failures
+            @test count(r -> r isa Test.Error, captured.results) == 0
+        end
+    end
+
     @testset "reference lanes check input primal mutations" begin
         for reference in (
             (lanes=:inactive_zero,),
