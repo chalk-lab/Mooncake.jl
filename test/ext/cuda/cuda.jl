@@ -3174,6 +3174,13 @@ end
             _, g, h = value_and_hvp!!(prepare_hvp_cache(sum, x), sum, v, x)
             @test isapprox(Array(g), ones(Float32, 8); rtol=1.0f-4)
             @test isapprox(Array(h), zeros(Float32, 8); atol=1.0f-5)
+            expected = zeros(Float32, 8)
+            w = argmax(Array(x))
+            expected[w] = 2 * Array(v)[w]
+            for f in (z -> maximum(z)^2, z -> maximum(z; init=(-Inf32))^2)
+                _, _, h = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                @test isapprox(Array(h), expected; rtol=1.0f-4)
+            end
             # dot(x, x) has Hessian 2I ⇒ hvp = 2v.
             dotsq = z -> dot(z, z)
             _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
