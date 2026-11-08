@@ -213,6 +213,8 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.require_tangent_cache(P) == Val(expected_result)
     end
 
+    @test TestUtils.count_allocs(increment!!, zeros(2), ones(2)) == 0
+
     @testset "Union handling of possibly uninitialised structs" begin
         F = Mooncake.FData{
             @NamedTuple{
