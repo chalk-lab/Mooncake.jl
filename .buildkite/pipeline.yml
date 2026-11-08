@@ -16,7 +16,7 @@ steps:
     agents:
       queue: "cuda"
     if: build.message !~ /\[skip tests\]/
-    timeout_in_minutes: 60
+    timeout_in_minutes: 90
     env:
       LABEL: "{{matrix.label}}"
       TEST_TYPE: ext

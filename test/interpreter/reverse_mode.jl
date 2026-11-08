@@ -20,6 +20,13 @@ f(a, x) = dot(a.data, x)
 
 unstable_tester(x::Ref{Any}) = sin(x[])
 
+identity_union(x::Int) = x
+identity_union(x::Float64) = x
+function unused_phi(x, a, b)
+    y = a ? identity_union(b ? x : 1) : 1
+    return y isa Float64 ? y : 0.0
+end
+
 # used for regression test for issue 660
 struct MakeAUnionAll{T} end
 
@@ -477,6 +484,9 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
     # Tests designed to prevent accidentally re-introducing issues which we have fixed.
     @testset "regression tests" begin
+        TestUtils.test_rule(
+            Xoshiro(123456), S2SGlobals.unused_phi, 2.0, true, false; is_primitive=false
+        )
 
         # 184
         TestUtils.test_rule(
