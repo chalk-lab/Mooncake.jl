@@ -182,6 +182,11 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     return x
 end
 
+function increment_internal!!(c::MemoryIncCache, x::T, y::T) where {T<:Array}
+    increment_internal!!(c, x.ref.mem, y.ref.mem)
+    return x
+end
+
 function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
     _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
