@@ -83,8 +83,46 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
+# Shared vectors cannot be resized: detaching their tangent buffer loses reverse gradients.
+# Julia 1.10 jl_array_t stores isshared in bit 14 after data and length.
+@inline function _check_resizable(a::Vector, da::Vector{T}, sz=nothing) where {T}
+    (iszero(Base.elsize(Vector{T})) || (isconcretetype(T) && ismutabletype(T))) &&
+        return nothing
+    flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(da) + 2sizeof(Int)))
+    iszero(flags & 0x4000) && return nothing
+    return _check_shared_resizable(a, da, sz, flags)
+end
+
+@noinline function _check_shared_resizable(a, da, sz, da_flags)
+    if sz !== nothing
+        changes_storage = false
+        for x in (a, da)
+            GC.@preserve x begin
+                p = pointer_from_objref(x)
+                flags = x === da ? da_flags : unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
+                offset = unsafe_load(Ptr{UInt32}(p + 2sizeof(Int) + 4))
+                capacity = unsafe_load(Ptr{UInt}(p + 3sizeof(Int) + 8))
+                n = max(UInt(sz), UInt(length(x)) + offset)
+                # jl_array_sizehint shrinks owned buffers when over one eighth is released.
+                how = flags & 0x0003
+                changes_storage |=
+                    n > capacity ||
+                    (how in (0x0001, 0x0002) && capacity - n > capacity >> 3)
+            end
+        end
+        changes_storage || return nothing
+    end
+    throw(
+        ArgumentError(
+            "cannot resize a $(summary(a)) on Julia 1.10: it shares memory with another " *
+            "array (for example from `reshape` or `vec`); copy it before resizing",
+        ),
+    )
+end
+
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    _check_resizable(primal(a), tangent(a))
     Base._deletebeg!(primal(a), primal(d))
     Base._deletebeg!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -92,6 +130,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
+    _check_resizable(primal(_a), tangent(_a))
     delta = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -112,6 +151,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    _check_resizable(primal(a), tangent(a))
     Base._deleteend!(primal(a), primal(d))
     Base._deleteend!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -119,6 +159,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
+    _check_resizable(primal(_a), tangent(_a))
     # Extract data.
     a = primal(_a)
     da = tangent(_a)
@@ -151,6 +192,7 @@ function frule!!(
     i::Dual{<:Integer},
     delta::Dual{<:Integer},
 )
+    _check_resizable(primal(a), tangent(a))
     Base._deleteat!(primal(a), primal(i), primal(delta))
     Base._deleteat!(tangent(a), primal(i), primal(delta))
     return zero_dual(nothing)
@@ -161,6 +203,7 @@ function rrule!!(
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
+    _check_resizable(primal(_a), tangent(_a))
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -186,6 +229,7 @@ end
 function frule!!(
     ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
 ) where {T}
+    _check_resizable(primal(a), tangent(a))
     Base._growbeg!(primal(a), primal(d))
     Base._growbeg!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -193,6 +237,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
+    _check_resizable(primal(_a), tangent(_a))
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -208,6 +253,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    _check_resizable(primal(a), tangent(a))
     Base._growend!(primal(a), primal(d))
     Base._growend!(tangent(a), primal(d))
     return zero_dual(nothing)
@@ -215,6 +261,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
+    _check_resizable(primal(_a), tangent(_a))
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -232,6 +279,7 @@ end
 function frule!!(
     ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
 )
+    _check_resizable(primal(a), tangent(a))
     Base._growat!(primal(a), primal(i), primal(d))
     Base._growat!(tangent(a), primal(i), primal(d))
     return zero_dual(nothing)
@@ -242,6 +290,7 @@ function rrule!!(
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
+    _check_resizable(primal(_a), tangent(_a))
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -260,11 +309,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
+    _check_resizable(primal(x), tangent(x), primal(sz))
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
+    _check_resizable(primal(x), tangent(x), primal(sz))
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x, NoPullback(f, x, sz)
