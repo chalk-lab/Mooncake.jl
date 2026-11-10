@@ -871,7 +871,10 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+# The Val tag marks the deepcopy cache, whose Array method adds each shared Memory once.
+const MemoryIncCache = IdDict{Any,Union{Bool,Val{:per_buffer}}}
+
+const IncCache = Union{NoCache,IdDict{Any,Bool},MemoryIncCache}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
