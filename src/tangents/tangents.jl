@@ -901,7 +901,9 @@ That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
 function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Bool}(), x, y)
+    return increment_internal!!(
+        require_tangent_cache(T) isa Val{false} ? NoCache() : IdDict{Any,Bool}(), x, y
+    )
 end
 
 """
