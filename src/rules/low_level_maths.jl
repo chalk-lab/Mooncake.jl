@@ -29,8 +29,82 @@
 # Many scalar smooth rules now route through `nfwd` in `rules_via_nfwd.jl`.
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
+# AD through Base's complex code loses axis/cut derivatives; sqrt/asin/acos/acosh error.
+const _complex_derivatives = (
+    (exp, :y),
+    (expm1, :(exp(x))),
+    (exp2, :(log(P(2)) * y)),
+    (exp10, :(log(P(10)) * y)),
+    (log, :(inv(x))),
+    (log1p, :(inv(1 + x))),
+    (log2, :(inv(x) / log(P(2)))),
+    (log10, :(inv(x) / log(P(10)))),
+    (sqrt, :(inv(2 * y))),
+    (sin, :(cos(x))),
+    (cos, :(-sin(x))),
+    (asin, :(inv(sqrt(1 - x) * sqrt(1 + x)))),
+    (acos, :(-inv(sqrt(1 - x) * sqrt(1 + x)))),
+    (acosh, :(inv(sqrt(x - 1) * sqrt(x + 1)))),
+    (atanh, :(inv(1 - x^2))),
+    (cis, :(im * y)),
+    (cispi, :(P(pi) * im * y)),
+    (sinpi, :(P(pi) * cospi(x))),
+    (cospi, :(-P(pi) * sinpi(x))),
+    (tanpi, :(P(pi) * inv(cospi(x))^2)),
+    (sincos, :((y[2], -y[1]))),
+    (sincospi, :((P(pi) * y[2], -P(pi) * y[1]))),
+)
+for (f, a) in _complex_derivatives
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),Complex{P}} where {P<:IEEEFloat}
+        function frule!!(::Dual{typeof($f)}, z::Dual{Complex{P}}) where {P<:IEEEFloat}
+            x, dx = primal(z), tangent(z)
+            y = $f(x)
+            return Dual(y, nan_tangent_guard.(dx, $a .* dx))
+        end
+        function rrule!!(::CoDual{typeof($f)}, z::CoDual{Complex{P}}) where {P<:IEEEFloat}
+            x = primal(z)
+            y = $f(x)
+            a = $a
+            pullback(dy) = NoRData(), sum(nan_tangent_guard.(dy, conj.(a) .* dy))
+            return zero_fcodual(y), pullback
+        end
+    end
+end
+@is_primitive MinimalCtx Tuple{
+    typeof(Base._cpow),Complex{P},Union{P,Complex{P}}
+} where {P<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(Base._cpow),P,Complex{P}} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(Base._cpow)},
+    z::Dual{<:Union{P,Complex{P}}},
+    p::Dual{<:Union{P,Complex{P}}},
+) where {P<:IEEEFloat}
+    x, q, dx, dq = primal(z), primal(p), tangent(z), tangent(p)
+    y = Base._cpow(x, q)
+    a = iszero(q) ? zero(y) : q * x^(q - 1)
+    b = iszero(x) && real(q) > 0 ? zero(y) : y * log(complex(x))
+    return Dual(y, nan_tangent_guard(dx, a * dx) + nan_tangent_guard(dq, b * dq))
+end
+function rrule!!(
+    ::CoDual{typeof(Base._cpow)},
+    z::CoDual{<:Union{P,Complex{P}}},
+    p::CoDual{<:Union{P,Complex{P}}},
+) where {P<:IEEEFloat}
+    x, q = primal(z), primal(p)
+    y = Base._cpow(x, q)
+    a = iszero(q) ? zero(y) : q * x^(q - 1)
+    b = iszero(x) && real(q) > 0 ? zero(y) : y * log(complex(x))
+    function cpow_pullback(dy)
+        dx, dq = nan_tangent_guard(dy, conj(a) * dy), nan_tangent_guard(dy, conj(b) * dy)
+        return NoRData(), x isa Real ? real(dx) : dx, q isa Real ? real(dq) : dq
+    end
+    return zero_fcodual(y), cpow_pullback
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
+        Any[],
         map([Float32, Float64]) do P
             cases = [
                 (sqrt, P(0.5)),
@@ -103,6 +177,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
     )
+    for P in (Float32, Float64), (o, c) in ((zero(P), complex), (-zero(P), conj ∘ complex))
+        for (f, _) in _complex_derivatives,
+            z in (complex(P(f === acosh ? 1.2 : 0.4), o), complex(o, P(0.7)))
+
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, z))
+        end
+        for (f, args...) in (
+            (Base._cpow, complex(P(1.2), o), P(2)),
+            (Base._cpow, complex(P(1.2), o), complex(P(2.3), P(0.4))),
+            (Base._cpow, P(1.2), complex(P(2.3), o)),
+            (Base._cpow, -P(1.2), complex(P(2.3), P(0.4))),
+            (Base._cpow, complex(o), P(2)),
+        )
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, args...))
+        end
+        for (f, x) in (
+            ((y -> g(c(y)), P(v)) for g in (sqrt, asin, acos, acosh), v in (2, -2, 0.5))...,
+            (x -> Base._cpow(c(x), oftype(x, 0.5)), -one(P)),
+            (x -> Base._cpow(c(x), complex(oftype(x, 2.3), oftype(x, 0.4))), -P(1.2)),
+        )
+            push!(
+                test_cases, (false, :allocs, (lb=1e-3, ub=50.0, is_primitive=false), f, x)
+            )
+        end
+    end
     memory = Any[]
     return test_cases, memory
 end
