@@ -3055,6 +3055,8 @@ end
                 (63, "maximum(x; dims=1)", _max_d1, _rand(rng, Float32, 4, 3)),
                 (64, "maximum(vec; dims=1)", _max_d1, _rand(rng, Float32, 6)),
                 (65, "minimum(x; dims=1)", _min_d1, _rand(rng, Float32, 4, 3)),
+                (70, "extrema(x) vector", extrema, _rand(rng, Float32, 6)),
+                (71, "extrema(x) matrix", extrema, _rand(rng, Float64, 4, 3)),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
