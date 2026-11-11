@@ -1414,12 +1414,19 @@ end
             push!(test_cases, case(f, 1.0, CuArray(fill(0.5))))
         end
         for f in (
+            x -> Float32.(x) .* 2.0f0,
+            x -> abs2.(ComplexF32.(x)),
             x -> cumprod(x; dims=1),
             x -> mean(sin, x; dims=(1,)),
             x -> mean(abs2, x; dims=(1,)),
         )
             push!(test_cases, case(f, CuArray(fill(0.5))))
         end
+        push!(test_cases, case((a, x) -> Float64.(a) .* x, 0.5f0, CuArray(fill(0.5, 2))))
+        push!(
+            test_cases,
+            case((x, i) -> Float64.(i) .* x, CuArray(fill(0.5)), CuArray(fill(Int32(1)))),
+        )
         for dims in (:, (1,))
             push!(
                 test_cases,

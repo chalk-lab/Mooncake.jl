@@ -3860,6 +3860,12 @@ end
     (_gpu_bcast_effective_dof(bc) == 0 || _gpu_is_simple_cast_broadcast(bc)) &&
     !isbitstype(typeof(Base.Broadcast.flatten(bc).f))
 
+_gpu_materialize_leaf(bc::Broadcasted) = Base.Broadcast.materialize(bc)
+# Internal array leaves must retain their shape so their tangents stay aligned.
+function _gpu_materialize_leaf(bc::Broadcasted{<:CuArrayStyle{0}})
+    return copyto!(similar(bc, Base.Broadcast.combine_eltypes(bc.f, bc.args)), bc)
+end
+
 _premat_nondiff_args(bc::Broadcasted) = _premat_nondiff_args(bc, NoTangent())
 
 function _premat_nondiff_args(bc::Broadcasted, td)
@@ -3872,15 +3878,15 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         a = bc.args[i]
         ta = targs[i]
         if a isa Broadcasted
-            # Scalars always report NoFData (their grad flows via RData), even when
-            # differentiable — so also require zero DOF before collapsing, or a
-            # differentiable scalar leaf here silently drops out of flat_pargs.
-            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
-                Base.Broadcast.materialize(a)
+            if a isa Broadcasted{<:Base.Broadcast.DefaultArrayStyle{0}} && _gpu_is_cast_chain(a)
+                _desugar_casts(_premat_nondiff_args(a, ta))
+            elseif ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
+                # Scalar gradients flow through RData, so NoFData alone does not imply zero DOF.
+                _gpu_materialize_leaf(a)
             else
                 a_prepared = _premat_nondiff_args(a, ta)
                 if _gpu_bcast_needs_premat(a_prepared)
-                    Base.Broadcast.materialize(a_prepared)
+                    _gpu_materialize_leaf(a_prepared)
                 else
                     a_prepared
                 end
@@ -3969,6 +3975,7 @@ function _unbroadcast(dx::CuArray, sz::Tuple)
     reduce_dims = filter(!iszero, reduce_dims)  # Tuple filter — no heap alloc
     return isempty(reduce_dims) ? reshape(dx, sz) : reshape(sum(dx; dims=reduce_dims), sz)
 end
+_unbroadcast(dx::Number, ::Tuple{}) = dx
 
 # Reverse mode: accumulate `contrib` (same shape as broadcast output) into leaf fdata.
 # Unbroadcast before accumulating so that broadcast-expanded inputs get the correct shape.
@@ -4131,9 +4138,7 @@ end
     re = _CastTo{real(T)}()(x)
     return Complex(re, zero(re))
 end
-# Only the outermost function needs this. A cast nested inside the tree is materialized by
-# `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
-# that survives, because nothing materializes the tree's own root.
+# Root casts and scalar-only cast subtrees reach the kernel without materialisation.
 function _desugar_casts(bc::Broadcasted{S}) where {S}
     bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
 end
