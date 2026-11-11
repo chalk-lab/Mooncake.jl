@@ -13,22 +13,31 @@
 
 </div>
 
-The goal of the `Mooncake.jl` project is to produce an automatic differentiation (AD)
-package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`,
-and `Zygote.jl` in several ways.
-Applying AD to Julia's type-inferred, optimised intermediate representation helps
-produce efficient derivative code.
-Support for mutation allows Mooncake to differentiate a wide range of numerical Julia code
-without hand-written rules.
-See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
+Mooncake.jl is an automatic differentiation (AD) package written entirely in Julia, with
+reverse and forward modes. It applies AD to Julia's type-inferred, optimised intermediate
+representation, which yields efficient derivative code, and it supports mutation, so a
+wide range of numerical Julia code can be differentiated without user-written rules.
+
+Handling mutation required a new representation of derivatives (tangent types) and, with
+it, a new set of differentiation rules maintained in Mooncake itself. CUDA kernels have no
+Julia IR, so CUDA support differentiates their elementwise and reduction operations with
+forward-mode dual numbers ([`Nfwd`](src/nfwd/Nfwd.jl)). These, among other things, give
+Mooncake a broad scope, roughly that of ForwardDiff, ChainRules, ChainRulesCore and
+Zygote combined. Because Mooncake is maintained voluntarily by academic researchers, we
+keep the project sustainable through a [support policy](SUPPORT_POLICY.md), which sets the
+supported Julia versions and the scope of differentiation rules. See the
+[documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
 
 ## Performance
 
-On one system, [Flux benchmarks](test/integration_testing/flux/README.md) found Mooncake gradient evaluations after warm-up were 2.03 times as fast as Zygote on CPU across 19 models, with comparable GPU performance. First evaluations were substantially slower. See also the [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md). **Performance varies by workload.** 
+On one system, the [Flux benchmarks](test/integration_testing/flux/README.md) found
+Mooncake's gradient evaluations to be 2.03 times as fast as Zygote's on CPU across 19
+models once warmed up, with comparable performance on GPU. First evaluations were
+substantially slower. The
+[DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
+give further comparisons. Performance varies by workload.
 
 ## Getting started
-
-Check whether Mooncake's [support policy](SUPPORT_POLICY.md) covers your Julia version.
 
 Mooncake uses reusable caches for repeated gradient and Hessian evaluations:
 
