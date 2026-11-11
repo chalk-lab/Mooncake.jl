@@ -23,10 +23,22 @@ for Julia. Foreign calls (`ccall`) may still need such rules, and tasks and thre
 not supported; see the
 [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/).
 
-Mutation required a new representation of derivatives (tangent types) and, with it, a
-new set of differentiation rules, which Mooncake maintains itself. GPU array operations
-reach compiled CUDA kernels and libraries, which have no Julia IR to differentiate, so
-we differentiate elementwise and reduction functions by running forward-mode dual
+Supporting mutation required a new representation of derivatives: each primal type has a
+unique tangent type, and each piece of mutable memory has a single location for its
+derivative, shared by all references to it. This in turn required a new set of
+differentiation rules, which Mooncake maintains itself. Tangent types are computed from
+the types Julia infers, or from runtime types where inference is imprecise; types with
+nothing to differentiate, such as integers, symbols and structs built only from them,
+get `NoTangent`. Mooncake therefore never has to reconstruct types from lower-level
+code, nor analyse data flow to decide which values are active: every non-constant value
+of a differentiable type carries a tangent. Exact versions of both analyses are
+undecidable in general, as is the may-alias analysis they depend on
+([Landi, 1992](https://doi.org/10.1145/161494.161501)). Tools that rely on them
+therefore face a trade-off: no analysis can, for every program, be both sound, never
+missing an active value (which can silently give incorrect derivatives), and precise,
+never including an inactive one (which degrades performance). Mooncake cannot
+differentiate through a GPU kernel launch, which is a foreign call, so for broadcasts
+and mapped reductions such as `sum(f, x)` on CUDA arrays, it runs `f` on forward-mode dual
 numbers ([`Nfwd`](src/nfwd/Nfwd.jl)) inside the kernel. Mutation and CUDA support, among
 other features, give the project an ambition comparable to that of ForwardDiff,
 ChainRules, ChainRulesCore and Zygote combined, although the support policy keeps rules
