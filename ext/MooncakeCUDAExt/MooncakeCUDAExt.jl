@@ -3791,7 +3791,7 @@ end
     return (; is_diff, primal_out)
 end
 
-# Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
+# Replace any nested array-style Broadcasted sub-expression whose tangent/fdata tree is
 # `NoTangent`/`NoFData`, or whose broadcast tree has zero effective differentiable
 # degrees of freedom and flattens to a non-isbits function, with its primal materialized
 # value. This catches zero-DOF subtrees such as `Float64.(b .> 0)`, where flattening the
@@ -3878,7 +3878,8 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         a = bc.args[i]
         ta = targs[i]
         if a isa Broadcasted
-            if a isa Broadcasted{<:Base.Broadcast.DefaultArrayStyle{0}} && _gpu_is_cast_chain(a)
+            # Fuse: a materialised scalar leaf would be taken for an explicit argument.
+            if a isa Broadcasted{<:Base.Broadcast.DefaultArrayStyle{0}}
                 _desugar_casts(_premat_nondiff_args(a, ta))
             elseif ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
                 # Scalar gradients flow through RData, so NoFData alone does not imply zero DOF.
@@ -4138,7 +4139,7 @@ end
     re = _CastTo{real(T)}()(x)
     return Complex(re, zero(re))
 end
-# Root casts and scalar-only cast subtrees reach the kernel without materialisation.
+# Root casts and casts in scalar-only subtrees reach the kernel without materialisation.
 function _desugar_casts(bc::Broadcasted{S}) where {S}
     bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
 end
