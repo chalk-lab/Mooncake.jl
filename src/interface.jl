@@ -1154,7 +1154,7 @@ end
 @inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
 @inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
 @inline function _fcache_gradient_input_dof(
-    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
+    x::AbstractArray{<:Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
 )
     haskey(seen, x) && return 0
     _fcache_mark_seen!(seen, x)
