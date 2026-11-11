@@ -13,53 +13,20 @@
 
 </div>
 
-Mooncake.jl is an automatic differentiation (AD) package written entirely in Julia. It
-has reverse and forward modes, and two features define its approach. First, it
+Mooncake.jl is an automatic differentiation (AD) package written entirely in Julia, with
+both reverse and forward modes. Two features define its approach. First, it
 differentiates Julia's type-inferred, optimised intermediate representation (IR), which
-helps produce efficient derivative code and gives broad coverage of Julia syntax.
-Second, it supports mutation, so most numerical Julia code can be differentiated without
-user-written rules. Together, these aim to make Mooncake a general-purpose AD compiler
-for Julia. Foreign calls (`ccall`) may still need such rules, and tasks and threads are
-not supported; see the
-[known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/).
-
-Supporting mutation required a new representation of derivatives: each primal type has a
-unique tangent type, and each piece of mutable memory has a single location for its
-derivative, shared by all references to it. This in turn required a new set of
-differentiation rules, which Mooncake maintains itself. Tangent types are computed from
-the types Julia infers, or from runtime types where inference is imprecise; types with
-nothing to differentiate, such as integers, symbols and structs built only from them,
-get `NoTangent`. Mooncake therefore never has to reconstruct types from lower-level
-code, nor analyse data flow to decide which values are active: every non-constant value
-of a differentiable type carries a tangent. Exact versions of both analyses are
-undecidable in general, as is the may-alias analysis they depend on
-([Landi, 1992](https://doi.org/10.1145/161494.161501)). Tools that rely on them
-therefore face a trade-off: no analysis can, for every program, be both sound, never
-missing an active value (which can silently give incorrect derivatives), and precise,
-never including an inactive one (which degrades performance). Mooncake cannot
-differentiate through a GPU kernel launch, which is a foreign call, so for broadcasts
-and mapped reductions such as `sum(f, x)` on CUDA arrays, it runs `f` on forward-mode dual
-numbers ([`Nfwd`](src/nfwd/Nfwd.jl)) inside the kernel. Mutation and CUDA support, among
-other features, give the project an ambition comparable to that of ForwardDiff,
-ChainRules, ChainRulesCore and Zygote combined, although the support policy keeps rules
-beyond Julia Base out of its official scope.
-
-We keep the project sustainable through a [support policy](SUPPORT_POLICY.md), which
-sets the supported Julia versions and the scope of differentiation rules. See the
-[documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
-
-## Performance
-
-On one system, the [Flux benchmarks](test/integration_testing/flux/README.md) found
-Mooncake's warm gradient evaluations to be 2.03 times as fast as Zygote's on CPU by
-geometric mean across 19 models. On GPU the two were comparable (geometric mean 1.05
-times as fast; range 0.73 to 1.10). First evaluations were substantially slower.
-The [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
-give further comparisons. Performance varies by workload.
+helps it produce efficient derivative code (see [Performance](#performance)) and gives
+broad coverage of Julia's syntax. Second, it supports mutation, so most numerical Julia
+code can be differentiated without user-written rules. The aim is a general-purpose AD
+compiler for Julia. Some limits remain: foreign calls (`ccall`) may still need rules,
+and reverse mode does not support threaded code. See the
+[known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
+and the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
 
 ## Getting started
 
-Mooncake uses reusable caches for repeated gradient and Hessian evaluations:
+For repeated evaluations at inputs of fixed type and size, prepare a cache and reuse it:
 
 ```julia
 import Mooncake as MC
@@ -77,28 +44,72 @@ value_fwd, (_, gradient_fwd) = MC.value_and_gradient!!(fwd_cache, f, x)
 
 # Hessian
 hess_cache = MC.prepare_hessian_cache(f, x);
-value, gradient, hessian = MC.value_gradient_and_hessian!!(hess_cache, f, x)
+value_h, gradient_h, hessian = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 ```
 
-Cache preparation takes some time, but calls that reuse the cache are fast. Each cache
-is tied to its inputs' types and sizes; passing a differently sized input raises an
-error. See the
+Preparing a cache takes some time, but later calls that reuse it are fast. Each cache is
+tied to the types and sizes of its inputs, and passing an input of a different size
+raises an error. When input sizes vary, build a reverse-mode rule with
+`Mooncake.build_rrule` instead; it depends only on the input types. The
 [tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients)
-for a walkthrough and the
-[interface](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) for details.
+walks through an example, and the
+[interface documentation](https://chalk-lab.github.io/Mooncake.jl/stable/interface/)
+gives details.
+
+## Performance
+
+On one machine, the [Flux benchmarks](test/integration_testing/flux/README.md) found Mooncake's warm
+gradient evaluations to be 2.03 times as fast as Zygote's on CPU, by geometric mean over
+19 models. On GPU the two were comparable: Mooncake was 1.05 times as fast by geometric
+mean, taking between 0.73 and 1.10 times Zygote's time per model. First evaluations were
+substantially slower. The
+[DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
+compare Mooncake's gradient times with Stan's across 147 PosteriorDB posteriors.
+Performance varies by workload.
+
+## Design
+
+Mooncake has its own representation of derivatives. Each primal type has a unique
+tangent type and, to support mutation, each piece of mutable memory has a single
+location for its derivative, shared by every reference to it. This meant writing a new
+set of differentiation rules, which Mooncake maintains itself. Tangent types are
+computed from the types Julia infers, or from runtime types where inference is
+imprecise. Types with nothing to differentiate, such as integers, symbols and structs
+built only from them, get `NoTangent`.
+
+Some AD tools reconstruct types from lower-level code, or analyse data flow to decide
+which values are active. Exact versions of both problems are undecidable in general, as
+is the may-alias analysis they rest on
+([Landi, 1992](https://doi.org/10.1145/161494.161501)). Such tools therefore face a
+trade-off: no analysis can, on every program, be both sound (never missing an active
+value, which can silently give incorrect derivatives) and precise (never including an
+inactive one, which degrades performance). Mooncake does not need to solve either
+problem: its tangent types follow from Julia's own types, so every non-constant value of
+a differentiable type carries a tangent. This is sound by construction, at the cost of
+computing some derivatives that turn out to be zero.
+
+GPU kernel launches are foreign calls, which Mooncake cannot trace into. For broadcasts
+and mapped reductions such as `sum(f, x)` on CUDA arrays, it instead runs `f` on
+forward-mode dual numbers ([`Nfwd`](src/nfwd/Nfwd.jl)) inside the kernel.
 
 ## Contributing
 
-We take a conservative approach to development, in the spirit of long-lived
-projects such as R and TeX. Correctness, stability, and narrowly scoped fixes
-come before expanding the package's scope.
+Supporting mutation, CUDA and as much of the language as possible makes the project
+comparable in ambition to ForwardDiff, ChainRules, ChainRulesCore and Zygote combined.
+To keep the project sustainable, the [support policy](SUPPORT_POLICY.md) sets the
+supported Julia versions and the scope of differentiation rules; rules beyond Julia Base
+are outside Mooncake's official scope.
 
-Contributions are most welcome when they fix reproducible problems: incorrect
-results, unexpected failures, or behaviour that contradicts the documented scope.
+We take a conservative approach to development, in the spirit of long-lived projects
+such as R and TeX: correctness, stability and narrowly scoped fixes come before
+expanding the package's scope.
 
-To extend Mooncake's coverage, please organise the work independently.
-See the [support policy](SUPPORT_POLICY.md#scope-of-differentiation-rules)
-for guidance and examples.
+Contributions are most welcome when they fix reproducible problems: incorrect results,
+unexpected failures, or behaviour that contradicts the documented scope.
+
+If you want to extend Mooncake's coverage, please do so in a package extension or
+separate package; the [support policy](SUPPORT_POLICY.md#scope-of-differentiation-rules)
+gives guidance and examples.
 
 ## Licensing
 
