@@ -4277,13 +4277,6 @@ function _gpu_reduced_jvp(out, px, dx, y, dims)
     return zero_tangent(y)
 end
 
-# Detect mixed-eltype GPU broadcasts: when CuArray leaves have different element types
-# (e.g. Float32 and Float64 in the same broadcast), the Dual wrapping would produce
-# incompatible Dual widths and cause a cryptic GPU compiler error.  Raise a clear error.
-# Note: scalar args (IEEEFloat/Complex) are not checked here; a Float64 scalar mixed
-# with a Float32 CuArray silently promotes the broadcast to Float64, which may be slow
-# or unsupported on some GPUs.  Cast the scalar explicitly if needed.
-
 # Shared pullback accumulation for materialize and materialize! rrules.
 #
 # Walks flat_pargs in order, computing the contribution from each arg's partial
@@ -4373,6 +4366,9 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
     return nothing
 end
 
+# Array leaves must share one precision (Float64 with ComplexF64 is accepted, Float32 with
+# ComplexF64 refused): some `NDual` methods, e.g. `muladd`, do not promote, and the kernel
+# fails to compile. Scalar leaves are not checked.
 function _check_mixed_gpu_eltype(flat_pargs)
     # Walk flat_pargs with an early-exit loop rather than building a temporary array.
     # In the common case (all same element type), this allocates nothing.
@@ -4386,12 +4382,13 @@ function _check_mixed_gpu_eltype(flat_pargs)
         et = eltype(pa)
         if first_et === nothing
             first_et = et
-        elseif et !== first_et
+        elseif real(et) !== real(first_et)
             throw(
                 ArgumentError(
-                    "Mooncake: GPU broadcast over arrays with mixed element types " *
-                    "($first_et and $et) is not supported. " *
-                    "Cast all inputs to the same type before broadcasting.",
+                    "Mooncake: GPU broadcast over arrays of different precision " *
+                    "($first_et and $et) is not supported. Convert them to one " *
+                    "precision; a real and a complex array of the same precision, " *
+                    "e.g. Float64 and ComplexF64, are supported.",
                 ),
             )
         end
