@@ -56,7 +56,7 @@ them out of `Mooncake.jl`.
 
 Community members may develop new rules independently in third-party package
 extensions, such as
-[NNlibMooncakeCUDAExt.jl](https://github.com/FluxML/NNlib.jl/blob/master/ext/NNlibMooncakeCUDAExt.jl),
+[NNlibMooncakeExt](https://github.com/FluxML/NNlib.jl/tree/master/ext/NNlibMooncakeExt),
 so that functions and their rules can be maintained together. Where extensions
 are not feasible, rules can be provided in separate packages, such as
 [MooncakeSparse.jl](https://github.com/JuliaSparse/MooncakeSparse.jl). These
