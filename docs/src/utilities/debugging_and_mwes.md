@@ -41,6 +41,71 @@ When debugging, it might be helpful to set the `interface_only=true` to skip the
 Mooncake.TestUtils.test_rule(rng, sin, 5.0; interface_only=true)
 ```
 
+## Pinned references
+
+When finite differences cannot resolve the derivative, use `reference` to pin expected
+results. Comparisons name the failing field. For example, pin a reverse array cotangent:
+
+```julia
+Mooncake.TestUtils.test_rule(
+    rng, sum, [2.0, 3.0]; mode=Mooncake.ReverseMode, is_primitive=false,
+    output_tangent=1.0,
+    reference=(
+        value=5.0,
+        deriv=(rvs=(Mooncake.NoRData(), Mooncake.NoRData()), fdata=(nothing, [1.0, 1.0])),
+    ),
+)
+```
+
+A NamedTuple `deriv` must use only `fwd`, `rvs`, and `fdata` keys. Put a
+NamedTuple-valued expected derivative under the appropriate mode key. References are
+validated when a `TestCase` is constructed; expected-value functions run at test time.
+An `fdata` function also runs during validation to check which positions it pins.
+Fields excluded by the test case's `mode` are refused, while `TEST_MODE` may filter checks.
+
+`deriv.fwd` pins the output JVP; `deriv.rvs` pins the pullback's returned tuple;
+`deriv.fdata` pins argument cotangent storage after the pullback, including the function
+position. A reverse reference must pin the entire cotangent: `rvs` and every argument
+with fdata. Use `nothing` only at positions without fdata; scalar-only arguments need
+no `fdata` entry. Expected values can be zero-argument
+functions, for example `value=() -> sum([2.0, 3.0])`.
+
+The default comparator is `isequal`. Use `cmp=Mooncake.TestUtils.isequal_ignoring_signed_zero`
+to equate signed zeros while retaining NaN equality, or `cmp=isapprox` with `rtol`/`atol`
+inside `reference`. These tolerances are independent of finite-difference tolerances.
+
+For chunked forward rules, `reference.lanes=:inactive_zero` uses the test case's seed in
+lane 1 and checks exact zeros in all other output and argument partials. To pin individual
+lanes, use `reference=(lanes=((seed=(Mooncake.NoTangent(), 1.0), value=2.0),
+(seed=(Mooncake.NoTangent(), 3.0), value=6.0)),)` for `x -> 2x`, with `chunk_size=2`.
+Each seed includes the function position. The default width is 8; unsupported lane
+representations and mismatched lane counts are refused. Comparisons with width-1 results
+use the harness's partials precision tolerance; `cmp` applies to pinned expected values.
+With an explicit `chunk_size`, only the pinned reference checks run at width 1, not
+the full width-1 battery.
+
+## Second-order registry checks
+
+The internal, unexported `Mooncake.TestUtils.TestCase` also lets a registry test case
+exercise forward-over-reverse HVPs and Hessians through `test_rule`:
+
+```julia
+tc = Mooncake.TestUtils.TestCase(x -> sum(abs2, x), [1.0, 2.0]; hvp=true)
+Mooncake.TestUtils.test_rule(rng, tc)
+```
+
+The function must take one argument and return a real scalar. `hvp=true` compares
+HVPs with finite differences of the reverse gradient, reuses the cache across two
+directions, and checks Hessian assembly for real floating-point vectors.
+Use an `hvp` NamedTuple for explicit `directions`, `reference`, `cmp`, `rtol`, or
+`atol`; `check=:hvp` omits implicit Hessian assembly, and `check=:reference` checks
+only the supplied reference fields. These settings are separate from first-order
+options. See the `TestCase` docstring for the complete internal contract.
+
+An HVP test case runs only second order unless `hvp.first_order=true`. Registry
+runners execute second order once, in the reverse runner. `TEST_MODE=hvp` selects
+only second-order checks; `TEST_MODE=forward` or `reverse` selects only first order.
+
 ## Manually Running a Rule
 
 For more fine-grained debugging, you can manually run `rrule!!` to inspect intermediate values.

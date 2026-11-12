@@ -60,6 +60,8 @@ include("front_matter.jl")
         include("skill_utils.jl")
         include("test_utils.jl")
         include(joinpath("ext", "pin_develop_or_skip_tests.jl"))
+    elseif test_group == "interface"
+        include("interface.jl")
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
     elseif test_group == "rules/array_legacy"

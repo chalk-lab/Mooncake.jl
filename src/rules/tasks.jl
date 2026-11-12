@@ -145,31 +145,19 @@ set_tangent_field!(t::TaskTangent, f, ::NoTangent) = NoTangent()
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Task, ::TaskTangent) = nothing
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:tasks})
-    test_cases = Any[
-        (false, :none, nothing, lgetfield, Task(() -> nothing), Val(:rngState1)),
-        (false, :none, nothing, getfield, Task(() -> nothing), :rngState1),
-        (
-            false,
-            :none,
-            nothing,
-            lsetfield!,
-            Task(() -> nothing),
-            Val(:rngState1),
-            UInt64(5),
-        ),
-        (false, :stability, nothing, current_task),
+    test_cases = TestCase[
+        TestCase(lgetfield, (Task(() -> nothing)), Val(:rngState1)),
+        TestCase(getfield, (Task(() -> nothing)), :rngState1),
+        TestCase(lsetfield!, (Task(() -> nothing)), Val(:rngState1), UInt64(5)),
+        TestCase(current_task; perf_flag=:stability),
     ]
     memory = Any[]
     return test_cases, memory
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:tasks})
-    test_cases = Any[(
-        false,
-        :none,
-        nothing,
-        (rng) -> (Random.seed!(rng, 0); rand(rng)),
-        Random.default_rng(),
+    test_cases = TestCase[TestCase(
+        (rng) -> (Random.seed!(rng, 0); rand(rng)), Random.default_rng()
     ),]
     memory = Any[]
     return test_cases, memory

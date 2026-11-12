@@ -78,23 +78,20 @@ end
     leaves(v::Tuple) = reduce(vcat, map(leaves, v); init=Any[])
     leaves(v) = Any[]
     cases, memory = Mooncake.derived_rule_test_cases(StableRNG, Val(:array_legacy))
-    GC.@preserve memory for (io, perf, opts, f, args...) in cases
-        opts isa NamedTuple && haskey(opts, :throws) || continue
-        get(opts, :mode, nothing) === ForwardMode || continue
+    GC.@preserve memory for tc in cases
+        haskey(tc.opts, :throws) || continue
+        get(tc.opts, :mode, nothing) === ForwardMode || continue
         c = IdDict{Any,Any}()
         slots = map(
-            x -> TestUtils._throws_slot(StableRNG(123), Val(opts.chunk_size), x, c), args
+            x -> TestUtils._throws_slot(StableRNG(123), Val(tc.opts.chunk_size), x, c),
+            tc.args,
         )
         arrays = reduce(vcat, map(x -> leaves(tangent(x)), slots); init=Any[])
         before, pointers = map(copy, arrays), map(pointer, arrays)
         TestUtils.test_rule(
             StableRNG(123),
-            f,
-            slots...;
-            interface_only=io,
-            perf_flag=perf,
-            is_primitive=false,
-            opts...,
+            TestUtils.TestCase(tc.f, slots...; tc.interface_only, tc.perf_flag, tc.opts...);
+            fallbacks=(is_primitive=false,),
         )
         @test arrays == before
         @test map(pointer, arrays) == pointers

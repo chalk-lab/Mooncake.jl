@@ -4,7 +4,8 @@ pin_develop_or_skip(@__DIR__, "BFloat16s")
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
 using Mooncake: CRC
 using LinearAlgebra: mul!
-using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
+using Mooncake.TestUtils:
+    TestCase, test_rule, test_tangent_interface, test_tangent_splitting
 
 const sr = StableRNG
 const P = BFloat16s.BFloat16
@@ -50,10 +51,11 @@ end
     end
 
     cases = [
-        (double, P(0.25)),
-        (double, P[0.125, 0.25]),
-        (-, P(0.25)),
-        (
+        TestCase(double, P(0.25)),
+        TestCase(double, P[0.125, 0.25]),
+        TestCase(-, P(0.25)),
+        TestCase(-, P(0.25), P(0.125); is_primitive=false),
+        TestCase(
             mul!,
             zeros(P, 2, 2),
             transpose(P[0.2 0.3; 0.4 0.5]),
@@ -61,56 +63,58 @@ end
             true,
             false,
         ),
-        (Float32, P(0.5)),
-        (Float64, P(0.5)),
-        (P, 0.5f0),
-        (P, 0.5),
-        (sqrt, P(0.5)),
-        (cbrt, P(0.4)),
-        (exp, P(0.2)),
-        (exp2, P(0.15)),  # in the fine-spacing range: at P(1.12) the reverse rule is correct
-        # (grad == exp2(x)·log 2) but BF16's coarse spacing there can't reconstruct the FD oracle.
-        (exp10, P(0.249)),
-        (expm1, P(-0.3)),
-        (log, P(0.1)),
-        (log2, P(0.15)),
-        (log10, P(0.1)),
-        (log1p, P(0.95)),
-        (sin, P(1.1)),
-        (cos, P(0.2)),
-        (tan, P(0.5)),
-        (asin, P(0.77)),
-        (acos, P(0.2)),
-        (atan, P(0.77)),
-        (sinh, P(-0.56)),
-        (cosh, P(0.4)),
-        (tanh, P(0.25)),
-        (asinh, P(1.45)),
-        (acosh, P(1.56)),
-        (atanh, P(-0.44)),
-        (hypot, P(0.4), P(0.3)),
-        (^, P(0.4), P(0.3)),
-        (max, P(0.2), P(0.15)),
-        (max, P(0.22), P(0.18)),
-        (min, P(1.5), P(0.5)),
-        (min, P(0.22), P(0.18)),
-        (abs, P(0.5)),
-        (abs, P(-0.5)),
-        (Base.eps, P(0.2)),
-        (nextfloat, P(0.25)),
-        (prevfloat, P(1.0)),
+        TestCase(Float32, P(0.5)),
+        TestCase(Float64, P(0.5)),
+        TestCase(P, 0.5f0),
+        TestCase(P, 0.5),
+        TestCase(sqrt, P(0.5)),
+        TestCase(cbrt, P(0.4)),
+        TestCase(exp, P(0.2)),
+        # In the fine-spacing range: at P(1.12) the reverse rule is correct
+        # (grad == exp2(x)·log 2) but BF16's coarse spacing cannot resolve the
+        # finite-difference check.
+        TestCase(exp2, P(0.15)),
+        TestCase(exp10, P(0.249)),
+        TestCase(expm1, P(-0.3)),
+        TestCase(log, P(0.1)),
+        TestCase(log2, P(0.15)),
+        TestCase(log10, P(0.1)),
+        TestCase(log1p, P(0.95)),
+        TestCase(sin, P(1.1)),
+        TestCase(cos, P(0.2)),
+        TestCase(tan, P(0.5)),
+        TestCase(asin, P(0.77)),
+        TestCase(acos, P(0.2)),
+        TestCase(atan, P(0.77)),
+        TestCase(sinh, P(-0.56)),
+        TestCase(cosh, P(0.4)),
+        TestCase(tanh, P(0.25)),
+        TestCase(asinh, P(1.45)),
+        TestCase(acosh, P(1.56)),
+        TestCase(atanh, P(-0.44)),
+        TestCase(hypot, P(0.4), P(0.3)),
+        TestCase(^, P(0.4), P(0.3)),
+        TestCase(max, P(0.2), P(0.15)),
+        TestCase(max, P(0.22), P(0.18)),
+        TestCase(min, P(1.5), P(0.5)),
+        TestCase(min, P(0.22), P(0.18)),
+        TestCase(abs, P(0.5)),
+        TestCase(abs, P(-0.5)),
+        TestCase(Base.eps, P(0.2)),
+        TestCase(nextfloat, P(0.25)),
+        TestCase(prevfloat, P(1.0)),
     ]
 
     A = P[0.2 0.3; 0.4 0.5]
-    push!(cases, (mul!, zeros(P, 2, 2), A, A, true, false))
-    push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), false, true))
+    push!(cases, TestCase(mul!, zeros(P, 2, 2), A, A, true, false))
+    push!(cases, TestCase(mul!, fill(P(0.125), 2, 2), A, fill(P(0.125), 2, 2), false, true))
     for wrap_a in (identity, transpose, adjoint), wrap_b in (identity, transpose, adjoint)
         A = reshape(P[0.2, 0.3, 0.4, 0.5], 2, 2, 1)
         B = reshape(P[0.3, 0.4, 0.5, 0.6], 2, 2, 1)
         C = fill(P(0.1), 2, 2, 1)
         push!(
             cases,
-            (
+            TestCase(
                 mul!,
                 view(C,:,:,1),
                 wrap_a(view(A,:,:,1)),
@@ -122,10 +126,13 @@ end
     end
 
     for wrap in (identity, transpose, adjoint)
-        push!(cases, (mul!, ones(P, 2), wrap(zeros(P, 2, 2)), ones(P, 2), true, zero(P)))
+        push!(
+            cases,
+            TestCase(mul!, ones(P, 2), wrap(zeros(P, 2, 2)), ones(P, 2), true, zero(P)),
+        )
     end
     for A in (view(zeros(P, 4, 2), 1:2:4, :), reshape(view(zeros(P, 6), 1:4), 2, 2))
-        push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), true, zero(P)))
+        push!(cases, TestCase(mul!, ones(P, 2, 2), A, ones(P, 2, 2), true, zero(P)))
     end
 
     # Tolerances reflect BFloat16's ~3-digit precision. Test values are in [0.125, 0.25)
@@ -133,15 +140,16 @@ end
     # and is captured, but snaps to one grid step (0.000977), giving ~24% relative error
     # → rtol=0.4. Two functions (acos, exp10) also suffer output-side absorption at some
     # inputs, yielding |LHS-RHS|≈0.16 even when ẏ_fd≠0 → atol=0.2.
+    # Precision tolerances are suite fallbacks.
     rule_options = (; atol=0.2, rtol=0.4)
-    @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
+    for (tc, name) in zip(cases, Mooncake.TestUtils._test_case_names(cases))
         # Chunked forward checks must not change the reverse finite-difference directions.
         for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
-            test_rule(sr(123), f, xs...; is_primitive=true, mode, rule_options...)
+            test_rule(sr(123), tc; mode, fallbacks=rule_options, name)
         end
-        if f === hypot
+        if tc.f === hypot
             # Scalar arithmetic barriers must not box tuple indexing in chunked rules.
-            args = map(x -> Mooncake.zero_lifted(Val(8), x), (f, xs...))
+            args = map(x -> Mooncake.zero_lifted(Val(8), x), (tc.f, tc.args...))
             Mooncake.frule!!(args...)
             @test Mooncake.TestUtils.count_allocs(Mooncake.frule!!, args...) == 0
         end

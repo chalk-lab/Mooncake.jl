@@ -978,7 +978,7 @@ is shown by the cache.
         _bindings = if _leaves === nothing
             nothing
         else
-            _cat_leaves(map(s -> _save_seed_bindings(tangent(s), primal(s)), _arg_seeds))
+            _save_seed_bindings(_arg_seeds)
         end
         if _leaves !== nothing && _bindings !== nothing
             gradient_seed = StructuredGradSeed(
@@ -2993,57 +2993,109 @@ end
 _all_real_scalars(::Type{<:ImmutableDual{T}}) where {T} = _all_real_scalars(T)
 _all_real_scalars(::Type) = false
 
-# Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse
-# tangent `g`, in dimension order. Returns a flat tuple of pairs, or `nothing` if any dimension is not
-# array-backed. `dict` guards against aliasing/cycles: a revisited array or mutable wrapper
-# means the flat leaf table would mis-order or double-count dimensions (the generic path dedups
-# instead), so bail to `nothing` and let that path handle it.
-_grad_leaves(::NoDual, @nospecialize(g), dict) = ()
-function _grad_leaves(
-    v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict
-) where {T<:Nfwd.NDualEltype}
-    haskey(dict, v) && return nothing
-    dict[v] = nothing
-    return ((v, g),)
+# Bound specialization by group size; the outer vector never encodes the row count.
+const _SEED_GROUP_SIZE = 16
+struct SeedGroups
+    groups::Vector{Any}
+end
+Base.isempty(rows::SeedGroups) = isempty(rows.groups)
+Base.last(rows::SeedGroups) = last(last(rows.groups))
+
+function _finish_seed_records(rows::Vector{Any})
+    length(rows) <= _SEED_GROUP_SIZE && return Tuple(rows)
+    groups = Any[]
+    for start in 1:_SEED_GROUP_SIZE:length(rows)
+        n = min(_SEED_GROUP_SIZE, length(rows) - start + 1)
+        push!(groups, ntuple(i -> rows[start + i - 1], n))
+    end
+    return SeedGroups(groups)
 end
 
-# A complex element owns TWO consecutive dimensions, the real direction then the imaginary one,
-# matching the order `tangent_dim` counts them and `basis_lifted!!` seeds them.
+@noinline function _walk_seed_group!(f::F, rows::Tuple) where {F}
+    foreach(f, rows)
+    return nothing
+end
+_walk_seed_records!(f::F, rows::Tuple) where {F} = _walk_seed_group!(f, rows)
+function _walk_seed_records!(f::F, rows::SeedGroups) where {F}
+    for group in rows.groups
+        _walk_seed_group!(f, group)
+    end
+    return nothing
+end
+
+_grad_leaves!(rows, ::NoDual, @nospecialize(g), dict) = true
+function _grad_leaves!(
+    rows, v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict
+) where {T<:Nfwd.NDualEltype}
+    haskey(dict, v) && return false
+    dict[v] = nothing
+    push!(rows, (v, g))
+    return true
+end
+
 @inline _leaf_dims(v::Nfwd.NDualArray{<:IEEEFloat}) = length(v.primal)
 @inline _leaf_dims(v::Nfwd.NDualArray{<:Complex{<:IEEEFloat}}) = 2 * length(v.primal)
-function _grad_leaves(v::Tuple, g::Tuple, dict)
-    return if length(v) == length(g)
-        _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), v, g))
-    else
-        nothing
+@noinline function _grad_leaves!(rows, v::Tuple, g::Tuple, dict)
+    length(v) == length(g) || return false
+    for i in eachindex(v)
+        _grad_leaves!(rows, v[i], g[i], dict) || return false
     end
+    return true
 end
-function _grad_leaves(v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
-    return _grad_leaves(values(v), values(g), dict)
+function _grad_leaves!(rows, v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
+    return _grad_leaves!(rows, values(v), values(g), dict)
 end
-_grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.fields, g.fields, dict)
-function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
-    haskey(dict, v) && return nothing
+function _grad_leaves!(rows, v::ImmutableDual, g::Tangent, dict)
+    return _grad_leaves!(rows, v.fields, g.fields, dict)
+end
+@noinline function _grad_leaves!(rows, v::MutableDual, g::MutableTangent, dict)
+    haskey(dict, v) && return false
     dict[v] = nothing
-    return _grad_leaves(v.fields, g.fields, dict)
+    return _grad_leaves!(rows, v.fields, g.fields, dict)
 end
-_grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/complex/abstract/uninit/mismatch
+_grad_leaves!(rows, @nospecialize(v), @nospecialize(g), dict) = false
 
-# Restore primal and dual field bindings each chunk: rebinding would orphan the cached
-# leaf table. Re-gathering would allocate. `_grad_leaves` already excludes repeats and
-# cycles, so no cycle guard is needed here.
-_save_seed_bindings(::Nfwd.NDualArray, p) = ()
-# Composite NoDual leaves can own mutable descendants outside the dual leaf table.
-# Use generic snapshot/restore for these inputs, including changed extents and bindings.
-_save_seed_bindings(::NoDual, p) = isbitstype(typeof(p)) ? () : nothing
-_save_seed_bindings(v::ImmutableDual, p) = _save_seed_bindings(v.fields, p)
-function _save_seed_bindings(v::MutableDual, p)
-    fields = ntuple(i -> getfield(p, i), fieldcount(typeof(p)))
-    return _cat_leaves((((v, (v.fields,)), (p, fields)), _save_seed_bindings(v.fields, p)))
+# Unsupported state retains the generic snapshot/restore path.
+_save_seed_bindings!(rows, ::Nfwd.NDualArray, p) = true
+_save_seed_bindings!(rows, ::NoDual, p) = isbitstype(typeof(p))
+function _save_seed_bindings!(rows, v::ImmutableDual, p)
+    return _save_seed_bindings!(rows, v.fields, p)
 end
-_save_seed_bindings(v::Tuple, p) = _cat_leaves(map(_save_seed_bindings, v, p))
-function _save_seed_bindings(v::NamedTuple{ns}, p) where {ns}
-    return _cat_leaves(map(n -> _save_seed_bindings(getfield(v, n), getfield(p, n)), ns))
+@noinline function _save_seed_bindings!(rows, v::MutableDual, p)
+    fields = ntuple(i -> getfield(p, i), fieldcount(typeof(p)))
+    push!(rows, (v, (v.fields,)), (p, fields))
+    return _save_seed_bindings!(rows, v.fields, p)
+end
+@noinline function _save_seed_bindings!(rows, v::Tuple, p)
+    for i in eachindex(v)
+        _save_seed_bindings!(rows, v[i], p[i]) || return false
+    end
+    return true
+end
+@noinline function _save_seed_bindings!(rows, v::NamedTuple{ns}, p) where {ns}
+    for n in ns
+        _save_seed_bindings!(rows, getfield(v, n), getfield(p, n)) || return false
+    end
+    return true
+end
+function _save_seed_bindings(arg_seeds::Tuple)
+    rows = Any[]
+    for s in arg_seeds
+        _save_seed_bindings!(rows, tangent(s), primal(s)) || return nothing
+    end
+    return _finish_seed_records(rows)
+end
+
+function _restore_seed_binding!(row)
+    obj, fields = row
+    for i in eachindex(fields)
+        getfield(obj, i) === fields[i] ||
+            ccall(:jl_set_nth_field, Cvoid, (Any, Csize_t, Any), obj, i - 1, fields[i])
+    end
+    return nothing
+end
+function _restore_seed_bindings!(rows::SeedGroups)
+    _walk_seed_records!(_restore_seed_binding!, rows)
 end
 
 @inline _restore_seed_bindings!(::Tuple{}) = nothing
@@ -3056,24 +3108,20 @@ end
     return _restore_seed_bindings!(Base.tail(rs))
 end
 
-# One row per differentiable leaf: the cache-owned seed, the gradient buffer it fills, and the
-# range of derivative dimensions it owns. Assigning that range once is what lets the sweeps index
-# by it instead of threading a running offset through every walk, and makes the total a field read
-# rather than a second recursion over the same rows.
 function _tangent_layout(arg_seeds::Tuple, grad_bufs::Tuple)
     dict = IdDict{Any,Any}()
-    leaves = _cat_leaves(
-        map((s, g) -> _grad_leaves(tangent(s), g, dict), arg_seeds, grad_bufs)
-    )
-    return leaves === nothing ? nothing : _tangent_layout(leaves, 1)
-end
-
-@inline _tangent_layout(::Tuple{}, ::Int) = ()
-@inline function _tangent_layout(ls::Tuple, first_dim::Int)
-    v, g = first(ls)
-    n = _leaf_dims(v)
-    dims = first_dim:(first_dim + n - 1)
-    return ((v, g, dims), _tangent_layout(Base.tail(ls), first_dim + n)...)
+    leaves = Any[]
+    for i in eachindex(arg_seeds)
+        _grad_leaves!(leaves, tangent(arg_seeds[i]), grad_bufs[i], dict) || return nothing
+    end
+    first_dim = 1
+    for i in eachindex(leaves)
+        v, g = leaves[i]
+        n = _leaf_dims(v)
+        leaves[i] = (v, g, first_dim:(first_dim + n - 1))
+        first_dim += n
+    end
+    return _finish_seed_records(leaves)
 end
 
 #
@@ -3601,9 +3649,19 @@ end
     end
 end
 
-# Unroll layout rows for type stability and zero allocation. Clear ALL partials each chunk:
-# in-place f can dirty inactive entries too (O(total_dim²) work over the sweep).
-# Keep zeroing separate from seeding so shared blocks cannot erase an earlier row's seed.
+# Zero all leaves before seeding: in-place rules can dirty inactive entries.
+_zero_seed_row!(row) = (Nfwd._zero_seed!(row[1]); nothing)
+_seed_chunk_row!(row, s, W) = (_seed_leaf!(row[1], row[3], s, W); nothing)
+_scatter_chunk_row!(row, out, s, W) = (_scatter_leaf!(row[2], row[3], out, s, W); nothing)
+_reset_seed_row!(row) = (_reset_seed_extent!(row[1], length(row[2])); nothing)
+_zero_seeds!(rows::SeedGroups) = _walk_seed_records!(_zero_seed_row!, rows)
+function _seed_chunk!(rows::SeedGroups, s, W)
+    return _walk_seed_records!(row -> _seed_chunk_row!(row, s, W), rows)
+end
+function _scatter_chunk!(rows::SeedGroups, out, s, W)
+    return _walk_seed_records!(row -> _scatter_chunk_row!(row, out, s, W), rows)
+end
+
 @inline _zero_seeds!(::Tuple{}) = nothing
 @inline function _zero_seeds!(ls::Tuple)
     Nfwd._zero_seed!(first(ls)[1])
@@ -3673,9 +3731,24 @@ end
 _seed_array_inputs(::NoDual, x) = ()
 _seed_array_inputs(::Nfwd.NDualArray, x) = (x,)
 _seed_array_inputs(v::Union{ImmutableDual,MutableDual}, x) = _seed_array_inputs(v.fields, x)
-_seed_array_inputs(v::Tuple, x) = _cat_leaves(map(_seed_array_inputs, v, x))
+function _seed_array_inputs(v::Tuple, x)
+    length(v) > 32 && return _seed_array_groups(v, x)
+    return _cat_leaves(map(_seed_array_inputs, v, x))
+end
 function _seed_array_inputs(v::NamedTuple{ns}, x) where {ns}
+    length(ns) > 32 && return _seed_array_groups(v, x)
     return _cat_leaves(map(n -> _seed_array_inputs(getfield(v, n), getfield(x, n)), ns))
+end
+@inline @generated function _seed_array_groups(v::V, x) where {V}
+    groups = Any[]
+    for start in 1:16:fieldcount(V)
+        inds = start:min(start + 15, fieldcount(V))
+        keys = V <: NamedTuple ? map(i -> QuoteNode(fieldname(V, i)), inds) : inds
+        vs = [:(getfield(v, $i)) for i in inds]
+        xs = [:(getfield(x, $key)) for key in keys]
+        push!(groups, :(_seed_array_inputs(($(vs...),), ($(xs...),))))
+    end
+    return :(_cat_leaves(($(groups...),)))
 end
 
 function _structured_gradient!!(
@@ -3706,7 +3779,7 @@ function _structured_gradient!!(
     while s <= total_dim
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
         _restore_seed_bindings!(seed.bindings)
-        foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
+        _walk_seed_records!(_reset_seed_row!, leaves)
         # Refresh call-time nondifferentiable state every chunk too, so mutation cannot
         # compound. Unchanged state rebuilds nothing.
         arg_seeds = @inline _refresh_all!(arg_seeds, xs)
@@ -3749,8 +3822,13 @@ end
     # `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
+@inline _scatter_isbits_field(c, v, ::Val{I}, coeffs, s) where {I} = _scatter_isbits_leaves(
+    getfield(v, I), coeffs, s, c
+)
+
 @inline _scatter_isbits_leaves(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
 @inline function _scatter_isbits_leaves(g::Tuple, coeffs, s, c::Int)
+    length(g) > 32 && return _walk_fields(_scatter_isbits_field, c, g, coeffs, s)
     h, c = _scatter_isbits_leaves(first(g), coeffs, s, c)
     t, c = _scatter_isbits_leaves(Base.tail(g), coeffs, s, c)
     return ((h, t...), c)
@@ -5124,7 +5202,19 @@ end
     return total
 end
 
-@inline _cat_leaves(t::Tuple) = _any_nothing(t) ? nothing : _flatten_leaves(t)
+@inline function _cat_leaves(t::Tuple)
+    length(t) > 32 && return _cat_leaf_groups(t)
+    return _any_nothing(t) ? nothing : _flatten_leaves(t)
+end
+@inline @generated function _cat_leaf_groups(t::T) where {T}
+    groups = Any[]
+    for start in 1:16:fieldcount(T)
+        inds = start:min(start + 15, fieldcount(T))
+        fields = [:(getfield(t, $i)) for i in inds]
+        push!(groups, :(_cat_leaves(($(fields...),))))
+    end
+    return :(_cat_leaves(($(groups...),)))
+end
 @inline _any_nothing(::Tuple{}) = false
 @inline _any_nothing(t::Tuple) = first(t) === nothing || _any_nothing(Base.tail(t))
 @inline _flatten_leaves(::Tuple{}) = ()

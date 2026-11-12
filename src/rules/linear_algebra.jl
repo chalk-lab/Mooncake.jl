@@ -450,11 +450,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     test_cases = if Base.get_extension(Mooncake, :MooncakeChainRulesExt) === nothing
-        Any[]
+        TestCase[]
     else
         vcat(
             map_prod([3, 7], Ps) do (N, P)
-                return (false, :none, nothing, exp, randn(rng, P, N, N))
+                return TestCase(exp, randn(rng, P, N, N))
             end,
         )
     end
@@ -468,35 +468,43 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         )
         # Float32 det finite differences are inaccurate;
         # see the Symmetric `det` cases in src/rules/lapack.jl.
-        cases = Any[]
+        cases = TestCase[]
         for A in As
-            push!(cases, (false, :stability, nothing, inv, A))
-            push!(cases, (P == Float32, :stability, nothing, det, A))
-            push!(cases, (false, :stability, nothing, logabsdet, A))
-            push!(cases, (false, :stability, nothing, \, A, randn(rng, P, N)))
-            push!(cases, (false, :stability, nothing, \, A, randn(rng, P, N, 2)))
+            push!(cases, TestCase(inv, A; perf_flag=:stability))
+            push!(
+                cases,
+                TestCase(det, A; interface_only=P == Float32, perf_flag=:stability),
+            )
+            push!(cases, TestCase(logabsdet, A; perf_flag=:stability))
+            push!(cases, TestCase(\, A, randn(rng, P, N); perf_flag=:stability))
+            push!(cases, TestCase(\, A, randn(rng, P, N, 2); perf_flag=:stability))
         end
         A = U + randn(rng, P, N, N)
-        push!(cases, (P == Float32, :stability, nothing, det, A'))
+        push!(cases, TestCase(det, A'; interface_only=P == Float32, perf_flag=:stability))
         # A reshaped non-contiguous 2-D view.
         R = reshape(view(randn(rng, P, 6, 8), 1:2, 1:8), 4, 4)
         foreach(i -> R[i, i] += 4, 1:4)
         # `inv` of a non-strided array goes through `factorize`, which isn't type-stable.
-        push!(cases, (false, :none, nothing, inv, R))
-        push!(cases, (false, :stability, nothing, \, R, randn(rng, P, 4)))
-        push!(cases, (false, :stability, nothing, \, R', randn(rng, P, 4)))
-        push!(cases, (false, :stability, nothing, \, R, view(randn(rng, P, 6), 2:5)))
-        push!(cases, (false, :stability, nothing, \, R, transpose(randn(rng, P, 2, 4))))
-        push!(cases, (false, :stability, nothing, logabsdet, transpose(A)))
-        push!(cases, (false, :stability, nothing, \, A', randn(rng, P, 2, N)'))
+        push!(cases, TestCase(inv, R))
+        push!(cases, TestCase(\, R, randn(rng, P, 4); perf_flag=:stability))
+        push!(cases, TestCase(\, R', randn(rng, P, 4); perf_flag=:stability))
+        push!(cases, TestCase(\, R, view(randn(rng, P, 6), 2:5); perf_flag=:stability))
+        push!(cases, TestCase(\, R, transpose(randn(rng, P, 2, 4)); perf_flag=:stability))
+        push!(cases, TestCase(logabsdet, transpose(A); perf_flag=:stability))
+        push!(cases, TestCase(\, A', randn(rng, P, 2, N)'; perf_flag=:stability))
         return cases
     end
     # Non-square \ (least squares and minimum norm). Finite differences are too inaccurate for
     # Float32 here, so those cases only check the interface.
     ldiv_cases = map_prod([(5, 3), (3, 5)], Ps) do ((m, n), P)
-        flags = (P == Float32, :stability, nothing)
-        return Any[
-            (flags..., \, randn(rng, P, m, n), randn(rng, P, m, k...)) for k in ((), (2,))
+        return TestCase[
+            TestCase(
+                \,
+                randn(rng, P, m, n),
+                randn(rng, P, m, k...);
+                interface_only=P == Float32,
+                perf_flag=:stability,
+            ) for k in ((), (2,))
         ]
     end
     test_cases = vcat(
@@ -504,10 +512,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         dense_cases...,
         ldiv_cases...,
         # det of singular matrices: rank n - 1, where the gradient is the adjugate, and rank 0.
-        Any[
-            (false, :stability, nothing, det, [0.0 2.0 1.0; 0.0 1.0 3.0; 0.0 0.0 4.0]),
-            (false, :stability, nothing, det, [1.0 2.0; 2.0 4.0]),
-            (false, :stability, nothing, det, zeros(3, 3)),
+        TestCase[
+            TestCase(det, [0.0 2.0 1.0; 0.0 1.0 3.0; 0.0 0.0 4.0]; perf_flag=:stability),
+            TestCase(det, [1.0 2.0; 2.0 4.0]; perf_flag=:stability),
+            TestCase(det, zeros(3, 3); perf_flag=:stability),
         ],
     )
     memory = Any[]
@@ -519,18 +527,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     Ps = [Float64, Float32]
     test_cases = vcat(
         map_prod([3, 7], Ps) do (N, P)
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., inv, randn(rng, P, N, N)), (flags..., det, randn(rng, P, N, N))
+            TestCase[
+                TestCase(inv, randn(rng, P, N, N)), TestCase(det, randn(rng, P, N, N))
             ]
         end...,
         # logdet and / reach the logabsdet and \ rules (#1372).
         map_prod([3], Ps) do (N, P)
             U = triu(randn(rng, P, N, N)) + 3I
-            return Any[
-                (false, :none, nothing, logdet, U),
-                (false, :none, nothing, /, randn(rng, P, 2, N), U),
-            ]
+            return Any[TestCase(logdet, U), TestCase(/, randn(rng, P, 2, N), U)]
         end...,
     )
     memory = Any[]

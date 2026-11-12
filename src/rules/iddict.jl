@@ -469,79 +469,51 @@ end
 
 function _keyed_dict_rule_cases(rng_ctor, D)
     test_cases = Any[
-        (false, :stability, nothing, Base.rehash!, D(true => 5.0, false => 4.0), 10),
-        (false, :none, nothing, setindex!, D(true => 5.0, false => 4.0), 3.0, false),
-        (false, :none, nothing, setindex!, D(true => 5.0), 3.0, false),
+        TestCase(Base.rehash!, D(true => 5.0, false => 4.0), 10; perf_flag=:stability),
+        TestCase(setindex!, D(true => 5.0, false => 4.0), 3.0, false),
+        TestCase(setindex!, D(true => 5.0), 3.0, false),
         # type-mismatched stores (typeof(val) ≠ V): non-diff/diff slots, mutable & abstract
         # values (aliasing), and a floating-point width change (fpext/fptrunc).
-        (false, :none, nothing, setindex!, D(:a => 1.0), 2, :b),
+        TestCase(setindex!, D(:a => 1.0), 2, :b),
         # interface_only: the finite-difference perturbation would break `convert(Int, ...)`.
-        (true, :none, nothing, setindex!, D(:a => 1), 3.0, :b),
-        (
-            false,
-            :none,
-            nothing,
-            setindex!,
-            D{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
-            [3.0, 4.0],
-            :b,
-        ),
-        (false, :none, nothing, setindex!, D{Symbol,Any}(:a => 1.0), 2.0, :b),
-        (false, :none, nothing, setindex!, D{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
-        (false, :none, nothing, setindex!, D{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
+        TestCase(setindex!, D(:a => 1), 3.0, :b; interface_only=true),
+        TestCase(setindex!, D{Symbol,Vector{Float64}}(:a => [1.0, 2.0]), [3.0, 4.0], :b),
+        TestCase(setindex!, D{Symbol,Any}(:a => 1.0), 2.0, :b),
+        TestCase(setindex!, D{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
+        TestCase(setindex!, D{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
         # the same width change for an array, where the gradient rides fdata, not rdata
-        (
-            false,
-            :none,
-            nothing,
-            setindex!,
-            D{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
-            Float32[3.0, 4.0],
-            :b,
+        TestCase(
+            setindex!, D{Symbol,Vector{Float64}}(:a => [1.0, 2.0]), Float32[3.0, 4.0], :b
         ),
         # a numeric-union eltype has structural storage
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             setindex!,
             D{Symbol,Vector{Union{Float32,Float64}}}(:a => [1.0, 2.0f0]),
             [3.0, 4.0],
             :b,
         ),
-        (false, :none, nothing, get, D(true => 5.0, false => 4.0), false, 2.0),
-        (false, :none, nothing, get, D(true => 5.0), false, 2.0),
+        TestCase(get, D(true => 5.0, false => 4.0), false, 2.0),
+        TestCase(get, D(true => 5.0), false, 2.0),
         # Absent key with a default whose type differs from the dict value type V:
         # the frule must return the `default` slot, not force `Lifted{V}` (regression).
-        (false, :none, nothing, get, D(true => 5.0), false, 2.0f0),
+        TestCase(get, D(true => 5.0), false, 2.0f0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.
-        (
-            false,
-            :none,
-            nothing,
-            get,
-            D{Symbol,Vector{Float64}}(:a => [1.0]),
-            :b,
-            [2.0, 3.0],
-        ),
+        TestCase(get, D{Symbol,Vector{Float64}}(:a => [1.0]), :b, [2.0, 3.0]),
         # interface_only: the non-differentiable default carries no derivative.
-        (true, :none, nothing, get, D{Symbol,Float64}(:a => 1.0), :b, 2),
-        (false, :none, nothing, getindex, D(true => 5.0, false => 4.0), true),
+        TestCase(get, D{Symbol,Float64}(:a => 1.0), :b, 2; interface_only=true),
+        TestCase(getindex, D(true => 5.0, false => 4.0), true),
         # Abstract V must still return a concretely typed slot.
-        (false, :none, nothing, getindex, D{Symbol,Any}(:a => 2.0), :a),
-        (false, :none, nothing, get, D{Symbol,Any}(:a => 2.0), :a, 0.0),
+        TestCase(getindex, D{Symbol,Any}(:a => 2.0), :a),
+        TestCase(get, D{Symbol,Any}(:a => 2.0), :a, 0.0),
         # Mutable structs exercise recursive lane materialisation, unlike leaf values.
-        (
-            false,
-            :none,
-            nothing,
+        TestCase(
             getindex,
             D{Symbol,TestResources.TypeStableMutableStruct{Float64}}(
                 :a => TestResources.TypeStableMutableStruct{Float64}(5.0, 4.0)
             ),
             :a,
         ),
-        (false, :none, nothing, D{Any,Any}),
+        TestCase(D{Any,Any}),
     ]
     memory = Any[]
     return test_cases, memory
@@ -563,8 +535,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:iddict})
         return sum(d[1])
     end
     test_cases = Any[
-        (false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]),
-        (false, :none, nothing, union_store_then_mutate, [3.0, 4.0]),
+        TestCase(converting_store_then_mutate, Float32[3.0, 4.0]),
+        TestCase(union_store_then_mutate, [3.0, 4.0]),
     ]
     return test_cases, Any[]
 end

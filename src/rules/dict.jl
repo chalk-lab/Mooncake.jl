@@ -314,40 +314,33 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:dict})
     append!(
         cases,
         Any[
-            (false, :none, nothing, haskey, copy(d), 1),
-            (false, :none, nothing, length, copy(d)),
-            (false, :none, nothing, isempty, copy(d)),
-            (false, :none, nothing, sizehint!, copy(d), 100),
-            (false, :none, nothing, _replace_dict_value!, copy(d), 4.0, 1),
-            (false, :none, nothing, delete!, copy(d), 1),
-            (false, :none, nothing, delete!, copy(d), 2),
-            (false, :none, nothing, empty!, copy(d)),
-            (false, :none, nothing, copy, copy(d)),
-            (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "differentiable keys"),),
+            TestCase(haskey, copy(d), 1),
+            TestCase(length, copy(d)),
+            TestCase(isempty, copy(d)),
+            TestCase(sizehint!, copy(d), 100),
+            TestCase(_replace_dict_value!, copy(d), 4.0, 1),
+            TestCase(delete!, copy(d), 1),
+            TestCase(delete!, copy(d), 2),
+            TestCase(empty!, copy(d)),
+            TestCase(copy, copy(d)),
+            TestCase(copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
+            TestCase(
                 _dict_next,
                 Dict([1.0] => 2.0),
-                1,
+                1;
+                throws=(ArgumentError, "differentiable keys"),
             ),
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "differentiable keys"),),
+            TestCase(
                 _dict_next,
                 Dict(1.0 => 2.0),
-                1,
+                1;
+                throws=(ArgumentError, "differentiable keys"),
             ),
-            (false, :none, nothing, _dict_next, copy(d), 1),
+            TestCase(_dict_next, copy(d), 1),
         ],
     )
     if VERSION >= v"1.11"
-        push!(
-            cases,
-            (false, :none, nothing, Core.kwcall, (; shrink=false), sizehint!, copy(d), 100),
-        )
+        push!(cases, TestCase(Core.kwcall, (; shrink=false), sizehint!, copy(d), 100))
     end
     for width in (1, 8),
         (f, args) in (
@@ -363,26 +356,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:dict})
 
         push!(
             cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "Dict uses a keyed tangent"), chunk_size=width),
+            TestCase(
                 f,
-                args...,
+                args...;
+                throws=(ArgumentError, "Dict uses a keyed tangent"),
+                chunk_size=width,
             ),
         )
     end
     for (f, args) in
         ((Base.ht_keyindex, (copy(d), 1)), (Base.ht_keyindex2_shorthash!, (copy(d), 1)))
         push!(
-            cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "Dict uses a keyed tangent"),),
-                f,
-                args...,
-            ),
+            cases, TestCase(f, args...; throws=(ArgumentError, "Dict uses a keyed tangent"))
         )
     end
     return cases, memory
@@ -390,7 +375,7 @@ end
 function derived_rule_test_cases(rng_ctor, ::Val{:dict})
     d = Dict(1 => 2.0, 23 => 3.0)
     cases = Any[
-        (false, :none, nothing, f, copy(d), args...) for (f, args) in (
+        TestCase(f, copy(d), args...) for (f, args) in (
             (get!, (1, 7.0)),
             (get!, (2, 7.0)),
             (pop!, (1,)),
@@ -416,28 +401,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
     append!(
         cases,
         Any[
-            (
-                false,
-                :none,
-                nothing,
+            TestCase(
                 x -> x.b[1]^2,
                 TestResources.TypeStableMutableStruct{typeof(d)}(1.0, copy(d)),
             ),
-            (false, :none, nothing, x -> x[1][1]^2, [copy(d)]),
-            (false, :none, nothing, x -> (g=()->x[1]^2; g()), copy(d)),
-            (
-                false,
-                :none,
-                nothing,
+            TestCase(x -> x[1][1]^2, [copy(d)]),
+            TestCase(x -> (g=()->x[1]^2; g()), copy(d)),
+            TestCase(
                 x -> (x[1][1] += 1; sum(x[2])),
                 let a=[2.0];
                     Dict(1=>a, 2=>a);
                 end,
             ),
-            (
-                false,
-                :none,
-                nothing,
+            TestCase(
                 x -> (t=Dict{Int,Vector{Float64}}(); t[1]=x; t[1][1]+=1; sum(t[1])),
                 Float32[2, 3],
             ),
@@ -463,7 +439,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
         x -> mergewith(+, Dict(1 => x[1]), Dict(1 => x[2], 2 => x[3]))[1]^2,
         x -> merge!(+, Dict(1 => x[1]), Dict(1 => x[2]))[1]^2,
     )
-        push!(cases, (false, :none, nothing, f, copy(x)))
+        push!(cases, TestCase(f, copy(x)))
     end
     for f in (
             x -> (
@@ -501,14 +477,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
         ),
         width in (1, 8)
 
-        push!(cases, (false, :none, (; chunk_size=width), f, copy(x)))
+        push!(cases, TestCase(f, copy(x); chunk_size=width))
     end
     if VERSION < v"1.11"
         for f in (x -> pop!(Set(x), x[1]), x -> pop!(Set(x), x[1], 0.0)), width in (1, 8)
-            push!(cases, (false, :none, (; chunk_size=width), f, copy(x)))
+            push!(cases, TestCase(f, copy(x); chunk_size=width))
         end
     end
-    push!(cases, (false, :none, nothing, d -> sum(values(d)), Dict(0.5 => 1.0, 1.5 => 2.0)))
+    push!(cases, TestCase(d -> sum(values(d)), Dict(0.5 => 1.0, 1.5 => 2.0)))
     for f in (
             x -> sum(Set(x)),
             x -> sum(k * v for (k, v) in Dict(x[1] => x[2])),
@@ -526,12 +502,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
 
         push!(
             cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "differentiable keys"), chunk_size=width),
-                f,
-                copy(x),
+            TestCase(
+                f, copy(x); throws=(ArgumentError, "differentiable keys"), chunk_size=width
             ),
         )
     end
@@ -547,12 +519,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
 
         push!(
             cases,
-            (
-                false,
-                :none,
-                (throws=(ArgumentError, "Dict uses a keyed tangent"), chunk_size=width),
+            TestCase(
                 f,
-                copy(x),
+                copy(x);
+                throws=(ArgumentError, "Dict uses a keyed tangent"),
+                chunk_size=width,
             ),
         )
     end
@@ -560,16 +531,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
     sample_value = x -> rand(Random.Xoshiro(1), values(Dict(1 => x[1])))
     if VERSION < v"1.11"
         # 1.10 collects keys and has no value-iterator sampler; 1.11+ samples Dict slots.
-        push!(cases, (false, :none, nothing, sample_key, copy(x)))
+        push!(cases, TestCase(sample_key, copy(x)))
         for width in (1, 8)
             push!(
                 cases,
-                (
-                    false,
-                    :none,
-                    (throws=(MethodError, "Sampler"), primal_throws=true, chunk_size=width),
+                TestCase(
                     sample_value,
-                    copy(x),
+                    copy(x);
+                    throws=(MethodError, "Sampler"),
+                    primal_throws=true,
+                    chunk_size=width,
                 ),
             )
         end
@@ -577,12 +548,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:dict})
         for f in (sample_key, sample_value), width in (1, 8)
             push!(
                 cases,
-                (
-                    false,
-                    :none,
-                    (throws=(ArgumentError, "Dict uses a keyed tangent"), chunk_size=width),
+                TestCase(
                     f,
-                    copy(x),
+                    copy(x);
+                    throws=(ArgumentError, "Dict uses a keyed tangent"),
+                    chunk_size=width,
                 ),
             )
         end

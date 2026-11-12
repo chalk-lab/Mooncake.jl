@@ -138,11 +138,86 @@ const NDAC_VecC64 = NDualArray{
     Mooncake.NDualBlock{ComplexF64,2},
 }
 
+@eval struct LiftedTest_Wide{T}
+    $([:($(Symbol(:x, i))::T) for i in 1:48]...)
+    LiftedTest_Wide{T}() where {T} = new{T}()
+    LiftedTest_Wide(xs::Vararg{T}) where {T} = new{T}(xs...)
+end
+
+@eval struct LiftedTest_WideInit{T}
+    $([:($(Symbol(:x, i))::T) for i in 1:34]...)
+end
+
+@noinline function lifted_read_last(sink, w, p, v)
+    out = Mooncake._read_lifted(w, p, v)
+    sink[] =
+        out !== nothing && if v isa ImmutableDual
+            getfield(tangent(out), :fields) === getfield(v, :fields)
+        else
+            getfield(tangent(out), nfields(p)) === getfield(v, nfields(p))
+        end
+    return nothing
+end
+
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
     # `Base._stable_typeof` P (`Type{T}` for type-valued primals, matching rule dispatch).
     sl(N, p, v=NoDual()) = Lifted{Base._stable_typeof(p),N}(p, v)
     nd(v::T, parts::Vararg{T,N}) where {T,N} = NDual{T,N}(v, parts)
+
+    @testset "wide aggregate reads" begin
+        for width in (1, 8)
+            p = LiftedTest_WideInit(ntuple(_ -> ones(4), 34)...)
+            v = tangent(zero_lifted(Val(width), p))
+            sink = Ref(false)
+            lifted_read_last(sink, Val(width), p, v)
+            @test sink[]
+            @test TestUtils.count_allocs(lifted_read_last, sink, Val(width), p, v) == 0
+        end
+        for n in (33, 128), width in (1, 8)
+            a = ones(4)
+            ps = ntuple(_ -> a, n)
+            names = ntuple(i -> Symbol(:x, i), n)
+            for p in (ps, NamedTuple{names}(ps))
+                v = tangent(zero_lifted(Val(width), p))
+                sink = Ref(false)
+                lifted_read_last(sink, Val(width), p, v)
+                @test sink[]
+                @test TestUtils.count_allocs(lifted_read_last, sink, Val(width), p, v) == 0
+                replacement = Base.setindex(ps, copy(a), n)
+                changed = p isa NamedTuple ? NamedTuple{names}(replacement) : replacement
+                @test Mooncake._read_lifted(Val(width), changed, v) === nothing
+            end
+        end
+        p = ntuple(i -> float(i), 128)
+        v = tangent(lift(p, ntuple(_ -> 1.0, 128)))
+        changed = map(x -> -x, p)
+        out = Mooncake._read_lifted(Val(1), changed, v)
+        @test typeof(tangent(out)) === typeof(v)
+        @test all(i -> tangent(out)[i].value === changed[i], eachindex(p))
+        @test all(i -> tangent(out)[i].partials === (1.0,), eachindex(p))
+        for n in (0, 48)
+            a = ones(4)
+            p = if n == 0
+                LiftedTest_Wide{Tuple{typeof(a),eltype(a)}}()
+            else
+                LiftedTest_Wide(ntuple(i -> (a, float(i)), n)...)
+            end
+            v = tangent(zero_lifted(Val(1), p))
+            sink = Ref(false)
+            lifted_read_last(sink, Val(1), p, v)
+            @test sink[]
+            @test TestUtils.count_allocs(lifted_read_last, sink, Val(1), p, v) == 0
+            changed = n == 0 ? p : LiftedTest_Wide(ntuple(i -> (a, -float(i)), n)...)
+            out = Mooncake._read_lifted(Val(1), changed, v)
+            @test typeof(tangent(out)) === typeof(v)
+            @test all(
+                i -> Mooncake.val(getfield(tangent(out).fields, i))[2].value === -float(i),
+                1:n,
+            )
+            @test all(f -> Mooncake.is_init(f) == (n == 48), tangent(out).fields)
+        end
+    end
 
     @testset "cyclic MutableDual tangent arithmetic" begin
         # A self-referential mutable struct lifts to a cyclic `MutableDual` V; the
@@ -233,8 +308,8 @@ const NDAC_VecC64 = NDualArray{
             dm[1] = 1.0
             # The tangents must alias exactly as the primals do; `fm` over one buffer is `2*m[1]`, so
             # the directional derivative is 2.0. Seeding this through `test_rule` instead would not
-            # catch it: the finite-difference oracle perturbs the primal through the same aliasing
-            # machinery the rule uses, so oracle and rule agree on the wrong answer.
+            # catch it: the finite-difference check perturbs the primal through the same
+            # aliasing machinery the rule uses, so both agree on the wrong answer.
             @test Mooncake.value_and_derivative!!(
                 cache, (fm, Mooncake.NoTangent()), (mk(), (dm, Core.memoryref(dm, 1)))
             ) == (2.0, 2.0)
@@ -557,8 +632,8 @@ const NDAC_VecC64 = NDualArray{
         end
 
         @testset "an Array's block windows its backing Memory's" begin
-            # Partial storage must alias with the primal. test_rule's finite-difference oracle
-            # uses the same seeding machinery, so an independent mutation check is needed.
+            # Partial storage must alias with the primal. test_rule's finite-difference
+            # check uses the same seeding machinery; an independent mutation check is needed.
             a = [1.0, 2.0, 3.0]
             v = tangent(zero_lifted(Val(2), (a, a.ref.mem)))
             Mooncake.Nfwd.tangent_view(v[1], 1)[2] = 5.0
@@ -652,8 +727,9 @@ const NDAC_VecC64 = NDualArray{
     # widths 1 and 8, :stability_and_allocs) by the complex group — no bespoke parallel needed.
 
     # performance_patches.jl rules (sum, sum(abs2,·), LinearAlgebra._kron!) are registered in
-    # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V is per-lane
-    # oracle-checkable, so `test_rule` covers value + per-lane partials across widths 1 and 8.
+    # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V supports
+    # comparison with each width-1 result, so `test_rule` covers value + per-lane partials
+    # across widths 1 and 8.
 
     @testset "MutableDualTangentView (NDual field)" begin
         r = LiftedTest_RefF(3.0)
@@ -752,7 +828,7 @@ const NDAC_VecC64 = NDualArray{
         @test tangent(cslot, 1).fields.next.fields.w == 7.0
 
         # A tuple field is a value, so it reads as exactly what reverse gives — and WRITES back,
-        # matching the reverse `set_tangent_field!` oracle the reads were widened to.
+        # matching the reverse `set_tangent_field!` result the reads were widened to.
         tup = LiftedTest_TupleField((1.0, 2.0))
         tv = tangent_view(zero_lifted(Val(2), tup), 1)
         @test tv.t === getfield(zero_tangent(tup).fields, :t) === (0.0, 0.0)
