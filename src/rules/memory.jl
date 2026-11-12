@@ -192,11 +192,18 @@ function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
+function _scale(a::Float64, t::Array{T}) where {T}
+    c = isbitstype(T) ? NoCache() : IdDict{Any,Any}()
+    return _scale_internal(c, a, t)
+end
+
+# Rewrap the scaled memory at the primal's offset, so aliases and spare capacity survive.
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
-    t′ = T(undef, size(t)...)
+    t′ = Base.wrap(Array, _scale_internal(c, a, t.ref), size(t))::T
+    haskey(c, t) && return c[t]::T  # a cycle through the memory has already wrapped `t`
     c[t] = t′
-    return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
+    return t′
 end
 
 for A in (Array, Memory)
@@ -1316,6 +1323,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         ),
         (false, :none, nothing, x -> (a=Any[]; append!(a, [(1, x)]); a[1][2]), 2.0),
     ]
+    for p in (Any[2.0, 3.0], [2.0, 3.0]), offset in (false, true)
+        v = sizehint!(copy(p), 20)
+        offset && popfirst!(v)
+        push!(test_cases, (false, :none, nothing, push!, v, first(v)))
+        push!(test_cases, (false, :none, nothing, pushfirst!, v, first(v)))
+        push!(test_cases, (false, :none, nothing, insert!, v, 2, first(v)))
+    end
     memory = Any[]
     return test_cases, memory
 end
