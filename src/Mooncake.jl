@@ -241,6 +241,9 @@ include(joinpath("rules", "bfloat16.jl"))
 else
     include(joinpath("rules", "array_legacy.jl"))
 end
+@static if VERSION >= v"1.11-"
+    include(joinpath("rules", "scopedvalues.jl"))
+end
 
 include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))

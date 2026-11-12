@@ -455,6 +455,19 @@ Throw an `UnhandledLanguageFeatureException` with message `msg`.
 """
 unhandled_feature(msg::String) = throw(UnhandledLanguageFeatureException(msg))
 
+# `with`/`@with` enter a scope through an `EnterNode`, which reverse mode reports as try/catch
+# and forward mode fails inside the handler of; refuse it here with a clear message.
+function check_scopedvalue_entry(ir::IRCode)
+    @static if VERSION >= v"1.11-"
+        for inst in stmt(ir.stmts)
+            if inst isa Core.EnterNode && isdefined(inst, :scope)
+                throw_scopedvalue_error()
+            end
+        end
+    end
+    return nothing
+end
+
 """
     replace_uses_with!(stmt, def::Union{Argument, SSAValue}, val)
 
