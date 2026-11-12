@@ -35,6 +35,22 @@ calls. The checks cover both differentiation modes at the legacy `_growbeg!`,
 rules. Forward collection deletion checks run before Base moves elements. Arrays
 on Julia 1.11 and later are unaffected.
 
+## Overlapping BLAS and LAPACK Operands
+
+Mutating BLAS matrix products and triangular operations, and LAPACK solves, require
+an output that does not overlap a separate input operand. Mooncake checks this in
+both modes and throws `ArgumentError` before modifying the operands. Copy the input
+when calling these operations with overlapping views or with the same array in
+both positions. The usual in-place right-hand side of a triangular operation is
+supported when it is disjoint from the coefficient matrix.
+
+`axpby!(a, x, b, x)` and `LAPACK.lacpy!(A, A, uplo)` support identical source and
+destination objects. Real `axpy!` also supports identical source and destination
+memory walks. Other overlapping source/destination patterns are refused; complex
+`axpy!` refuses even identical walks because its BLAS kernel can overwrite a
+component before reading it. These checks do not change the general boundary for
+aliasing established only through raw pointers.
+
 ## Numerical Workarounds and Singularities
 
 Numerical workarounds can preserve function values while producing incorrect derivatives under automatic differentiation.
@@ -56,7 +72,8 @@ Custom differentiation rules may be needed; see [Defining Rules](@ref).
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
 in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
-with a message explaining the cause. Forward mode does support these constructs.
+with a message explaining the cause. Forward mode supports `try`/`catch`, `try`/`finally` and
+`rethrow()`, except that binding the exception (`catch e`) is refused.
 
 **The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
 For example:
@@ -121,9 +138,110 @@ Rebinding to an equal value is accepted, but the same object must not also be an
 
 Forward mode reads current values and replaced storage inside a global between calls (`R[] = [7.0]`), including changes of the slot's value type and scalars replaced inside an immutable aggregate (`R[] = (7.0, 7.0)`). Reverse mode supports changes that remain compatible with its cached tangent representation; replacement with another type can raise an exception. A global array grown beyond its cached derivative storage, whether a numeric array's partials block or an element-wise array's tangent array (`Vector{Vector{Float64}}`, `Vector{Any}`), is refused in forward mode with an `ArgumentError`; this also applies when the array is returned as a Jacobian output. Shrinking is supported, except that on Julia 1.11 `reshape` of a vector whose capacity exceeds its length (any grown or shrunk vector, global or not) takes a `jl_genericmemory_slice` foreign call that has no rule and raises `MissingForeigncallRuleError`. The CUDA extension's block readers do not perform the growth check. Storage replaced inside an immutable aggregate held by a global (`R[] = ([7.0],)`) is read correctly in forward mode.
 
+### Passing a global as an argument
+
+Reading a global is fine only while that object is not *also* an argument. The global's derivative
+storage is built once when the rule is built, so it shares nothing with the argument's, and the
+contribution through the global is written somewhere the caller never sees:
+
+```julia
+const G = [1.0, 2.0]
+f(x) = sum(x .* G)
+value_and_gradient!!(build_rrule(f, G), f, G)   # throws ArgumentError
+```
+
+Without the guard, the value would be correct but the gradient would omit the global contribution.
+Both modes refuse such a call with an `ArgumentError`, including cached gradients checked against
+the caller's objects before copying them into cache storage. Pass a copy, or read the value through
+an argument instead of a global.
+
+Each rule compares its recorded constants with its own arguments by identity, at the root only.
+It does not inspect objects nested inside either side. A global array `A` reached through an
+argument `(A,)`, or an array argument reached through a global tuple `(A,)`, can therefore still
+produce incorrect derivatives.
+
+A differentiable immutable constant that is also passed as an argument, such as
+`const C = ("a", 1.0)`, is not caught. Neither is a global read behind a call whose own
+arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`).
+
+In reverse mode, aliased arguments share derivative storage, so both positions report the one
+accumulated gradient. Forward gradients have the restrictions described below.
+
+### Conflicting forward tangents for one shared storage
+
+For every public `value_and_derivative!!` entry point, providing compatible tangent storage
+for positions sharing differentiable storage is the caller's responsibility. This applies to
+bare rules, prepared caches under either `friendly_tangents` setting, and caller-supplied
+`Lifted` slots. Supplied tangents are not checked for this: conflicting seeds give an undefined
+direction without an error.
+
+Distinct objects can share storage. For example:
+
+```julia
+f(a, b) = sum(a) + sum(b)
+a = [1.0, 2.0, 3.0]
+b = reshape(a, 3, 1)
+da = ones(3)
+db = fill(2.0, 3, 1)
+```
+
+Here `da` and `db` specify conflicting directions for one buffer. Bare tuple calls and both
+prepared tuple interfaces accept these seeds, but the returned direction is undefined. Use
+compatible shared seeds, such as `db = reshape(da, 3, 1)`; all three paths then return `(12.0, 6.0)`.
+The same requirement applies to views, captured fields, and an `Array` beside its backing
+`Memory`. Equal values in separate tangent buffers do not establish shared storage.
+
+For `Lifted` inputs, build the slots jointly so their partial buffers share storage in every
+lane. Independently lifting two aliased primals allocates independent partial buffers, even
+when their supplied seeds are the same object. Passing those slots together does not raise an
+error for the conflicting storage, but the returned direction is undefined.
+
+### Forward gradients of arguments that share one storage
+
+Forward mode gives each argument its own tangent storage, so two arguments over one array are two
+independent directions rather than one shared derivative, and `value_and_gradient!!` — whose
+gradient is assembled from one standard-basis dimension range per input — cannot represent that. It
+refuses with an `ArgumentError` rather than returning a gradient scaled by the number of positions
+the storage occupies. Repeated leaves *within* one argument are supported and agree with reverse
+mode: `f(t) = sum(t[1]) + sum(t[2])` at `t = (a, a)` gives `([2, 2, 2], [2, 2, 2])` in both modes,
+because one `lift` threads a single aliasing cache through the argument's leaves. Sharing that is
+not object identity — a `reshape`, a `view`, an `Array` beside its backing `Memory` — is refused
+wherever it appears, including within one argument.
+
+Reverse mode has no such restriction: aliased arguments share one cotangent buffer, so every
+position reports the one accumulated gradient. The forward Jacobian is also unaffected — it
+differentiates a single argument with `f` held fixed, so one dimension range covers every position, and
+an aliased capture (`f = x -> x .* sum(q)` called at `x === q`) gives the full Jacobian.
+
+## Restoration of arguments a rule mutated
+
+Forward input snapshots retain the original mutable objects as well as their contents.
+If `f` rebinds a field of a mutable argument (`s.v = 2 .* s.v` rather than `s.v .= 2 .* s.v`),
+restoration puts the original object back in the field and restores its contents.
+
+Restoration depends on the forward entry point:
+
+- `value_and_derivative!!(cache, (f, df), (x, dx), ...)` restores arguments after success or
+  failure, under either `friendly_tangents` setting.
+- Bare-rule calls to `value_and_derivative!!`, and calls with `Lifted` inputs even through a
+  cache, leave argument mutations in place.
+- Forward `value_and_gradient!!` and `value_and_jacobian!!` preserve their input arguments,
+  including when the rule raises.
+
+For example, `f(x) = (x[1] *= 2; sum(x))` leaves `x = [1.0, 2.0]` as `[2.0, 2.0]` through
+bare-rule or `Lifted` calls; the cached tuple interface restores `[1.0, 2.0]`.
+The callable `f` itself is not snapshotted. RNG state is deliberately excluded from restoration,
+including RNGs nested in arguments: random draws leave the RNG advanced, including on failure.
+Random operations execute afresh in each gradient or Jacobian chunk.
+Reverse mode restores mutations on the pullback instead, so an exception during the forward
+sweep leaves them in place: the
+arguments of a `value_and_pullback!!` or `value_and_gradient!!` call that threw are whatever the
+rule left behind. Copy them if you intend to retry.
+
 ## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). For globals, the guard and its remaining limitations are described in
+[Passing a global as an argument](@ref).
 
 A `NoTangent` parent:
 
@@ -168,7 +286,8 @@ ERROR: ArgumentError: An argument is the same object as a constant or global rea
 ```
 
 `X` and `x` are the same vector, and their derivative storage is separate, so the contribution
-through `X` would be dropped. Mooncake raises an `ArgumentError` instead of returning an incorrect derivative.
+through `X` would be dropped. Mooncake used to return `[1.0]` silently; it now raises. See
+[Passing a global as an argument](@ref) for the guard.
 
 ## Passing Differentiable Data as a Type
 
@@ -281,6 +400,21 @@ Calls inside an existing primitive's body are unaffected.
 Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
+
+Plain `maximum` and `minimum` on real floating-point `CuArray`s have rules in both modes,
+including dimension-wise reductions. Their mapped forms, `maximum(f, x)` and `minimum(f, x)`,
+remain unsupported. `diff` and `sort` on differentiable `CuArray`s also remain unsupported.
+Higher-order reductions support only specific operators: `reduce` supports `+` and `*`,
+`mapreduce` supports `+`, and `accumulate` supports `+`. Calls outside these sets raise an
+`ArgumentError` naming the operation.
+
+Non-differentiable array elements contribute no derivative. A differentiable `init` can still
+contribute, as in `maximum`, `minimum`, and `accumulate`.
+
+Forward mode over `NNlib.gather` on a GPU array refuses for a related reason: the traced kernel
+launch takes the process down with no catchable exception, so the rule raises instead. The
+limitation is specific to that combination. Reverse mode over the same signature works, and so
+does forward mode on a CPU array.
 
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
@@ -414,6 +548,45 @@ In this case, you will not be able to use `Mooncake.value_and_gradient!!` as thi
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
+
+### Raw pointers into differentiable CPU arrays
+
+Raw pointers into differentiable CPU arrays require chunk width one. At wider widths,
+each derivative lane is strided, so the pointer cannot address a dense tangent buffer.
+This restriction applies to flat arrays and arrays of arrays. Use `Config(chunk_size=1)`
+or reverse mode for these pointer-based calls:
+
+```julia
+f(x, y, n) = (unsafe_copyto!(pointer(x), pointer(y), n); sum(sum, x))
+x = [randn(3) for _ in 1:5]
+y = [randn(4) for _ in 1:6]
+# chunk width 1: fine. Above 1: ArgumentError naming the width.
+```
+
+Wrapping a pointer-to-pointer buffer with `unsafe_wrap` preserves its shadow pointer storage at
+chunk width one. Wider chunks raise `ArgumentError`: the wrapped array interleaves its shadow
+pointers by element, whereas each raw pointer lane addresses a dense buffer. Supporting both
+layouts requires a pointer representation that carries the tangent stride; use chunk width one
+or reverse mode.
+
+### Re-typing a pointer through `Ptr{Cvoid}`
+
+Re-typing must preserve the layout of tangent storage. A `Float64` load through a pointer into
+`Float32` tangent storage would straddle two elements, so Mooncake refuses it.
+
+Erased and non-differentiable pointers retain provenance in `PtrTangent` (reverse mode)
+and `PtrDual{N}` (forward mode). These descriptors record both the primal element type
+and the derivative storage type, so erasing a pointer does not permit an incompatible
+re-typing. Re-typing differentiated storage to a different primal element type is refused
+in both modes, including when the types occupy the same number of bytes. For example:
+
+```julia
+f(b::Vector{Float32}) = unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
+```
+
+Erasing and re-typing back to the original element type preserves the pointer's derivative
+storage. Pointer operations still require an addressable derivative layout; wider interleaved
+lanes are subject to the restrictions above.
 
 ```@meta
 DocTestSetup = nothing

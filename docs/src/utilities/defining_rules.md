@@ -44,9 +44,37 @@ Mooncake.rrule!!
 Mooncake.build_primitive_rrule
 ```
 
+## Adding Methods To `frule!!` And `build_primitive_frule`
+
+Forward mode has the same shape, and a new primitive should generally get both: write the reverse
+rule for gradients and the forward one for directional derivatives, Jacobians and the forward half
+of higher-order AD. A signature declared primitive in only one mode is transformed in the other.
+That fallback works only if its implementation uses operations supported by that mode;
+otherwise, provide a rule for both modes.
+
+`@is_primitive` takes the mode, so declare the forward direction explicitly — `@is_primitive
+MinimalCtx ForwardMode Tuple{typeof(f),P}`. Then implement a method of one of:
+```@docs; canonical=false
+Mooncake.frule!!
+Mooncake.build_primitive_frule
+```
+
+A `frule!!` takes and returns [`Mooncake.Lifted`](@ref) slots. Its result's inner
+representation has the canonical type `dual_type(Val(N), typeof(result))`.
+For a zero derivative, return `zero_lifted(Val(N), result)`;
+`zero_dual(Val(N), result)` constructs only the inner representation.
+The rule propagates `N` directional derivatives at once, so write it for general `N`
+rather than assuming a single lane.
+
+For scalar primitives there is usually less to write than this suggests: teaching `NDual` the local
+derivative once gives the `frule!!` for free. See
+[Scalar And Low-Dimensional Rules Via `NDual`](@ref).
+
 ## Canonicalising Tangent Types
 
-For some differentiation rules, Mooncake performs an explicit canonicalisation step inside `frule!!`/`rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By canonicalising at the rule boundary, a single implementation can support many combinations of argument and tangent types without duplicating logic or relying on complex dispatch. This allows the remainder of the rule to assume a single, well-defined tangent representation.
+Canonicalising array tangents at the rule boundary lets a rule use array operations
+across different tangent representations. The resulting arrays can retain wrappers
+and their storage constraints.
 
 Recall that `rrule!!` methods in Mooncake receive `CoDual`-wrapped arguments, including the function itself. Each `CoDual` carries both a primal value and an associated tangent (or `FData`). Consider a `kron` rule:
 
@@ -56,12 +84,7 @@ function Mooncake.rrule!!(
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
-    # Canonicalise inputs: although this method constrains `x1`/`x2` to `AbstractVecOrMat`,
-    # they may still be realised by many concrete array types (e.g. vectors, matrices, views,
-    # `Diagonal`, `Symmetric`, `PDMat`, and other wrappers). Canonicalising at the rule boundary
-    # avoids a proliferation of specialised methods and lets the pullback operate on a single,
-    # predictable dense matrix tangent representation.
-    # `matrixify` returns a tuple (primal, tangent_matrix).
+    # Matrix-shaped tangents retain wrapper storage constraints, such as a stored diagonal.
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
 
@@ -79,9 +102,13 @@ function Mooncake.rrule!!(
 end
 ```
 
-The key insight is that `matrixify` is one of several canonicalisation utilities (alongside `arrayify`) used to reconcile heterogeneous tangent representations into simple, uniform forms. In this case, tangents associated with vectors, matrices, views, `Diagonal`, `Symmetric`, `PDMat`, and other array wrappers are converted into a standard dense matrix representation that the rule can consume directly. Without this step, the rule would require multiple specialised methods or intricate dispatch logic to account for every admissible tangent representation.
+`arrayify` expresses the tangent as an array with the primal's wrapper.
+`matrixify` additionally reshapes vector operands into column matrices.
+The result need not be dense or support arbitrary writes, so the rule must respect
+the wrapper's storage constraints. For example, a `Diagonal` tangent remains a `Diagonal`.
 
-Although this pattern is especially visible in BLAS- and LAPACK-backed rules—where performance-critical kernels must accommodate many array wrappers—it is not specific to linear algebra. Canonicalisation is a general rule-design technique: it isolates type heterogeneity at the boundary of the rule, simplifies the core logic, and improves maintainability across any domain where primitives admit many equivalent tangent representations (e.g. broadcasting, structured arrays, or custom numeric types).
+Canonicalisation converts structured `Tangent`/`FData` representations into arrays at the
+rule boundary, so the rule body can use array operations.
 
 ## Customising Friendly Gradients
 

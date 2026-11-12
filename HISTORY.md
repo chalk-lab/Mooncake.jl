@@ -1,5 +1,57 @@
 # 0.6.0
 
+- Replace `Dual{P,T}` with public `Lifted{P,N,V}` in custom `frule!!` methods; use `V = dual_type(Val(N), P)` and read lane derivatives with `tangent(x, k)`; `N` is chunk width ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Replace `value_and_derivative!!` inputs `Dual(f, df), Dual(x, dx)` with `(f, df), (x, dx)`; results become `(value, derivative)`. `Lifted` inputs return `Lifted` ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Replace multi-input HVP/Hessian calls with a single input; concatenate arguments into one vector. Hessians require a vector; HVPs still accept scalars ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Replace `Config(enable_nfwd=...)` with `Config(...)`; the removed keyword raises `MethodError`. `NfwdMooncake` is removed; all forward differentiation uses `frule!!` ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Replace implicit `set_tangent_field!(t, :s, 1f0)` conversion into a `Float64` field with `set_tangent_field!(t, :s, Float64(1))`; mismatched types now raise `ArgumentError` ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Replace `zero_tangent(ptr)` with explicitly allocated tangent storage when dereferencing derivatives; it now raises `ArgumentError`. `zero_codual(ptr)` remains an undereferenceable placeholder ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Custom reverse pointer rules must replace `Ptr{Cvoid}` tangents with `PtrTangent`, retaining the tangent address and both primal and tangent element types ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- For aliased arguments, replace forward-gradient caches with reverse caches; `value_and_gradient!!` now raises `ArgumentError` for unsupported shared storage ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- For aliased inputs to `value_and_derivative!!`, compatible tangent storage is the caller's responsibility; conflicting tuple or `Lifted` seeds are not checked and give an undefined direction without an error ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Rebuild prepared gradient/pullback caches when checked input alias relationships change; previously accepted mismatches now raise `PreparedCacheError` ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Replace arguments identical to directly read mutable globals/constants with copies, or pass those values solely as arguments; both modes now raise `ArgumentError` ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Use chunk width one or reverse mode for raw pointers into nested arrays; wider forward chunks now refuse unsupported tangent layouts ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Reject overlapping BLAS/LAPACK inputs and outputs with `ArgumentError` before mutation; copy overlapping inputs. Supported exact self-copies remain valid ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336), [#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Fix lowercase BLAS flags and `LAPACK.lacpy!` triangle selection; differentiated calls retain the underlying routine’s flag validation ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Fix BLAS derivatives over strided views; unsupported memory walks now raise `ArgumentError` instead of differentiating the wrong elements ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Return the zero subgradient for `BLAS.nrm2` at the zero vector, replacing NaN derivatives ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Preserve untouched outputs and zero coefficient derivatives for empty `BLAS.gemv!` calls ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Fix BLAS primal values and coefficient derivatives at zero coefficients, including `gemm!` with NaN output storage and `trmm!`/`trsm!` at zero alpha ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Prevent zero weights from contaminating BLAS coefficient gradients with NaN/Inf; preserve finite vector coefficient gradients at extreme magnitudes ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Keep BLAS/LAPACK reverse contributions exactly zero for whole-zero output cotangents, including beside NaN/Inf operands ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Keep wholly inactive lanes zero in level-2/3 BLAS forward rules beside NaN/Inf operands, including zero-alpha derivative products ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Preserve cotangents through exact `LAPACK.lacpy!` and pointer `unsafe_copyto!` self-copies; correctly restore partially overlapping pointer copies ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Fix shared cotangent accumulation in `axpby!`; preserve real `axpy!` self-aliasing and reject unsupported overlapping walks, including complex self-aliasing ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Reject missing, placeholder, or incompatible pointer tangent storage before derivative loads/stores, including unsafe retyping through `Ptr{Cvoid}` ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336), [#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Reject `pointer_from_objref` derivative accesses with incompatible layouts; forward mode refuses numeric `Ref` object pointers instead of risking incorrect values ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Initialise `Core.memorynew` reverse tangents to zero rather than allocator-dependent contents ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Fix derivatives through structured matrix wrappers, including unit-triangular views/reshapes in `kron` and `logsumexp`; ignore implicit unit diagonals ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Accumulate reverse gradients across repeated arguments, views, reshapes, and, on Julia 1.11+, shared `Memory`/`MemoryRef` storage ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Preserve shared storage during tangent seeding and arithmetic, preventing double-counted dot products/increments and duplicated `SimpleVector` tangents ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Respect subsequently defined `tangent_type` methods when building friendly-gradient caches ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Avoid reading undefined primal slots during primal-to-tangent conversion, including `Memory{Symbol}` ([#1338](https://github.com/chalk-lab/Mooncake.jl/pull/1338)).
+- Reject changed storage sharing in structured forward-gradient caches with `PreparedCacheError` before refreshing inputs ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Restore cached forward tuple-call arguments after success or failure, including rebound fields and resized arrays; bare-rule and `Lifted` calls retain mutations ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Leave RNGs advanced after cached forward calls, including nested RNGs and failures; random draws execute afresh for each gradient/Jacobian chunk ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Fix singular real symmetric/Hermitian determinant derivatives; rank-deficient matrices now receive the adjugate derivative instead of unconditional zero ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Support forward-over-reverse differentiation of finite, nonsingular real symmetric/Hermitian `det`, `logdet`, and `logabsdet` calls ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Fix extreme-magnitude derivatives for division, two-argument `atan`, `asinh`, and `acosh`, avoiding spurious overflow/underflow ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Fix `ldexp`, `significand`, and `frexp` derivatives at extreme scales by preserving representable scaled directions ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Preserve primal NaN/signed-zero selection in `min`/`max`, correct crossed-bound `clamp` derivatives, and fix `copysign` derivatives with zero sign arguments ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Correct `rem` derivatives for negative quotients and preserve `iszero` branch behaviour when forward directions are nonzero ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Extend zero-direction guards at scalar singularities and retain second derivatives through zero cotangents and removable power singularities ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Match primal `tan` rounding and mixed-precision power/division promotion in forward mode ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Preserve non-finite real/imaginary components when adding, scaling, and dotting complex CUDA tangents ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Avoid LLVM crashes in BFloat16 tangent dot products and `Float64` conversions on Julia 1.11 x86_64 ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336), [#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Prevent Mooncake inference results from corrupting native package-image caches on Julia 1.10/1.11 ([#1336](https://github.com/chalk-lab/Mooncake.jl/pull/1336)).
+- Avoid Julia 1.10 OpaqueClosure code-generation crashes after nested-rule invalidation ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340), [julia#61368](https://github.com/JuliaLang/julia/issues/61368)).
+- Extend chunked forward differentiation through transformed Julia code, including `value_and_gradient!!` and vector-input `value_and_jacobian!!` via `Config(chunk_size=N)` ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Batch `value_gradient_and_hessian!!` columns with `chunk_size`, capped at input dimension; standalone `value_and_hvp!!` and one-dimensional Hessians use width one ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Add width-aware factories such as `zero_dual(Val(N), x)`, plus `uninit_dual`/`randn_dual` and `zero_lifted`/`uninit_lifted`/`randn_lifted` slot constructors; existing width-one spellings remain available ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Support Unicode character predicates such as `isuppercase` and `isletter` inside differentiated code ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Preserve forward derivatives through differentiable `SimpleVector` elements ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
+- Forward representations use `NDual` scalars and `NDualArray` numeric arrays; array primals share user storage while derivative lanes occupy separate storage ([#1340](https://github.com/chalk-lab/Mooncake.jl/pull/1340)).
 - BLAS/LAPACK matrix layouts that disagree with BLAS storage walks now error instead of producing incorrect derivatives.
 - Forward friendly gradients of composites holding an `AbstractDict` change from
   primal-shaped structs to fieldwise `NamedTuple`s, matching reverse mode.
@@ -19,13 +71,6 @@
   becomes `NoTangent()`).
 - Friendly reverse caches accept self-referential inputs, which previously overflowed
   the stack during preparation.
-- Forward rules now use `Lifted{P,N}` with `N` tangent lanes instead of `Dual`. Use
-  `lift` / `unlift` at the single-direction boundary and `arrayify` for array rules.
-- Remove `NfwdMooncake` and the `Config(enable_nfwd=...)` keyword. Forward caches always
-  use lifted `frule!!` rules; `chunk_size` controls their batch width. Removed configuration
-  keywords raise `MethodError`, as other unrecognised `Config` keywords do.
-- Reject arguments identical to constants or globals read by a rule, because separately
-  seeded constant storage would otherwise drop derivative contributions.
 - Fix reverse cache reuse with incompatible nested inputs, preventing incorrect gradients and unsafe memory writes.
 
 # 0.5.32

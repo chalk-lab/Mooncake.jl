@@ -70,14 +70,23 @@ fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
-Passing `Config(chunk_size=2)` caps the number of tangent directions evaluated together.
-Leaving `chunk_size=nothing` uses Mooncake's default heuristic. Forward caches always use
-lifted `frule!!` rules; `NfwdMooncake` and `Config(enable_nfwd=...)` have been removed.
-`show(cache)` / `repr(cache)` report the resolved chunk width. Cache construction does
-not execute the primal; unsupported operations can still fail at evaluation time.
+Passing `Config(chunk_size=2)` caps the forward chunk width `W`: the cache builds a native
+width-`W` `frule!!` that evaluates `W` directional derivatives per pass, and the gradient
+sweep runs `ceil(tangent_dim / W)` passes. Leaving `chunk_size=nothing` keeps Mooncake's default
+heuristic (`min(tangent_dim, 8)`). Chunking applies to every input shape with more than one degree of
+freedom. What is shape-restricted is the *zero-allocation* fast path — a non-differentiable `f`
+whose arguments are all same-eltype `IEEEFloat` vectors, array-backed structured inputs
+with real or complex `IEEEFloat` leaves (including mixed leaf eltypes), or isbits structures
+of real scalars. Structured seeds require isbits nondifferentiable state and distinct
+array leaves. Other shapes, including composite `NoDual` state and a differentiable `f`,
+still chunk at width `W` through the generic sweep, which allocates. Cache construction
+stays passive (it transforms IR but does not run the function). `show(cache)` / `repr(cache)`
+report the resolved `chunk_size` and set `chunk=true` when a rule with width greater than one
+has been built.
 
-The Hessian path exposed by `prepare_hessian_cache` / `value_gradient_and_hessian!!`
-uses forward-over-reverse AD over a captured gradient closure.
+Separately, the Hessian path exposed by `prepare_hessian_cache` /
+`value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
+closure.
 
 ## Jacobian example
 
