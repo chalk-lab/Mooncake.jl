@@ -102,6 +102,22 @@ function rrule!!(
     return zero_fcodual(y), cpow_pullback
 end
 
+# Base's `_cpow` fails on `NDual`s: `convert(Int, p)` has no `NDual` method, and `iszero`
+# also tests the partials, so a seeded zero base reaches `log`. Must match the rules above.
+@inline function Base._cpow(
+    z::Union{NDual{T,N},Complex{NDual{T,N}}}, p::Union{NDual{T,N},Complex{NDual{T,N}}}
+) where {T,N}
+    x, q = Nfwd._nfwd_dual_value(z), Nfwd._nfwd_dual_value(p)
+    y = Base._cpow(x, q)
+    a = iszero(q) ? zero(y) : q * x^(q - 1)
+    b = iszero(x) && real(q) > 0 ? zero(y) : y * log(complex(x))
+    dy = ntuple(Val(N)) do k
+        dx, dq = Nfwd._nfwd_dual_partial(z, k), Nfwd._nfwd_dual_partial(p, k)
+        nan_tangent_guard(dx, a * dx) + nan_tangent_guard(dq, b * dq)
+    end
+    return Complex(NDual{T,N}(real(y), map(real, dy)), NDual{T,N}(imag(y), map(imag, dy)))
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         Any[],
