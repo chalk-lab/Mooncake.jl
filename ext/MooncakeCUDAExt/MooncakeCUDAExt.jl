@@ -1259,6 +1259,24 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     end
 end
 
+# `dims` and `extrema(f, x)` still reach the mapreduce error.
+@is_primitive(MinimalCtx, Tuple{typeof(extrema),CuFloatArray})
+function frule!!(::Dual{typeof(extrema)}, x::Dual{<:CuFloatArray})
+    lo = frule!!(Dual(minimum, NoTangent()), x)
+    hi = frule!!(Dual(maximum, NoTangent()), x)
+    return Dual((primal(lo), primal(hi)), (tangent(lo), tangent(hi)))
+end
+function rrule!!(::CoDual{typeof(extrema)}, x::CoDual{<:CuFloatArray})
+    lo, lo_pb!! = rrule!!(zero_fcodual(minimum), x)
+    hi, hi_pb!! = rrule!!(zero_fcodual(maximum), x)
+    function extrema_pb!!(dy)
+        lo_pb!!(dy[1])
+        hi_pb!!(dy[2])
+        return NoRData(), NoRData()
+    end
+    return CoDual((primal(lo), primal(hi)), NoFData()), extrema_pb!!
+end
+
 # Rules for `prod(x)` on GPU arrays, bare and `dims`.
 #
 # ∂prod/∂xᵢ is the product of xᵢ's slice excluding xᵢ.  Reading that off as y/xᵢ divides by
