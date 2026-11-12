@@ -15,8 +15,19 @@
 #   improvement over what we currently have, and helps to prevent the addition of flakey
 #   rules which cause robustness or correctness problems.
 
+# These rules assume one concrete float eltype, so a `Union` eltype must use derived rules.
+function _primitive_unless_union_eltype(M, sig)
+    @eval function _is_primitive(
+        ::Type{DefaultCtx}, ::Type{<:$M}, ::Type{S}
+    ) where {S<:$sig}
+        return !(
+            S isa DataType && any(T -> T isa DataType && eltype(T) isa Union, fieldtypes(S))
+        )
+    end
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
+_primitive_unless_union_eltype(Mode, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
@@ -30,7 +41,7 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
+_primitive_unless_union_eltype(Mode, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{ContiguousSubVector{P}}) where {P<:IEEEFloat}
     px, dx = arrayify(x)
     return Dual(sum(px), sum(dx))
@@ -47,7 +58,7 @@ function rrule!!(
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
+_primitive_unless_union_eltype(Mode, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
@@ -341,7 +352,7 @@ end
 
 # Differentiating the generic implementation element by element costs more than the rules
 # either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
-@is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
+_primitive_unless_union_eltype(Mode, Tuple{typeof(permutedims),Matrix{<:IEEEFloat}})
 function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:Matrix{P}}) where {P<:IEEEFloat}
     px, dx = arrayify(x)
     return Dual(permutedims(px), permutedims(dx))
@@ -394,9 +405,12 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
-@is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),_CPUStridedArray{T,2},KronFactor{T},KronFactor{T}
-} where {T<:IEEEFloat}
+_primitive_unless_union_eltype(
+    Mode,
+    Tuple{
+        typeof(LinearAlgebra._kron!),_CPUStridedArray{T,2},KronFactor{T},KronFactor{T}
+    } where {T<:IEEEFloat},
+)
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
     out::Dual{<:_CPUStridedArray{<:T,2}},
@@ -443,9 +457,9 @@ end
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),KronFactor{T},KronFactor{T}
-} where {T<:IEEEFloat}
+_primitive_unless_union_eltype(
+    ReverseMode, Tuple{typeof(kron),KronFactor{T},KronFactor{T}} where {T<:IEEEFloat}
+)
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)}, x1::CoDual{<:KronFactor{<:T}}, x2::CoDual{<:KronFactor{<:T}}
 ) where {T<:Base.IEEEFloat}
@@ -560,6 +574,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
 end
 
 _square_matmul(x) = x * x
+_union_matrix(x) = Union{Float32,Float64}[x 2.0f0; 3.0 x]
 
 function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
@@ -723,6 +738,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         test_cases,
         (false, :none, nothing, mul!, ones(1, 1), zeros(1, 0), zeros(0, 1), 0.0, 0.0),
     )
+    for g in (
+        identity,
+        x -> view(x[:, 2], 1:2),
+        permutedims,
+        x -> kron(x, x),
+        x -> LinearAlgebra._kron!(similar(x, 4, 4), x, x),
+    )
+        push!(test_cases, (false, :none, nothing, x -> sum(g(_union_matrix(x))), 3.0))
+    end
+    push!(test_cases, (false, :none, nothing, sum, abs2, _union_matrix(3.0)))
     f = a -> sum(a * ones(2, 2) * ones(2, 2))
     push!(test_cases, (false, :none, nothing, f, 1.0))
     f =
