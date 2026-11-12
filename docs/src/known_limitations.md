@@ -57,6 +57,11 @@ alternative is to provide a custom `rrule!!` for the function that contains the 
 block, so that Mooncake never needs to differentiate through the block itself.
 See [Defining Rules](@ref) for guidance on writing custom rules.
 
+## Scoped Values
+
+On Julia 1.11 and later, Mooncake.jl refuses to differentiate code that reads a `ScopedValue` or enters a scope with `with` or `@with`, raising an `UnhandledLanguageFeatureException`.
+Read the value before differentiating and pass it in as an argument.
+
 ## Mutation of Global Variables
 
 ```@meta
