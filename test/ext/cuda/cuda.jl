@@ -285,6 +285,7 @@ end
         _bcast_cx_abs2(x) = sum(abs2.(x))
         _bcast_cx_sin_re(x) = real(sum(sin.(x)))
         _bcast_cx_mul_re(x, y) = real(sum(x .* y))
+        _bcast_cx_scaled_re(s, x, y) = sum(real.(s .* x .* y))
         # Adjoint / Transpose broadcast wrappers
         _bcast_adj_lit_add(x) = sum(x' .+ 1.0)        # real adjoint
         _bcast_adj_cx_abs2(x) = sum(abs2.(x'))         # complex adjoint, non-holomorphic
@@ -900,6 +901,9 @@ end
             case(_bcast_cx_abs2, _rand(rng, ComplexF64, 16)),
             case(_bcast_cx_sin_re, _rand(rng, ComplexF64, 16)),
             case(_bcast_cx_mul_re, _rand(rng, ComplexF64, 16), _rand(rng, ComplexF64, 16)),
+            # Real and complex leaves of one precision, including an Adjoint leaf
+            case(_bcast_cx_scaled_re, 0.7, _rand(rng, 16), _rand(rng, ComplexF64, 16)),
+            case(_bcast_cx_mul_re, _rand(rng, ComplexF64, 4, 3)', _rand(rng, 3, 4)),
             # ComplexF32 broadcast variants
             case(_bcast_cx_abs2, _rand(rng, ComplexF32, 16)),
             case(_bcast_cx_sin_re, _rand(rng, ComplexF32, 16)),
@@ -2209,13 +2213,13 @@ end
                     (3.0, x64),
                     (; msg=r"does not support"),
                 ),
-                # Mismatched GPU element types are caught before any kernel launch.
+                # Mixed-precision GPU leaves are caught before any kernel launch.
                 (
                     208,
-                    "mixed-eltype broadcast",
+                    "mixed-precision broadcast",
                     _bcast_cx_mixed,
-                    (x32, cx32),
-                    (; msg=r"GPU broadcast over arrays with mixed element types"),
+                    (x64, cx32),
+                    (; msg=r"GPU broadcast over arrays of different precision"),
                 ),
                 # Scalar indexing would silently run a one-element GPU op per index.
                 (209, "scalar getindex", z -> z[1], (x32,), (; msg=r"scalar indexing")),
