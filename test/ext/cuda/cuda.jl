@@ -1423,6 +1423,7 @@ end
             push!(test_cases, case(f, CuArray(fill(0.5))))
         end
         push!(test_cases, case((a, x) -> Float64.(a) .* x, 0.5f0, CuArray(fill(0.5, 2))))
+        push!(test_cases, case((a, x) -> Float64.(a .> 0) .* x, 0.5, CuArray(fill(0.5, 2))))
         push!(
             test_cases,
             case((x, i) -> Float64.(i) .* x, CuArray(fill(0.5)), CuArray(fill(Int32(1)))),
