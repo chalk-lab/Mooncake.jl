@@ -5,7 +5,6 @@ using LogExpFunctions
 using Base: IEEEFloat
 import Mooncake:
     DefaultCtx,
-    @from_chainrules,
     frule!!,
     rrule!!,
     Dual,
@@ -128,9 +127,38 @@ function rrule!!(::CoDual{typeof(xlogx)}, x::CoDual{<:IEEEFloat})
     return zero_fcodual(z), xlogx_pb!!
 end
 
-# These rules avoid saturation in logistic and the equal-input branch in logaddexp.
-@from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
+# Compute partials from inputs: rounded logistic tails lose their slope,
+# and rounded logaddexp ties lose their normaliser.
+logistic_partial(x) = logistic(x) * logistic(-x)
+function logaddexp_partials(x, y)
+    d = x == y && isinf(x) ? zero(x - y) : x - y
+    return logistic(d), logistic(-d)
+end
+
+@is_primitive DefaultCtx Tuple{typeof(logistic),IEEEFloat}
+function frule!!(::Dual{typeof(logistic)}, x::Dual{<:IEEEFloat})
+    z = logistic(primal(x))
+    return Dual(z, scale_partial(logistic_partial(primal(x)), tangent(x)))
+end
+function rrule!!(::CoDual{typeof(logistic)}, x::CoDual{<:IEEEFloat})
+    d = logistic_partial(primal(x))
+    logistic_pb!!(dz) = NoRData(), scale_partial(d, dz)
+    return zero_fcodual(logistic(primal(x))), logistic_pb!!
+end
+
+@is_primitive DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
+function frule!!(::Dual{typeof(logaddexp)}, x::Dual{<:IEEEFloat}, y::Dual{<:IEEEFloat})
+    z = logaddexp(primal(x), primal(y))
+    a, b = logaddexp_partials(primal(x), primal(y))
+    return Dual(z, oftype(z, scale_partial(a, tangent(x)) + scale_partial(b, tangent(y))))
+end
+function rrule!!(
+    ::CoDual{typeof(logaddexp)}, x::CoDual{P}, y::CoDual{Q}
+) where {P<:IEEEFloat,Q<:IEEEFloat}
+    a, b = logaddexp_partials(primal(x), primal(y))
+    logaddexp_pb!!(dz) = NoRData(), P(scale_partial(a, dz)), Q(scale_partial(b, dz))
+    return zero_fcodual(logaddexp(primal(x), primal(y))), logaddexp_pb!!
+end
 
 # Preserve the quotients at regular points, including x=0, to retain mixed derivatives.
 xlogy_partials(x, y, z) = (log(y), iszero(x) && iszero(y) ? zero(x / y) : x / y)
@@ -192,6 +220,26 @@ for f in (:xlogy, :xlog1py, :xexpy)
     end
 end
 
+# Compute the normaliser independently of rounded `logsumexp(x)`.
+# The shift cancels from weight derivatives, including at ties.
+function logsumexp_shift(x, y::Number)
+    isempty(x) && return y, wide(y)
+    m = maximum(x)
+    return m, isfinite(m) ? log(sum(xi -> exp(wide(xi) - wide(m)), x)) : zero(wide(m))
+end
+function logsumexp_shift(x, y::AbstractArray)
+    isempty(x) && return y, wide.(y)
+    m = maximum!(similar(y), x)
+    l = sum!(wide.(m), exp.(wide.(x) .- wide.(m)))
+    l .= ifelse.(isfinite.(m), log.(l), zero.(l))
+    return m, l
+end
+# A Float16 sum stops growing at 2048 unit terms, so Float16 weights and sums use Float32.
+wide(x) = x
+wide(x::Float16) = Float32(x)
+# At an infinite maximum the weight is NaN; a zero seed still contributes zero.
+scaled_weight(d, x, m, l) = nan_tangent_guard(d, d * exp((x - m) - l))
+
 # logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
 # branching in the primal implementation. (In principle, the forward-mode rule for logsumexp
 # could be imported from ChainRulesCore, but that leads to extra allocations, so we
@@ -208,7 +256,8 @@ function frule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y = logsumexp(_x; primal(kwargs)...)
-    dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
+    m, l = logsumexp_shift(_x, y)
+    dy = oftype.(y, sum(scaled_weight.(_dx, _x, m, l); primal(kwargs)...))
     return Dual(y, dy)
 end
 function frule!!(
@@ -216,12 +265,23 @@ function frule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y = logsumexp(_x)
-    dy = zero(P)
-    # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
-    for i in eachindex(_dx)
-        @inbounds dy += _dx[i] * exp(_x[i] - y)
+    m = wide(isempty(_x) ? y : maximum(_x))
+    s, dy, l = zero(m), zero(m), zero(m)
+    # Accumulate without allocations or repeated exponentials; normalise first only
+    # when directions near `floatmax` overflow the unnormalised sum.
+    if isfinite(m)
+        for i in eachindex(_dx)
+            e = exp(wide(@inbounds(_x[i])) - m)
+            s += e
+            dy += wide(@inbounds(_dx[i])) * e
+        end
+        isfinite(dy) && return Dual(y, oftype(y, dy / s))
+        dy, l = zero(m), log(s)
     end
-    return Dual(y, dy)
+    for i in eachindex(_dx)
+        @inbounds dy += scaled_weight(wide(_dx[i]), wide(_x[i]), m, l)
+    end
+    return Dual(y, oftype(y, dy))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -231,9 +291,10 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y = logsumexp(_x; primal(kwargs)...)
+    m, l = logsumexp_shift(_x, y)
     function logsumexp_pb!!(dy::P)
         dense = densify_tangent(_dx)
-        dense .+= dy .* exp.(_x .- y)
+        dense .+= scaled_weight.(dy, _x, m, l)
         increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -248,10 +309,11 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y = logsumexp(_x; primal(kwargs)...)
+    m, l = logsumexp_shift(_x, y)
     dy = zero(y)
     function logsumexp_pb!!(::NoRData)
         dense = densify_tangent(_dx)
-        dense .+= dy .* exp.(_x .- y)
+        dense .+= scaled_weight.(dy, _x, m, l)
         increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -262,15 +324,17 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y = logsumexp(_x)
+    m, l = logsumexp_shift(_x, y)
     function logsumexp_pb!!(dy::P)
         dense = densify_tangent(_dx)
-        dense .+= dy .* exp.(_x .- y)
+        dense .+= scaled_weight.(dy, _x, m, l)
         increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
 end
 
+# Read all of `x` and its tangent before writing aliased `out`.
 @is_primitive DefaultCtx Tuple{
     typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
 } where {P<:IEEEFloat}
@@ -279,8 +343,10 @@ function frule!!(
 ) where {P<:IEEEFloat}
     _x, _dx = arrayify(x)
     y, _dy = arrayify(out)
-    logsumexp!(y, _x)
-    sum!(_dy, _dx .* exp.(_x .- y))
+    r = logsumexp!(similar(y), _x)
+    m, l = logsumexp_shift(_x, r)
+    _dy .= sum!(similar(l), scaled_weight.(_dx, _x, m, l))
+    y .= r
     return out
 end
 function rrule!!(
@@ -291,13 +357,16 @@ function rrule!!(
     _x, _dx = arrayify(x)
     y, _dy = arrayify(out)
     old_out = copy(y)
-    logsumexp!(y, _x)
+    r = logsumexp!(similar(y), _x)
+    m, l = logsumexp_shift(_x, r)
+    y .= r
     function logsumexp!_pb!!(::NoRData)
-        dense = densify_tangent(_dx)
-        dense .+= _dy .* exp.(_x .- y)
-        increment_densified_tangent!!(_dx, dense)
         copyto!(y, old_out)
+        dy = copy(_dy)
         fill!(_dy, zero(P))
+        dense = densify_tangent(_dx)
+        dense .+= scaled_weight.(dy, _x, m, l)
+        increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData(), NoRData()
     end
     return out, logsumexp!_pb!!

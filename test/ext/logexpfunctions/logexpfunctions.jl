@@ -4,6 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
+using Mooncake: ForwardMode, ReverseMode, zero_tangent
 using Mooncake.Nfwd: NDual
 
 sr(n::Int) = StableRNG(n)
@@ -92,6 +93,13 @@ end
                 (:none, true, logsumexp!, [P(1.0)], [P(2.0), P(2.0)]),
                 (:none, true, logsumexp!, [P(1.0)], view([P(2.0), P(2.0)], 1:2)),
                 (:none, true, logsumexp!, view([P(1.0)], 1:1), view([P(2.0), P(2.0)], 1:2)),
+                # `out` aliases `x`, whose first column the rule must read before writing.
+                (
+                    :none,
+                    false,
+                    A -> sum(logsumexp!(view(A, :, 1), A)),
+                    P[0.3 0.7; -0.2 1.1],
+                ),
                 # not a primitive because the two inputs have different eltypes, but we can
                 # still check that it runs correctly
                 (
@@ -119,6 +127,87 @@ end
         end...,
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+    end
+
+    @testset "derivatives beyond finite differences" begin
+        # Rounding hides a unit translation of `2^precision(P)` and `logistic`'s tail slope,
+        # and an infinite entry makes every perturbed value infinite. Both modes give `d`.
+        derivative_is(d) =
+            (mode, f, t) -> begin
+                cache = Mooncake.prepare_derivative_cache(f, t)
+                fwd = Mooncake.value_and_derivative!!(
+                    cache, (f, zero_tangent(f)), (t, one(t))
+                )[2]
+                rvs = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_gradient_cache(f, t), f, t
+                )
+                return (mode === ReverseMode || isapprox(fwd, d; rtol=8eps(typeof(d)))) && (
+                    mode === ForwardMode || isapprox(rvs[2][2], d; rtol=8eps(typeof(d)))
+                )
+            end
+        # The Hessian at a tie of `n` zeros is `(I - 1/n) / n`; first-order checks miss
+        # a rule whose primal pass drops the tied entries' derivatives.
+        function hvp_at_tie(_, f, x)
+            n = length(x)
+            v = [1; zeros(n - 1)]
+            _, _, hv = Mooncake.value_and_hvp!!(Mooncake.prepare_hvp_cache(f, x), f, v, x)
+            return isapprox(hv, (v .- 1 / n) ./ n)
+        end
+        lses = (
+            logsumexp,
+            x -> logsumexp(x; dims=:),
+            x -> only(logsumexp(x; dims=1)),
+            x -> only(logsumexp!(zeros(eltype(x), 1), x)),
+        )
+        cases = Any[]
+        for P in (Float64, Float32)
+            c = P(2)^precision(P)
+            for lse in lses
+                push!(cases, (derivative_is(one(P)), t -> lse(fill(c + t, 2)), zero(P)))
+                # A zero seed on the infinite entry contributes zero.
+                push!(cases, (derivative_is(zero(P)), t -> lse([P(Inf), t]), zero(P)))
+                # The maximal direction stays finite once normalised.
+                f = t -> lse(fill(floatmax(P) * t, 2))
+                push!(cases, (derivative_is(floatmax(P)), f, zero(P)))
+            end
+            # A zero cotangent on the infinite column contributes zero.
+            g = t -> logsumexp(P[Inf+t 1; 0 2]; dims=1)[2]
+            push!(cases, (derivative_is(zero(P)), g, zero(P)))
+            g! = t -> logsumexp!(zeros(P, 1, 2), P[Inf+t 1; 0 2])[2]
+            push!(cases, (derivative_is(zero(P)), g!, zero(P)))
+            push!(cases, (derivative_is(P(0.5)), t -> logaddexp(c + t, c), zero(P)))
+            d = P(exp(-40) / (1 + exp(-40))^2)
+            push!(cases, (derivative_is(d), t -> logistic(P(40) + t), zero(P)))
+        end
+        # Float16 sums saturate at 2048 unit terms and overflow at 65504. At `2^16` zeros,
+        # each weight is `2^-16` and half the entries carry half the derivative.
+        function weights_are_uniform(mode, f, x)
+            dx = Float16.(isodd.(eachindex(x)))
+            cache = Mooncake.prepare_derivative_cache(f, x)
+            fwd = Mooncake.value_and_derivative!!(cache, (f, zero_tangent(f)), (x, dx))[2]
+            cache = Mooncake.prepare_gradient_cache(f, x)
+            rvs = Mooncake.value_and_gradient!!(cache, f, x)[2][2]
+            return (mode === ReverseMode || fwd == 0.5) &&
+                   (mode === ForwardMode || all(==(Float16(2)^-16), rvs))
+        end
+        for lse in lses
+            push!(cases, (weights_are_uniform, lse, zeros(Float16, 2^16)))
+        end
+        for n in (2, 17), lse in lses
+            push!(cases, (hvp_at_tie, lse, zeros(n)))
+        end
+        push!(cases, (hvp_at_tie, x -> logaddexp(x[1], x[2]), zeros(2)))
+        # An abstract element type, whose weights take their type from the result.
+        function gradient_is_softmax(_, f, x)
+            cache = Mooncake.prepare_gradient_cache(f, x)
+            return all(
+                isapprox.(Mooncake.value_and_gradient!!(cache, f, x)[2][2], softmax(x))
+            )
+        end
+        push!(cases, (gradient_is_softmax, logsumexp, Union{Float32,Float64}[1.0f0, 2.0]))
+        @testset for (oracle, f, x) in cases
+            test_rule(sr(1), f, x; is_primitive=false, oracle)
+        end
     end
 
     @testset "zero multipliers and inactive directions" begin
