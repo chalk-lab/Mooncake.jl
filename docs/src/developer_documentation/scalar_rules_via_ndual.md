@@ -5,7 +5,7 @@ For many scalar and low-dimensional primitives, the simplest strategy in Mooncak
 1. define the local derivative behavior once on `NDual`, and then
 1. expose that behavior to Mooncake through `nfwd`.
 
-This keeps the scalar semantics in one place and lets both forward and reverse mode reuse them.
+This keeps the scalar semantics in one place and lets lifted forward rules reuse them. Reverse rules use analytic pullbacks.
 
 ## Core Idea
 
@@ -14,14 +14,26 @@ If a primitive is fundamentally "a few scalar inputs in, a few scalar outputs ou
 In this setup:
 
 - `src/nfwd/Nfwd.jl` owns the scalar derivative semantics,
-- `src/nfwd/NfwdMooncake.jl` lifts those semantics into Mooncake's `Dual` / `CoDual` interface, and
-- `src/rules/rules_via_nfwd.jl` decides which primitive signatures should use that path.
+- `src/tangents/lifted.jl` defines the `Lifted` forward representation, and
+- `src/rules/low_level_maths.jl` registers scalar primitive rules.
 
 That gives Mooncake one source of truth for:
 
 - ordinary derivatives,
 - strong-zero behavior, and
 - awkward points such as discontinuities or removable singularities.
+
+## Guarded operations under forward-over-reverse
+
+A zero cotangent or seed can carry a nonzero outer perturbation. Differentiating a
+branch such as `iszero(seed) ? zero(seed) : seed * coefficient` loses that perturbation.
+The guarded scales have explicit `Lifted` forward rules that apply the product rule,
+guarding each term independently. Guarded division does the same for intrinsic square
+roots and `hypot` coefficients. Their inner dual values retain the guarded primal result.
+
+At a removable singularity, the coefficient expression must also retain its derivative:
+for example, the zero-base power coefficient uses `p * x^(p - 1)` for finite `p > 1`,
+so `x^2.0` has second derivative two at zero. A literal zero coefficient would lose it.
 
 ## Concrete MWE
 
@@ -49,38 +61,17 @@ Key details:
 Once that exists, the Mooncake primitive wrapper can stay thin:
 
 ```julia
-@is_primitive MinimalCtx Tuple{typeof(cospi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(cospi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
-
-function rrule!!(f::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(cospi),P} where {P<:IEEEFloat}
+function frule!!(::Lifted{typeof(cospi),N}, x::Lifted{P,N}) where {P<:IEEEFloat,N}
+    v = cospi(tangent(x))
+    return Lifted{P,N}(v.value, v)
 end
 ```
 
-The real registrations live in `src/rules/rules_via_nfwd.jl`.
-
-Here `Val(1)` means "run the shared `nfwd` path with chunk size 1".
-In other words, this primitive wrapper asks `nfwd` to propagate one tangent direction at a time through the `NDual` implementation of `cospi`.
-
-More generally, `Val(N)` is how these helpers receive the chunk size as a compile-time constant.
-Use:
-
-- `Val(1)` for the usual scalar primitive wrappers in `rules_via_nfwd.jl`,
-- `Val(N)` with `N > 1` when you are deliberately calling the lower-level `nfwd` machinery in chunked mode.
-
-The key point is that `N` is not an arity marker here.
-It is the number of tangent lanes carried by the `NDual` evaluation.
-
-`NfwdMooncake._nfwd_primitive_rrule_call`/`NfwdMooncake._nfwd_primitive_frule_call` are internal helpers for primitive wrappers, not
-a general public rule interface. They expect a stateless callable tangent, i.e. `NoTangent` or `NoFData`.
-More generally, `nfwd` only supports scalar leaves it can lift to `NDual` directly, and
-arrays or tuples only when their element types and tangent layouts are supported by the
-same lift/extract path.
-
-The important part is that the Mooncake-level rule does not re-encode the derivative.
-It just routes the primitive through the shared `nfwd` path.
+Here `N` is the number of tangent lanes, not the arity. The `NDual` implementation
+propagates them together. Register a reverse rule too when claiming the primitive in
+both modes; the analytic pullbacks in `src/rules/low_level_maths.jl` show the pattern.
+`NfwdMooncake` and its primitive-wrapper helpers have been removed.
 
 ## Why This Is Useful
 
@@ -88,12 +79,12 @@ This approach works well because it keeps the local numerical semantics close to
 
 That usually gives:
 
-- better alignment between forward and reverse mode,
+- consistent scalar and chunked forward behavior,
 - less duplicated rule code,
 - one place to handle edge cases such as `log`, `sqrt`, `hypot`, `^`, `mod`, or `mod2pi`, and
-- thinner primitive wrappers in `rules_via_nfwd.jl`.
+- thinner primitive wrappers in `low_level_maths.jl`.
 
-`rules_via_nfwd.jl` then becomes mostly a dispatch table, not a second implementation of the derivative logic.
+The forward wrappers in `low_level_maths.jl` reuse these scalar methods.
 
 ## Where It Is A Good Fit
 
@@ -101,7 +92,7 @@ This approach is a good fit when:
 
 - the primitive is scalar or low-dimensional,
 - the derivative behavior is local and numerical,
-- the same behavior should be shared by forward and reverse mode, and
+- the same behavior should be shared by scalar and chunked forward mode, and
 - the output is already something `nfwd` can lift and extract cleanly.
 
 Typical examples are unary scalar functions, binary scalar functions, small tuple-output functions, and a few carefully chosen low-arity vararg cases.

@@ -791,3 +791,32 @@ cyclic_a = A(1.0, A(2.0))
 cyclic_a.a.a = cyclic_a
 Mooncake.TestUtils.test_data(Random.default_rng(), cyclic_a)
 ```
+
+### Derivative storage in custom tangents
+
+`_tangent_fields` and `_basis_seed!!` are internal hooks;
+their signatures and behaviour may change without a public API deprecation.
+
+If a custom tangent contains executable rules or other non-derivative fields, define
+`Mooncake._tangent_fields(::Type{<:MyTangent})` to return only the field names holding
+derivative storage. Dimension counting and the friendly-direction dictionary checks use
+these fields, keeping their identity guards for aliases and cycles. The FunctionWrappers
+extension selects only `(:dobj_ref,)`; its compiled closures are never derivative storage.
+
+Custom forward representations also need a `Mooncake._basis_seed!!` method that seeds
+that same storage, threads the supplied cursor and identity cache, and preserves the
+executable fields. The callable must read the seeded storage when it runs.
+Friendly conversion defaults to the raw tangent for custom tangent types; override
+`friendly_tangent_cache` when a different representation is needed; see
+[Customising Friendly Gradients](@ref). This user hook must not recurse through
+executable code or primal type metadata.
+
+## Opaque primal storage and snapshots
+
+Prepared caches copy outputs and snapshot mutable inputs. For opaque storage whose Julia
+fields must not be traversed (such as GPU arrays), define
+`Mooncake._copy_output(x::T)` and `Mooncake._copy_to_output!!(dst::T, src::T)`, and opt in with
+`Mooncake._has_custom_copy(::Type{T}) = true`. The cache-threaded fallbacks use these methods
+while preserving repeated references and restoring original bindings. Both methods must
+return a value of type `T`; the latter must return the destination after updating it.
+These are internal extension points. Types using the ordinary field traversal need no opt-in.

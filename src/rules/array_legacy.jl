@@ -1,8 +1,25 @@
+# Julia 1.10 lacks Memory identity: dataids plus length identifies shared storage
+# and distinguishes extents. Valid only within a call while callers root every array,
+# preventing address reuse.
+@inline _legacy_storage(x::Array) = (_storage_id(x), length(x))
+# Keep distinct array headers over shared storage, even when the shapes match.
+# `reshape` would return the cached vector itself and couple independent resizes.
+@inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}
+    return ccall(
+        :jl_reshape_array, Array{T,N}, (Any, Any, Any), Array{T,N}, cached::Vector{T}, sz
+    )
+end
+# Cache vec views so retrieval knows both eltype and dimensionality without copying.
+@inline _legacy_cached(x::Array) = vec(x)
+
 @inline function zero_tangent_internal(x::Array{P,N}, dict::MaybeCache) where {P,N}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    haskey(dict, x) && return dict[x]::Array{tangent_type(P),N}
+    k = _legacy_storage(x)
+    haskey(dict, k) && return (dict[x] = _legacy_reshape(dict[k], tangent_type(P), size(x)))
 
     zt = Array{tangent_type(P),N}(undef, size(x)...)
     dict[x] = zt
+    dict[k] = _legacy_cached(zt)
     return _map_if_assigned!(
         Base.Fix2(zero_tangent_internal, dict), zt, x
     )::Array{tangent_type(P),N}
@@ -11,16 +28,20 @@ end
 function randn_tangent_internal(
     rng::AbstractRNG, x::Array{T,N}, dict::MaybeCache
 ) where {T,N}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    haskey(dict, x) && return dict[x]::Array{tangent_type(T),N}
+    k = _legacy_storage(x)
+    haskey(dict, k) && return (dict[x] = _legacy_reshape(dict[k], tangent_type(T), size(x)))
 
     dx = Array{tangent_type(T),N}(undef, size(x)...)
     dict[x] = dx
+    dict[k] = _legacy_cached(dx)
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), dx, x)
 end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {P,N,T<:Array{P,N}}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
+    k = _legacy_storage(x)
+    (haskey(c, k) || x === y) && return x
+    c[k] = true
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
@@ -31,13 +52,16 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::Array{T,N}) where {T,N}
     haskey(c, t) && return c[t]::Array{T,N}
+    k = _legacy_storage(t)
+    haskey(c, k) && return (c[t] = _legacy_reshape(c[k], T, size(t)))
     t′ = Array{T,N}(undef, size(t)...)
     c[t] = t′
+    c[k] = _legacy_cached(t′)
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
-    key = (t, s)
+    key = (_legacy_storage(t), _legacy_storage(s))
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
     bitstype = Val(isbitstype(eltype(T)))
@@ -53,10 +77,13 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, x::Array{P,N}, t::Array{<:Any,N}, unsafe::Bool
 ) where {P,N}
-    key = (x, t, unsafe)
-    haskey(c, key) && return c[key]::Array{P,N}
+    object_key = (x, t, unsafe)
+    haskey(c, object_key) && return c[object_key]::Array{P,N}
+    key = (_legacy_storage(x), _legacy_storage(t), unsafe)
+    haskey(c, key) && return (c[object_key] = _legacy_reshape(c[key], P, size(x)))
     x′ = Array{P,N}(undef, size(x)...)
-    c[key] = x′
+    c[object_key] = x′
+    c[key] = _legacy_cached(x′)
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
@@ -72,6 +99,7 @@ end
 function primal_to_tangent_internal!!(
     t::Array{<:Any,N}, x::Array{P,N}, c::MaybeCache
 ) where {P,N}
+    _check_friendly_tangent_size(t, x)
     haskey(c, x) && return c[x]::Array{tangent_type(P),N}
     c[x] = t
     return _map_if_assigned!(t, t, x) do txn, xn
@@ -83,27 +111,30 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
-# Shared vectors cannot be resized: detaching their tangent buffer loses reverse gradients.
-# Julia 1.10 jl_array_t stores isshared in bit 14 after data and length.
-@inline function _check_resizable(a::Vector, da::Vector{T}, sz=nothing) where {T}
+# Julia 1.10 jl_array_t stores flags after data and length. Bit 14 is isshared.
+# Read only: resizing cannot reconnect detached headers on the reverse pass.
+@inline function _legacy_check_resize(
+    a::Vector, da::Vector{T}, operation, sz=nothing, lanes=1
+) where {T}
     (iszero(Base.elsize(Vector{T})) || (isconcretetype(T) && ismutabletype(T))) &&
         return nothing
     flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(da) + 2sizeof(Int)))
     iszero(flags & 0x4000) && return nothing
-    return _check_shared_resizable(a, da, sz, flags)
+    return _legacy_shared_resize(a, da, operation, sz, lanes)
 end
 
-@noinline function _check_shared_resizable(a, da, sz, da_flags)
+@noinline function _legacy_shared_resize(a, da, operation, sz, lanes)
     if sz !== nothing
         changes_storage = false
-        for x in (a, da)
+        for (x, requested) in ((a, sz), (da, lanes * sz))
             GC.@preserve x begin
                 p = pointer_from_objref(x)
-                flags = x === da ? da_flags : unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
+                flags = unsafe_load(Ptr{UInt16}(p + 2sizeof(Int)))
                 offset = unsafe_load(Ptr{UInt32}(p + 2sizeof(Int) + 4))
                 capacity = unsafe_load(Ptr{UInt}(p + 3sizeof(Int) + 8))
-                n = max(UInt(sz), UInt(length(x)) + offset)
-                # jl_array_sizehint shrinks owned buffers when over one eighth is released.
+                n = max(UInt(requested), UInt(length(x)) + offset)
+                # jl_array_sizehint grows beyond capacity, or shrinks owned buffers
+                # when more than one eighth of their capacity would be released.
                 how = flags & 0x0003
                 changes_storage |=
                     n > capacity ||
@@ -114,23 +145,158 @@ end
     end
     throw(
         ArgumentError(
-            "cannot resize a $(summary(a)) on Julia 1.10: it shares memory with another " *
-            "array (for example from `reshape` or `vec`); copy it before resizing",
+            "cannot resize array $(repr(a)) with $operation on Julia 1.10: its tangent " *
+            "storage is shared with another array header; copy the array before resizing it",
         ),
     )
 end
 
-@is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
-    Base._deletebeg!(primal(a), primal(d))
-    Base._deletebeg!(tangent(a), primal(d))
-    return zero_dual(nothing)
+function _legacy_resize_shared(a::Array)
+    flags = unsafe_load(Ptr{UInt16}(pointer_from_objref(a) + 2sizeof(Int)))
+    return !iszero(flags & 0x4000)
 end
+function _legacy_resize_shared(a::NDualArray)
+    return _legacy_resize_shared(getfield(getfield(a, :partials_block), :parent))
+end
+@is_primitive MinimalCtx Tuple{typeof(_legacy_resize_shared),Vector{<:NDualEltype}}
+function frule!!(::Lifted{typeof(_legacy_resize_shared),N}, a::Lifted) where {N}
+    return zero_lifted(Val(N), _legacy_resize_shared(tangent(a)))
+end
+
+function rrule!!(f::CoDual{typeof(_legacy_resize_shared)}, a::CoDual)
+    return zero_fcodual(false), NoPullback(f, a)
+end
+
+_legacy_refuse_deletion(a, operation) = _legacy_shared_resize(a, a, operation, nothing, 1)
+@zero_derivative MinimalCtx Tuple{typeof(_legacy_refuse_deletion),Vector{<:NDualEltype},Any}
+
+# Base's collection deletions move elements before reaching the resize primitive.
+function _legacy_check_deletion(a, inds, operation)
+    remaining = copy(a)
+    operation(remaining, inds)
+    length(remaining) == length(a) || _legacy_refuse_deletion(a, operation)
+    return nothing
+end
+
+@mooncake_overlay function Base._deleteat!(
+    a::Vector{<:NDualEltype}, inds, deleted::Union{Base.Nowhere,Vector}
+)
+    if _legacy_resize_shared(a)
+        _legacy_check_deletion(a, inds, Base._deleteat!)
+        return a
+    end
+    return invoke(Base._deleteat!, Tuple{Vector,Any,Any}, a, inds, deleted)
+end
+
+for I in (AbstractVector{Bool}, AbstractUnitRange{Bool})
+    @eval @mooncake_overlay function Base.deleteat!(a::Vector{<:NDualEltype}, inds::$I)
+        if _legacy_resize_shared(a)
+            _legacy_check_deletion(a, inds, deleteat!)
+            return a
+        end
+        return invoke(deleteat!, Tuple{Vector,AbstractVector{Bool}}, a, inds)
+    end
+end
+
+for I in (Any, AbstractVector{Bool})
+    @eval @mooncake_overlay function Base._keepat!(a::Vector{<:NDualEltype}, inds::$I)
+        if _legacy_resize_shared(a)
+            _legacy_check_deletion(a, inds, keepat!)
+            return a
+        end
+        return invoke(Base._keepat!, Tuple{AbstractVector,$I}, a, inds)
+    end
+end
+
+@mooncake_overlay function Base.filter!(f, a::Vector{<:NDualEltype})
+    if _legacy_resize_shared(a)
+        for x in a
+            f(x)::Bool || _legacy_refuse_deletion(a, filter!)
+        end
+        return a
+    end
+    return invoke(filter!, Tuple{Any,AbstractVector}, f, a)
+end
+
+# On Julia 1.10 dataids compares raw addresses without dereferencing them; its Tuple{UInt}
+# is non-differentiable. Intercept in both modes: reverse rule construction otherwise
+# reaches jl_array_ptr before chunked forward-over-reverse can reject stride-N lanes.
+# Julia 1.11+ uses the backing Memory's objectid instead.
+@zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Array}
+
+# Plain-Array V overloads mutate per-element duals in lockstep, including Array{NoDual}
+# for non-differentiable elements and pullback buffers under forward-over-reverse.
+# Element-major storage needs N * d block entries per d primal elements.
+# The NDualEltype/4-parameter V prefix also accepts complex NDualArrays.
+for f in (Base._deletebeg!, Base._deleteend!, Base._growbeg!, Base._growend!)
+    @eval begin
+        function frule!!(
+            ::Lifted{typeof($f),N},
+            a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+            d::Lifted,
+        ) where {N,T<:NDualEltype}
+            d_p = primal(d)
+            _legacy_check_resize(
+                primal(a), getfield(getfield(tangent(a), :partials_block), :parent), $f
+            )
+            $f(primal(a), d_p)
+            Nfwd._resize_block!($f, getfield(tangent(a), :partials_block), N, d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+        function frule!!(
+            ::Lifted{typeof($f),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+        ) where {N}
+            d_p = primal(d)
+            _legacy_check_resize(primal(a), tangent(a), $f)
+            $f(primal(a), d_p)
+            $f(tangent(a), d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+    end
+end
+
+# Julia 1.10's Base._unsetindex! uses allocatedinline, unlike the Memory layout
+# predicate in Julia 1.11+. Keep its pointer arithmetic out of both AD modes.
+@is_primitive MinimalCtx Tuple{typeof(Base._unsetindex!),Array,Int}
+@inline function frule!!(
+    ::Lifted{typeof(Base._unsetindex!),N}, x::Lifted{<:Array{P},N}, i::Lifted{Int}
+) where {N,P}
+    _i = primal(i)
+    Base._unsetindex!(primal(x), _i)
+    if Base.allocatedinline(P) && (!(P isa DataType) || Base.datatype_pointerfree(P))
+        return x
+    end
+    Base._unsetindex!(tangent(x), _i)
+    return x
+end
+
+@inline function rrule!!(
+    f::CoDual{typeof(Base._unsetindex!)}, x::CoDual{<:Array{P}}, i::CoDual{Int}
+) where {P}
+    _x, _dx, _i = primal(x), tangent(x), primal(i)
+    if Base.allocatedinline(P) && (!(P isa DataType) || Base.datatype_pointerfree(P))
+        Base._unsetindex!(_x, _i)
+        return x, NoPullback(f, x, i)
+    end
+    px = isassigned(_x, _i)
+    dx = isassigned(_dx, _i)
+    old_x = px ? _x[_i] : nothing
+    old_dx = dx ? _dx[_i] : nothing
+    Base._unsetindex!(_x, _i)
+    Base._unsetindex!(_dx, _i)
+    function _unsetindex!_pullback!!(::NoRData)
+        px ? (_x[_i] = old_x) : Base._unsetindex!(_x, _i)
+        dx ? (_dx[_i] = old_dx) : Base._unsetindex!(_dx, _i)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return x, _unsetindex!_pullback!!
+end
+
+@is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deletebeg!)
     delta = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -150,16 +316,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
-    Base._deleteend!(primal(a), primal(d))
-    Base._deleteend!(tangent(a), primal(d))
-    return zero_dual(nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deleteend!)
     # Extract data.
     a = primal(_a)
     da = tangent(_a)
@@ -185,25 +345,49 @@ function rrule!!(
     return zero_fcodual(nothing), _deleteend!_pb!!
 end
 
-@is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
-function frule!!(
-    ::Dual{typeof(Base._deleteat!)},
-    a::Dual{<:Vector},
-    i::Dual{<:Integer},
-    delta::Dual{<:Integer},
-)
-    _check_resizable(primal(a), tangent(a))
-    Base._deleteat!(primal(a), primal(i), primal(delta))
-    Base._deleteat!(tangent(a), primal(i), primal(delta))
-    return zero_dual(nothing)
+for (f, arg) in ((Base._deleteat!, :delta), (Base._growat!, :d))
+    @eval begin
+        function frule!!(
+            ::Lifted{typeof($f),N},
+            a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+            i::Lifted,
+            $arg::Lifted,
+        ) where {N,T<:NDualEltype}
+            i_p = primal(i)
+            d_p = primal($arg)
+            _legacy_check_resize(
+                primal(a), getfield(getfield(tangent(a), :partials_block), :parent), $f
+            )
+            $f(primal(a), i_p, d_p)
+            # Element `i_p` starts at block entry `(i_p - 1) * N + 1`, and `d_p` elements span `d_p * N`.
+            $f(
+                getfield(getfield(tangent(a), :partials_block), :parent),
+                (i_p - 1) * N + 1,
+                d_p * N,
+            )
+            return zero_lifted(Val(N), nothing)
+        end
+        function frule!!(
+            ::Lifted{typeof($f),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, $arg::Lifted
+        ) where {N}
+            i_p = primal(i)
+            d_p = primal($arg)
+            _legacy_check_resize(primal(a), tangent(a), $f)
+            $f(primal(a), i_p, d_p)
+            $f(tangent(a), i_p, d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+    end
 end
+
+@is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
     _a::CoDual{<:Vector},
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._deleteat!)
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -226,18 +410,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
-function frule!!(
-    ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
-) where {T}
-    _check_resizable(primal(a), tangent(a))
-    Base._growbeg!(primal(a), primal(d))
-    Base._growbeg!(tangent(a), primal(d))
-    return zero_dual(nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growbeg!)
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -252,16 +428,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    _check_resizable(primal(a), tangent(a))
-    Base._growend!(primal(a), primal(d))
-    Base._growend!(tangent(a), primal(d))
-    return zero_dual(nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growend!)
     d = primal(_delta)
     a = primal(_a)
     da = tangent(_a)
@@ -276,21 +446,13 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
-function frule!!(
-    ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
-)
-    _check_resizable(primal(a), tangent(a))
-    Base._growat!(primal(a), primal(i), primal(d))
-    Base._growat!(tangent(a), primal(i), primal(d))
-    return zero_dual(nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
     _a::CoDual{<:Vector},
     _i::CoDual{<:Integer},
     _delta::CoDual{<:Integer},
 )
-    _check_resizable(primal(_a), tangent(_a))
+    _legacy_check_resize(primal(_a), tangent(_a), Base._growat!)
     # Extract data.
     a, i, delta = map(primal, (_a, _i, _delta))
     da = tangent(_a)
@@ -308,35 +470,106 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
-function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
-    _check_resizable(primal(x), tangent(x), primal(sz))
-    sizehint!(primal(x), primal(sz))
-    sizehint!(tangent(x), primal(sz))
+function frule!!(
+    ::Lifted{typeof(sizehint!),N},
+    x::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    sz::Lifted,
+) where {N,T<:NDualEltype}
+    sz_p = primal(sz)
+    _legacy_check_resize(
+        primal(x),
+        getfield(getfield(tangent(x), :partials_block), :parent),
+        sizehint!,
+        sz_p,
+        N,
+    )
+    sizehint!(primal(x), sz_p)
+    sizehint!(getfield(getfield(tangent(x), :partials_block), :parent), N * sz_p)
+    return x
+end
+function frule!!(
+    ::Lifted{typeof(sizehint!),N}, x::Lifted{<:Vector,N,<:Array}, sz::Lifted
+) where {N}
+    sz_p = primal(sz)
+    _legacy_check_resize(primal(x), tangent(x), sizehint!, sz_p)
+    sizehint!(primal(x), sz_p)
+    sizehint!(tangent(x), sz_p)
     return x
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
-    _check_resizable(primal(x), tangent(x), primal(sz))
+    _legacy_check_resize(primal(x), tangent(x), sizehint!, primal(sz))
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x, NoPullback(f, x, sz)
 end
 
-function _tangent_array_ptr(x::Array, dx::Array{V}) where {V}
-    dx_ptr = ccall(:jl_array_ptr, Ptr{V}, (Any,), dx)
-    return bitcast(Ptr{V}, _build_tangent_ptr(dx_ptr, x, dx))
-end
-
+# Element-major lane partials have stride N, which a raw pointer cannot retain.
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_ptr}},
-    ::Dual{Val{Ptr{T}}},
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    a::Dual{<:Array{T},<:Array{V}},
-) where {T,V}
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{T}},N},
+    ::Lifted{Tuple{Val{Any}},N},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}},
+) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
+    N == 1 || throw(
+        ArgumentError(
+            "Forward-mode raw pointer (`jl_array_ptr`) of a lifted `Array{$T}` is unsupported " *
+            "at chunk width $N > 1: the element-major partials block stores each lane with " *
+            "stride $N, so lane partials are not addressable through a forward pointer. " *
+            "Differentiate at chunk width 1.",
+        ),
+    )
+    Nfwd._check_block(tangent(a))
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    return Dual(y, _tangent_array_ptr(primal(a), tangent(a)))
+    block_parent = getfield(getfield(tangent(a), :partials_block), :parent)
+    return Lifted{Ptr{T},N}(y, (ccall(:jl_array_ptr, Ptr{T}, (Any,), block_parent),))
+end
+# Pointer elements share their full forward value across lanes.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{P}},N},
+    ::Lifted{Tuple{Val{Any}},N},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{<:Array,N,<:Array{E}},
+) where {P,E,N}
+    # Structural values interleave lanes instead of providing parallel partial buffers.
+    N == 1 ||
+        (P isa DataType && P <: Ptr) ||
+        throw(
+            ArgumentError(
+                "Forward-mode raw pointer (`jl_array_ptr`) of a lifted `Array` with element-wise " *
+                "dual element `$E` is unsupported at chunk width $N > 1: the $N lanes are " *
+                "interleaved in one element-wise array, so lane partials are not " *
+                "addressable through a forward pointer. " *
+                "Differentiate at chunk width 1.",
+            ),
+        )
+    y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
+    dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
+    if P === Any
+        return Lifted{Ptr{P},N}(
+            y, PtrDual((Ptr{Nothing}(dy),), E, BoxedPointerStorage(primal(a), tangent(a)))
+        )
+    end
+    return Lifted{Ptr{P},N}(y, ntuple(_ -> dy, Val(N)))
+end
+# Array{NoDual} has no addressable derivative at any width: returning its pointer
+# would let bitcast read unrelated heap contents as partials. Use canonical NoDual,
+# as the MemoryRef ptr_or_offset path does on Julia 1.11+.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{P}},N},
+    ::Lifted{Tuple{Val{Any}},N},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{<:Array,N,<:Array{NoDual}},
+) where {P,N}
+    return Lifted{Ptr{P},N}(ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a)), NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -349,7 +582,17 @@ function rrule!!(
 ) where {T,V}
     y = CoDual(
         ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a)),
-        _tangent_array_ptr(primal(a), tangent(a)),
+        # 1.10 gives zero-size elements a non-null address; NULL marks absent storage.
+        if IntrinsicsWrappers._elements_occupy_storage(V)
+            dp = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
+            if T === Any
+                PtrTangent(Ptr{Nothing}(dp), V, BoxedPointerStorage(primal(a), tangent(a)))
+            else
+                dp
+            end
+        else
+            Ptr{V}(0)
+        end,
     )
     return y, NoPullback(ntuple(_ -> NoRData(), 7))
 end
@@ -357,27 +600,60 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(unsafe_copyto!),Array{T},Any,Array{T},Any,Any
 } where {T}
+@is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Array{Any},Any,Array,Any,Any}
+# `unsafe_copyto!` copies `n` elements linearly, so dest and src dimensionalities need not
+# match (e.g. copying a 0-dim `Array{T,0}` into a `Vector{T}`); bind them separately.
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:Array{T}},
-    doffs::Dual,
-    src::Dual{<:Array{T}},
-    soffs::Dual,
-    n::Dual,
-) where {T}
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{Array{T,Dd},N,<:NDualArray{T,N,Dd,Array{T,Dd}}},
+    doffs::Lifted,
+    src::Lifted{Array{T,Ds},N,<:NDualArray{T,N,Ds,Array{T,Ds}}},
+    soffs::Lifted,
+    n::Lifted,
+) where {N,T<:NDualEltype,Dd,Ds}
     _n = primal(n)
-    Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
-    Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Nfwd._check_block(tangent(dest))
+    Nfwd._check_block(tangent(src))
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    # Element-major: the `_n` elements' lanes are one contiguous run of `_n * N` block entries,
+    # so all lanes move in a single copy.
+    Base.unsafe_copyto!(
+        getfield(getfield(tangent(dest), :partials_block), :parent),
+        (_doffs - 1) * N + 1,
+        getfield(getfield(tangent(src), :partials_block), :parent),
+        (_soffs - 1) * N + 1,
+        _n * N,
+    )
+    return dest
+end
+# Element-wise V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
+# pullback buffers in the public forward-over-reverse HVP interface on 1.10).
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{<:Array,N,<:Array},
+    doffs::Lifted,
+    src::Lifted{<:Array,N},
+    soffs::Lifted,
+    n::Lifted,
+) where {N}
+    _n = primal(n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    # Boxed forward tuple values grow with N; copying allocates a fixed number of boxes.
+    copyto!(tangent(dest), _doffs, tangent(src), _soffs, _n)
     return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:Array{T}},
+    dest::CoDual{<:Array},
     doffs::CoDual,
-    src::CoDual{<:Array{T}},
+    src::CoDual{<:Array},
     soffs::CoDual,
     n::CoDual,
-) where {T}
+)
     _n = primal(n)
 
     # Record values that will be overwritten.
@@ -396,18 +672,15 @@ function rrule!!(
 
     function unsafe_copyto_pb!!(::NoRData)
         unsafe_copyto!(pdest, first(dest_idx), dest_copy, 1, _n)
-        dptr, sptr = pointer(ddest, first(dest_idx)), pointer(dsrc, _soffs)
-        overlap = max(dptr, sptr) - min(dptr, sptr) < _n * Base.elsize(ddest)
         # Overlapping ranges require restoring ddest before accumulating into dsrc.
-        overlap && _swap_array_entries!(ddest, ddest_copy, dest_idx)
+        _swap_array_entries!(ddest, ddest_copy, dest_idx)
 
         src_idx = _soffs:(_soffs + _n - 1)
         @inbounds for (i, s) in enumerate(src_idx)
             if isassigned(dsrc, s)
-                dsrc[s] = increment!!(dsrc[s], overlap ? ddest_copy[i] : ddest[dest_idx[i]])
+                dsrc[s] = increment!!(dsrc[s], ddest_copy[i])
             end
         end
-        overlap || unsafe_copyto!(ddest, first(dest_idx), ddest_copy, 1, _n)
 
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
@@ -415,16 +688,50 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
+# On legacy Julia, derived complex-array copying reaches unsupported jl_array_ptr/arrayset
+# paths. Override forward mode only; reverse keeps its derived rule. This file is
+# loaded only before Julia 1.11-rc4, where MemoryRef copying takes over.
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(complex),Array{P,D}
+} where {P<:IEEEFloat,D}
+function frule!!(
+    ::Lifted{typeof(complex),N}, x::Lifted{Array{P,D},N,<:NDualArray}
+) where {N,P<:IEEEFloat,D}
+    y = complex(primal(x))  # y = x + 0im
+    # d(complex(x)) = complex(dx): complexify the block, which keeps its element-major layout.
+    blk, _ = _partials_block(x)
+    new_block = NDualBlock(vec(complex.(blk)), (N, size(y)...))
+    return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, new_block))
+end
+
 Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(Core.arrayref)},
-    inbounds::Dual{Bool},
-    x::Dual{<:Array},
-    inds::Vararg{Dual{Int},N},
-) where {N}
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
-    y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = arrayref(primal(inbounds), tangent(x), _inds...)
-    return Dual(y, dy)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    # Element `_inds`'s `Nw` lanes, read one at a time through the block's orientation seam.
+    v = tangent(x)
+    blk = getfield(v, :partials_block)
+    e = Nfwd._linear_elem(v, _inds...)
+    dy_partials = ntuple(k -> @inbounds(blk[Nfwd._lane_index(v, e, k)]), Val(Nw))
+    return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
+end
+# Element-wise reads also cover Array{NoDual}, yielding the element's NoDual.
+Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{<:Array,Nw,<:Array},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    Nfwd._check_storage(length(tangent(x)), 1, length(primal(x)))
+    return _read_lifted(Val(Nw), y, arrayref(_inb, tangent(x), _inds...), x, _inds)
 end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
@@ -450,15 +757,35 @@ Base.@propagate_inbounds function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(Core.arrayset)},
-    inbounds::Dual{Bool},
-    A::Dual{<:Array},
-    v::Dual,
-    inds::Dual{Int}...,
-)
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
+    v::Lifted{T,Nw},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
-    Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
-    Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    dA = tangent(A)
+    blk = getfield(dA, :partials_block)
+    e = Nfwd._linear_elem(dA, _inds...)
+    @inbounds for lane in 1:Nw
+        blk[Nfwd._lane_index(dA, e, lane)] = tangent(v, lane)
+    end
+    return A
+end
+# Element-wise stores also cover Array{NoDual}, where the dual store is a typed no-op.
+function frule!!(
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{<:Array,Nw,<:Array},
+    v::Lifted,
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    Core.arrayset(_inb, tangent(A), tangent(v), _inds...)
     return A
 end
 function rrule!!(
@@ -521,15 +848,30 @@ function isbits_arrayset_rrule(
     return A, isbits_arrayset_pullback!!
 end
 
-function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
-    return zero_dual(Core.arraysize(primal(X), primal(dim)))
+function frule!!(::Lifted{typeof(Core.arraysize),N}, X::Lifted, dim::Lifted) where {N}
+    return zero_lifted(Val(N), Core.arraysize(primal(X), primal(dim)))
 end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+# NDualEltype and the 4-parameter V prefix include complex NDualArrays.
+function frule!!(
+    ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
+) where {N,T<:NDualEltype,D}
+    new_primal = copy(primal(a))
+    block, _ = _partials_block(a)
+    new_block = NDualBlock{T,D + 1}(undef, N, size(new_primal)...)
+    copyto!(new_block, block)
+    return Lifted{Array{T,D},N}(
+        new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_block)
+    )
+end
+# Element-wise copies include non-differentiable arrays reached via Set/Dict copying.
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -541,18 +883,12 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     return y, copy_pullback!!
 end
 
-function _copy_dict_tangent(mt::MutableTangent)
-    t = mt.fields
-    new_fields = typeof(t)((
-        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-    ))
-    return MutableTangent(new_fields)
-end
-
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
+# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
+# update needed; mutate the primal and return the slot unchanged.
 function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:Array{<:Union{UInt8,Int8}}}, x::Dual{<:Integer}
-)
+    ::Lifted{typeof(fill!),N}, a::Lifted{<:Array{<:Union{UInt8,Int8}},N}, x::Lifted
+) where {N}
     fill!(primal(a), primal(x))
     return a
 end
@@ -581,6 +917,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         # Old foreigncall wrappers.
         (true, :stability, nothing, Array{Float64,0}, undef),
         (true, :stability, nothing, Array{Float64,1}, undef, 5),
+        (true, :stability, nothing, Vector{Union{}}, undef, 0),
         (true, :stability, nothing, Array{Float64,2}, undef, 5, 4),
         (true, :stability, nothing, Array{Float64,3}, undef, 5, 4, 3),
         (true, :stability, nothing, Array{Float64,4}, undef, 5, 4, 3, 2),
@@ -589,6 +926,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
         (true, :stability, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
         (false, :stability, nothing, copy, randn(5, 4)),
+        (false, :stability, nothing, copy, randn(Xoshiro(123456), ComplexF64, 5)),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 0),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 2),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 5),
@@ -604,7 +942,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Base._growend!, randn(5), 3),
         (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
         (false, :stability, nothing, sizehint!, randn(5), 10),
+        # Complex vectors (`NDualArray` V `Complex{NDual}` inner) exercise the broad `@is_primitive`
+        # against a matching frule; a `T<:IEEEFloat`-only frule would leave it uncovered -> MethodError.
+        (false, :stability, nothing, Base._deletebeg!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteend!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteat!, randn(ComplexF64, 5), 2, 2),
+        (true, :stability, nothing, Base._growbeg!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growend!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growat!, randn(ComplexF64, 5), 2, 2),
+        (false, :stability, nothing, sizehint!, randn(ComplexF64, 5), 10),
         (false, :stability, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
+        # Mismatched dest/src dimensionality (0-dim source into a Vector).
+        (false, :none, nothing, unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
         (
             false,
             :stability,
@@ -639,9 +988,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
             2,
         ),
         (
+            # A lane of the element-major block is stride-`N`, so no dense per-lane buffer exists
+            # for a raw pointer to address above width 1; the frule throws there (covered by
+            # the `:foreigncall` guard rows). The width-1 path is correct.
             true,
             :none,
-            nothing,
+            (skip_chunked=true,),
             _foreigncall_,
             Val(:jl_array_ptr),
             Val(Ptr{Float64}),
@@ -649,6 +1001,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
             Val(0), # nreq
             Val(:ccall), # calling convention
             randn(5),
+        ),
+        (
+            false,
+            :none,
+            (
+                mode=ForwardMode,
+                chunk_size=8,
+                throws=(ArgumentError, "lane partials are not addressable"),
+            ),
+            _foreigncall_,
+            Val(:jl_array_ptr),
+            Val(Ptr{Tuple{Float64,Float64}}),
+            (Val(Any),),
+            Val(0),
+            Val(:ccall),
+            [(1.0, 2.0)],
         ),
 
         # Old builtins.
@@ -709,6 +1077,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (false, :stability, nothing, Core.arraysize, randn(5, 4, 3), 2),
         (false, :stability, nothing, Core.arraysize, randn(5, 4, 3, 2, 1), 100),
     ]
+    for a in (
+        [2.0],
+        Union{Float64,Int}[2.0],
+        Union{Float64,Nothing}[2.0],
+        Any[2.0],
+        [TestResources.Mixed(2.0, [3.0])],
+        Vector{Any}(undef, 1),
+    )
+        push!(test_cases, (false, :none, nothing, Base._unsetindex!, a, 1))
+    end
     memory = Any[_x, _dx, _a, _da, _b, _db]
     return test_cases, memory
 end
@@ -719,7 +1097,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (
             false,
             :none,
-            nothing,
+            (skip_chunked=true,),
             Base._unsafe_copyto!,
             fill!(Matrix{Real}(undef, 5, 4), 1.0),
             3,
@@ -733,5 +1111,224 @@ function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 3, 1, 2),
         (false, :none, nothing, unsafe_copyto_overlap_tester, randn(4), 1, 3, 2),
     ]
-    return test_cases, Any[]
+    for P in (Union{Float64,Int}, Union{Float64,Nothing}), nested in (false, true)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                nothing,
+                (P, nested, x) -> begin
+                    v = TestResources.OneField{P}(x)
+                    a = [nested ? TestResources.OneField(v) : v]
+                    Base._unsetindex!(a, 1)
+                    return (nested ? a[1].a.a : a[1].a)^2
+                end,
+                P,
+                nested,
+                2.0,
+            ),
+        )
+    end
+    for (f, args) in (
+            (Base._growbeg!, (1,)),
+            (Base._growend!, (1,)),
+            (Base._growat!, (2, 1)),
+            (Base._deletebeg!, (1,)),
+            (Base._deleteend!, (1,)),
+            (Base._deleteat!, (2, 1)),
+            (sizehint!, (100,)),
+        ),
+        N in (1, 8)
+
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (
+                    throws="its tangent storage is shared with another array header",
+                    mode=ForwardMode,
+                    chunk_size=N,
+                ),
+                (f, x, args) -> f(vec(reshape(x, 1, 2)), args...),
+                f,
+                [2.0, 3.0],
+                args,
+            ),
+        )
+    end
+    for N in (1, 8)
+        for (f, inds) in (
+            (deleteat!, [1]),
+            (Base._deleteat!, [1]),
+            (deleteat!, [true, false]),
+            (deleteat!, false:true),
+            (splice!, [1]),
+            (keepat!, [2]),
+            (Base._keepat!, [2]),
+            (keepat!, [false, true]),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (mode=ForwardMode, chunk_size=N),
+                    (f, inds, x) -> begin
+                        a = Union{Float32,Float64}[x, 2x]
+                        f(a, inds)
+                        only(a)
+                    end,
+                    f,
+                    inds,
+                    2.0,
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                x -> begin
+                    a = Union{Float32,Float64}[x, 2x]
+                    filter!(>(3), a)
+                    only(a)
+                end,
+                2.0,
+            ),
+        )
+    end
+    memory = Any[]
+    for N in (1, 8)
+        refusal = (
+            throws="its tangent storage is shared with another array header",
+            mode=ForwardMode,
+            chunk_size=N,
+        )
+        for (f, arg) in (
+            (deleteat!, [1]),
+            (Base._deleteat!, [1]),
+            (Base._keepat!, [2]),
+            (deleteat!, (1,)),
+            (deleteat!, [true, false]),
+            (deleteat!, false:true),
+            (splice!, [1]),
+            (keepat!, [2]),
+            (keepat!, [false, true]),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    refusal,
+                    (f, x, arg) -> f(vec(reshape(x, 1, 2)), arg),
+                    f,
+                    [2.0, 3.0],
+                    arg,
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                refusal,
+                x -> filter!(>(2.0), vec(reshape(x, 1, 2))),
+                [2.0, 3.0],
+            ),
+        )
+        for route in (
+            x -> (reshape(x, 1, 2); x),
+            x -> vec(reshape(x, 1, 2)),
+            x -> parent(view(vec(reshape(x, 1, 2)), :)),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    refusal,
+                    (route, x) -> begin
+                        push!(route(x), 0.0)
+                        sum(x)
+                    end,
+                    route,
+                    [2.0, 3.0],
+                ),
+            )
+        end
+        push!(
+            test_cases,
+            (false, :none, refusal, x -> begin
+                y = sum(reshape(x, 1, 2))
+                push!(x, 0.0)
+                y
+            end, [2.0, 3.0]),
+        )
+        x = [2.0, 3.0]
+        sizehint!(x, 100)
+        push!(test_cases, (false, :none, refusal, x -> begin
+            b = reshape(x, 1, 2)
+            sizehint!(x, 100)
+            sum(b)
+        end, x))
+        x = [2.0, 3.0]
+        y = unsafe_wrap(Vector{Float64}, pointer(x), 2)
+        push!(memory, x)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                refusal,
+                xs -> (push!(xs[1], 0.0); xs[1][1] *= 2; sum(xs[2])),
+                (x, y),
+            ),
+        )
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                x -> (push!(x, 0.0); sum(x)),
+                vec(reshape([2.0, 3.0], 1, 2)),
+            ),
+        )
+    end
+    for N in (1, 8),
+        shared in (false, true),
+        (f, inds) in (
+            (deleteat!, Int[]),
+            (deleteat!, ()),
+            (deleteat!, [false, false]),
+            (keepat!, [1, 2]),
+            (keepat!, [true, true]),
+            (splice!, Int[]),
+        )
+
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode, chunk_size=N),
+                (f, x, inds, shared) -> begin
+                    a = shared ? vec(reshape(x, 1, 2)) : x
+                    f(a, inds)
+                    sum(a)
+                end,
+                f,
+                [2.0, 3.0],
+                inds,
+                shared,
+            ),
+        )
+    end
+    return test_cases, memory
 end

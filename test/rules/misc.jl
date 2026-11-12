@@ -1,4 +1,11 @@
 @testset "misc" begin
+    @testset "direct primitive refuses union storage" begin
+        T = Union{Float32,Float64}
+        for args in ((sort, T[2.0f0, 3.0]),), w in (1, 8)
+            slots = map(x -> Mooncake.zero_lifted(Val(w), x), args)
+            @test_throws "This forward primitive requires" Mooncake.frule!!(slots...)
+        end
+    end
     @testset "stop_gradient" begin
         # Primal pass-through: same object returned.
         x = [1.0, 2.0]
@@ -28,13 +35,9 @@
         @test iszero(gy_tuple)
     end
     @testset "lgetfield" begin
-        x = (5.0, 4)
-        @test lgetfield(x, Val(1)) == getfield(x, 1)
-        @test lgetfield(x, Val(2)) == getfield(x, 2)
-
-        y = (a=5.0, b=4)
-        @test lgetfield(y, Val(:a)) == getfield(y, :a)
-        @test lgetfield(y, Val(:b)) == getfield(y, :b)
+        for x in ((5.0, 4), (a=5.0, b=4)), field in fieldnames(typeof(x))
+            @test lgetfield(x, Val(field)) == getfield(x, field)
+        end
     end
     @testset "lsetfield!" begin
         x = TestResources.MutableFoo(5.0, randn(5))
@@ -45,6 +48,5 @@
         @test Mooncake.lsetfield!(x, Val(:b), new_b) === new_b
         @test x.b === new_b
     end
-
     TestUtils.run_rule_test_cases(StableRNG, Val(:misc))
 end

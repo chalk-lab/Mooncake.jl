@@ -1,11 +1,10 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "DynamicExpressions")
 
 using Mooncake
 using Mooncake: Mooncake, prepare_gradient_cache, value_and_gradient!!
 using Mooncake.TestUtils
-using Mooncake.TestUtils: test_rule, test_data
+using Mooncake.TestUtils: test_rule, test_data, has_equal_data
 using DynamicExpressions
 using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
@@ -17,6 +16,26 @@ using AllocCheck: AllocCheck
 using Test
 
 @testset "test_data on key types" begin
+    for N in (Node, GraphNode)
+        t = Mooncake.zero_tangent(N{Float64}(; val=1.0))
+        t.val = 2.0
+        @test Mooncake._dot((t, t), (t, t)) == 4.0
+        p = N{Float64}(; val=1.0)
+        ps = Mooncake.tangent_to_primal!!((p, p), (t, t))
+        ts = Mooncake.primal_to_tangent!!((t, t), (p, p))
+        @test ps[1] === ps[2]
+        @test ts[1] === ts[2]
+        a, b = N{Float64}(; val=1.0), N{Float64}(; val=1.00001)
+        x, y = N{Float64}(; op=1, children=(a,)), N{Float64}(; op=1, children=(b,))
+        @test !has_equal_data(x, y)
+        @test has_equal_data(x, y; float_precision=Float32)
+        @test !has_equal_data(x, y; float_precision=Float32, exact_floats=true)
+        @test !has_equal_data(x, N{Float64}(; op=2, children=(a,)))
+        @test !has_equal_data(a, N{Float64}(; feature=1))
+        @test has_equal_data(
+            N{Float64}(; op=1, children=(a, a)), N{Float64}(; op=1, children=(a, copy(a)))
+        ) == (N === Node)
+    end
     let
         test_data(StableRNG(0), Nullable{Float64}(true, 1.0))
         test_data(StableRNG(0), Nullable{Float64}(false, 1.0))
@@ -30,6 +49,15 @@ using Test
             ),
         )
     end
+end
+
+@testset "forward refuses expression trees; reverse is unaffected" begin
+    # Ref{Any} prevents constant folding and inference's recursion limiter from masking
+    # a runtime stack overflow. TangentNode breaks recursion in reverse; forward must refuse.
+    # These interface preconditions cannot be expressed in the rule registry.
+    P = Ref{Any}(Node{Float64,2})
+    @test Mooncake._check_representable_input(Mooncake.ReverseMode(), P[], 0) === nothing
+    @test_throws ArgumentError Mooncake.dual_type(Val(1), P[])
 end
 
 @testset "Basic usage checks" begin

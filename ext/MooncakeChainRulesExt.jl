@@ -9,7 +9,9 @@ import Mooncake:
     @is_primitive,
     CoDual,
     DefaultCtx,
-    Dual,
+    Lifted,
+    NDual,
+    NDualArray,
     MinimalCtx,
     NoRData,
     ReverseMode,
@@ -18,7 +20,8 @@ import Mooncake:
     increment_densified_tangent!!,
     primal,
     rrule!!,
-    tangent
+    tangent,
+    tangent_view
 
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
 
@@ -34,10 +37,29 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
-    X = copy(primal(X_dX))
-    dX = copy(tangent(X_dX))
-    return Dual(ChainRules.frule((ChainRules.NoTangent(), dX), LinearAlgebra.exp!, X)...)
+function frule!!(
+    ::Lifted{typeof(exp),Nw},
+    X_dX::Lifted{Matrix{P},Nw,<:NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat}
+    Xp = primal(X_dX)
+    # ChainRules requires Matrix tangents and computes value/JVP together by augmented
+    # matrix exponential, with no JVP-only path: each lane must recompute exp(X). exp!
+    # mutates its input: refill both scratches. Keep the fresh outputs without copying,
+    # taking the lane-independent primal from lane 1 (Nw ≥ 1).
+    Xc = similar(Xp)
+    dXc = similar(Xp)
+    copyto!(Xc, Xp)
+    copyto!(dXc, tangent_view(X_dX, 1))
+    Y_primal, dY_1 = ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)
+    Y_partials = ntuple(Val(Nw)) do lane
+        lane == 1 && return dY_1
+        copyto!(Xc, Xp)
+        copyto!(dXc, tangent_view(X_dX, lane))
+        return ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)[2]
+    end
+    return Lifted{Matrix{P},Nw}(
+        Y_primal, NDualArray{P,Nw,2,Matrix{P}}(Y_primal, Y_partials)
+    )
 end
 
 function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}

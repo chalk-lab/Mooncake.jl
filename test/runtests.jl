@@ -11,7 +11,6 @@
        julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
 
      Then include individual test files, e.g.: include("test/nfwd/nfwd.jl")
-     or include("test/nfwd/nfwdmooncake.jl")
 
   2. Batch — run a named test group end-to-end via Pkg.test:
        julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
@@ -36,9 +35,12 @@ include("front_matter.jl")
         Aqua.test_all(Mooncake)
         include("utils.jl")
         include(joinpath("tangents", "tangents.jl"))
-        include(joinpath("tangents", "fwds_rvs_data.jl"))
+        # The 32-bit runner has 4 GiB of address space; x64 runs these checks.
+        @static if Sys.WORD_SIZE != 32
+            include(joinpath("tangents", "fwds_rvs_data.jl"))
+        end
         include(joinpath("tangents", "codual.jl"))
-        include(joinpath("tangents", "dual.jl"))
+        include(joinpath("tangents", "lifted.jl"))
         include("debug_mode.jl")
         include("stack.jl")
         include(joinpath("rules", "threads.jl"))
@@ -57,9 +59,9 @@ include("front_matter.jl")
         include("developer_tools.jl")
         include("skill_utils.jl")
         include("test_utils.jl")
+        include(joinpath("ext", "pin_develop_or_skip_tests.jl"))
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
-        include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
         @static if VERSION < v"1.11.0-rc4"
             include(joinpath("rules", "array_legacy.jl"))
@@ -82,6 +84,8 @@ include("front_matter.jl")
         include(joinpath("rules", "fastmath.jl"))
     elseif test_group == "rules/foreigncall"
         include(joinpath("rules", "foreigncall.jl"))
+    elseif test_group == "rules/dict"
+        include(joinpath("rules", "dict.jl"))
     elseif test_group == "rules/iddict"
         include(joinpath("rules", "iddict.jl"))
     elseif test_group == "rules/lapack"

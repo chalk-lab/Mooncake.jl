@@ -146,4 +146,72 @@ end
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
     end
+
+    # Foreign CIs must be excluded from native pkgimage lookup.
+    @testset "inference results do not pollute native pkgimages" begin
+        code = raw"""
+        module CacheResultTest
+        using Mooncake, Test
+        const CC = Mooncake.CC
+        const newly_inferred = VERSION < v"1.12-" ? CC.newly_inferred : Base.newly_inferred
+        native_probe(x) = cos(x) + x
+        mooncake_probe(x) = sin(x) + x
+        const hook_calls = Ref(0)
+        const tracking_inside_hook = Ref(false)
+        @static if VERSION < v"1.12-"
+            # Force fresh native inference while Mooncake's cache_result! is on-stack.
+            function CC.transform_result_for_cache(
+                interp::Mooncake.MooncakeInterpreter,
+                mi::Core.MethodInstance,
+                worlds::CC.WorldRange,
+                result::CC.InferenceResult,
+            )
+                if mi.specTypes === Tuple{typeof(sum),NTuple{4,Int}}
+                    hook_calls[] += 1
+                    tracking_inside_hook[] = CC.track_newly_inferred.x
+                    Base.invokelatest(native_probe, 1.0)
+                end
+                return invoke(
+                    CC.transform_result_for_cache,
+                    Tuple{CC.AbstractInterpreter,Core.MethodInstance,CC.WorldRange,CC.InferenceResult},
+                    interp, mi, worlds, result,
+                )
+            end
+        end
+        ccall(:jl_set_newly_inferred, Cvoid, (Any,), newly_inferred)
+        VERSION < v"1.12-" && (CC.track_newly_inferred.x = true)
+        interp = Mooncake.MooncakeInterpreter(Mooncake.ReverseMode)
+        Mooncake.lookup_ir(interp, Tuple{typeof(mooncake_probe),Float32})
+        if VERSION < v"1.12-"
+            @testset "nested native inference" begin
+                @test hook_calls[] == 1
+                @test tracking_inside_hook[]
+                @test any(ci -> ci.def.def === which(native_probe, (Float64,)), newly_inferred)
+            end
+        end
+        cis = Base.IdSet{Any}(values(interp.code_cache.dict))
+        @test !isempty(cis)
+        VERSION < v"1.12-" && @test CC.track_newly_inferred.x
+        if VERSION < v"1.11-" || VERSION >= v"1.12-"
+            @test !any(in(cis), newly_inferred)
+        else
+            @test CC.cache_owner(interp) === Mooncake.MooncakeInterpreter
+            @test all(ci -> ci.owner === CC.cache_owner(interp), cis)
+        end
+        Base.invokelatest(native_probe, 1.0)
+        @test any(ci -> ci.def.def === which(native_probe, (Float64,)), newly_inferred)
+        end
+        """
+        script = "Base.include_string(Base.__toplevel__, $(repr(code)))"
+        mktempdir() do dir
+            cmd = `$(Base.julia_cmd()) --startup-file=no
+                   --project=$(dirname(Base.active_project()))
+                   --output-incremental=yes --output-ji=$(joinpath(dir, "cache.ji"))
+                   -e $script`
+            @test success(pipeline(cmd; stdout, stderr))
+            runtime_cmd = `$(Base.julia_cmd()) --startup-file=no
+                           --project=$(dirname(Base.active_project())) -e $script`
+            @test success(pipeline(runtime_cmd; stdout, stderr))
+        end
+    end
 end

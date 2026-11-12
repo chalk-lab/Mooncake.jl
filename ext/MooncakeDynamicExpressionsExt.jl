@@ -52,6 +52,19 @@ function Mooncake.tangent(t::TangentNode, ::Mooncake.NoRData)
     return t
 end
 
+# Self-referential nodes need a custom forward representation, as TangentNode provides
+# for reverse. Refuse here to avoid dual_type stack overflow wherever a tree is reached.
+# Widening a field to Any still leaves a concrete struct and bypasses representability checks.
+function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N,P<:AbstractExpressionNode}
+    throw(
+        ArgumentError(
+            "Forward-mode AD does not support `$P`: an expression tree is self-referential, and " *
+            "Mooncake has no forward derivative representation for one. Use reverse mode " *
+            "(`prepare_gradient_cache` or `prepare_pullback_cache`).",
+        ),
+    )
+end
+
 _unwrap_nullable(c::NoTangent) = c
 _unwrap_nullable(c::NamedTuple{(:null, :x)}) = c.x
 _wrap_nullable(c::NoTangent) = c
@@ -269,7 +282,6 @@ Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentNode, s::NoTangent) = 0
                 )
             )
         end
-        c[key] = res
         return res
     end
 end
@@ -344,10 +356,9 @@ end
 ) where {T,D,N<:AbstractExpressionNode{T,D}}
     quote
         t isa NoTangent && return p
-        # Not using the cache since it's not clear to me
-        # which expressions are mutable and which are not
+        haskey(c, p) && return c[p]::N
         deg = p.degree
-        if deg == 0
+        result = if deg == 0
             if p.constant
                 new_leaf = leaf_copy(p)
                 new_leaf.val = Mooncake.tangent_to_primal_internal!!(p.val, t.val, c)
@@ -369,6 +380,8 @@ end
                 )
             )
         end
+        c[p] = result
+        return result
     end
 end
 @generated function Mooncake.primal_to_tangent_internal!!(
@@ -376,11 +389,10 @@ end
 ) where {T,D,N<:AbstractExpressionNode{T,D}}
     quote
         t isa NoTangent && return NoTangent()
-        # Not using the cache since it's not clear to me
-        # which expressions are mutable and which are not
         Tv = Mooncake.tangent_type(T)
+        haskey(c, p) && return c[p]::TangentNode{Tv,D}
         deg = p.degree
-        if deg == 0
+        result = if deg == 0
             if p.constant
                 TangentNode{Tv,D}(Mooncake.primal_to_tangent_internal!!(t.val, p.val, c))
             else
@@ -400,6 +412,8 @@ end
                 )
             )
         end
+        c[p] = result
+        return result
     end
 end
 
@@ -809,8 +823,26 @@ function Mooncake.TestUtils.has_equal_data_internal(
     x::N, y::N, equndef::Bool, d::IdDict{Any,Bool}
 ) where {T,N<:AbstractExpressionNode{T}}
     idp = (x, y)
-    # Just use regular `AbstractExpressionNode` Base.:(==)
-    return get!(() -> x == y, d, idp)
+    haskey(d, idp) && return d[idp]
+    if DE.preserve_sharing(N)
+        haskey(d, (x, :left)) == haskey(d, (y, :right)) || return false
+        d[(x, :left)] = d[(y, :right)] = true
+    end
+    d[idp] = true
+    x.degree == y.degree || return false
+    if x.degree == 0
+        x.constant == y.constant || return false
+        return if x.constant
+            Mooncake.TestUtils.has_equal_data_internal(x.val, y.val, equndef, d)
+        else
+            x.feature == y.feature
+        end
+    end
+    return x.op == y.op && all(1:x.degree) do i
+        Mooncake.TestUtils.has_equal_data_internal(
+            DE.get_child(x, i), DE.get_child(y, i), equndef, d
+        )
+    end
 end
 
 function Mooncake.TestUtils.has_equal_data_internal(
