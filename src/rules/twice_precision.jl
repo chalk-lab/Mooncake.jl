@@ -223,7 +223,11 @@ function frule!!(
 ) where {T<:IEEEFloat}
     x = range_start_step_length(primal(a), primal(st), primal(len))
     Tx = tangent_type(typeof(x))
-    dx = Tx((ref=tangent(a), step=tangent(st), len=NoTangent(), offset=NoTangent()))
+    # `ref` is element `offset`. Keep `ref`'s precision: rounding `dref`
+    # and `dstep` apart breaks `r[1] == ref - (offset-1)*step`.
+    R = typeof(x.ref)
+    dref = R(tangent(a)) + (x.offset - 1) * R(tangent(st))
+    dx = Tx((ref=dref, step=R(tangent(st)), len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -232,8 +236,11 @@ function rrule!!(
     st::CoDual{T},
     len::CoDual{<:Integer},
 ) where {T<:IEEEFloat}
-    pb(dz) = NoRData(), T(dz.data.ref), T(dz.data.step), NoRData()
-    return zero_fcodual(range_start_step_length(a.x, st.x, len.x)), pb
+    y = range_start_step_length(a.x, st.x, len.x)
+    o = y.offset - 1
+    # Cotangents have `ref`'s width; early narrowing cancels in Float16.
+    pb(dz) = NoRData(), T(dz.data.ref), T(o * dz.data.ref + dz.data.step), NoRData()
+    return zero_fcodual(y), pb
 end
 
 using Base: unsafe_getindex
@@ -295,14 +302,20 @@ function frule!!(
 ) where {P<:IEEEFloat}
     x = (:)(primal(start), primal(step), primal(stop))
     T = tangent_type(typeof(x))
-    dx = T((ref=tangent(start), step=tangent(step), len=NoTangent(), offset=NoTangent()))
+    R = typeof(x.ref)
+    dref = R(tangent(start)) + (x.offset - 1) * R(tangent(step))
+    dx = T((ref=dref, step=R(tangent(step)), len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
-    colon_pb(dy::RData) = NoRData(), P(dy.data.ref), P(dy.data.step), zero(P)
-    return zero_fcodual((:)(start.x, step.x, stop.x)), colon_pb
+    y = (:)(start.x, step.x, stop.x)
+    o = y.offset - 1
+    function colon_pb(dy::RData)
+        return NoRData(), P(dy.data.ref), P(o * dy.data.ref + dy.data.step), zero(P)
+    end
+    return zero_fcodual(y), colon_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sum),TWPStepRangeLen}
@@ -338,11 +351,16 @@ function frule!!(
     stop::Dual{P},
     length::Dual{<:Integer},
 ) where {P<:IEEEFloat}
-    l = primal(length) - 1
+    # `_linspace1` stores `step == start - stop` when `length < 2`.
+    # `Float64` avoids unsigned wrap, `Int` overflow and `BigInt` costs.
+    l = primal(length) < 2 ? -1.0 : Float64(primal(length)) - 1
     y = Base.range_start_stop_length(primal(start), primal(stop), primal(length))
     T = tangent_type(typeof(y))
-    dref = tangent(start)
-    dstep = (tangent(stop) - tangent(start)) / l
+    R = typeof(y.ref)
+    dstep = (R(tangent(stop)) - R(tangent(start))) / l
+    # Weighted, so a finite `dref` cannot overflow through `dstep`.
+    w = R(Float64(y.offset) - 1) / l
+    dref = R(tangent(start)) * (R(1) - w) + R(tangent(stop)) * w
     dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
     return Dual(y, dy)
 end
@@ -352,14 +370,14 @@ function rrule!!(
     stop::CoDual{P},
     length::CoDual{<:Integer},
 ) where {P<:IEEEFloat}
-    l = (length.x - 1)
+    l = length.x < 2 ? -1.0 : Float64(length.x) - 1
+    y = Base.range_start_stop_length(start.x, stop.x, length.x)
+    o = Float64(y.offset) - 1
     function range_start_stop_length_pb(dy::RData)
-        dstart = P(dy.data.ref) - P(dy.data.step) / l
-        dstop = P(dy.data.step) / l
-        return NoRData(), dstart, dstop, NoRData()
+        dstop = (o * dy.data.ref + dy.data.step) / l
+        return NoRData(), P(dy.data.ref - dstop), P(dstop), NoRData()
     end
-    y = zero_fcodual(Base.range_start_stop_length(start.x, stop.x, length.x))
-    return y, range_start_stop_length_pb
+    return zero_fcodual(y), range_start_stop_length_pb
 end
 
 @static if VERSION >= v"1.11"
@@ -448,6 +466,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         (false, :stability_and_allocs, nothing, sum, range(-0.1, 9.9; length=51)),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, 11.7, 7),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, -11.7, 11),
+        # offset == 3, so ref depends on `stop`.
+        (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
     ]
     @static if VERSION >= v"1.11"
         extra_test_cases = Any[
@@ -526,6 +546,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # Functionality in base/range.jl
         (false, :allocs, nothing, range, 0.0, 5.6),
         (false, :allocs, nothing, (lb, ub) -> range(lb, ub; length=10), -0.45, 9.5),
+        # offset != 1. A perturbed start can reset the offset and move
+        # ref, so check the smooth sum, not the constructor output.
+        (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
+        (false, :allocs, nothing, (a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0),
+        # This offset (1000) survives perturbation, so check `ref` directly.
+        (false, :allocs, nothing, a -> Base.range_start_stop_length(a, 1.0, 1001), -999.0),
+        (false, :allocs, nothing, a -> Base.range_start_stop_length(a, a, 1), 2.0),
+        (false, :allocs, nothing, a -> Base.range_start_stop_length(a, a, UInt(1)), 2.0),
     ]
     @static if VERSION >= v"1.11"
         push!(test_cases, (false, :allocs, nothing, Base._logrange_extra, 1.1, 3.5, 5))
