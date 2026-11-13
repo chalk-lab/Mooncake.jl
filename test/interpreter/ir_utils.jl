@@ -49,6 +49,18 @@ end
             Mooncake.lookup_ir(CC.NativeInterpreter(), tt; optimize_until=nothing)[1],
             CC.IRCode,
         )
+
+        # Julia 1.14 IR can access globals through `Core.BindingPartition`s.
+        f = function ()
+            isdefined(IRUtilsGlobalRefs, :__x_1) || return 0.0
+            return IRUtilsGlobalRefs.__x_1 = sin(IRUtilsGlobalRefs.__x_3)
+        end
+        insts = stmt(Mooncake.lookup_ir(CC.NativeInterpreter(), Tuple{typeof(f)})[1].stmts)
+        has_partition(x) =
+            (isdefined(Core, :BindingPartition) && x isa Core.BindingPartition) ||
+            (x isa QuoteNode && has_partition(x.value)) ||
+            (x isa Expr && any(has_partition, x.args))
+        @test !any(has_partition, insts)
     end
     @testset "unhandled_feature" begin
         @test_throws(

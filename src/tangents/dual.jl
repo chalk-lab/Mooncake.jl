@@ -13,6 +13,11 @@ struct Dual{P,T}
 end
 
 primal(x::Dual) = x.primal
+@static if isdefined(Core, :TypeEgal)
+    # Julia 1.14 (JuliaLang/julia#62141): `Type{P}` no longer implies `<: DataType`, so a
+    # primal inferred as `Type{P}` loses static dispatch. `P` itself infers as a constant.
+    primal(::Dual{Type{P}}) where {P} = P
+end
 tangent(x::Dual) = x.tangent
 Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
 # Dual can be safely shared without copying
@@ -55,7 +60,14 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 end
 
 function dual_type(p::Type{Type{P}}) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(p) && return Dual
+    end
     return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}
+end
+@static if isdefined(Core, :TypeEgal)
+    # On Julia 1.14, inference widens a constant type `P` to `Core.TypeEgal{P}`.
+    dual_type(p::Core.TypeEgal) = dual_type(Type{Base.type_parameter(p)})
 end
 
 _primal(x) = x
@@ -86,5 +98,8 @@ end
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function Dual(x::Type{P}, dx::NoTangent) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(x) && return Dual{typeof(x),NoTangent}(x, dx)
+    end
     return Dual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(x, dx)
 end
