@@ -70,8 +70,15 @@ function structured_rule_cases(f)
                 [0.2 0.3; 0.4 0.5],
             ),
         )
-        for y in
-            (x, view(x, [i, i], j:j), reshape(x, 4), Adjoint(x), Diagonal(view(x, :, j)))
+        for y in (
+            x,
+            view(x, [i, i], j:j),
+            reshape(x, 4),
+            Adjoint(x),
+            Diagonal(view(x, :, j)),
+            UpperTriangular(x),
+            LowerTriangular(x),
+        )
             push!(cases, (false, :none, (;), f, y))
         end
     end
