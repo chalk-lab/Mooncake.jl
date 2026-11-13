@@ -5,7 +5,7 @@ For many scalar and low-dimensional primitives, the simplest strategy in Mooncak
 1. define the local derivative behavior once on `NDual`, and then
 1. expose that behavior to Mooncake through `nfwd`.
 
-This keeps the scalar semantics in one place and lets both forward and reverse mode reuse them.
+This keeps the forward-mode scalar semantics in one place.
 
 ## Core Idea
 
@@ -17,7 +17,7 @@ In this setup:
 - `src/nfwd/NfwdMooncake.jl` lifts those semantics into Mooncake's `Dual` / `CoDual` interface, and
 - `src/rules/rules_via_nfwd.jl` decides which primitive signatures should use that path.
 
-That gives Mooncake one source of truth for:
+That gives forward mode one source of truth for:
 
 - ordinary derivatives,
 - strong-zero behavior, and
@@ -53,10 +53,6 @@ Once that exists, the Mooncake primitive wrapper can stay thin:
 function frule!!(f::Dual{typeof(cospi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
-
-function rrule!!(f::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
-end
 ```
 
 The real registrations live in `src/rules/rules_via_nfwd.jl`.
@@ -79,7 +75,7 @@ More generally, `nfwd` only supports scalar leaves it can lift to `NDual` direct
 arrays or tuples only when their element types and tangent layouts are supported by the
 same lift/extract path.
 
-The important part is that the Mooncake-level rule does not re-encode the derivative.
+The important part is that the `frule!!` does not re-encode the derivative.
 It just routes the primitive through the shared `nfwd` path.
 
 ## Why This Is Useful
@@ -88,12 +84,9 @@ This approach works well because it keeps the local numerical semantics close to
 
 That usually gives:
 
-- better alignment between forward and reverse mode,
 - less duplicated rule code,
 - one place to handle edge cases such as `log`, `sqrt`, `hypot`, `^`, `mod`, or `mod2pi`, and
 - thinner primitive wrappers in `rules_via_nfwd.jl`.
-
-`rules_via_nfwd.jl` then becomes mostly a dispatch table, not a second implementation of the derivative logic.
 
 ## Where It Is A Good Fit
 
@@ -101,7 +94,6 @@ This approach is a good fit when:
 
 - the primitive is scalar or low-dimensional,
 - the derivative behavior is local and numerical,
-- the same behavior should be shared by forward and reverse mode, and
 - the output is already something `nfwd` can lift and extract cleanly.
 
 Typical examples are unary scalar functions, binary scalar functions, small tuple-output functions, and a few carefully chosen low-arity vararg cases.
