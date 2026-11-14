@@ -1423,12 +1423,8 @@ live in `src/rules/linear_algebra.jl`.
         return :(($(dest_exprs...),))
     end
     # Immutable struct with fields: recurse element-wise and return a NamedTuple dest.
-    # Mutable types are excluded for two reasons:
-    #   1. They can be recursive (e.g. tree nodes), making field-by-field descent infinite.
-    #   2. Calling tangent_type(P) here would invoke a generated function from another
-    #      generated function's body, risking world-age cycles (see AGENTS.md).
-    # Immutable structs are safe: they cannot be self-referential (infinite memory) and
-    # always have a standard Tangent{...} tangent type.
+    # Custom tangents (`Complex`, `TwicePrecision`) and `NoTangent` stay raw; tangent_type
+    # is checked in the returned expression so later methods remain visible.
     # AbstractArray and AbstractDict subtypes have dedicated overloads; exclude for clarity.
     if !isprimitivetype(P) &&
         !ismutabletype(P) &&
@@ -1454,7 +1450,13 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(NamedTuple{$names}(($(dest_exprs...),)))
+        return :(
+            if $P <: NamedTuple || tangent_type($P) <: Tangent
+                NamedTuple{$names}(($(dest_exprs...),))
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Resolve element tangents at runtime so later methods remain visible.
     if P <: AbstractArray && !(eltype(P) <: FloatOrComplex)
@@ -1490,9 +1492,15 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(FriendlyTangentCache{AsMutableFields}(
-            NamedTuple{$names}(($(dest_exprs...),))
-        ))
+        return :(
+            if tangent_type($P) <: MutableTangent
+                FriendlyTangentCache{AsMutableFields}(
+                    NamedTuple{$names}(($(dest_exprs...),))
+                )
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Everything else: primitives, zero-field types, and custom-tangent types.
     return :(friendly_tangent_cache_internal(x))
@@ -1566,8 +1574,6 @@ end
 # it provides the same field-by-field NamedTuple unwrapping generically for mutable structs
 # whose tangent type is MutableTangent (the Mooncake default for mutable structs with fields).
 # Per-field caches are pre-built into dest.buffer at prepare time (no per-call allocation).
-# Mutable structs with a custom tangent type (not MutableTangent) fall through to the
-# @unstable fallback below, which returns the raw tangent unchanged.
 @generated function tangent_to_friendly!!(
     dest::FriendlyTangentCache{AsMutableFields},
     primal::P,
@@ -1625,9 +1631,6 @@ end
     end
 end
 
-# Fallback: mutable struct with a custom tangent type (not MutableTangent).
-# Return the raw tangent unchanged — same as AsRaw behaviour.
-#
 # Dispatch note: the `where {M<:AsCustomised}` method above also matches
 # FriendlyTangentCache{AsMutableFields} (since AsMutableFields <: AsCustomised), but Julia
 # prefers this method because a concrete invariant type parameter (AsMutableFields) is more

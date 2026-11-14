@@ -1,3 +1,7 @@
+# 0.5.70
+
+- Friendly tangents of structs with custom tangent types (`Complex`, `Base.TwicePrecision`) no longer throw, and a non-differentiable struct's friendly tangent changes from `(n = NoTangent(),)` to `NoTangent()`.
+
 # 0.5.32
 
 - Fix forward-over-reverse Hessian-vector products on closures that capture a `Ref` wrapped in a `NoTangent`-typed aggregate, which previously threw `UndefRefError`. `prepare_hvp_cache` now eagerly compiles the inner `rrule!!` together with its forward-mode dual callables and routes the outer forward pass through a new `DerivedFoRRule`, so the inner `IdDict` constructor is no longer inlined past Mooncake's rule ([#1193](https://github.com/chalk-lab/Mooncake.jl/pull/1193), [#1202](https://github.com/chalk-lab/Mooncake.jl/pull/1202)).
