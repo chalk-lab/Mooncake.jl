@@ -149,6 +149,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.trtrs!, primal(_B), primal(_A))
     # Extract everything and make a copy of B for the reverse-pass.
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
@@ -226,6 +227,7 @@ function rrule!!(
     _ipiv::CoDual{<:AbstractVector{Int}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.getrs!, primal(_B), primal(_A), primal(_ipiv))
 
     # Extract data.
     trans = _blas_flag(_trans)
@@ -334,6 +336,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
     _ipiv::CoDual{<:AbstractVector{Int}},
 )
+    _check_blas_output_alias(LAPACK.getri!, primal(_A), primal(_ipiv))
     # Extract args and copy A for reverse-pass.
     A, dA = arrayify(_A)
     ipiv = _ipiv.x
@@ -500,6 +503,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.potrs!, primal(_B), primal(_A))
 
     # Extract args and take a copy of B.
     uplo = _uplo.x
@@ -558,13 +562,14 @@ end
         A_dA::CoDual{<:AbstractMatrix{P}},
         _uplo::CoDual{Char},
     ) where {P<:BlasFloat}
+        primal(A_dA) === primal(B_dB) ||
+            _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
         uplo = _blas_flag(_uplo)
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
-        # Only exact self-copy is handled; partially overlapping views are not.
         # Clear cotangents in the overwritten region unless the copy is an identity.
         dA === dB || zero_tri!(dB, uplo)
 
@@ -828,6 +833,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     bools = [false, true]
     uplos = ['U', 'L', 'N']
     test_cases = vcat(
+        Any[],
         # getrf!
         map_prod(Ps) do (P,)
             As = blas_matrices(rng, P, 5, 5)
@@ -983,6 +989,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 A -> sum(LAPACK.lacpy!(A, A, 'U')),
                 ones(2, 2),
             )],
+        )
+    end
+    opts = (
+        mode=ReverseMode, throws=(err=ArgumentError, msg="overlapping input and output")
+    )
+    let A = [2.0 1; 0 3]
+        for args in (
+            (LAPACK.trtrs!, 'U', 'N', 'N', A, A),
+            (LAPACK.getrs!, 'N', A, [1, 2], A),
+            (LAPACK.potrs!, 'U', A, A),
+        )
+            push!(test_cases, (false, :none, opts, args...))
+        end
+    end
+    @static if VERSION >= v"1.11"
+        B = reshape(collect(1.0:9), 3, 3)
+        push!(
+            test_cases,
+            (false, :none, opts, LAPACK.lacpy!, view(B, 1:2, 1:2), view(B, 2:3, 2:3), 'A'),
+        )
+    end
+    let storage = [reinterpret(Float64, one(Int))]
+        A = reshape(view(storage, :), 1, 1)
+        push!(test_cases, (false, :none, opts, getri!, A, reinterpret(Int, storage)))
+    end
+    let storage = reinterpret.(Float64, Int[2, 3, 3])
+        B = reshape(view(storage, :), 3, 1)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                opts,
+                getrs!,
+                'N',
+                Matrix{Float64}(I, 3, 3),
+                reinterpret(Int, storage),
+                B,
+            ),
+        )
+    end
+    let storage = collect(reinterpret(Float32, [one(Int)]))
+        B = reshape(view(storage, 2:2), 1, 1)
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                opts,
+                getrs!,
+                'N',
+                ones(Float32, 1, 1),
+                reinterpret(Int, storage),
+                B,
+            ),
         )
     end
     memory = Any[]

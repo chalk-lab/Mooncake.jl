@@ -349,6 +349,55 @@ function frule!!(
     return Dual(_guarded_mul(a, b), _guarded_mul(a, db) + _guarded_mul(da, b))
 end
 
+# Output operands must be disjoint from read-only inputs and their shared tangents.
+@inline _check_blas_output_alias(f, output) = nothing
+@inline function _check_blas_output_alias(f, output, input, inputs...)
+    !isempty(output) &&
+        !isempty(input) &&
+        Base.mightalias(output, input) &&
+        _blas_overlaps(output, input) &&
+        _throw_blas_output_alias(f)
+    return _check_blas_output_alias(f, output, inputs...)
+end
+function _blas_overlaps(a, b)
+    wrappers = Union{Transpose,Adjoint,LinearAlgebra.AbstractTriangular,Symmetric,Hermitian}
+    a isa wrappers && return _blas_overlaps(parent(a), b)
+    b isa wrappers && return _blas_overlaps(a, parent(b))
+    ea, eb = sizeof(eltype(a)), sizeof(eltype(b))
+    sa = ea .* strides(a)
+    sb = eb .* strides(b)
+    a0, b0 = Int(pointer(a)), Int(pointer(b))
+    alo = a0 + sum(min.(0, (size(a) .- 1) .* sa))
+    ahi = a0 + sum(max.(0, (size(a) .- 1) .* sa)) + ea - 1
+    blo = b0 + sum(min.(0, (size(b) .- 1) .* sb))
+    bhi = b0 + sum(max.(0, (size(b) .- 1) .* sb)) + eb - 1
+    (ahi < blo || bhi < alo) && return false
+    (ea > eb || (ea == eb && length(a) > length(b))) && return _blas_overlaps(b, a)
+    dims = abs(stride(b, 1)) >= abs(stride(b, 2)) ? (1, 2) : (2, 1)
+    for i in CartesianIndices(a)
+        offset = a0 + sum((Tuple(i) .- 1) .* sa) - blo
+        0 <= offset <= bhi - blo || continue
+        for d in dims
+            size(b, d) == 1 && continue
+            q, offset = divrem(offset, abs(stride(b, d)) * eb)
+            if q >= size(b, d)
+                offset = -1
+                break
+            end
+        end
+        0 <= offset < eb && return true
+    end
+    return false
+end
+@noinline function _throw_blas_output_alias(f)
+    throw(
+        ArgumentError(
+            "Mooncake cannot differentiate $(nameof(f)) with overlapping input and output operands. " *
+            "Pass a copy of the input or use an elementwise Julia update.",
+        ),
+    )
+end
+
 #
 # LEVEL 1
 #
@@ -649,6 +698,9 @@ function rrule!!(
     a = primal(a_da)
     X, dX = viewify(n, X_dX, incx)
     Y, dY = viewify(n, Y_dY, incy)
+    if n > 1 && !(pointer(X) == pointer(Y) && incx == incy)
+        _blas_overlaps(X, Y) && _throw_blas_output_alias(BLAS.axpy!)
+    end
 
     # Take a copy of previous state in order to recover it on the reverse pass.
     Y_copy = copy(Y)
@@ -741,6 +793,7 @@ end
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemv!, primal(_y), primal(_A), primal(_x))
 
     # Pull out primals and tangents (the latter only where necessary).
     trans = _blas_flag(_tA)
@@ -865,6 +918,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         beta::CoDual{T},
         y_dy::CoDual{<:AbstractVector{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
 
         # Extract primals.
         ul = primal(uplo)
@@ -979,6 +1033,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
 
     # Extract primals.
     uplo = primal(_uplo)
@@ -1086,6 +1141,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
     uplo = primal(_uplo)
     trans = _blas_flag(_trans)
     diag = _blas_flag(_diag)
@@ -1200,6 +1256,7 @@ end
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemm!, primal(C), primal(A), primal(B))
     tA = _blas_flag(transA)
     tB = _blas_flag(transB)
     a = primal(alpha)
@@ -1343,6 +1400,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         beta::CoDual{T},
         C_dC::CoDual{<:AbstractMatrix{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
 
         # Extract primals.
         s = _blas_flag(side)
@@ -1472,6 +1530,7 @@ for (fname, elty, relty) in (
         β_dβ::CoDual{$relty},
         C_dC::CoDual{<:AbstractMatrix{$elty}},
     )
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
 
         # Extract values from pairs.
         uplo = primal(_uplo)
@@ -1573,6 +1632,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
 
     # Extract values.
     side = _blas_flag(_side)
@@ -1684,6 +1744,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
 
     # Extract parameters.
     side = _blas_flag(_side)
@@ -2174,6 +2235,46 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    let x = P[1, 2, 3]
+        opts = (
+            mode=ReverseMode, throws=(err=ArgumentError, msg="overlapping input and output")
+        )
+        push!(
+            test_cases,
+            (false, :none, opts, BLAS.axpy!, 2, P(2), view(x, 1:2), 1, view(x, 2:3), 1),
+        )
+    end
+    if P in (Float64, ComplexF64)
+        A = P[2 1; 0 3]
+        x = view(A, :, 1)
+        opts = (
+            mode=ReverseMode, throws=(err=ArgumentError, msg="overlapping input and output")
+        )
+        for args in (
+            (BLAS.gemv!, 'N', one(P), A, ones(P, 2), zero(P), x),
+            (BLAS.symv!, 'U', one(P), A, ones(P, 2), zero(P), x),
+            (BLAS.trmv!, 'U', 'N', 'N', A, x),
+            (BLAS.trsv!, 'U', 'N', 'N', A, x),
+            (BLAS.gemm!, 'N', 'N', one(P), A, copy(A), zero(P), A),
+            (BLAS.symm!, 'L', 'U', one(P), A, copy(A), zero(P), A),
+            (BLAS.syrk!, 'U', 'N', one(P), A, zero(P), A),
+            (BLAS.trmm!, 'L', 'U', 'N', 'N', one(P), A, A),
+            (BLAS.trsm!, 'L', 'U', 'N', 'N', one(P), A, A),
+            (
+                if P <: Complex
+                    (
+                    (BLAS.hemv!, 'U', one(P), A, ones(P, 2), zero(P), x),
+                    (BLAS.hemm!, 'L', 'U', one(P), A, copy(A), zero(P), A),
+                    (BLAS.herk!, 'U', 'N', one(real(P)), A, zero(real(P)), A),
+                )
+                else
+                    ()
+                end
+            )...,
+        )
+            push!(test_cases, (false, :none, opts, args...))
+        end
+    end
     memory = Any[]
     return test_cases, memory
 end
@@ -2275,18 +2376,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
         (
             false,
             :none,
-            (
-                oracle=(mode, f, args...) -> begin
-                    TestUtils.test_rule_throws(
-                        rng_ctor(123),
-                        f,
-                        args...;
-                        mode,
-                        msg="non-contiguous multidimensional array operands",
-                    )
-                    true
-                end,
-            ),
+            (throws=(msg="non-contiguous multidimensional array operands",),),
             BLAS.nrm2,
             2,
             view(ones(2, 2), 1:1, :),

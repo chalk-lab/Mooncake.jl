@@ -1131,6 +1131,7 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
 
 For cases outside finite differences, `oracle(mode, f, args...)` must return a Boolean
 checking an analytic reference. It replaces the ordinary rule checks.
+For refusals, `throws=(; err, msg)` delegates to [`test_rule_throws`](@ref).
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1149,7 +1150,9 @@ function test_rule(
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
     oracle=nothing,
+    throws=nothing,
 )
+    isnothing(throws) || return test_rule_throws(rng, deepcopy(x)...; mode, throws...)
     isnothing(oracle) || return @test oracle(mode, deepcopy(x)...)
     # Independently seeded arguments require independent primal copies.
     d = IdDict()
