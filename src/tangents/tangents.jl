@@ -515,8 +515,16 @@ anything other than that which this function returns.
 """
 zero_tangent(x)
 function zero_tangent(x::P) where {P}
-    return zero_tangent_internal(x, isbitstype(P) ? NoCache() : IdDict())
+    return zero_tangent_internal(x, _needs_cache(P) ? IdDict() : NoCache())
 end
+"""
+    _needs_cache(P::Type)
+
+Whether `zero_tangent` must track aliasing for a value of type `P`. An array of isbits
+elements holds no references, so it has no aliasing or cycles.
+"""
+_needs_cache(::Type{P}) where {P} = !isbitstype(P)
+_needs_cache(::Type{<:Array{E}}) where {E} = !isbitstype(E)
 function zero_tangent(x::Ptr)
     throw(
         ArgumentError(
