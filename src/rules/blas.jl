@@ -46,10 +46,12 @@ in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoin
 `Symmetric` → `Symmetric`).
 The exception is a unit-triangular primal: its tangent is a lazy strict-triangle view, not
 wrapped in the primal's type, that reads zeros outside the strict triangle, writes through
-to the original storage inside it, and throws on a nonzero store outside it. Rules that need
-to write into the tangent in-place must account for whether the wrapper supports
-`setindex!`; if it does not (e.g. `Symmetric`), a dedicated helper should extract the
-backing store (see `_accum_sym_logdet!`).
+to the original storage inside it, and throws on a nonzero store outside it. A wrapper over
+a unit-triangular parent keeps its outer type but wraps that view, so its parent type
+changes (e.g. `UpperTriangular{T,<:StrictTriangle}`). Rules that need to write into the
+tangent in-place must account for whether the wrapper supports `setindex!`; if it does not
+(e.g. `Symmetric`), a dedicated helper should extract the backing store (see
+`_accum_sym_logdet!`).
 
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
@@ -132,7 +134,8 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     x isa UnitUpperTriangular && return x, StrictTriangle(_dx, Val(true))
     x isa UnitLowerTriangular && return x, StrictTriangle(_dx, Val(false))
-    return x, Tx(_dx)
+    # Not `Tx(_dx)`: a unit-triangular `x.data` has a `StrictTriangle` tangent.
+    return x, Base.typename(Tx).wrapper(_dx)
 end
 function arrayify(
     x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
@@ -2253,7 +2256,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
             ones(2, 2),
         ) for U in (true, false)
     ]
-    for W in (UnitUpperTriangular, UnitLowerTriangular)
+    for W in (UnitUpperTriangular, UnitLowerTriangular),
+        O in (identity, UpperTriangular, LowerTriangular)
+
         push!(
             test_cases,
             (
@@ -2261,7 +2266,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
                 :none,
                 (mode=ReverseMode, oracle=(_, f, x) -> iszero(f(x))),
                 x -> fill!(arrayify(x, fdata(zero_tangent(x)))[2], 0),
-                W(zeros(2, 2)),
+                O(W(zeros(2, 2))),
             ),
         )
     end
