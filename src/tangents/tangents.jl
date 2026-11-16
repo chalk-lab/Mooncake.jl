@@ -1423,6 +1423,8 @@ live in `src/rules/linear_algebra.jl`.
         return :(($(dest_exprs...),))
     end
     # Immutable struct with fields: recurse element-wise and return a NamedTuple dest.
+    # Recursion follows runtime field values, so it overflows on deep nesting or on a cycle,
+    # which must pass through a mutable object (`Ref`, `Vector`, mutable struct).
     # Custom tangents (`Complex`, `TwicePrecision`) and `NoTangent` stay raw; tangent_type
     # is checked in the returned expression so later methods remain visible.
     # AbstractArray and AbstractDict subtypes have dedicated overloads; exclude for clarity.
