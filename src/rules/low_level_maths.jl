@@ -189,6 +189,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (Base.eps, P(5.0)),
                 (nextfloat, P(0.25)),
                 (prevfloat, P(1.1)),
+                (tanpi, P(0.2)),
+                (sincosd, P(33.5)),
+                (sincospi, P(0.3)),
+                (modf, P(2.3)),
+                (clamp, P(0.05), P(0.1), P(0.9)),
+                (clamp, P(0.5), P(0.1), P(0.9)),
+                (clamp, P(1.5), P(0.1), P(0.9)),
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
