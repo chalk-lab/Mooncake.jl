@@ -28,7 +28,7 @@
 #
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
-for (f, coefficient) in (
+for (f, derivative) in (
     (exp, :y),
     (exp2, :(y * oftype(y, log(2)))),
     (exp10, :(y * oftype(y, log(10)))),
@@ -118,7 +118,7 @@ for (f, coefficient) in (
         function rrule!!(::CoDual{typeof($f)}, x_codual::CoDual{P}) where {P<:IEEEFloat}
             x = primal(x_codual)
             y = $f(x)
-            c = $coefficient
+            c = $derivative
             # `map` over numbers applies the function once, so scalar outputs share this.
             pullback(ȳ) = (
                 NoRData(),
@@ -130,7 +130,7 @@ for (f, coefficient) in (
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
-for (f, coefficients) in (
+for (f, derivatives) in (
     (atan, :((inv(a^2 + b^2) * b, inv(a^2 + b^2) * -a))),
     (Base.FastMath.atan_fast, :((inv(a^2 + b^2) * b, inv(a^2 + b^2) * -a))),
     (log, :((-y / (a * log(a)), inv(b * log(a))))),
@@ -156,7 +156,7 @@ for (f, coefficients) in (
         ) where {P<:IEEEFloat}
             a, b = primal(x1), primal(x2)
             y = $f(a, b)
-            c = $coefficients
+            c = $derivatives
             pullback(ȳ::P) = (
                 NoRData(), map(ci -> zero(P) + nan_tangent_guard(ȳ, ȳ * ci), c)...
             )
