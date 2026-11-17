@@ -54,18 +54,18 @@ const _complex_derivatives = (
     (sincos, :((y[2], -y[1]))),
     (sincospi, :((P(pi) * y[2], -P(pi) * y[1]))),
 )
-for (f, a) in _complex_derivatives
+for (f, derivative) in _complex_derivatives
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),Complex{P}} where {P<:IEEEFloat}
         function frule!!(::Dual{typeof($f)}, z::Dual{Complex{P}}) where {P<:IEEEFloat}
             x, dx = primal(z), tangent(z)
             y = $f(x)
-            return Dual(y, nan_tangent_guard.(dx, $a .* dx))
+            return Dual(y, nan_tangent_guard.(dx, $derivative .* dx))
         end
         function rrule!!(::CoDual{typeof($f)}, z::CoDual{Complex{P}}) where {P<:IEEEFloat}
             x = primal(z)
             y = $f(x)
-            a = $a
+            a = $derivative
             pullback(dy) = NoRData(), sum(nan_tangent_guard.(dy, conj.(a) .* dy))
             return zero_fcodual(y), pullback
         end
