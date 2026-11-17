@@ -92,16 +92,6 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
-function _check_mul_alias(C, A, B)
-    # Unwrap Transpose/Adjoint: mightalias otherwise rejects disjoint slices of one array.
-    C isa Union{Transpose,Adjoint} && return _check_mul_alias(parent(C), A, B)
-    A isa Union{Transpose,Adjoint} && return _check_mul_alias(C, parent(A), B)
-    B isa Union{Transpose,Adjoint} && return _check_mul_alias(C, A, parent(B))
-    (Base.mightalias(C, A) || Base.mightalias(C, B)) &&
-        throw(ArgumentError("output matrix must not be aliased with input matrix"))
-    return nothing
-end
-
 # `StridedArray` admits `AbstractGPUArray <: DenseArray`; the scalar loops and `arrayify`
 # need `Array` or `Memory` storage, so other dense arrays fall back to stdlib `mul!`.
 const _CPUDenseArray = @static VERSION < v"1.11-" ? Array : Union{Array,Memory}
@@ -160,8 +150,7 @@ end
 # every named element type and wrapper kind is tested.
 # The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
 # lose coefficient derivatives; #1340 removes that path, which fixes this.
-# Structured, vector-left or mixed-type operands, wrapped-vector inputs/outputs,
-# Int coefficients, scalar-array mul! and stdlib internals can lose coefficient derivatives.
+# Strided rules and the overlay require `C` to overlap neither `A` nor `B`, as stdlib does.
 const _CPUStridedMulSig{T} = Tuple{
     typeof(mul!),
     _CPUStridedOrAdjTransVecOrMat{T},
@@ -218,7 +207,6 @@ end
     C, dC = arrayify(c)
     A, dA = arrayify(a)
     B, dB = arrayify(b)
-    _check_mul_alias(C, A, B)
     dC = B isa AbstractVector && dC isa AbstractMatrix ? view(dC, :, 1) : dC
     pa, pb = primal(alpha), primal(beta)
     da = pa isa Bool ? zero(T) : tangent(alpha)
@@ -258,7 +246,6 @@ end
     C, dC = arrayify(c)
     A, dA = arrayify(a)
     B, dB = arrayify(b)
-    _check_mul_alias(C, A, B)
     # Small outputs must not allocate a separate restoration buffer.
     # Some avoids a union-typed NamedTuple field, whose tangent type is Any.
     old = (
@@ -337,6 +324,96 @@ end
         return NoRData(), NoRData(), NoRData(), NoRData(), da, db
     end
     return c, pullback
+end
+
+# `x ∈ {0, 1}` as a constant at every order of AD, signed zeros included.
+_mul_constant(x::Real) = isone(x) ? one(x) : (signbit(x) ? -zero(x) : zero(x))
+_mul_constant(x::Complex) = complex(_mul_constant(real(x)), _mul_constant(imag(x)))
+
+const _MulCoef = Union{IEEEFloat,Complex{<:IEEEFloat}}
+const _MulDest = let
+    wrap(X) = Union{
+        X,
+        map(
+            W -> W{<:Any,<:X},
+            (Adjoint, Transpose, Diagonal, Bidiagonal, Tridiagonal, UpperTriangular),
+        )...,
+        LowerTriangular{<:Any,<:X},
+        map(W -> W{<:Any,<:Any,<:X}, (SubArray, Base.ReshapedArray))...,
+    }
+    wrap(wrap(wrap(Union{_CPUDenseArray,_CPUStridedArray})))
+end
+
+# Stdlib coefficient shortcuts discard derivatives; zero-valued add-backs restore them.
+for (Tα, Tβ) in ((_MulCoef, Number), (Number, _MulCoef), (_MulCoef, _MulCoef))
+    @eval @mooncake_overlay function mul!(C::_MulDest, A, B, α::$Tα, β::$Tβ)
+        fa = (α isa _MulCoef) && (iszero(α) || isone(α))
+        fb = (β isa _MulCoef) && (iszero(β) || isone(β))
+        a, b = fa ? _mul_constant(α) : α, fb ? _mul_constant(β) : β
+        T = promote_type(eltype(C), eltype(A), eltype(B))
+        P = fa ? mul!(similar(C, T, size(C)), A, B, true, false) : C
+        X = fb ? copy(C) : C
+        invoke(mul!, Tuple{typeof(C),typeof(A),typeof(B),Number,Number}, C, A, B, a, b)
+        fa && _add_scaled!(C, P, α - a)
+        fb && _add_scaled!(C, X, β - b)
+        return C
+    end
+end
+
+# `C + δ X`, leaving `C` untouched at δ == 0, so signed zeros and non-finite values survive.
+# Array rules for this primitive avoid slower AD through inline broadcast.
+_add_scaled!(C, X, δ) = (C .= _add_scaled.(C, X, δ))
+_add_scaled(c, x, δ) = iszero(δ) ? c : c + δ * x
+@is_primitive MinimalCtx Tuple{typeof(_add_scaled),Number,Number,Number}
+_coef_tangent(x::Dual) = tangent(x) isa NoTangent ? false : tangent(x)
+function _coef_rdata(x, v)
+    tangent_type(typeof(x)) == NoTangent && return NoRData()
+    return oftype(x, x isa Real ? real(v) : v)
+end
+# Array rules require zero δ and matching concrete element types accepted by `arrayify`.
+for P in Base.uniontypes(Union{BlasFloat,HalfFloat})
+    @eval @is_primitive MinimalCtx Tuple{
+        typeof(_add_scaled!),_CPUStridedArray{$P},_CPUStridedArray{$P},Number
+    }
+end
+function frule!!(::Dual{typeof(_add_scaled!)}, C::Dual, X::Dual, δ::Dual)
+    (_, dC), (pX, _) = arrayify(C), arrayify(X)
+    iszero(primal(δ)) || throw(ArgumentError("`_add_scaled!` rules require δ == 0"))
+    dδ = _coef_tangent(δ)
+    iszero(dδ) || (dC .+= _mul_guarded_scale.(dδ, pX))
+    return C
+end
+function rrule!!(::CoDual{typeof(_add_scaled!)}, C::CoDual, X::CoDual, δ::CoDual)
+    (pC, dC), (pX, dX) = arrayify(C), arrayify(X)
+    d = primal(δ)
+    iszero(d) || throw(ArgumentError("`_add_scaled!` rules require δ == 0"))
+    # Forward-over-reverse AD must see δ X.
+    pC .= _add_scaled.(pC, pX, d)
+    function add_scaled_pb!!(::NoRData)
+        dd = zero(promote_type(eltype(dC), eltype(pX)))
+        @inbounds for i in eachindex(dC, pX)
+            dd += _mul_guarded_scale(dC[i], conj(pX[i]))
+        end
+        dX .+= _mul_guarded_scale.(conj(d), dC)
+        return NoRData(), NoRData(), NoRData(), _coef_rdata(d, dd)
+    end
+    return C, add_scaled_pb!!
+end
+
+function frule!!(::Dual{typeof(_add_scaled)}, c::Dual, x::Dual, δ::Dual)
+    g, y = _mul_guarded_scale, _add_scaled(primal(c), primal(x), primal(δ))
+    dy = _coef_tangent(c) + g(_coef_tangent(δ), primal(x)) + g(primal(δ), _coef_tangent(x))
+    return tangent_type(typeof(y)) == NoTangent ? zero_dual(y) : Dual(y, _coef_rdata(y, dy))
+end
+function rrule!!(::CoDual{typeof(_add_scaled)}, c::CoDual, x::CoDual, δ::CoDual)
+    pc, px, d = primal(c), primal(x), primal(δ)
+    function add_scaled_pb!!(dy)
+        dy = dy isa NoRData ? false : dy
+        g = _mul_guarded_scale
+        dc, dx = _coef_rdata(pc, dy), _coef_rdata(px, g(conj(d), dy))
+        return NoRData(), dc, dx, _coef_rdata(d, g(dy, conj(px)))
+    end
+    return zero_fcodual(_add_scaled(pc, px, d)), add_scaled_pb!!
 end
 
 # Differentiating the generic implementation element by element costs more than the rules
@@ -508,6 +585,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 false, :stability, nothing, *, randn(rng, P, 7, 11), randn(rng, P, 11, 5)
             )
         end,
+    )
+    push!(
+        test_cases,
+        (false, :stability, nothing, _add_scaled, -0.0, 2.0, 0.0),
+        (false, :stability, nothing, _add_scaled, 1.0+0.0im, 2.0+1.0im, 0.0),
+        (false, :none, nothing, _add_scaled!, view(randn(rng, 3), 1:2), ones(2), 0.0),
     )
     P = Float16
     push!(
