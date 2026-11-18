@@ -346,7 +346,11 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::Union{PhiNode,PhiCNode},
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    ::DualInfo,
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -375,19 +379,6 @@ function modify_fwd_ad_stmts!(
 )
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
-    end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
-    return nothing
-end
-
-function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
-)
-    for n in eachindex(stmt.values)
-        isassigned(stmt.values, n) || continue
-        stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
