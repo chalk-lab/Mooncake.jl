@@ -430,9 +430,7 @@ end
 
 @inline _nfwd_pow_grad_p(x, p, y) = y * log(complex(x))
 @inline function _nfwd_pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
-    return ifelse(
-        !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
-    )
+    return ifelse(!iszero(x), y * log(abs(x)), ifelse(p > zero(P), zero(y), oftype(y, NaN)))
 end
 
 @inline function _nfwd_mod_grad_coeffs(x::P, y::P) where {P<:IEEEFloat}
