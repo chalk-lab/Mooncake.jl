@@ -325,10 +325,6 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
                 @test stmt_info isa Mooncake.ADStmtInfo
                 @test Meta.isexpr(last(stmt_info.fwds)[2].stmt, :call)
                 @test last(stmt_info.fwds)[2].stmt.args[1] == Mooncake.__verify_const
-
-                f = S2SGlobals.scale_by_observation
-                cache = Mooncake.prepare_gradient_cache(f, 3.0)
-                @test value_and_gradient!!(cache, f, 3.0) == (6.0, (NoTangent(), 2.0))
             end
             @testset "differentiable const globals" begin
                 stmt_info = make_ad_stmts!(GlobalRef(S2SGlobals, :const_float), ID(), info)
@@ -501,6 +497,15 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
             S2SGlobals.A(2 * ones(3)),
             ones(3);
             interface_only=false,
+            is_primitive=false,
+            mode=Mooncake.ReverseMode,
+        )
+
+        # 1476 -- reading a non-const global whose `==` with itself is not `true`
+        TestUtils.test_rule(
+            Xoshiro(123456),
+            S2SGlobals.scale_by_observation,
+            3.0;
             is_primitive=false,
             mode=Mooncake.ReverseMode,
         )
