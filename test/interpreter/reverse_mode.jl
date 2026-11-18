@@ -2,6 +2,8 @@ module S2SGlobals
 using LinearAlgebra, Mooncake
 
 non_const_global = 5.0
+observations = Union{Missing,Float64}[2.0, missing]
+scale_by_observation(x) = first(observations) * x
 const const_float = 5.0
 const const_int = 5
 const const_bool = true
@@ -323,6 +325,10 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
                 @test stmt_info isa Mooncake.ADStmtInfo
                 @test Meta.isexpr(last(stmt_info.fwds)[2].stmt, :call)
                 @test last(stmt_info.fwds)[2].stmt.args[1] == Mooncake.__verify_const
+
+                f = S2SGlobals.scale_by_observation
+                cache = Mooncake.prepare_gradient_cache(f, 3.0)
+                @test value_and_gradient!!(cache, f, 3.0) == (6.0, (NoTangent(), 2.0))
             end
             @testset "differentiable const globals" begin
                 stmt_info = make_ad_stmts!(GlobalRef(S2SGlobals, :const_float), ID(), info)
