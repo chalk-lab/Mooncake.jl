@@ -460,6 +460,75 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
             ]
         end...,
     )
+    # Stdlib coefficient shortcuts must retain coefficient derivatives.
+    d, B, C = randn(rng, 3), randn(rng, 3, 3), randn(rng, 3, 3)
+    for args in (
+        (copy(C), Diagonal(d), B, 1.0, 0.0),
+        (copy(C), Bidiagonal(d, d[1:2], :U), B, 0.0, 1.0),
+        (copy(C), UpperTriangular(B), randn(rng, 3, 3), 2.0, 1.0),
+        (randn(3), B, randn(Float32, 3), 2.0, 0.0),
+        (copy(C), B, 2.0, 1.0, 0.0),
+    )
+        push!(test_cases, (false, :none, nothing, mul!, args...))
+    end
+    push!(
+        test_cases,
+        (
+            true,
+            :none,
+            nothing,
+            mul!,
+            zeros(Int, 2, 2),
+            Diagonal([2.0, 3]),
+            [1.0 2; 3 4],
+            1.0,
+            0.0,
+        ),
+    )
+    f = (a, b) -> sum(abs2, mul!([0.9 1.8; 2.7 3.6], 1.3, 0.7I, a, b))
+    push!(test_cases, (false, :none, nothing, f, 1.0, 1.0))
+    build = () -> adjoint(view(Diagonal([6.0, 7]), 1:2, 1:2))
+    f = (a, b) -> sum(mul!(build(), Diagonal([2.0, 3]), Diagonal([4.0, 5]), a, b))
+    push!(test_cases, (false, :none, nothing, f, 1.0, 0.0))
+    # The infinite cotangent of sqrt at zero must not reach the C that β == 0 discards.
+    f =
+        x -> sum(
+            sqrt, mul!(reshape(copy(x), 2, 2), Diagonal([1.0, 2]), [0 1; 1 1], 2.0, 0.0)
+        )
+    push!(test_cases, (false, :none, nothing, f, rand(4) .+ 1))
+    # Stdlib cancels the overflowing product against C; Julia 1.10's stdlib overflows.
+    if VERSION >= v"1.11-"
+        f =
+            b ->
+                only(mul!(fill(-1e308, 1, 1), fill(1e308, 1, 1), fill(2.0f0, 1, 1), 1.0, b))
+        push!(test_cases, (false, :none, nothing, f, 1.0), (false, :none, nothing, f, 0.5))
+    end
+    # The sign of a zero must match stdlib's, which only a Boolean output compares exactly.
+    f = (a, b) -> signbit(only(mul!(ones(1, 1), fill(-0.0, 1, 1), Diagonal([1.0]), a, b)))
+    push!(test_cases, (false, :none, nothing, f, 1.0, 0.0))
+    # Abstract and `Union` element types.
+    f = (a, b) -> only(mul!(fill(6.0, 1, 1), Diagonal(Real[2.0]), fill(4.0, 1, 1), a, b))
+    g =
+        (a, b) -> only(
+            mul!(Union{Float32,Float64}[6.0;;], Diagonal([2.0]), fill(4.0, 1, 1), a, b)
+        )
+    push!(
+        test_cases,
+        (false, :none, nothing, f, 0.0, 1.0),
+        (false, :none, nothing, g, 1.0, 0.0),
+    )
+    # Coefficients without a tangent.
+    f =
+        (a, b) ->
+            mul!(zeros(ComplexF64, 1, 1), ones(ComplexF64, 1, 1), Diagonal([1.0im]), a, b)
+    push!(
+        test_cases,
+        (false, :none, nothing, f, 1.0, 0im),
+        (false, :none, nothing, f, 0.0, 1//2),
+    )
+    # At α == 0 stdlib never stores the non-diagonal product.
+    f = b -> sum(mul!(Diagonal([6.0, 7]), [2.0 1; 1 3], [4.0 1; 1 5], 0.0, b))
+    push!(test_cases, (false, :none, nothing, f, 1.0))
     memory = Any[]
     return test_cases, memory
 end
