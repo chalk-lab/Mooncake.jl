@@ -1548,7 +1548,7 @@ end
 # Wrapped is NDual{T,N} for real T, Complex{NDual{T,N}} for Complex{T}; element access
 # constructs it lazily while the AbstractArray supertype preserves generic dispatch.
 # Lane views are strided; consumers needing dense arrays (ccall/pointer/setfield!) must use
-# the block.
+# the block. Mooncake methods live in tangents/lifted.jl.
 
 export NDualArray
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -1789,7 +1789,7 @@ end
 end
 
 # The canonical NDualArray V-type for a primal array type `A` at width `N` — the single source
-# of the type's parameter arity.
+# of the type's parameter arity, so `dual_type`/`lifted_type` don't spell out the block param.
 @inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:FloatOrComplex,D,A<:AbstractArray{Element,D},N} = NDualArray{
     Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
 }
@@ -1938,7 +1938,7 @@ end
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualRef{P,N}` keeps partials in a separate Ref for parallel raw-pointer access.
 # Its distinct type prevents generic struct re-lifting; seeds, materialisation, field
-# access and pointer rules handle it explicitly.
+# access and pointer rules handle it explicitly. The primal Ref lives in Lifted.
 export NDualRef
 struct NDualRef{P<:FloatOrComplex,N}
     partials::Base.RefValue{NTuple{N,P}}

@@ -81,9 +81,15 @@
         @test codual_type(phantom) === CoDual
         @test Mooncake.fcodual_type(phantom) === CoDual
         @test dual_type(phantom) === Dual
+        # Phantom-TypeVar primals widen to `Any` at the requested width.
+        @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
         @test dual_type(phantom_tuple) === Dual
+        # Free TypeVars leave `P` unbound; tuple methods must guard before using it.
+        @test dual_type(Val(1), phantom_tuple) === Any
+        # The slot widens to `Lifted`, while its inner representation widens to `Any`.
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
     @testset "NoPullback" begin
