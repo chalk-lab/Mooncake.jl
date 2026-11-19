@@ -1990,7 +1990,7 @@ end
         end
     end
 
-    # Convenience for the block-shaped construction sites:
+    # Convenience for the block-shaped construction sites and the Memory-seed factory:
     # validate the block's lane rows, then adopt its backing ref and column count.
     @inline function NDualMemoryRef{Element,N,M}(
         primal::MemoryRef{Element}, block::PartialsBlock{Element,2}, col::Int
