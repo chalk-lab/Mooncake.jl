@@ -802,12 +802,17 @@ function regression_319(θ)
     return d
 end
 
+# A branch on `iszero` must inspect the primal: at zero, this function has value one
+# and derivative zero, independent of the tangent seed.
+removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
+
 function generate_test_functions()
     return Any[
         (false, :allocs, nothing, const_tester),
         (false, :allocs, nothing, const_tester_non_differentiable),
         (false, :allocs, nothing, identity, 5.0),
         (false, :allocs, nothing, foo, 5.0),
+        (false, :none, nothing, removable_singularity_tester, 0.0),
         (false, :allocs, nothing, non_differentiable_foo, 5),
         (false, :allocs, nothing, bar, 5.0, 4.0),
         (false, :allocs, nothing, unused_expression, 5.0, 1),

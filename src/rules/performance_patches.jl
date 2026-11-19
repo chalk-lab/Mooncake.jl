@@ -148,8 +148,6 @@ end
 # Stdlib `mul!` skips A·B when α = 0; its generic kernels skip α at one and C at β = 0.
 # Exception to convention 2: strided coefficient correctness requires an open signature;
 # every named element type and wrapper kind is tested.
-# The default prepare_derivative_cache nfwd path (enable_nfwd=true) can silently
-# lose coefficient derivatives; #1340 removes that path, which fixes this.
 # Strided rules and the overlay require `C` to overlap neither `A` nor `B`, as stdlib does.
 const _CPUStridedMulSig{T} = Tuple{
     typeof(mul!),

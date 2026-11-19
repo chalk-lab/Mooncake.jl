@@ -4303,9 +4303,9 @@ end
 # gradients are returned in a Vector that the caller uses to build r_bc via
 # _gpu_fill_scalar_rdata.
 #
-# Keep the contraction inline here rather than reusing `_nfwd_real_dot`: these
-# GPU pullbacks need mixed-precision support (e.g. Float64 cotangent against
-# Float32 partials) and CUDA-friendly codegen for complex broadcasts.
+# The contraction is inline: these GPU pullbacks need mixed-precision support (e.g.
+# Float64 cotangent against Float32 partials) and CUDA-friendly codegen for complex
+# broadcasts.
 #
 # Returns r_bc (the Broadcasted rdata), or zero_rdata(bc_primal) if no scalars.
 function _gpu_accum_pullback!(
