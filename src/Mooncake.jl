@@ -192,6 +192,12 @@ include(joinpath("tangents", "tangents.jl"))
 include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: NDual, NDualArray, PartialsBlock, NDualRef, tangent_view
+@static if VERSION >= v"1.11-rc4"
+    using .Nfwd: NDualMemoryRef
+end
+include(joinpath("tangents", "lifted.jl"))
 include("debug_mode.jl")
 include("stack.jl")
 
@@ -213,8 +219,6 @@ include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
-include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
@@ -260,6 +264,7 @@ end
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
 @public Dual
+@public Lifted
 
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse

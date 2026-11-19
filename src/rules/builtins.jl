@@ -185,6 +185,11 @@ end
 
 _null_tangent(::Ptr{T}) where {T} = T == NoTangent ? NoTangent() : T(C_NULL)
 
+# Whether data reached through a `T` can carry partials. `Ptr{Cvoid}` may address a
+# differentiable object, so it counts as carrying them.
+@inline _carries_partials(::Type{T}) where {T} = tangent_type(T) !== NoTangent
+@inline _carries_partials(::Type{Ptr{T}}) where {T} = T === Nothing || _carries_partials(T)
+
 """
     module IntrinsicsWrappers
 
