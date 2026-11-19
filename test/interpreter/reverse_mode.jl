@@ -507,7 +507,6 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
             S2SGlobals.scale_by_observation,
             3.0;
             is_primitive=false,
-            mode=Mooncake.ReverseMode,
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code
