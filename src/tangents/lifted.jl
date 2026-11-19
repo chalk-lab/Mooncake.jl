@@ -488,6 +488,10 @@ end
     )
 end
 
+# Workaround, drop once neither 1.10 nor 1.11 is supported: a fourth method applicable to
+# `String` stops their inference expanding `Tangent` into heap-corrupting `_new_(String)`.
+_add_to_primal_internal(::MaybeCache, x, ::NoDual, ::Bool) = x
+
 # `NDualMemoryRef` (and its constructor) lives in `src/nfwd/Nfwd.jl`.
 # Mooncake-namespace method extensions follow.
 
