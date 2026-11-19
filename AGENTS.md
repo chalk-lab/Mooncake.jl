@@ -70,6 +70,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer constructing a minimal working example (MWE) first, then running the smallest focused test group that validates the fix, and only then broader test groups if needed.
 - Before adding a new test or test helper, check whether the behaviour is already covered; prefer extending an existing case over introducing a new one, make multiple pruning passes, and keep additions minimal.
 - Use the canonical test utilities: `Mooncake.TestUtils.test_rule` for new differentiation rules; `TestUtils.test_tangent_splitting` on a concrete value (add constructors to `src/test_resources.jl`) for tangent/fdata/rdata correctness rather than direct `@test tangent_type(...)` assertions; `TestUtils.test_data` for custom tangent type implementations.
+- For custom forward representations, run `test_lifted` alongside `test_data`; use `cache_free=false` for cyclic values.
 - Do not disable tests or weaken performance assertions just to get CI green; if that appears necessary, stop and ask for confirmation first.
 - Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.

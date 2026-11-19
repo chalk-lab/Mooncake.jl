@@ -26,6 +26,13 @@ If all the tests in these functions pass, then you have satisfied the interface.
 
 ## Forward-mode representation
 
+The functions above define the reverse tangent interface. Custom reverse tangents
+need additional methods for forward mode; see the
+[forward-mode counterpart](@ref custom-forward-representation).
+[`Mooncake.TestUtils.test_lifted`](@ref) checks forward representations and factories
+at widths 1 and 8; [`Mooncake.TestUtils.test_lifted_type`](@ref) checks their types.
+Use [`Mooncake.TestUtils.test_rule`](@ref) separately for differentiation rules.
+
 Forward rules use a separate slot and representation contract:
 
 ```@docs; canonical=true

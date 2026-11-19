@@ -276,6 +276,28 @@ By contrast, separate rules for `setfield!` are generally unnecessary. In Moonca
 
 By following this process—starting with a minimal set of methods and expanding as Mooncake requests more—you can support recursive types robustly in Mooncake.jl.
 
+### [Forward-mode counterpart](@id custom-forward-representation)
+
+The implementation on this page provides reverse-mode support. Forward support
+also requires `dual_type` and the representation operations described in
+[`TestUtils.test_lifted`](@ref). The generic `zero_lifted`, `uninit_lifted`, and
+`randn_lifted` wrappers delegate seed construction to `_zero_dual_internal`,
+`_uninit_dual_internal`, and `_randn_dual_internal`, respectively. Custom seed
+construction requires those methods and the cache-free `zero_dual`, `uninit_dual`,
+and `randn_dual` entry points, together with `lift` and lane materialisation. A
+`_zero_dual_internal` method for a type that owns storage must first call
+`_visit_storage(x, d)`, or the shared-header check in `tangent_dim` and
+`basis_lifted!!` cannot see that storage. If two different header objects can reach
+that storage, the type also needs a `_storage_id` method returning its owner, since
+the check otherwise matches headers by identity.
+
+Run `test_lifted` alongside `test_data`. At widths 1 and 8, it checks the lifted
+factories, cache-free `zero_dual`/`uninit_dual`/`randn_dual(Val(N), ...)` factories,
+and per-lane materialisation. It also checks the width-one `lift`/`unlift` round
+trip. [`TestUtils.test_lifted_type`](@ref) checks the type-level contract.
+For cyclic values, use `test_lifted(rng, p; cache_free=false)` to omit cache-free
+factory checks. Test differentiation rules separately with [`TestUtils.test_rule`](@ref).
+
 ## Appendix: Full Implementations
 
 Before defining the full implementation, [`TestUtils.test_data`](@ref) will fail.
