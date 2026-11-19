@@ -21,5 +21,9 @@ end
         @test pointer(p[1].ref.mem) === pointer(p[2])
         t = f(p)
         @test pointer(t[1].ref.mem) === pointer(t[2])
+        # On 1.11 a capacity-hinted reshape gets a `Memory` sliced from its owner's.
+        a = sizehint!(randn(2), 100)
+        t = f((a, reshape(a, 2, 1).ref.mem))
+        @test pointer(t[1]) === pointer(t[2])
     end
 end

@@ -28,6 +28,14 @@ function zero_tangent_internal(x::Memory{P}, dict::MaybeCache) where {P}
     # If we've seen this primal before, then we have a circular reference, and must return
     # the tangent which has already been allocated for it.
     haskey(dict, x) && return dict[x]::T
+    @static if VERSION < v"1.12-"
+        owner = _storage_id(x)
+        if owner !== x
+            t = _tangent_memory_window(x, zero_tangent_internal(owner, dict))
+            dict[x] = t
+            return t::T
+        end
+    end
 
     # We have not seen this primal before, so allocate + store the tangent for it, and zero
     # out the elements.
@@ -39,7 +47,14 @@ end
 function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
     T = tangent_type(typeof(x))
     haskey(dict, x) && return dict[x]::T
-
+    @static if VERSION < v"1.12-"
+        owner = _storage_id(x)
+        if owner !== x
+            t = _tangent_memory_window(x, randn_tangent_internal(rng, owner, dict))
+            dict[x] = t
+            return t::T
+        end
+    end
     t = T(undef, length(x))
     dict[x] = t
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), t, x)::T
