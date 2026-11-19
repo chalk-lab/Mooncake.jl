@@ -503,10 +503,7 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
         # 1476 -- reading a non-const global whose `==` with itself is not `true`
         TestUtils.test_rule(
-            Xoshiro(123456),
-            S2SGlobals.scale_by_observation,
-            3.0;
-            is_primitive=false,
+            Xoshiro(123456), S2SGlobals.scale_by_observation, 3.0; is_primitive=false
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code
