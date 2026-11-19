@@ -98,6 +98,7 @@ using Mooncake:
     randn_lifted,
     uninit_dual,
     randn_dual,
+    basis_lifted!!,
     lift,
     unlift,
     extract
@@ -660,6 +661,134 @@ const NDAC_VecC64 = NDualArray{
         @test @inferred(zero_lifted(Val(2), 1.0)) isa Lifted{Float64,2,NDual{Float64,2}}
         @test @inferred(dual_type(Val(2), Float64)) === NDual{Float64,2}
         @test @inferred(lifted_type(Val(2), Float64)) === Lifted{Float64,2,NDual{Float64,2}}
+    end
+
+    @testset "basis_lifted!!" begin
+        # `basis_lifted!!(zero_lifted(...), slots)` sets lane k hot at the slots[k]-th
+        # scalar dimension, in `tangent_dim`/`zero_tangent` order, mutating mutable V in
+        # place and rebuilding immutable V.
+        bl(x, slots) = basis_lifted!!(zero_lifted(Val(length(slots)), x), slots)
+
+        @test tangent(bl(3.0, (1,)), 1) == 1.0
+        @test tangent(bl([5.0, 6.0, 7.0], (2,)), 1) == [0.0, 1.0, 0.0]
+        @test tangent(bl(1.0 + 2.0im, (2,)), 1) == 0.0 + 1.0im  # imag tangent_dim
+        let t = tangent(bl(([1.0, 2.0], 9.0), (3,)), 1)
+            @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is tangent_dim 3
+        end
+
+        # Aliased fields: `tangent_dim` dedups the shared array, so both fields share one V.
+        shared = [10.0, 20.0]
+        let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).rep.fields
+            @test nt.a === nt.b
+            @test tangent_view(nt.a, 1) == [1.0, 0.0]
+        end
+
+        # Headers over one storage share one seed, so they have no basis positions of their
+        # own; one object reached twice is one header.
+        let a = [1.0, 2.0], b = Any[1.0, 2.0]
+            shared = Any[(a, reshape(a, 1, 2)), (b, vec(reshape(b, 1, 2)))]
+            @static if VERSION >= v"1.11-rc4"
+                h = sizehint!([1.0, 2.0], 8)
+                # The empty `y` reaches the `Memory` first; both later headers carry.
+                y = empty!([1.0, 2.0])
+                ym = y.ref.mem
+                push!(shared, (h, h.ref.mem), (y, ym, Base.wrap(Array, ym, 1)))
+            end
+            @testset "refuse $(typeof(x))" for x in shared
+                TestUtils._test_throws(ArgumentError, "different headers") do
+                    Mooncake.tangent_dim(x)
+                end
+                TestUtils._test_throws(ArgumentError, "different headers") do
+                    bl(x, (1,))
+                end
+            end
+            @test Mooncake.tangent_dim((a, a, b)) == 4
+            @test tangent(bl((a, a), (2,)), 1) == ([0.0, 1.0], [0.0, 1.0])
+            # Shared storage without degrees of freedom holds no basis position.
+            ai, e = Any[1, 2], Float64[]
+            for x in ((ai, reshape(ai, 1, 2), 3.0), (e, reshape(e, 0, 1), 3.0))
+                @test Mooncake.tangent_dim(x) == 1
+                @test tangent(bl(x, (1,)), 1)[3] == 1.0
+            end
+            @static if VERSION >= v"1.11-rc4"
+                # Only the `Memory` carries a derivative, in either order or reached twice.
+                v = sizehint!(Any[2, 3], 4)
+                m = v.ref.mem
+                m[3] = 1.0
+                for (x, d) in
+                    (((ym, y), 2), ((y, ym), 2), ((y, ym, ym), 2), ((m, v), 1), ((v, m), 1))
+                    @test Mooncake.tangent_dim(x) == d
+                end
+                @test tangent(bl((y, ym), (2,)), 1)[2] == [0.0, 1.0]
+                @test tangent(bl((m, v), (1,)), 1)[1][3] == 1.0
+            end
+        end
+
+        # The control: the storage key must not merge unrelated stores, and a REUSED seed
+        # must be cleared on every reseed. A false merge would skip the clear and leave the
+        # previous chunk's hot lane behind.
+        let s = zero_lifted(Val(1), ([1.0, 2.0], [3.0, 4.0]))
+            @test tangent(basis_lifted!!(s, (1,)), 1) == ([1.0, 0.0], [0.0, 0.0])
+            @test tangent(basis_lifted!!(s, (4,)), 1) == ([0.0, 0.0], [0.0, 1.0])
+        end
+
+        # Aliasing on the `lift` (reverse→forward) path, non-float-element array: the
+        # element-wise array lift must register the shared array in the cache so both
+        # fields get one V (matching reverse). Float-element fields are safe via
+        # `ẋ`-aliasing; this exercises the gap.
+        let h = LiftedTest_AliasedNested([[1.0, 2.0], [3.0]], [[1.0, 2.0], [3.0]])
+            h.b = h.a
+            nt = tangent(lift(h, randn_tangent(Xoshiro(1), h))).fields
+            @test nt.a === nt.b
+        end
+
+        # Self-cyclic mutable struct: terminates; `.next` V is the node's own V.
+        c = LiftedTest_Cycle(nothing, 5.0)
+        c.next = c
+        let b = bl(c, (1,))
+            @test b.rep.fields.next === b.rep
+            @test b.rep.fields.w.partials[1] == 1.0  # `w` is the only tangent_dim
+        end
+
+        # Uninit field stays uninit/zero; the defined field gets the basis.
+        let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).rep.fields
+            @test nt.x.partials[1] == 1.0
+        end
+
+        @static if VERSION >= v"1.11-rc4"
+            # Structural MemoryRefs leave the following scalar at the first basis position.
+            for T in (Int, Union{})
+                p = (memoryref(Memory{T}(undef, 0)), 1.0)
+                @test tangent(bl(p, (1,)), 1)[2] == 1.0
+            end
+
+            # A complex `MemoryRef` seeds two dimensions per element, real then imaginary.
+            let m = Memory{ComplexF64}(undef, 2)
+                m .= [1.0 + 0.0im, 2.0 + 0.0im]
+                b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
+                # `tangent(b)` is the `NDualMemoryRef` V; its `tangent` rebuilds the block.
+                @test tangent(tangent(b))[1, :] == [0.0 + 1.0im, 0.0 + 0.0im]
+            end
+        end
+
+        # Memory and MemoryRef contribute one set of dimensions. Check a later array's basis
+        # positions too, so a duplicate cursor advance cannot silently drop its gradient.
+        # test_lifted compares basis seeds with each other, never with known positions.
+        @static if VERSION >= v"1.11-rc4"
+            let m = Memory{Float64}(undef, 2), b = [3.0, 4.0]
+                m .= [1.0, 2.0]
+                x = (m, Core.memoryref(m), b)
+                @test tangent_view(tangent(bl(x, (2,)))[1], 1) == [0.0, 1.0]
+                @test tangent_view(tangent(bl(x, (3,)))[3], 1) == [1.0, 0.0]
+                @test tangent_view(tangent(bl(x, (4,)))[3], 1) == [0.0, 1.0]
+            end
+        end
+
+        # Pointer fields carry no basis direction.
+        let b = bl((Ptr{Float64}(0), 2.0), (1,))
+            @test tangent(b)[1] == Mooncake.uninit_dual(Val(1), Ptr{Float64}(0))
+            @test tangent(b)[2].partials[1] == 1.0      # Float64 lane seeded hot
+        end
     end
 
     @static if VERSION < v"1.11-rc4"

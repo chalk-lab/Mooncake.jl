@@ -822,6 +822,7 @@ buffer, share partials. Throws a `DimensionMismatch` if an array seed's size, or
 reaching one storage differ.
 """
 function lift end
+# Width-N basis seeds are built with `basis_lifted!!` and `Lifted{P,N}`.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
 lift(x::FloatOrComplex, ẋ::FloatOrComplex) = _throw_tangent_leaf_type_error(x, ẋ)
 @noinline function _throw_tangent_leaf_type_error(x, ẋ)
@@ -1546,6 +1547,23 @@ end
     end
 end
 
+# Records, while `_shares_headers` seeds a value, the first header to reach each storage and
+# every later header over a recorded storage.
+struct StorageTracker
+    owners::IdDict{Any,Any}
+    later::Vector{Any}
+end
+
+# Visit array storage at seed entry, before aliases are coalesced. Only record: the first
+# header is untyped here, so testing it would dispatch at runtime in every array seed.
+@inline function _visit_storage(p, cache)
+    haskey(cache, Val(:visit_storage)) || return nothing
+    tangent_type(eltype(p)) === NoTangent && return nothing
+    tracker = cache[Val(:visit_storage)]::StorageTracker
+    get!(tracker.owners, _storage_id(p), p) === p || push!(tracker.later, p)
+    return nothing
+end
+
 for (factory, internal) in (
     (:zero_dual, :_zero_dual_internal),
     (:uninit_dual, :_uninit_dual_internal),
@@ -1559,9 +1577,13 @@ for (factory, internal) in (
         (Array, Base.RefValue)
     end
     for C in containers
+        visit = if factory === :zero_dual && C in _STRUCTURAL_CONTAINERS
+            :(_visit_storage(x, d))
+        end
         @eval @inline function $internal(
             w::Val, $(rng_args...), x::$C{T}, d::MaybeCache
         ) where {T}
+            $visit
             return $internal(_storage_kind(T), w, $(rng_vals...), x, d)
         end
     end
@@ -1623,10 +1645,17 @@ for (factory, internal) in (
                 v = if d isa NoCache
                     $factory(w, $(rng_vals...), x)
                 else
+                    # Bypass the visitor: an Array's own Memory is not a second header.
                     _derived_array_dual(
                         w,
                         x,
-                        $internal(w, $(rng_vals...), _storage_id(getfield(x, :ref).mem), d),
+                        $internal(
+                            NumericStorage(),
+                            w,
+                            $(rng_vals...),
+                            _storage_id(getfield(x, :ref).mem),
+                            d,
+                        ),
                     )
                 end
             else
@@ -1730,7 +1759,8 @@ for (factory, internal) in (
             v = if owner === x || d isa NoCache
                 $factory(w, $(rng_vals...), x)
             else
-                ov = $internal(w, $(rng_vals...), owner, d)
+                # Bypass the visitor: a Memory window's owner is not a second header.
+                ov = $internal(NumericStorage(), w, $(rng_vals...), owner, d)
                 block = Nfwd._window_block(
                     getfield(ov, :partials_block), w, _storage_offset(x), (N, length(x))
                 )
@@ -1765,6 +1795,254 @@ for (factory, internal) in (
         spans the call, so within `x` one object reached twice, or two headers over one
         buffer, share partials.
         """ $factory
+end
+
+# Headers over storage with degrees of freedom share one seed, so have no basis positions
+# of their own. A width-1 seed walks what a forward value holds, keyed on primal storage:
+# 1.10's reverse tangents give such headers separate storage.
+function _shares_headers(x)
+    _max_array_headers(typeof(x)) < 2 && return false
+    tracker = StorageTracker(IdDict{Any,Any}(), Any[])
+    _zero_dual_internal(Val(1), x, IdDict{Any,Any}(Val(:visit_storage) => tracker))
+    return _derivative_shared(tracker)
+end
+# Refuse when two distinct headers over one storage carry a derivative; `hot` maps it to
+# the first that does. Where one carries none, their overlap holds no basis position.
+function _derivative_shared(t::StorageTracker)
+    isempty(t.later) && return false
+    carries(q) = tangent_dim(zero_tangent(q), IdDict{Any,Any}()) > 0
+    hot = IdDict{Any,Any}()
+    return any(t.later) do p
+        carries(p) || return false
+        k = _storage_id(p)
+        return get!(() -> carries(t.owners[k]) ? t.owners[k] : p, hot, k) !== p
+    end
+end
+# The array headers a value of type `T` can reach, capped at 2. Fewer than two cannot share
+# storage, so `_shares_headers` skips building their forward value.
+function _max_array_headers(::Type{T}) where {T}
+    isbitstype(T) && return 0
+    T <: _BuiltinArrays && return isbitstype(eltype(T)) ? 1 : 2
+    isconcretetype(T) && isstructtype(T) && !ismutabletype(T) || return 2
+    return min(2, sum(i -> _max_array_headers(fieldtype(T, i)), 1:fieldcount(T); init=0))
+end
+@noinline _throw_shared_headers() = throw(
+    ArgumentError(
+        "Two arguments or fields reach one array's storage through different headers, " *
+        "such as an array and its `reshape`, or an `Array` and its `Memory`. " *
+        "Forward-mode gradients cannot separate their entries. Pass the array once, " *
+        "`copy` one of them, or use reverse mode.",
+    ),
+)
+
+# Reseed lanes at slots[k] in tangent_dim order (complex: real then imaginary).
+# Mutate array partials in place and rebuild immutable Vs; callers must use the result.
+# One object reached twice is seeded once; headers `tangent_dim` refuses are refused.
+@inline function basis_lifted!!(seed::Lifted{P,N,V}, slots::NTuple{N,Int}) where {P,N,V}
+    # An isbits V has nothing to mutate or dedup, so rebuild it without allocating.
+    if isbitstype(V)
+        v, _ = _basis_seed_isbits(seed.rep, slots, 0)
+        return Lifted{P,N}(primal(seed), v)
+    end
+    _shares_headers(primal(seed)) && _throw_shared_headers()
+    v = _basis_seed!!(seed.rep, slots, Ref(0), IdDict{Any,Any}())
+    return Lifted{P,N}(primal(seed), v)
+end
+
+# Returns `(rebuilt V, advanced cursor)`. Like `_basis_seed!!`, it must advance in
+# `tangent_dim` order (real then imaginary): a mismatch silently misplaces gradient entries.
+@inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
+    NoDual(), c
+)
+# Ptr lanes are non-addressable placeholders with zero tangent_dim. Leave them unchanged
+# and do not advance the cursor, including when reached through a tuple or struct V.
+@inline _basis_seed_isbits(v::PointerDual, _slots::NTuple{N,Int}, c::Int) where {N} = (v, c)
+@inline function _basis_seed_isbits(v::NDual{T,N}, slots::NTuple{N,Int}, c::Int) where {T,N}
+    c += 1
+    return (NDual{T,N}(v.value, ntuple(k -> c == slots[k] ? one(T) : zero(T), Val(N))), c)
+end
+@inline function _basis_seed_isbits(
+    v::Complex{NDual{T,N}}, slots::NTuple{N,Int}, c::Int
+) where {T,N}
+    re, c = _basis_seed_isbits(real(v), slots, c)
+    im, c = _basis_seed_isbits(imag(v), slots, c)
+    return (Complex(re, im), c)
+end
+@inline _basis_seed_isbits(::Tuple{}, _slots::NTuple{N,Int}, c::Int) where {N} = ((), c)
+@inline function _basis_seed_isbits(v::Tuple, slots::NTuple{N,Int}, c::Int) where {N}
+    h, c = _basis_seed_isbits(first(v), slots, c)
+    t, c = _basis_seed_isbits(Base.tail(v), slots, c)
+    return ((h, t...), c)
+end
+@inline function _basis_seed_isbits(
+    v::NamedTuple{names}, slots::NTuple{N,Int}, c::Int
+) where {names,N}
+    t, c = _basis_seed_isbits(values(v), slots, c)
+    # `NamedTuple{names}` would narrow an `Any`-declared field and break the canonical V.
+    return (typeof(v)(t), c)
+end
+@inline function _basis_seed_isbits(
+    v::ImmutableDual, slots::NTuple{N,Int}, c::Int
+) where {N}
+    inner, c = _basis_seed_isbits(v.fields, slots, c)
+    return (ImmutableDual(inner), c)
+end
+@inline function _basis_seed_isbits(
+    v::PossiblyUninitTangent, slots::NTuple{N,Int}, c::Int
+) where {N}
+    is_init(v) || return (v, c)
+    inner, c = _basis_seed_isbits(val(v), slots, c)
+    return (typeof(v)(inner), c)
+end
+
+function _basis_seed!!(
+    v::Union{NoDual,PointerDual,NDual,Complex{<:NDual}}, slots::NTuple, cursor, _dict
+)
+    v, cursor[] = _basis_seed_isbits(v, slots, cursor[])
+    return v
+end
+# The allocation two windows share: on 1.11+ the `Memory` under a window's `Array` header.
+@inline _partials_allocation(store) = store
+@static if VERSION >= v"1.11-rc4"
+    @inline _partials_allocation(store::Array) = _storage_id(getfield(store, :ref).mem)
+end
+
+# Claim and clear the whole allocation once, then let each container write its hot lanes.
+# Must key on the allocation: a `Memory` and a `MemoryRef` into it hold distinct Vs over one
+# block, and a second clear would erase the first one's hot lane.
+@inline function _clear_partials_store!(dict, block, z)
+    store = _partials_allocation(Nfwd._block_storage(block))
+    haskey(dict, store) && return nothing
+    dict[store] = nothing
+    fill!(store, z)
+    return nothing
+end
+
+# `tangent_dim` counts a `Memory` and refs into it once; return true if `primal` was seen.
+@inline _memory_seen!(_dict, _primal) = false
+@static if VERSION >= v"1.11-rc4"
+    @inline function _memory_seen!(dict, mem::Memory)
+        haskey(dict, mem) && return true
+        dict[mem] = nothing
+        return false
+    end
+    @inline _memory_seen!(dict, p::MemoryRef) = _memory_seen!(dict, p.mem)
+end
+
+# An element's unit in a lane hot `j` steps past its cursor: a real element spans one step,
+# a complex one two, real then imaginary.
+@inline _unit_lane(::Type{T}, j::Int) where {T<:IEEEFloat} = T(j == 1)
+@inline _unit_lane(::Type{Complex{R}}, j::Int) where {R} = Complex{R}(j == 1, j == 2)
+
+function _basis_seed!!(
+    v::NDualArray{T,N}, slots::NTuple{N,Int}, cursor, dict
+) where {T<:FloatOrComplex,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    _clear_partials_store!(dict, getfield(v, :partials_block), zero(T))
+    _memory_seen!(dict, v.primal) && return v
+    parts = Nfwd._lane_views(v)
+    d = T <: Complex ? 2 : 1
+    @inbounds for idx in eachindex(v.primal)
+        c = cursor[]
+        cursor[] = c + d
+        for k in 1:N
+            0 < slots[k] - c <= d && (parts[k][idx] = _unit_lane(T, slots[k] - c))
+        end
+    end
+    return v
+end
+# Element-wise V (an `Array` or `Memory` of inner duals, e.g. an abstract-element array):
+# rebuild each element in place.
+function _basis_seed!!(
+    v::Union{_STRUCTURAL_CONTAINERS...}, slots::NTuple{N,Int}, cursor, dict
+) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    @inbounds for i in eachindex(v)
+        isassigned(v, i) && (v[i] = _basis_seed!!(v[i], slots, cursor, dict))
+    end
+    return v
+end
+@static if VERSION >= v"1.11-rc4"
+    function _basis_seed!!(v::MemoryRef, slots::NTuple{N,Int}, cursor, dict) where {N}
+        _basis_seed!!(v.mem, slots, cursor, dict)
+        return v
+    end
+end
+function _basis_seed!!(v::Tuple, slots::NTuple{N,Int}, cursor, dict) where {N}
+    return map(e -> _basis_seed!!(e, slots, cursor, dict), v)
+end
+function _basis_seed!!(
+    v::NamedTuple{names}, slots::NTuple{N,Int}, cursor, dict
+) where {names,N}
+    # `typeof(v)`, as in `_basis_seed_isbits` above and for the same reason.
+    return typeof(v)(map(e -> _basis_seed!!(e, slots, cursor, dict), values(v)))
+end
+function _basis_seed!!(
+    v::PossiblyUninitTangent, slots::NTuple{N,Int}, cursor, dict
+) where {N}
+    is_init(v) || return v
+    return typeof(v)(_basis_seed!!(val(v), slots, cursor, dict))
+end
+# `Ref{P}` forward V: one scalar dimension in a mutable `Base.RefValue` partials shadow.
+# Mirror the `NDual` method (real: one cursor step; complex: two, real then imaginary) and
+# register in `dict`, so an aliased `Ref` seeds once, like `NDualArray`/`MutableDual`.
+function _basis_seed!!(
+    v::NDualRef{P,N}, slots::NTuple{N,Int}, cursor, dict
+) where {P<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    cursor[] += 1
+    c = cursor[]
+    v.partials[] = ntuple(k -> c == slots[k] ? one(P) : zero(P), Val(N))
+    return v
+end
+function _basis_seed!!(
+    v::NDualRef{Complex{R},N}, slots::NTuple{N,Int}, cursor, dict
+) where {R<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    cursor[] += 1
+    cr = cursor[]
+    cursor[] += 1
+    ci = cursor[]
+    v.partials[] = ntuple(
+        k -> Complex(cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)),
+        Val(N),
+    )
+    return v
+end
+function _basis_seed!!(v::ImmutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
+    return ImmutableDual(_basis_seed!!(v.fields, slots, cursor, dict))
+end
+function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    v.fields = _basis_seed!!(v.fields, slots, cursor, dict)
+    return v
+end
+# Factory-built NDualMemoryRefs cover the whole Memory (column j ↔ slot j), which
+# tangent_dim walks. Seed each column, real then imaginary for complex elements, and dedup.
+@static if VERSION >= v"1.11-rc4"
+    function _basis_seed!!(
+        v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
+    ) where {T<:FloatOrComplex,N}
+        haskey(dict, v) && return dict[v]
+        dict[v] = v
+        block = Nfwd._reconstruct_block(v)
+        _clear_partials_store!(dict, block, zero(T))
+        _memory_seen!(dict, v.primal) && return v
+        d = T <: Complex ? 2 : 1
+        @inbounds for idx in 1:size(block, 2)
+            c = cursor[]
+            cursor[] = c + d
+            for k in 1:N
+                0 < slots[k] - c <= d && (block[k, idx] = _unit_lane(T, slots[k] - c))
+            end
+        end
+        return v
+    end
 end
 
 # ── Memory and MemoryRef seed factories (Julia 1.11+) ───────────────────────

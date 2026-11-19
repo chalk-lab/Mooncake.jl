@@ -129,6 +129,7 @@ using Mooncake:
     randn_lifted,
     zero_lifted,
     uninit_lifted,
+    basis_lifted!!,
     randn_dual,
     zero_dual,
     uninit_dual,
@@ -1516,9 +1517,11 @@ Forward-mode analogue of [`test_tangent`](@ref): check the `Lifted` representati
 each chunk width in `widths`. The seed factories must return a slot of type
 `lifted_type(Val(N), typeof(p))` whose primal aliases `p` and whose partials use no more
 storages than `zero_tangent(p)`. Every lane read `tangent(slot, lane)` must materialise a
-`tangent_type(typeof(p))`. A reverse tangent must round-trip through `unlift(lift(p, ẋ))`
-without gaining partial storages: a lift that fails to thread its aliasing cache gives two
-positions over one array independent partials.
+`tangent_type(typeof(p))`, and a `basis_lifted!!` seed must keep the slot's type, each lane
+reading as the width-1 seed of its direction, unless `tangent_dim` refuses `p`. A reverse
+tangent must round-trip through `unlift(lift(p, ẋ))` without gaining partial storages: a
+lift that fails to thread its aliasing cache gives two positions over one array independent
+partials.
 
 `cache_free=false` skips the cache-free factories `zero_dual`/`uninit_dual`/`randn_dual`,
 which cannot seed a self-referential primal.
@@ -1551,6 +1554,18 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
         end
         if N > 1 && !has_equal_data(tangent(r, 1), tangent(z, 1))
             @test !has_equal_data(tangent(r, 1), tangent(r, 2))
+        end
+        # Lane k of a basis seed must read as the width-1 seed of direction `mod1(k, d)`.
+        # With `d >= 2` this catches an accessor that reads another lane's direction.
+        d = Mooncake.tangent_dim(zero_tangent(p), IdDict{Any,Any}())
+        if d > 0 && !Mooncake._shares_headers(p)
+            slots = ntuple(k -> mod1(k, d), N)
+            b = basis_lifted!!(zero_lifted(Val(N), p), slots)
+            @test typeof(b) === typeof(z)
+            for k in 1:N
+                bk = basis_lifted!!(zero_lifted(Val(1), p), (slots[k],))
+                @test has_equal_data(tangent(b, k), tangent(bk, 1))
+            end
         end
 
         if cache_free

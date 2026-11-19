@@ -1080,6 +1080,64 @@ end
     end
 end
 
+"""
+    tangent_dim(x)
+
+Number of real degrees of freedom in the tangent of `x`, in the order `basis_lifted!!` seeds
+them (complex values count real then imaginary). An object reached twice counts once.
+
+Throws an `ArgumentError` if `x` reaches one storage through two headers that both carry a
+derivative: a `reshape` or `vec`, an `Array` beside its own `Memory`, or a 1.11 `Memory`
+slice. Headers that carry none, such as empty arrays or `Any` arrays holding only integers,
+may share storage with each other and with a header that does. Headers inside a
+`Core.SimpleVector` are not checked.
+"""
+function tangent_dim(x)
+    _shares_headers(x) && _throw_shared_headers()
+    return tangent_dim(zero_tangent(x), IdDict{Any,Any}())
+end
+# The two-argument methods count a tangent; custom tangent types extend them.
+@inline tangent_dim(::NoTangent, ::IdDict{Any,Any}) = 0
+@inline tangent_dim(::IEEEFloat, ::IdDict{Any,Any}) = 1
+@inline tangent_dim(::Complex{<:IEEEFloat}, ::IdDict{Any,Any}) = 2
+# Bottom-element storage can have undefined slots but no differentiable content.
+@inline tangent_dim(::AbstractArray{Union{}}, ::IdDict{Any,Any}) = 0
+@inline function tangent_dim(t::AbstractArray, seen::IdDict{Any,Any})
+    haskey(seen, t) && return 0
+    seen[t] = nothing
+    if _storage_kind(eltype(t)) isa NumericStorage
+        return (eltype(t) <: Complex ? 2 : 1) * length(t)
+    end
+    total = 0
+    if t isa _BuiltinArrays
+        for i in eachindex(t)
+            isassigned(t, i) || continue
+            total += tangent_dim(t[i], seen)
+        end
+    else
+        for ti in t
+            total += tangent_dim(ti, seen)
+        end
+    end
+    return total
+end
+@inline function tangent_dim(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
+    return is_init(t) ? tangent_dim(val(t), seen) : 0
+end
+# Walk fields of tuple, named-tuple and struct tangents, including `Tangent` and
+# `MutableTangent` through their `fields`, counting mutable nodes once.
+@inline function tangent_dim(t::P, seen::IdDict{Any,Any}) where {P}
+    if Base.ismutabletype(P)
+        haskey(seen, t) && return 0
+        seen[t] = nothing
+    end
+    total = 0
+    for n in 1:fieldcount(P)
+        isdefined(t, n) && (total += tangent_dim(getfield(t, n), seen))
+    end
+    return total
+end
+
 # fcache gradient bookkeeping
 @noinline function _fcache_gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
     throw(
