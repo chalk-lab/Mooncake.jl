@@ -80,9 +80,9 @@ Forward-mode slot holding a primal of type `P` and its width-`N` forward represe
   `dual_type(Val(N), P)` when that is concrete, and a subtype of it otherwise. Only a `Ptr`
   slot is checked: its `rep` must be a `PointerDual{N}`.
 
-Rules dispatch on `Lifted{P, N}` and read a slot with `primal` and `tangent`. They build
-outputs with `Lifted{P, N}(primal, rep)`, which infers `V`; given a type `X` as its primal,
-it sets `P` to `Type{X}`, whatever `P` the caller wrote.
+Rules dispatch on `Lifted{P, N}` and read a slot with `primal`, `tangent` and, for lane `k`,
+`tangent(slot, k)`. They build outputs with `Lifted{P, N}(primal, rep)`, which infers `V`;
+given a type `X` as its primal, it sets `P` to `Type{X}`, whatever `P` the caller wrote.
 
 Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward mode.
 """
@@ -147,6 +147,10 @@ end
 primal(d::Lifted) = d.primal
 tangent(d::Lifted) = d.rep
 
+function verify_lifted_type(::Lifted{P,N,V}) where {P,N,V}
+    !isconcretetype(P) || V === dual_type(Val(N), P)
+end
+
 extract(d::Lifted) = (primal(d), tangent(d))
 
 function Base.:(==)(a::Lifted, b::Lifted)
@@ -157,15 +161,333 @@ end
 @inline primal(a::NDualArray) = a.primal
 @inline tangent(a::NDualArray) = Nfwd._lane_views(a)
 
+# `tangent(slot, lane)` materialises lane `lane` as a `tangent_type(P)`; `tangent_view` is
+# an array's writable lane. Leaf methods key on V, leaving `P` free for abstract slots.
+@inline function tangent(x::Lifted{P,N,NDual{T,N}}, lane::Integer) where {P,T<:IEEEFloat,N}
+    return tangent(x).partials[lane]
+end
+@inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
+    v = tangent(x)
+    return copyto!(similar(getfield(v, :primal)), tangent_view(v, lane))
+end
+@inline function Nfwd.tangent_view(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
+    return Nfwd.tangent_view(tangent(x), lane)
+end
+# A `Ref` is a mutable struct, so its reverse tangent is a
+# `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}`, NOT a bare scalar.
+@inline function tangent(
+    x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
+) where {P<:FloatOrComplex,N}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
 # `NDualMemoryRef` / `MemoryRef` / `Core.memoryref` are 1.11+; gate to avoid an
 # `UndefVarError` at precompile on 1.10.
 @static if VERSION >= v"1.11-rc4"
+    @inline function tangent(x::Lifted{P,N,<:NDualMemoryRef}, lane::Integer) where {P,N}
+        # A copy into a same-length `Memory` at the same offset. Block column `j` pairs with
+        # slot `o - c + j`; slots the block does not cover stay zero.
+        v = tangent(x)
+        p = getfield(v, :primal)
+        block = Nfwd._reconstruct_block(v)
+        c = getfield(v, :col)
+        o = Core.memoryrefoffset(p)
+        T = eltype(block)
+        mem = fill!(Memory{T}(undef, length(p.mem)), zero(T))
+        @inbounds for j in 1:size(block, 2)
+            s = o - c + j
+            1 <= s <= length(mem) && (mem[s] = block[lane, j])
+        end
+        return _memoryref_at(mem, o)
+    end
     # `Core.memoryref(mem, offset)` is out-of-bounds for an empty `mem` (length 0); the 1-arg
     # `Core.memoryref(mem)` gives the canonical empty ref. Empty `Memory` is a valid primal
     # (empty arrays/vectors), so re-build a `MemoryRef` V through this guard.
     @inline _memoryref_at(mem, offset) =
         length(mem) == 0 ? Core.memoryref(mem) : Core.memoryref(mem, offset)
+    # Element-wise `MemoryRef` V: project the lane through the `.mem`, then re-`memoryref`.
+    @inline function tangent(
+        x::Lifted{P,N,V}, lane::Integer
+    ) where {P<:MemoryRef,N,V<:MemoryRef}
+        return _materialise_lane(x, lane, IdDict{Any,Any}())
+    end
 end
+@inline function tangent(
+    x::Lifted{P,N,Complex{NDual{R,N}}}, lane::Integer
+) where {P,R<:IEEEFloat,N}
+    v = tangent(x)
+    return Complex(real(v).partials[lane], imag(v).partials[lane])
+end
+# NoDual means no forward partial, not necessarily NoTangent in reverse (Ptr and CUDA's
+# DataRef differ). Rebuild from the primal, but refuse a noncanonical NoDual first.
+@inline function tangent(x::Lifted{P,N,NoDual}, ::Integer) where {P,N}
+    verify_lifted_type(x) || _throw_noncanonical_nodual(Val(N), P)
+    return uninit_tangent(primal(x))
+end
+@noinline function _throw_noncanonical_nodual(::Val{N}, ::Type{P}) where {N,P}
+    throw(
+        ArgumentError(
+            "a slot over the primal `$P` carries the forward value `NoDual`, but its " *
+            "canonical forward value is `$(dual_type(Val(N), P))` and its reverse " *
+            "tangent `$(tangent_type(P))`. `NoDual` is valid only where `dual_type` " *
+            "declares it.",
+        ),
+    )
+end
+# Rebuild the container shape even when its elements have no forward partials.
+@inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
+    return uninit_tangent(primal(x))
+end
+# Element-wise container V: the same-shape array of each element's lane, mirroring reverse
+# `tangent_type(Array{T}) === Array{tangent_type(T)}`; undefined slots stay undefined.
+@inline function tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+@inline function tangent(x::Lifted{P,N,PointerDual{N}}, lane::Integer) where {P<:Ptr,N}
+    return bitcast(tangent_type(P), tangent(x).lanes[lane])
+end
+@inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+@inline function tangent(x::Lifted{P,N,<:MutableDual}, lane::Integer) where {P,N}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+@inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+@inline function tangent(x::Lifted{<:NamedTuple,N,<:NamedTuple}, lane::Integer) where {N}
+    return _materialise_lane(x, lane, IdDict{Any,Any}())
+end
+
+# Public 2-tuple unpack at the slot boundary. Width-1 only — chunked slots
+# carry per-lane derivatives in their V and have no single native-tangent
+# unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
+@inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
+
+# Materialise reverse tangent_type(P), never a writable view. Register mutable shells
+# before recursion so cycles terminate and aliased children share one reverse tangent.
+# Only leaf Vs may fall back to the lane accessor. Diagnose unsupported aggregates here
+# instead of passing a wrong-shaped tangent to reverse arithmetic.
+@inline function _materialise_lane(x::Lifted{P,N}, lane::Integer, cache::IdDict) where {P,N}
+    t = tangent(x, lane)
+    t isa tangent_type(P) || _throw_not_a_leaf_v(P, t)
+    return _register_leaf(primal(x), t, cache)
+end
+# Registering a fresh leaf keeps two aliased leaves under one slot on one reverse tangent.
+# `t` is built first so the cache hit can be asserted to its concrete type.
+@inline function _register_leaf(p, t, cache::IdDict)
+    ismutable(p) || return t
+    haskey(cache, p) && return cache[p]::typeof(t)
+    cache[p] = t
+    return t
+end
+@noinline function _throw_not_a_leaf_v(::Type{P}, t) where {P}
+    throw(
+        ArgumentError(
+            "there is no method materialising a reverse tangent from the forward value " *
+            "of `$P`, so it fell back to the lane accessor, which gave a `$(typeof(t))` " *
+            "where the reverse tangent is `$(tangent_type(P))`. That fallback is right " *
+            "only for a leaf; an aggregate needs its own `_materialise_lane` " *
+            "rebuilding a reverse tangent from its components.",
+        ),
+    )
+end
+function _materialise_lane(
+    x::Lifted{P,N,<:MutableDual}, lane::Integer, cache::IdDict
+) where {P,N}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    Tt = tangent_type(P)
+    shell = Tt()
+    cache[p] = shell
+    nt = tangent(x).fields
+    field_tangents = map(keys(nt)) do name
+        return _materialise_field_lane(Val(N), P, p, name, getfield(nt, name), lane, cache)
+    end
+    # Coerce into the declared reverse backing `tangent_type(P)` (an abstract field is
+    # stored widened, e.g. `a::Any`, matching reverse mode).
+    shell.fields = fieldtype(Tt, :fields)(field_tangents)
+    return shell
+end
+function _materialise_lane(
+    x::Lifted{P,N,<:ImmutableDual}, lane::Integer, cache::IdDict
+) where {P,N}
+    nt = tangent(x).fields
+    p = primal(x)
+    field_tangents = map(keys(nt)) do name
+        return _materialise_field_lane(Val(N), P, p, name, getfield(nt, name), lane, cache)
+    end
+    return Tangent(fieldtype(tangent_type(P), :fields)(field_tangents))
+end
+# Restrict element-wise materialisation to tuple primals. Child slots take the held
+# value's type, as at `_materialise_field_lane`.
+function _materialise_lane(
+    x::Lifted{P,N,<:Tuple}, lane::Integer, cache::IdDict
+) where {P<:Tuple,N}
+    p = primal(x)
+    v = tangent(x)
+    return ntuple(length(v)) do i
+        pe = p[i]
+        return _materialise_lane(Lifted{typeof(pe),N}(pe, v[i]), lane, cache)
+    end
+end
+function _materialise_lane(
+    x::Lifted{P,N,<:NamedTuple}, lane::Integer, cache::IdDict
+) where {P,N}
+    p = primal(x)
+    v = tangent(x)
+    names = keys(v)
+    return NamedTuple{names}(
+        map(names) do name
+            pf = getfield(p, name)
+            return _materialise_lane(
+                Lifted{typeof(pf),N}(pf, getfield(v, name)), lane, cache
+            )
+        end,
+    )
+end
+# A block-backed array IS a leaf: it cannot reference back into itself, so it needs no
+# shell. It does need registering, being storage two aliased positions must share.
+function _materialise_lane(
+    x::Lifted{P,N,<:NDualArray}, lane::Integer, cache::IdDict
+) where {P,N}
+    _register_leaf(primal(x), tangent(x, lane), cache)
+end
+@static if VERSION >= v"1.11-rc4"
+    # ... except that reverse derives an `Array`'s tangent from its `Memory`'s, so an
+    # `Array` beside its `Memory` must share one buffer, as `_derived_array_dual` seeds it.
+    function _materialise_lane(
+        x::Lifted{P,N,<:NDualArray}, lane::Integer, cache::IdDict
+    ) where {P<:Array,N}
+        p = primal(x)
+        haskey(cache, p) && return cache[p]::tangent_type(P)
+        E = eltype(P)
+        r = getfield(p, :ref)
+        mem = r.mem
+        buf = getfield(getfield(getfield(tangent(x), :partials_block), :parent), :ref).mem
+        # Only a `_window_block` into the `Memory`'s `N`-scaled block has one to tie.
+        len = N * length(mem)
+        length(buf) == len || return _register_leaf(p, tangent(x, lane), cache)
+        block = Nfwd.PartialsBlock{E,2}(
+            Base.wrap(Array, memoryref(buf), (len,))::Vector{E}, (N, length(mem))
+        )
+        memv = NDualArray{E,N,1,Memory{E}}(mem, block)
+        tmem = _materialise_lane(Lifted{Memory{E},N}(mem, memv), lane, cache)
+        t = Base.wrap(Array, construct_ref(r, tmem), size(p))::tangent_type(P)
+        cache[p] = t
+        return t
+    end
+
+    # The `MemoryRef` half: register the materialised `Memory` when the block spans it all.
+    function _materialise_lane(
+        x::Lifted{P,N,<:NDualMemoryRef}, lane::Integer, cache::IdDict
+    ) where {P<:MemoryRef,N}
+        p = primal(x)
+        v = tangent(x)
+        t = tangent(x, lane)
+        off = Core.memoryrefoffset(p)
+        (getfield(v, :ncols) == length(p.mem) && getfield(v, :col) == off) || return t
+        return _memoryref_at(_register_leaf(p.mem, t.mem, cache), off)
+    end
+end
+@static if VERSION >= v"1.11-rc4"
+    # Thread the cache, so the ref's `Memory` shares a lane with other headers over it.
+    function _materialise_lane(
+        x::Lifted{P,N,V}, lane::Integer, cache::IdDict
+    ) where {P<:MemoryRef,N,V<:MemoryRef}
+        p = primal(x)
+        mem = _materialise_lane(Lifted{typeof(p.mem),N}(p.mem, tangent(x).mem), lane, cache)
+        return _memoryref_at(mem, Core.memoryrefoffset(p))
+    end
+end
+# An all-NoDual representation is a leaf only if its elements have NoTangent too.
+@inline function _materialise_lane(
+    x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, cache::IdDict
+) where {P,N}
+    tangent_type(eltype(P)) === NoTangent &&
+        return _register_leaf(primal(x), tangent(x, lane), cache)
+    return _materialise_lane_elementwise(x, lane, cache)
+end
+function _materialise_lane(
+    x::Lifted{P,N,V}, lane::Integer, cache::IdDict
+) where {P,N,V<:AbstractArray}
+    return _materialise_lane_elementwise(x, lane, cache)
+end
+function _materialise_lane_elementwise(
+    x::Lifted{P,N}, lane::Integer, cache::IdDict
+) where {P,N}
+    p = primal(x)
+    if p isa Union{_STRUCTURAL_CONTAINERS...}
+        # Share storage between headers, as the lift and seed caches do.
+        key = _structural_key(p)
+        key, first = _extent_key(p, key, cache)
+        if first !== nothing
+            first isa tangent_type(P) && _same_window(first, p) && return first
+            hkey = _header_key(p, key, first, tangent_type(eltype(P)))
+            haskey(cache, hkey) && return cache[hkey]
+            t = _shared_lane(p, first, tangent_type(eltype(P)))::tangent_type(P)
+            cache[hkey] = t
+        else
+            t = _new_lane(p, tangent_type(eltype(P)))::tangent_type(P)
+            cache[key] = t
+        end
+    else
+        haskey(cache, p) && return cache[p]
+        t = similar(p, tangent_type(eltype(P)))
+        cache[p] = t
+    end
+    # Use the concrete `typeof(pe)`: an abstract `eltype(P)` has no fields to lift.
+    _map_if_assigned!(
+        (pe, ve) -> _materialise_lane(Lifted{typeof(pe),N}(pe, ve), lane, cache),
+        t,
+        p,
+        tangent(x),
+    )
+    return t
+end
+# `Ref{P<:FloatOrComplex}` (V `NDualRef`): build the `MutableTangent` reverse mode gives it
+# (a `Ref` is a mutable struct, registered in the alias cache before returning). Its `:x`
+# field is non-always-init, so reverse wraps it in `PossiblyUninitTangent`.
+function _materialise_lane(
+    x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer, cache::IdDict
+) where {P<:FloatOrComplex,N}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    Tt = tangent_type(typeof(p))
+    shell = Tt()
+    cache[p] = shell
+    Ft = fieldtype(fieldtype(Tt, :fields), :x)
+    part = tangent(x).partials[][lane]
+    shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
+    return shell
+end
+# Undefined primal fields produce uninitialised reverse PUTs. Child slots use the held
+# value's concrete type: a declared Any would break struct lookup or treat a tuple as lanes.
+# Rt remains the declared reverse backing type, which admits the concrete result.
+@inline _materialise_field_lane(
+    ::Val{N}, ::Type{P}, p, name, vfield, lane, cache::IdDict
+) where {N,P} =
+    let pf = getfield(p, name)
+        _materialise_lane(Lifted{typeof(pf),N}(pf, vfield), lane, cache)
+    end
+@inline function _materialise_field_lane(
+    ::Val{N}, ::Type{P}, p, name, vfield::PossiblyUninitTangent, lane, cache::IdDict
+) where {N,P}
+    Rt = tangent_type(fieldtype(P, name))
+    (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
+    pf = getfield(p, name)
+    return PossiblyUninitTangent{Rt}(
+        _materialise_lane(Lifted{typeof(pf),N}(pf, val(vfield)), lane, cache)
+    )
+end
+@noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
+    throw(
+        ArgumentError(
+            "unlift only supports width-1 Lifted slots; got Lifted{$P, $N, $V}. " *
+            "Use `tangent(x, lane)` for per-lane access at width > 1.",
+        ),
+    )
+end
+
 # `NDualMemoryRef` (and its constructor) lives in `src/nfwd/Nfwd.jl`.
 # Mooncake-namespace method extensions follow.
 
@@ -844,6 +1166,7 @@ end
 # representation, or a write through one leaves the other's partials stale. Caches therefore
 # key a structural container on its storage, holding the first header's representation there;
 # any other header is built over that representation's storage and registered under itself.
+@inline _same_window(v, x) = size(v) == size(x) && _storage_offset(v) == _storage_offset(x)
 # Return the storage key and its cache entry (or `nothing`).
 @inline function _extent_key(x, key, cache)
     cache isa NoCache && return key, nothing
@@ -887,6 +1210,24 @@ end
     @inline _shared_shell(x, first, ::Type{T}) where {T} = _structural_dual_shell(
         x, _owner_memory(first, T)
     )
+    # A lane allocates only up to the end of its header's window, not the owner's capacity,
+    # but at the header's offset, which locates later headers. One reaching past that end
+    # gets storage of its own. An empty `Array`'s ref still needs a slot past offset 1.
+    @inline _lane_end(p::Array) =
+        _storage_offset(p) + max(length(p), _storage_offset(p) > 1) - 1
+    @inline _lane_end(p::Memory) = _storage_offset(p) + length(p) - 1
+    @inline _lane_over(p::Array, m) = Base.wrap(
+        Array, _memoryref_at(m, _storage_offset(p)), size(p)
+    )
+    @inline _lane_over(p::Memory, m) = _structural_dual_shell(p, m)
+    @inline _new_lane(p, ::Type{T}) where {T} = _lane_over(
+        p, Memory{T}(undef, _lane_end(p))
+    )
+    @inline function _shared_lane(p, first, ::Type{T}) where {T}
+        m = _owner_memory(first, T)
+        _lane_end(p) <= length(m) || return _new_lane(p, T)
+        return _lane_over(p, m)
+    end
 else
     const _JL_ARRAY_T_FLAGS_OFFSET = 2 * sizeof(Int)
     const _JL_ARRAY_T_FLAGS_ISSHARED = UInt16(0x4000)
@@ -913,6 +1254,10 @@ else
             :jl_reshape_array, Array{T,D}, (Any, Any, Any), Array{T,D}, first, size(x)
         )
     end
+    @inline _new_lane(p::Array, ::Type{T}) where {T} = _new_shared_shell(
+        p, T, _structural_key(p)
+    )
+    @inline _shared_lane(p, first, ::Type{T}) where {T} = _shared_shell(p, first, T)
 end
 
 # Register before filling, as `zero_tangent_internal(::Array)` does, so cycles terminate and
