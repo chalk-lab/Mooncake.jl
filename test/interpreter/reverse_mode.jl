@@ -2,6 +2,8 @@ module S2SGlobals
 using LinearAlgebra, Mooncake
 
 non_const_global = 5.0
+observations = Union{Missing,Float64}[2.0, missing]
+scale_by_observation(x) = first(observations) * x
 const const_float = 5.0
 const const_int = 5
 const const_bool = true
@@ -497,6 +499,14 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
             interface_only=false,
             is_primitive=false,
             mode=Mooncake.ReverseMode,
+        )
+
+        # 1476 -- reading a non-const global whose `==` with itself is not `true`
+        TestUtils.test_rule(
+            Xoshiro(123456),
+            S2SGlobals.scale_by_observation,
+            3.0;
+            is_primitive=false,
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code

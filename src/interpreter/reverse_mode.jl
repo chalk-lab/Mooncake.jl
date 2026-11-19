@@ -1413,7 +1413,8 @@ end
 
 # Helper used by `make_ad_stmts! ` for `GlobalRef`. Noinline to avoid IR bloat.
 @noinline function __verify_const(global_ref, stored_value)
-    @assert global_ref == primal(stored_value)
+    saved = primal(stored_value)
+    @assert global_ref === saved || global_ref == saved
     return uninit_fcodual(global_ref)
 end
 
