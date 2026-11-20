@@ -118,6 +118,29 @@ using DispatchDoctor: allow_unstable
         @test_throws "two-argument form" zero_tangent(Ptr{Float64}())
     end
 
+    @testset "zero_tangent of an isbits array allocates no cache" begin
+        x = rand(Float32, 1000)
+        zero_tangent(x)
+        # The array's own 4000 bytes plus headers; an IdDict would add several hundred more.
+        @test @allocated(zero_tangent(x)) < sizeof(x) + 300
+        @test zero_tangent(x) == zeros(Float32, 1000)
+        aliased = rand(3)
+        t = zero_tangent([aliased, aliased])  # non-isbits elements still keep aliasing
+        @test t[1] === t[2]
+        shared = rand(Float32, 4)
+        pair = (; first=shared, second=shared)
+        pair_tangent = zero_tangent(pair)
+        @test pair_tangent.first === pair_tangent.second
+        tuple_tangent = zero_tangent((shared, shared))
+        @test tuple_tangent[1] === tuple_tangent[2]
+        read_both(p) = sum(p.first) + 2 * sum(p.second)
+        cache = Mooncake.prepare_gradient_cache(read_both, pair)
+        _, (_, gradient) = Mooncake.value_and_gradient!!(cache, read_both, pair)
+        # Both reads land in the one shared tangent: 1 + 2 per element.
+        @test gradient.first === gradient.second
+        @test all(==(3.0f0), gradient.first)
+    end
+
     tangent(nt::NamedTuple) = Tangent(map(PossiblyUninitTangent, nt))
     mutable_tangent(nt::NamedTuple) = MutableTangent(map(PossiblyUninitTangent, nt))
 
