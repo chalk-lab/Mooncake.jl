@@ -918,7 +918,17 @@ If the signature has a custom rule ([`Mooncake.is_primitive`](@ref) returns `tru
 uses that rule. Otherwise it looks up the primal IR and differentiates it.
 
 [`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method
-instance, which is a lower-level version of `Base.code_ircode`.
+instance, which is a lower-level version of `Base.code_ircode`. On Julia 1.14, optimised IR
+can access globals through `Core.BindingPartition`s; `lookup_ir` rewrites these back into the
+`GlobalRef`-based forms produced by earlier Julia versions.
+
+`MooncakeInterpreter` preserves primitive calls during inference with `NoInlineCallInfo`,
+so Julia does not inline or constant-fold away calls that need custom rules. On Julia 1.14,
+the `abstract_call_gf_by_type` hook also forwards the caller's variable-state table. Inference
+frames now share a stack parameterised by interpreter type, so primitive inference must stay
+in the Mooncake interpreter rather than switching to `NativeInterpreter` as on older Julia
+versions. Merely making the package precompile does not verify this contract: the primitive
+inlining and custom-gradient regressions in `test/interpreter/abstract_interpretation.jl` do.
 
 The transform works on `Core.Compiler.IRCode`, not the `CodeInfo` shown by `@code_typed`.
 [`normalise!`](@ref Mooncake.normalise!) rewrites some `IRCode` expressions into forms that are

@@ -5,14 +5,24 @@ end
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function CoDual(x::Type{P}, dx::NoFData) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(x) && return CoDual{typeof(x),NoFData}(x, dx)
+    end
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoFData}(P, dx)
 end
 
 function CoDual(x::Type{P}, dx::NoTangent) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(x) && return CoDual{typeof(x),NoTangent}(x, dx)
+    end
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(P, dx)
 end
 
 primal(x::CoDual) = x.x
+@static if isdefined(Core, :TypeEgal)
+    # See `primal(::Dual{Type{P}})`.
+    primal(::CoDual{Type{P}}) where {P} = P
+end
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
 # CoDual can be safely shared without copying
@@ -84,6 +94,9 @@ The type of the `CoDual` which contains instances of `P` and associated tangents
 end
 
 @unstable function codual_type(p::Type{Type{P}}) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(p) && return CoDual
+    end
     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
 end
 
@@ -98,7 +111,16 @@ The type of the `CoDual` which contains instances of `P` and its fdata.
 end
 
 @unstable function fcodual_type(p::Type{Type{P}}) where {P}
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(p) && return CoDual
+    end
     return @isdefined(P) ? CoDual{Type{P},NoFData} : CoDual{_typeof(p),NoFData}
+end
+
+@static if isdefined(Core, :TypeEgal)
+    # See `dual_type(::Core.TypeEgal)`.
+    @unstable codual_type(p::Core.TypeEgal) = codual_type(Type{Base.type_parameter(p)})
+    @unstable fcodual_type(p::Core.TypeEgal) = fcodual_type(Type{Base.type_parameter(p)})
 end
 
 to_fwds(x::CoDual) = CoDual(primal(x), fdata(tangent(x)))

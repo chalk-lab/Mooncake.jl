@@ -22,6 +22,8 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    # Preparatory coverage, not an official support commitment.
+    continue-on-error: ${{ matrix.version == '1.14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +61,12 @@ jobs:
           - x64
         include:
           - test_group: 'basic'
+            version: '1.14'
+            arch: x64
+          - test_group: 'rules/misc'
+            version: '1.14'
+            arch: x64
+          - test_group: 'basic'
             version: 'lts'
             arch: x86
           - test_group: 'rules/array_legacy'
@@ -70,9 +78,18 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
+          # No stable 1.14 release yet; this tracks its prereleases and then 1.14.x.
+          include-all-prereleases: ${{ matrix.version == '1.14' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
+        if: matrix.version != '1.14'
       - uses: julia-actions/julia-runtest@v1
+        if: matrix.version != '1.14'
+        env:
+          TEST_GROUP: ${{ matrix.test_group }}
+      - name: Prerelease tests (AllocCheck analysis skipped)
+        if: matrix.version == '1.14'
+        run: julia --check-bounds=yes --code-coverage=user --project=test/prerelease test/prerelease/runtests.jl
         env:
           TEST_GROUP: ${{ matrix.test_group }}
       - uses: julia-actions/julia-processcoverage@v1
