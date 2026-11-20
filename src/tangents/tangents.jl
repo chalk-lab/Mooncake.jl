@@ -1775,14 +1775,15 @@ The tangent is not modified, and the returned primal will not alias it.
 New code should prefer [`tangent_to_friendly!!`](@ref).
 
 !!! warning
-    This function will be removed in the next breaking release (0.6).
+    This function will be removed in a future breaking release.
     It is retained solely for backward compatibility with downstream packages.
 """
 const _TANGENT_TO_PRIMAL_WARNED = Ref(false)
 function tangent_to_primal!!(primal::P, tangent) where {P}
     if !_TANGENT_TO_PRIMAL_WARNED[]
         _TANGENT_TO_PRIMAL_WARNED[] = true
-        @warn "tangent_to_primal!! is deprecated and will be removed in 0.6. " *
+        @warn "tangent_to_primal!! is deprecated and will be removed in a future " *
+            "breaking release. " *
             "Results may be inconsistent with the `friendly_tangents` opt-in " *
             "mechanism (`FriendlyTangentCache`): types that override " *
             "`friendly_tangent_cache` will not have their custom conversion applied." maxlog=1

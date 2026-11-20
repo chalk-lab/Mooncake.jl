@@ -90,8 +90,7 @@ forward-mode gradient cache. Conceptually:
   contributions into gradient buffers.
 
 The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
+forward) / derived forward rules.
 """
 function _fcache_derivative_chunked!! end
 
@@ -216,7 +215,6 @@ include("tools_for_rules.jl")
 include("interface.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
-include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))

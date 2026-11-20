@@ -211,27 +211,6 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
             @test q.partials == map(-, p.partials)
         end
 
-        for args in ((1.0, 2.0, 0.5), (2.0, 3.0, 0.75)),
-            f in (
-                (a, b, x) -> beta_inc(a, 2.0, 0.5),
-                (a, b, x) -> beta_inc(1.0, b, 0.5),
-                (a, b, x) -> beta_inc(a, b, 0.5),
-                (a, b, x) -> beta_inc(1.0, 2.0, x),
-                (a, b, x) -> beta_inc(a, 2.0, x),
-                (a, b, x) -> beta_inc(1.0, b, x),
-                beta_inc,
-            )
-
-            test_rule(
-                StableRNG(123),
-                f,
-                args...;
-                is_primitive=false,
-                mode=ReverseMode,
-                rrule=Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=3),
-            )
-        end
-
         y = NDual{Float64,1}(1e-20, (1.0,))
         p, q = beta_inc(2.0, 1.0, 1-y, y)
         @test q.value > 0
