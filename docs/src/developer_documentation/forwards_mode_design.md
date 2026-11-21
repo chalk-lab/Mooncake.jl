@@ -53,6 +53,28 @@ end
 ```
 it must always hold that `T = tangent_type(P)`.
 
+`Mooncake.dual_type(Val(N), P)` gives the canonical width-`N` forward
+representation of a primal of type `P`; `lifted_type(Val(N), P)` gives the
+wider annotation for a slot holding it.
+
+The representation depends on the primal type:
+
+| Primal type                                       | Forward representation                          |
+|---------------------------------------------------|-------------------------------------------------|
+| IEEE floating-point scalar `P`                    | `NDual{P,N}`, containing the value and partials |
+| `Complex{P}` with IEEE floating-point `P`         | `Complex{NDual{P,N}}`                           |
+| `Array{T,D}` with concrete `T <: FloatOrComplex`  | `NDualArray`                                    |
+| Other `Array{T,D}`                                | `Array{dual_type(Val(N), T),D}`                 |
+| Differentiable tuple or named tuple               | Per-element forward representations             |
+| Struct with the default structural representation | `ImmutableDual` or `MutableDual` over fields    |
+| Type whose tangent is `NoTangent`                 | `NoDual`                                        |
+
+`FloatOrComplex` includes IEEE floats and their complex counterparts. Thus a
+`Vector{Int}` has a `Vector{NoDual}` representation, while a
+`Vector{Vector{Float64}}` contains `NDualArray` representations of its elements.
+Default structural representations recurse through fields; specialised types can
+supply their own representation.
+
 ### Array block layout
 
 An `NDualArray` holds a primal array and its partials separately. The primal is the
