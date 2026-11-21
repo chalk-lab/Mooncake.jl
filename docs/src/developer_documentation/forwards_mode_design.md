@@ -53,6 +53,37 @@ end
 ```
 it must always hold that `T = tangent_type(P)`.
 
+### Array block layout
+
+An `NDualArray` holds a primal array and its partials separately. The primal is the
+user's own array, with its concrete type, not a copy: the two alias, meaning they
+share memory, so a write through either is visible through the other. Forward mode
+relies on this, because a function that updates an array in place must update the
+caller's array. An `Array{NDual}` would copy the primal values out, breaking the
+alias, and BLAS cannot multiply it.
+
+On the CPU, the partials live in a `PartialsBlock` of shape `(N, size(primal)...)`,
+where `N` is the chunk width. Each element's `N` partials are adjacent, and each
+lane, one of the `N` directions, occupies every `N`-th entry. For `x = [x₁, x₂, x₃]`
+at width 2, the block is 2×3 and stores, writing `∂ₖxᵢ` for lane `k` of element `i`,
+
+    [∂₁x₁, ∂₂x₁, ∂₁x₂, ∂₂x₂, ∂₁x₃, ∂₂x₃]
+
+so lane 1 occupies entries 1, 3 and 5.
+
+`PartialsBlock` pairs a flat `Vector` with the shape it presents:
+
+    struct PartialsBlock{T,D} <: DenseArray{T,D}
+        parent::Vector{T}
+        dims::NTuple{D,Int}
+    end
+
+Because a `DenseArray` is a strided array, BLAS-backed methods such as `mul!` accept
+a `PartialsBlock`. Reshaping one returns a new `PartialsBlock` over the same `parent`.
+The flat `Vector` also lets the partials grow with the primal: `parent` grows by `N`
+entries per element, and `size` derives the last dimension from its length. A
+`Matrix` cannot be resized, and on Julia 1.10 reshaping a `Vector` into one marks
+the vector as shared, after which `push!` throws.
 
 ### Testing
 
