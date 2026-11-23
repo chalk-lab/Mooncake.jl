@@ -657,14 +657,17 @@ function _characterise_unique_predecessor_blocks(
 
     # Obtain the block IDs in order -- this ensures that we get the entry block first.
     blk_ids = ID[b.id for b in blks]
+    entry_id = blk_ids[1]
     preds = _compute_cfg_predecessors(blks)
     succs = _compute_cfg_successors(blks)
 
-    # The bulk of blocks can be handled by this general loop.
+    # The bulk of blocks can be handled by this general loop. Function entry is an implicit
+    # predecessor of the entry block, so no block that branches to it is a unique pred.
     is_unique_pred = Dict{ID,Bool}()
     for id in blk_ids
         ss = succs[id]
-        is_unique_pred[id] = !isempty(ss) && all(s -> length(preds[s]) == 1, ss)
+        is_unique_pred[id] =
+            !isempty(ss) && all(s -> s != entry_id && length(preds[s]) == 1, ss)
     end
 
     # If there is a single reachable return node, then that block is treated as a unique
@@ -689,7 +692,6 @@ function _characterise_unique_predecessor_blocks(
 
     # If the entry block has no predecessors, then it can only be entered once, when the
     # function is first entered. In this case, we treat it as having a unique predecessor.
-    entry_id = blk_ids[1]
     pred_is_unique_pred[entry_id] = isempty(preds[entry_id])
 
     return is_unique_pred, pred_is_unique_pred
