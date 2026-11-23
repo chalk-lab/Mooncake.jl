@@ -516,6 +516,15 @@ end
             end
         end
 
+        @testset "_copy_to_output!! with a resized source" begin
+            f_pos = x -> x[x .> 0]
+            cache = Mooncake.prepare_pullback_cache(f_pos, [1.0, 2.0, -1.0])
+            @test Mooncake.value_and_pullback!!(cache, ones(3), f_pos, [1.0, 2.0, 3.0])[1] ==
+                [1.0, 2.0, 3.0]
+            @test Mooncake._copy_to_output!!(Core.svec(0.0), Core.svec(1.0, 2.0)) ==
+                Core.svec(1.0, 2.0)
+        end
+
         @testset "NamedTuple copy preserves field types: $T" for T in (
             Any, AbstractVector, Union{Nothing,Vector{Float64}}
         )
@@ -1111,6 +1120,14 @@ end
             @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
                 cache, f_arr, reshape([x, y], 2, 1)
             )
+
+            f_nested = x -> sum(abs2, x[1])
+            cache = Mooncake.prepare_derivative_cache(
+                f_nested, [[x, y]]; config=Mooncake.Config(; kwargs...)
+            )
+            @test_throws r"nested size mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_nested, [[x, y, 3.0]]
+            )
         end
 
         @testset "reverse cache mismatch errors" begin
@@ -1128,6 +1145,41 @@ end
             )
             @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
                 cache, f_arr, reshape([x, y], 2, 1)
+            )
+
+            # The repeated array must fit the storage prepared for each of its positions.
+            f_pair = t -> t[2][end]
+            cache = Mooncake.prepare_gradient_cache(
+                f_pair, ([x, y, 3.0], [x, y]); config=Mooncake.Config(; kwargs...)
+            )
+            c = [x, y, 3.0]
+            @test_throws r"nested size mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_pair, (c, c)
+            )
+
+            f_dict = d -> sum(abs2, d[:a])
+            cache = Mooncake.prepare_gradient_cache(
+                f_dict, Dict(:a => [x, y]); config=Mooncake.Config(; kwargs...)
+            )
+            @test_throws r"nested size mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_dict, Dict(:a => [x, y, 3.0])
+            )
+
+            # An index vector holds nothing differentiable, so the entry check lets it grow.
+            # The call itself is not run: `--check-bounds=yes` rejects the past-the-end
+            # `NoTangent` read in the indexing rule.
+            f_idx = p -> sum(abs2, p.v[p.idx])
+            cache = Mooncake.prepare_gradient_cache(f_idx, (v=[x, y, 3.0], idx=[1]))
+            @test Mooncake._validate_prepared_cache_inputs(
+                getfield(cache, :input_specs), (f_idx, (v=[x, y, 3.0], idx=[1, 3]))
+            ) isa Tuple
+
+            f_any = v -> 2 * v[1]
+            cache = Mooncake.prepare_gradient_cache(
+                f_any, Any[x]; config=Mooncake.Config(; kwargs...)
+            )
+            @test_throws r"nested tangent type mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_any, Any[1]
             )
         end
 

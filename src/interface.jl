@@ -425,11 +425,14 @@ _copy_to_output!!(::Module, src::Module) = src
 
 # explicit copy for Core.svec
 function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
+    length(dst) == length(src) || return _copy_output(src)
     return Core.svec(map(_copy_to_output!!, dst, src)...)
 end
 
 # copy for Array, Memory
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
+    size(dst) == size(src) || return _copy_output(src)
+    # A slot undefined in `src` keeps whatever `dst` held there.
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
             dst[i] = if isassigned(dst, i)
@@ -465,6 +468,7 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     nf == 0 && return src
 
     if ismutable(src)
+        # A field undefined in `src` keeps whatever `dst` held there.
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.
@@ -672,13 +676,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
-        else
-            PreparedCacheInputSpec(typeof(x), ())
-        end
-    end
+    input_specs = _prepared_cache_input_specs(fx, tangents)
     output_primal = primal(y)
     output_spec = if output_primal isa AbstractArray
         PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
@@ -802,13 +800,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
-        else
-            PreparedCacheInputSpec(typeof(x), ())
-        end
-    end
+    input_specs = _prepared_cache_input_specs(fx, tangents)
     output_primal = primal(y)
     output_spec = if output_primal isa AbstractArray
         PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
@@ -1011,11 +1003,36 @@ end
 # encoded as a type parameter so that `_validate_prepared_cache_inputs` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
 # a `DataType`-valued field would require.
-struct PreparedCacheInputSpec{T,S}
+struct PreparedCacheInputSpec{T,S,R}
     size::S
+    # What nested arrays must fit: the cache's derivative storage for the argument, a
+    # `_size_record` where the cache keeps none, or `nothing` where `size` fixes them all.
+    nested::R
 end
 
-PreparedCacheInputSpec(::Type{T}, s::S) where {T,S} = PreparedCacheInputSpec{T,S}(s)
+function PreparedCacheInputSpec(::Type{T}, s::S) where {T,S}
+    return PreparedCacheInputSpec{T,S,Nothing}(s, nothing)
+end
+
+function _prepared_cache_input_spec(x, storage)
+    T = typeof(x)
+    s = x isa AbstractArray ? size(x) : ()
+    nested = if _sized_at_top(T)
+        nothing
+    else
+        storage === nothing ? _size_record(x, IdDict{Any,Any}()) : storage
+    end
+    return PreparedCacheInputSpec{T,typeof(s),typeof(nested)}(s, nested)
+end
+
+# `storage` holds the cache's derivative storage for each of `fx`, or `nothing` per
+# argument. `f` is matched by type alone, so an `f` whose captured arrays grow is not caught.
+function _prepared_cache_input_specs(fx::Tuple, storage::Tuple)
+    f = fx[1]
+    f_spec = PreparedCacheInputSpec(typeof(f), f isa AbstractArray ? size(f) : ())
+    x_specs = map(_prepared_cache_input_spec, Base.tail(fx), Base.tail(storage))
+    return (f_spec, x_specs...)
+end
 
 @inline function _cache_spec_size_summary(spec::PreparedCacheInputSpec{T}) where {T}
     return if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
@@ -1090,6 +1107,14 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
         "Got top-level type: $got\n" *
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level argument types they were prepared with."
+    elseif kind === :nested_size || kind === :nested_type
+        what = kind === :nested_size ? "size" : "tangent type"
+        "Cached autodiff call has a nested $what mismatch for $label.\n" *
+        "Expected nested $what: $expected\n" *
+        "Got nested $what: $got\n" *
+        "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
+        "with the same array sizes and value types, at every nesting level, they were " *
+        "prepared with."
     else
         "Cached autodiff call has a size mismatch for $label.\n" *
         "Expected top-level size: $expected\n" *
@@ -1122,6 +1147,7 @@ end
                             :size, $i, specs[$i].size, size(x_i)
                         )
                     end
+                    _validate_nested(specs[$i].nested, x_i, $i)
                 end
             end,
         )
@@ -1130,6 +1156,158 @@ end
         $checks
         return fx
     end
+end
+
+_validate_nested(::Nothing, x, i::Int) = nothing
+
+function _validate_nested(ref, x, i::Int)
+    seen = _flat(typeof(x)) ? nothing : Base.IdSet{Any}()
+    err = _fits(x, ref, seen)
+    err === nothing || _throw_prepared_cache_spec_error(err[1], i, err[2], err[3])
+    return nothing
+end
+
+# A pure check: forward mode must not trace it when the HVP cache differentiates
+# `value_and_gradient!!` for a primitive `f`.
+@zero_derivative MinimalCtx Tuple{typeof(_validate_nested),Any,Any,Int}
+
+# Whether the top-level size of a `T` fixes all of its derivative storage. An array whose
+# elements have no tangent is not size-checked: its `NoTangent` storage holds no data.
+@foldable function _sized_at_top(::Type{T}) where {T}
+    T <: _BuiltinArrays &&
+        return isbitstype(eltype(T)) || tangent_type(eltype(T)) == NoTangent
+    return isbitstype(T) || tangent_type(T) == NoTangent
+end
+
+# Whether a value of type `T` reaches no mutable container other than bits-element arrays,
+# so `_fits` needs no cycle tracking and compiles to a fixed set of size comparisons.
+@foldable function _flat(::Type{T}) where {T}
+    _sized_at_top(T) && return true
+    return isconcretetype(T) && !ismutabletype(T) && all(_flat, fieldtypes(T))
+end
+
+# `_fits(p, ref, seen)` returns `nothing` if every array reachable from `p` has the size of
+# its counterpart in `ref`, else `(kind, expected, got)`. `ref` is derivative storage
+# (a tangent) or a `_size_record`. A sharing change between equal-size arrays is not caught.
+# Custom tangent types reach this fallback and are not checked.
+_fits(p, ref, seen) = nothing
+
+_fits(p::_BuiltinArrays, ref::AbstractArray{NoTangent}, seen) = nothing
+
+_fits(p::_BuiltinArrays, ref::Dims, seen) = _fits_size(size(p), ref)
+
+function _fits(p::_BuiltinArrays, ref::AbstractArray, seen)
+    err = _fits_size(size(p), size(ref))
+    (err !== nothing || isbitstype(eltype(p)) || _seen!(seen, p, ref)) && return err
+    for i in eachindex(p)
+        # A slot undefined on either side is not compared.
+        (isassigned(p, i) && isassigned(ref, i)) || continue
+        err = _fits_slot(p[i], ref[i], eltype(p), seen)
+        err === nothing || return err
+    end
+    return nothing
+end
+
+function _fits(p::IdDict, ref::IdDict, seen)
+    _seen!(seen, p, ref) && return nothing
+    for (k, v) in p
+        haskey(ref, k) || continue
+        err = _fits_slot(v, ref[k], valtype(p), seen)
+        err === nothing || return err
+    end
+    return nothing
+end
+
+function _fits(p, ref::Union{Tuple,NamedTuple,Tangent,MutableTangent}, seen)
+    ismutable(p) && _seen!(seen, p, ref) && return nothing
+    return _fits_fields(p, ref, seen)
+end
+
+@generated function _fits_fields(p::P, ref, seen) where {P}
+    checks = map(1:fieldcount(P)) do n
+        quote
+            if isdefined(p, $n)
+                err = _fits_slot(getfield(p, $n), _field_ref(ref, $n), $(fieldtype(P, n)), seen)
+                err === nothing || return err
+            end
+        end
+    end
+    return Expr(:block, checks..., :(return nothing))
+end
+
+_fits_size(got, expected) = got == expected ? nothing : (:nested_size, expected, got)
+
+# A slot of abstract type `S` can hold a value whose tangent type differs from the one the
+# cache was prepared for, so check it before the sizes.
+function _fits_slot(p, ref, ::Type{S}, seen) where {S}
+    ref === nothing && return nothing
+    if !isconcretetype(S)
+        T = ref isa Pair ? ref.first : typeof(ref)
+        P = typeof(p)
+        tangent_type(P) === T ||
+            return (:nested_type, T, "$(tangent_type(P)) (a value of type $P)")
+        ref isa Pair && (ref = ref.second)
+    end
+    return _fits(p, ref, seen)
+end
+
+_field_ref(ref::Union{Tuple,NamedTuple}, n) = ref[n]
+function _field_ref(ref::Union{Tangent,MutableTangent}, n)
+    t = getfield(ref.fields, n)
+    return t isa PossiblyUninitTangent ? (is_init(t) ? val(t) : nothing) : t
+end
+
+# Each (primal, reference) pair is compared once, so cycles terminate while an object that
+# appears at several positions is still compared against each position's reference.
+_seen!(::Nothing, p, ref) = false
+function _seen!(seen::Base.IdSet{Any}, p, ref)
+    (p, ref) in seen && return true
+    push!(seen, (p, ref))
+    return false
+end
+
+# The sizes of the arrays `x` reaches, shaped like its tangent: `Dims` for a bits-element
+# array, an `Array{Any}` of element records otherwise, a `Tuple` of field records for a
+# struct, and `tangent type => record` in a slot of abstract type. `nothing` marks no arrays.
+function _size_record(x, seen::IdDict{Any,Any})
+    if _sized_at_top(typeof(x))
+        x isa _BuiltinArrays || return nothing
+        return tangent_type(eltype(x)) == NoTangent ? nothing : size(x)
+    elseif x isa _BuiltinArrays
+        haskey(seen, x) && return seen[x]
+        rec = seen[x] = fill!(Array{Any}(undef, size(x)), nothing)
+        for i in eachindex(x)
+            isassigned(x, i) && (rec[i] = _size_record_slot(x[i], eltype(x), seen))
+        end
+        return rec
+    elseif x isa IdDict
+        haskey(seen, x) && return seen[x]
+        rec = seen[x] = IdDict{Any,Any}()
+        for (k, v) in x
+            rec[k] = _size_record_slot(v, valtype(x), seen)
+        end
+        return rec
+    end
+    nfields(x) == 0 && return nothing
+    if ismutable(x)
+        # A cycle back to `x` before its record is complete records nothing.
+        haskey(seen, x) && return seen[x]
+        seen[x] = nothing
+    end
+    rec = ntuple(nfields(x)) do n
+        if isdefined(x, n)
+            _size_record_slot(getfield(x, n), fieldtype(typeof(x), n), seen)
+        else
+            nothing
+        end
+    end
+    ismutable(x) && (seen[x] = rec)
+    return rec
+end
+
+function _size_record_slot(x, ::Type{S}, seen) where {S}
+    rec = _size_record(x, seen)
+    return isconcretetype(S) ? rec : tangent_type(typeof(x)) => rec
 end
 
 # fcache gradient bookkeeping
@@ -1712,13 +1890,9 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     gradient_chunk_size_auto = requested_chunk_size == 0
     chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
-        else
-            PreparedCacheInputSpec(typeof(x), ())
-        end
-    end
+    input_tangents = config.friendly_tangents ? tuple_map(zero_tangent, fx) : nothing
+    storage = something(input_tangents, map(Returns(nothing), fx))
+    input_specs = _prepared_cache_input_specs(fx, storage)
     gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
         if gradient_chunk_size_auto
             min(total_dof, _CHUNK_NFWD_MAX_LANES)
@@ -1728,7 +1902,6 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     end
     output_primal = nothing
     if config.friendly_tangents
-        input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
         return ForwardCache(
             rule,
@@ -2057,6 +2230,10 @@ end
 Returns a `Dual` containing the result of applying forward-mode AD to compute the (Fréchet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
+    and `x` must be of the same size and shape as those used to construct the `cache`.
 """
 # Derivative dispatch summary for `value_and_derivative!!(cache, ...)`:
 # - `value_and_derivative!!(cache, duals...)`: native/internal tangent interface;

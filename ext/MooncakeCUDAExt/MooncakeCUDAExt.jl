@@ -118,6 +118,7 @@ const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle
 # Copy GPU storage through CUDA; generic struct copying would descend into GPU contexts.
 Mooncake._copy_output(x::CuArray) = copy(x)
 function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuArray}
+    size(dst) == size(src) || return copy(src)
     copyto!(dst, src)
     return dst
 end
