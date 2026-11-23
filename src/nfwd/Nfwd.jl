@@ -1540,4 +1540,515 @@ end
 @inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
 @inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
 
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualArray{Element,N,D,A,Wrapped,B}` is the canonical array V.
+# The primal aliases user storage and remains usable by BLAS/LAPACK; partials are slot-local.
+# B = _block_type(A) holds lanes in element-major shape (N, size(primal)...), so each
+# element's lanes are contiguous. Memory primals use rank-2 blocks.
+# Wrapped is NDual{T,N} for real T, Complex{NDual{T,N}} for Complex{T}; element access
+# constructs it lazily while the AbstractArray supertype preserves generic dispatch.
+# Lane views are strided; consumers needing dense arrays (ccall/pointer/setfield!) must use
+# the block.
+
+export NDualArray
+const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
+# The coherent wrapped-element type for an `NDualArray` of `Element` at width `N` — what
+# `getindex` actually returns. Used by the inner constructor to reject an incoherent `Wrapped`.
+@inline _wrapped_eltype(::Type{Element}, ::Val{N}) where {Element<:IEEEFloat,N} = NDual{
+    Element,N
+}
+@inline function _wrapped_eltype(
+    ::Type{Element}, ::Val{N}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    return Complex{NDual{T,N}}
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# `PartialsBlock{T, D}` — the element-major partials block, one type on every supported Julia.
+#
+# A header over a flat Vector keeps storage resizable on Julia 1.10, where Base.reshape would
+# mark it shared; the trailing dimension follows the parent's length. `DenseArray` keeps
+# StridedArray/BLAS dispatch.
+
+struct PartialsBlock{T,D} <: DenseArray{T,D}
+    parent::Vector{T}
+    dims::NTuple{D,Int}
+end
+@inline function PartialsBlock{T,D}(::UndefInitializer, dims::Vararg{Int,D}) where {T,D}
+    return PartialsBlock{T,D}(Vector{T}(undef, prod(dims)), dims)
+end
+
+# `dims` with the trailing entry recomputed from the parent's current length. A zero leading
+# product means an empty block, which never grows, so the stored entry stands.
+@inline function _derived_dims(dims::NTuple{D,Int}, len::Int) where {D}
+    lead = 1
+    @inbounds for i in 1:(D - 1)
+        lead *= dims[i]
+    end
+    lead == 0 && return dims
+    return (Base.front(dims)..., len ÷ lead)
+end
+
+@inline function Base.size(b::PartialsBlock)
+    return _derived_dims(getfield(b, :dims), length(getfield(b, :parent)))
+end
+Base.length(b::PartialsBlock) = length(getfield(b, :parent))
+Base.IndexStyle(::Type{<:PartialsBlock}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(b::PartialsBlock, i::Int) = getfield(b, :parent)[i]
+Base.@propagate_inbounds function Base.setindex!(b::PartialsBlock, v, i::Int)
+    getfield(b, :parent)[i] = v
+    return b
+end
+Base.strides(b::PartialsBlock) = Base.size_to_strides(1, size(b)...)
+Base.elsize(::Type{<:PartialsBlock{T}}) where {T} = sizeof(T)
+# `cconvert` hands a `ccall` the parent `Array` rather than the block, so the argument the GC roots
+# is a real heap object and the block header itself need never be boxed.
+Base.cconvert(::Type{Ptr{T}}, b::PartialsBlock{T}) where {T} = getfield(b, :parent)
+function Base.unsafe_convert(::Type{Ptr{T}}, b::PartialsBlock{T}) where {T}
+    return Base.unsafe_convert(Ptr{T}, getfield(b, :parent))
+end
+Base.dataids(b::PartialsBlock) = Base.dataids(getfield(b, :parent))
+Base.copy(b::PartialsBlock) = PartialsBlock(copy(getfield(b, :parent)), getfield(b, :dims))
+Base.fill!(b::PartialsBlock, x) = (fill!(getfield(b, :parent), x); b)
+function Base.convert(::Type{PartialsBlock{S,D}}, b::PartialsBlock{T,D}) where {S,T,D}
+    return PartialsBlock{S,D}(convert(Vector{S}, getfield(b, :parent)), getfield(b, :dims))
+end
+# Reshaping a block is a new header over the same parent, so it neither copies nor marks the
+# parent shared (which would break the resize primitives on 1.10).
+function Base.reshape(b::PartialsBlock{T}, dims::NTuple{D,Int}) where {T,D}
+    prod(dims) == length(b) || throw(
+        DimensionMismatch("cannot reshape a block of length $(length(b)) to size $dims")
+    )
+    return PartialsBlock{T,D}(getfield(b, :parent), dims)
+end
+
+# Access the flat parent to keep hot stores on one array; the fallback serves CUDA blocks.
+@inline _block_storage(b::PartialsBlock) = getfield(b, :parent)
+@inline _block_storage(b) = b
+
+@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
+    # A window into `memblock` covering the `prod(dims) ÷ N` columns starting at the backing
+    # `Memory`'s slot `off`. The block is element-major, so slot j owns flat entries
+    # `(j-1)*N+1 : j*N`; sharing that storage is what makes a lane written through an `Array`'s V
+    # visible through its backing `Memory`'s V, mirroring the primal aliasing.
+    #
+    # Traced growth keeps the window aligned by following the primal's `:ref`/`:size`
+    # writes; a Base `resize!` of the block places data by its own length, so it drifts
+    # from the primal.
+    @inline function _window_block(
+        memblock::PartialsBlock{E,2}, ::Val{N}, off::Int, dims::NTuple{D,Int}
+    ) where {E,N,D}
+        parent_ref = getfield(getfield(memblock, :parent), :ref)
+        len = prod(dims)
+        ref = _block_column_ref(parent_ref, off, N)
+        return PartialsBlock{E,D}(Base.wrap(Array, ref, (len,))::Vector{E}, dims)
+    end
+end
+
+# Unknown containers must define _block_type rather than silently getting CPU storage.
+# Backends with different orientation override _lane_index, tangent_view and _lane_views.
+# Memory is one-dimensional and uses a rank-2 block.
+@inline _block_type(::Type{Array{Element,D}}) where {Element,D} = PartialsBlock{
+    Element,D + 1
+}
+@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
+    @inline _block_type(::Type{Memory{Element}}) where {Element} = PartialsBlock{Element,2}
+end
+@inline _block_dims(N::Int, p) = (N, size(p)...)
+@inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
+
+@inline _allocate_block(::Val{N}, p::A) where {N,A} = _block_type(A)(
+    undef, _block_dims(N, p)...
+)
+@static if VERSION >= v"1.11-rc4"
+    @inline function _allocate_block(w::Val{N}, p::Array{E}) where {N,E}
+        ref = getfield(p, :ref)
+        dims = _block_dims(N, p)
+        length(ref.mem) == length(p) && return _block_type(typeof(p))(undef, dims...)
+        # Growth can reuse either end of the backing Memory; unseeded capacity stays zero.
+        block = fill!(PartialsBlock{E,2}(undef, N, length(ref.mem)), zero(E))
+        return _window_block(block, w, Core.memoryrefoffset(ref), dims)
+    end
+end
+
+@noinline function _throw_block_shape_error(block_size, N, primal_size)
+    return throw(
+        DimensionMismatch(
+            "NDualArray partials block has size $block_size; expected $N lanes over a " *
+            "primal of size $primal_size.",
+        ),
+    )
+end
+
+struct NDualArray{
+    Element<:FloatOrComplex,
+    N,
+    D,
+    A<:AbstractArray{Element,D},
+    Wrapped,
+    B<:AbstractArray{Element},
+} <: AbstractArray{Wrapped,D}
+    primal::A
+    partials_block::B
+    # Enforce coherent element and block types; static checks constant-fold, shape is O(1).
+    function NDualArray{Element,N,D,A,Wrapped,B}(
+        primal::A, partials_block::B
+    ) where {
+        Element<:FloatOrComplex,
+        N,
+        D,
+        A<:AbstractArray{Element,D},
+        Wrapped,
+        B<:AbstractArray{Element},
+    }
+        Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
+            ArgumentError(
+                "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
+                "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
+            ),
+        )
+        B === _block_type(A) || throw(
+            ArgumentError(
+                "NDualArray block parameter $B is incoherent: expected " *
+                "$(_block_type(A)) for A=$A.",
+            ),
+        )
+        # Pass the size, not the block: passing a fresh block escapes it and allocates.
+        _block_shape_ok(partials_block, N, primal) ||
+            _throw_block_shape_error(size(partials_block), N, size(primal))
+        return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
+    end
+end
+
+# Pack per-lane same-shape arrays into a fresh element-major block: lane `k` of element
+# `j` lands at linear block index `(j - 1) * N + k` (the block's leading dim is the lane).
+# Every block packer calls this, so no seed shape can leave a partial unwritten.
+function _check_seed_axes(p, ts)
+    for t in ts
+        axes(t) == axes(p) || throw(
+            DimensionMismatch(
+                "a seed with axes $(axes(t)) cannot carry the partials of a primal with " *
+                "axes $(axes(p))",
+            ),
+        )
+    end
+end
+@inline function _pack_block(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element,N,A<:AbstractArray{Element}}
+    _check_seed_axes(p, ts)
+    block = _allocate_block(Val(N), p)
+    @inbounds for k in 1:N
+        tk = ts[k]
+        for j in 1:length(p)
+            block[(j - 1) * N + k] = tk[j]
+        end
+    end
+    return block
+end
+
+# Per-lane arrays are packed into a fresh block. The 5-/6-parameter forms keep the caller's
+# `Wrapped` and `B` so the inner constructor still rejects incoherent ones.
+@inline function NDualArray{Element,N,D,A}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:FloatOrComplex,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, _pack_block(p, ts)
+    )
+end
+@inline function NDualArray{Element,N,D,A,Wrapped}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:FloatOrComplex,N,D,A<:AbstractArray{Element,D},Wrapped}
+    return NDualArray{Element,N,D,A,Wrapped,_block_type(A)}(p, _pack_block(p, ts))
+end
+@inline function NDualArray{Element,N,D,A,Wrapped,B}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:FloatOrComplex,N,D,A<:AbstractArray{Element,D},Wrapped,B}
+    return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
+end
+
+# Block-accepting outer constructor: adopt an existing element-major block AS the partials
+# storage (no copy — the caller passes a block deliberately, usually to share storage with
+# another V so mutations through either are visible through both).
+@inline function NDualArray{Element,N,D,A}(
+    p::A, block::AbstractArray{Element}
+) where {Element<:FloatOrComplex,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
+
+# Zero-init seed: allocate a fresh slot-local zero block matching the primal.
+@inline function NDualArray{Element,N,D,A}(
+    p::A
+) where {Element<:FloatOrComplex,N,D,A<:AbstractArray{Element,D}}
+    block = fill!(_allocate_block(Val(N), p), zero(Element))
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
+
+# The canonical NDualArray V-type for a primal array type `A` at width `N` — the single source
+# of the type's parameter arity.
+@inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:FloatOrComplex,D,A<:AbstractArray{Element,D},N} = NDualArray{
+    Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
+}
+
+# Centralise element-major lane addressing here. Duplicating the formula would
+# silently address the wrong lane.
+@inline _lane_index(::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} =
+    (elem - 1) * N + lane
+
+# Per-lane strided views write through to the block; tangent_view builds just one lane.
+@inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
+    _check_block(a)
+    block = getfield(a, :partials_block)
+    colons = ntuple(d -> axes(getfield(a, :primal), d), Val(D))
+    return ntuple(k -> view(block, k, colons...), Val(N))
+end
+
+# Write-through lane view.
+@inline function tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D}
+    _check_block(a)
+    return view(getfield(a, :partials_block), k, axes(getfield(a, :primal))...)
+end
+
+# Shape follows the primal; resize mutates primal and block together while preserving
+# the immutable wrapper's field identities.
+Base.size(a::NDualArray) = size(a.primal)
+function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
+    return IndexStyle(A)
+end
+
+# The primal must be resized only through forward rules: matching lengths miss `pop!`
+# then `push!` or `popfirst!`, which is harmless only for a global's all-zero partials.
+@inline function _check_block(a::NDualArray{Element,N}) where {Element,N}
+    block = _block_storage(getfield(a, :partials_block))
+    entries = length(block)
+    len = length(getfield(a, :primal))
+    if getfield(a, :primal) isa Vector && block isa Vector
+        entries < N * len && _grow_block!(block, N * len)
+    else
+        _check_storage(entries, N, len)
+    end
+    return nothing
+end
+@noinline function _grow_block!(block, len)
+    old = length(block)
+    resize!(block, len)
+    fill!(view(block, (old + 1):len), zero(eltype(block)))
+    return nothing
+end
+# Element-wise V arrays share the check with `N == 1` and one V entry per element.
+@inline function _check_storage(entries::Int, N::Int, len::Int)
+    entries >= N * len || _throw_storage_mismatch(entries, N, len)
+    return nothing
+end
+@noinline function _throw_storage_mismatch(entries::Int, N::Int, len::Int)
+    throw(
+        ArgumentError(
+            "The forward derivative storage covers $(entries ÷ N) elements but the array " *
+            "now has $len: it was resized outside differentiated code after its " *
+            "derivative storage was built (e.g. a global resized between calls). Rebuild " *
+            "the rule or cache.",
+        ),
+    )
+end
+
+# The block columns covering the primal. A primal shrunk outside differentiated code leaves
+# the block longer; copying the covered columns gives every reader the primal's shape.
+@inline function _covered_block(a::NDualArray{Element,N}) where {Element,N}
+    _check_block(a)
+    b = getfield(a, :partials_block)
+    p = getfield(a, :primal)
+    _block_shape_ok(b, N, p) && return b
+    return typeof(b)(vec(collect(view(b, :, axes(p)...))), (N, size(p)...))
+end
+
+# The primal's linear index for `i`, which `_lane_index` turns into a block address.
+# `LinearIndices` accepts both the linear and the cartesian index forms and bounds-checks them,
+# so the block access itself can be `@inbounds`.
+@inline function _linear_elem(a::NDualArray, i::Vararg{Int})
+    _check_block(a)
+    return LinearIndices(getfield(a, :primal))[i...]
+end
+
+# Assemble the scalar V of one element from its primal and its primal-typed lanes.
+@inline _scalar_ndual(y::T, parts::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{T,N}(
+    y, parts
+)
+@inline function _scalar_ndual(
+    y::Complex{R}, parts::NTuple{N,Complex{R}}
+) where {R<:IEEEFloat,N}
+    return Complex(
+        NDual{R,N}(real(y), ntuple(k -> real(parts[k]), Val(N))),
+        NDual{R,N}(imag(y), ntuple(k -> imag(parts[k]), Val(N))),
+    )
+end
+
+# _scalar_ndual handles real/complex elements; setindex! dispatches on their distinct V types.
+@inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    return _scalar_ndual(
+        a.primal[i...], ntuple(k -> @inbounds(block[_lane_index(a, e, k)]), Val(N))
+    )
+end
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
+) where {Element<:IEEEFloat,N}
+    a.primal[i...] = x.value
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = x.partials[k]
+    end
+    return a
+end
+# Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
+# and the block hold `Complex{T}`, so split/recombine the real and imaginary parts.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.re.value, x.im.value)
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = Complex(x.re.partials[k], x.im.partials[k])
+    end
+    return a
+end
+# A real dual stored into a complex array (e.g. `copyto!(::complex, ::real)`) promotes: the
+# imaginary part of the value and of every partial is zero.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.value)
+    block = _block_storage(getfield(a, :partials_block))
+    e = _linear_elem(a, i...)
+    @inbounds for k in 1:N
+        block[_lane_index(a, e, k)] = Complex(x.partials[k])
+    end
+    return a
+end
+# No element-type convert: it would copy the primal and sever user-storage aliasing.
+# Converting stores must rebuild V over the destination,
+# or fail with MethodError. Scalar NDual conversion is safe because storage is inline.
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualRef{P,N}` keeps partials in a separate Ref for parallel raw-pointer access.
+# Its distinct type prevents generic struct re-lifting; seeds, materialisation, field
+# access and pointer rules handle it explicitly.
+export NDualRef
+struct NDualRef{P<:FloatOrComplex,N}
+    partials::Base.RefValue{NTuple{N,P}}
+    # Suppress the implicit constructor: at N=0 its unbound P would fail Aqua.
+    function NDualRef{P,N}(partials::Base.RefValue{NTuple{N,P}}) where {P<:FloatOrComplex,N}
+        return new{P,N}(partials)
+    end
+end
+# Zero-init seed: fresh slot-local partials.
+@inline function NDualRef{P,N}() where {P<:FloatOrComplex,N}
+    return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> zero(P), Val(N))))
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualMemoryRef{Element,N,M}` covers MemoryRef, which is not an AbstractArray.
+# Keep the primal ref usable by ccall and the shared (N,ncols) partials block as a flat
+# backing ref at column 1, lane 1. col selects the element; memoryrefnew advances it by i-1.
+# Sharing with Memory/Array V preserves mutation aliasing. Column col+j pairs with primal
+# slot memoryrefoffset(primal)+j: Memory factories cover the full backing, whereas
+# Array-projected refs stop at the array's logical end.
+
+@static if VERSION >= v"1.11-rc4"
+    export NDualMemoryRef
+
+    # A flat MemoryRef keeps the V type rank-independent and Array.ref projection alloc-free.
+    # Reconstruct shaped blocks only for bulk operations, off the hot path.
+    struct NDualMemoryRef{Element<:FloatOrComplex,N,M<:Memory{Element}}
+        primal::MemoryRef{Element}
+        partials_ref::MemoryRef{Element}
+        ncols::Int
+        col::Int
+        function NDualMemoryRef{Element,N,M}(
+            primal::MemoryRef{Element},
+            partials_ref::MemoryRef{Element},
+            ncols::Int,
+            col::Int,
+        ) where {Element<:FloatOrComplex,N,M<:Memory{Element}}
+            # Validate against seeded columns, not backing capacity: Array refs may have slack.
+            # Column ncols+1 is formable but not dereferenceable, including an empty array's ref.
+            1 <= col <= ncols + 1 || throw(
+                ArgumentError(
+                    "NDualMemoryRef column $col is past the $ncols partials columns. The " *
+                    "offset is inside the backing `Memory` but past the seeded array's " *
+                    "length, so there is no partials column for it.",
+                ),
+            )
+            return new{Element,N,M}(primal, partials_ref, ncols, col)
+        end
+    end
+
+    # Convenience for the block-shaped construction sites:
+    # validate the block's lane rows, then adopt its backing ref and column count.
+    @inline function NDualMemoryRef{Element,N,M}(
+        primal::MemoryRef{Element}, block::PartialsBlock{Element,2}, col::Int
+    ) where {Element<:FloatOrComplex,N,M<:Memory{Element}}
+        size(block, 1) == N || throw(
+            DimensionMismatch(
+                "NDualMemoryRef partials block has $(size(block, 1)) rows; " *
+                "expected the chunk width N = $N (lane-leading layout).",
+            ),
+        )
+        return NDualMemoryRef{Element,N,M}(
+            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
+        )
+    end
+
+    # Zero-init seed: a fresh zero block covering the whole backing `Memory` (column j ↔ mem
+    # slot j), so the referenced element's column is the ref's offset. Element types in
+    # `FloatOrComplex` are bits types, so undef iteration is not needed.
+    @inline function NDualMemoryRef{Element,N,M}(
+        p::MemoryRef{Element}
+    ) where {Element<:FloatOrComplex,N,M<:Memory{Element}}
+        block = fill!(PartialsBlock{Element,2}(undef, N, length(p.mem)), zero(Element))
+        return NDualMemoryRef{Element,N,M}(p, block, Core.memoryrefoffset(p))
+    end
+
+    # Column col starts at lane 1; n columns occupy n*N contiguous entries.
+    # Skip bounds checks: construction confines col to 1:ncols+1 and lanes stay in 1:N.
+    # Dereferencing the end ref is primal UB; checking every lane would tax scalar access.
+    @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
+        col == 1 && return partials_ref
+        return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, false)
+    end
+
+    # Read the `N` contiguous lanes starting at `colref` (position 1 == `colref` itself), and
+    # write them. Alloc-free (`memoryref` ops + an isbits `ntuple`).
+    @inline function _read_lanes(colref::MemoryRef, ::Val{N}) where {N}
+        return ntuple(
+            k -> Core.memoryrefget(Core.memoryrefnew(colref, k, false), :not_atomic, false),
+            Val(N),
+        )
+    end
+    @inline function _write_lanes!(colref::MemoryRef, vals, ::Val{N}) where {N}
+        for k in 1:N
+            Core.memoryrefset!(
+                Core.memoryrefnew(colref, k, false), vals[k], :not_atomic, false
+            )
+        end
+        return nothing
+    end
+
+    # Reconstruct the whole `(N, ncols)` block sharing the ref's backing (bulk/interface ops
+    # only — off the hot path). `partials_ref` is col-1 lane-1, so wrapping `N * ncols` entries
+    # from it reproduces the original block exactly.
+    @inline function _reconstruct_block(v::NDualMemoryRef{E,N}) where {E,N}
+        ncols = getfield(v, :ncols)
+        flat = Base.wrap(Array, getfield(v, :partials_ref), (N * ncols,))::Vector{E}
+        return PartialsBlock{E,2}(flat, (N, ncols))
+    end
+end
+
 end

@@ -827,3 +827,10 @@ end
     @test _nfwd_input_dof(Float32[1, 2, 3]) == 3
     @test _nfwd_input_dof(1.0f0 + 2.0f0im) == 2
 end
+
+@testset "PartialsBlock reshape" begin
+    b = Nfwd.PartialsBlock{Float64,2}(undef, 2, 3)
+    @test size(reshape(b, (3, 2))) == (3, 2)
+    @test_throws DimensionMismatch reshape(b, (4, 1))
+    @test_throws DimensionMismatch reshape(b, (5,))
+end
