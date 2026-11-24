@@ -248,7 +248,7 @@ end
 ) where {N,names,T<:Tuple}
     # Non-differentiable NamedTuples collapse to NoDual, matching reverse and kwargs seeds.
     tangent_type(NamedTuple{names,T}) === NoTangent && return NoDual
-    # An abstract field widens `DT` to `Any`, and `NamedTuple{names,Any}` is invalid.
+    # As in `tangent_type`: `Any` unless `DT` is concrete, which an abstract field prevents.
     DT = dual_type(Val(N), T)
     return isconcretetype(DT) ? NamedTuple{names,DT} : Any
 end
