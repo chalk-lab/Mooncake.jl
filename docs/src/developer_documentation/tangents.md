@@ -23,3 +23,11 @@ Mooncake.TestUtils.test_data
 ```
 
 If all the tests in these functions pass, then you have satisfied the interface.
+
+## Forward-mode representation
+
+Forward rules use a separate slot and representation contract:
+
+```@docs; canonical=true
+Mooncake.Lifted
+```
