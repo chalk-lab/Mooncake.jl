@@ -1805,7 +1805,9 @@ function nvargs(pb::Pullback{sig}) where {sig}
     return Val{_isva(pb) ? _nargs(pb) - length(sig.parameters) + 1 : 0}
 end
 
-@inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[](dy), nvargs(pb)())
+@inline function (pb::Pullback)(dy)
+    return __flatten_varargs(_isva(pb), __call_rule(pb.pb_oc[], (dy,)), nvargs(pb)())
+end
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
@@ -1838,20 +1840,7 @@ end
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
-end
-
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
-# type parameters; the Pullback's nargs comes from the number of args at the call site.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
-    ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return __call_rule_erased!(
-            Base.inferencebarrier(rule), args
-        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
+    return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
 """
@@ -2899,28 +2888,6 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
 end
 
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
-
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
-    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
-    @inline function __call_rule(
-        rule::LazyDerivedRule{
-            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
-        },
-        args::A,
-    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(
-            args...
-        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
-    end
-end
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)

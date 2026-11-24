@@ -167,15 +167,6 @@ for `DebugRRule` for details.
     return y, DebugPullback(pb, primal(y), map(primal, x))
 end
 
-@static if VERSION < v"1.11-"
-    # DebugFRule and DebugRRule do not contain OpaqueClosure directly; their __call__
-    # methods delegate to the inner rule which handles OC safety via its own
-    # __call_rule specialisation. Calling them directly is safe on Julia 1.10 and avoids
-    # a second unnecessary inferencebarrier.
-    @inline __call_rule(rule::DebugFRule, args) = rule(args...)
-    @inline __call_rule(rule::DebugRRule, args) = rule(args...)
-end
-
 # DerivedRule adds a method to this function.
 verify_args(_, x) = nothing
 
