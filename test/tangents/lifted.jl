@@ -6,11 +6,19 @@ mutable struct LiftedTest_RefF
     v::Float64
 end
 
-# The same custom reverse tangent with NO `dual_type`: the structural lift must refuse it.
+# A custom reverse tangent with no `dual_type`: the structural lift must refuse it.
 struct LiftedTest_CustomTangent
     id::Int
 end
 Mooncake.tangent_type(::Type{LiftedTest_CustomTangent}) = LiftedTest_CustomTangent
+struct LiftedTest_FloatInt <: Integer
+    x::Float64
+end
+mutable struct LiftedTest_Partial
+    a::Float64
+    b::Vector{Float64}
+    LiftedTest_Partial(a) = new(a)
+end
 
 using Mooncake:
     Lifted,
@@ -122,6 +130,62 @@ const NDAC_VecC64 = NDualArray{
         @test dual_type(Val(1), Union{}) === Union{}
         @test dual_type(Val(3), Union{}) === Union{}
         @test dual_type(Val(2), Tuple{}) === NoDual
+    end
+
+    @testset "non-concrete, fieldless and non-differentiable primals" begin
+        # Tuple unions and `Vararg` tuples have no single element list to recurse over.
+        @test dual_type(Val(2), Union{Tuple{Float64},Tuple{Float64,Float64}}) === Any
+        @test dual_type(Val(2), Union{Tuple{},Tuple{Float64}}) === Any
+        @test dual_type(Val(2), Union{Tuple{T},Tuple{T,T}} where {T<:AbstractFloat}) === Any
+        @test dual_type(Val(2), Tuple{Vararg{Float64}}) === Any
+        # A non-concrete tuple admits its wholly non-differentiable concretisations.
+        @test dual_type(Val(2), Tuple{Real}) === Union{NoDual,Tuple{Any}}
+        @test dual_type(Val(2), Integer) === Any
+        @test dual_type(Val(2), Union{Float64,Nothing}) === Any
+        nt = @NamedTuple{a::Float64, b::Any}
+        @test dual_type(Val(2), nt) === Any
+        @test lifted_type(Val(2), nt) == (Lifted{nt,2,W} where {W})
+        # `NoDual` exactly where reverse mode has `NoTangent`.
+        for P in (
+            Bool,
+            Int8,
+            UInt128,
+            BigInt,
+            Char,
+            Symbol,
+            Nothing,
+            DataType,
+            TypeVar,
+            Module,
+            Expr,
+            Cstring,
+            Cwstring,
+        )
+            @test tangent_type(P) === NoTangent
+            @test dual_type(Val(2), P) === NoDual
+        end
+        @test dual_type(Val(2), LiftedTest_FloatInt) ===
+            ImmutableDual{@NamedTuple{x::ND{Float64,2}}}
+        @test dual_type(Val(2), LiftedTest_Partial) === MutableDual{
+            @NamedTuple{a::ND{Float64,2},b::Mooncake.PossiblyUninitTangent{NDA_VecF64}}
+        }
+        # A fieldless differentiable type carries one tangent per lane.
+        @test dual_type(Val(2), Core.SimpleVector) === NTuple{2,Vector{Any}}
+        if isdefined(Core, :BFloat16)
+            @test dual_type(Val(2), Core.BFloat16) === NTuple{2,Core.BFloat16}
+        end
+        # Only a union of non-differentiable members splits into its members' slots.
+        @test lifted_type(Val(2), Union{Int,Nothing}) ===
+            Union{Lifted{Int,2,NoDual},Lifted{Nothing,2,NoDual}}
+        @test lifted_type(Val(2), Union{Float64,Nothing}) ==
+            (Lifted{T,2,V} where {T<:Union{Float64,Nothing},V})
+    end
+
+    @testset "a Ptr slot holds PointerDual lanes of its width" begin
+        p = Ptr{Float64}(16)
+        @test Lifted{Ptr{Float64},2}(p, (p, p)) isa lifted_type(Val(2), Ptr{Float64})
+        @test_throws ArgumentError Lifted{Ptr{Float64},2}(p, (p,))
+        @test_throws ArgumentError Lifted{Ptr{Float64},2,NoDual}(p, NoDual())
     end
 
     @testset "a custom reverse tangent without a `dual_type` is refused" begin
