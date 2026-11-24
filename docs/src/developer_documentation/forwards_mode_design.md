@@ -53,21 +53,29 @@ end
 ```
 it must always hold that `T = tangent_type(P)`.
 
+Forward rules written against `Lifted` slots use a separate representation:
 `Mooncake.dual_type(Val(N), P)` gives the canonical width-`N` forward
-representation of a primal of type `P`; `lifted_type(Val(N), P)` gives the
+representation of a primal of type `P`, and `lifted_type(Val(N), P)` gives the
 wider annotation for a slot holding it.
 
 The representation depends on the primal type:
 
-| Primal type                                       | Forward representation                          |
-|---------------------------------------------------|-------------------------------------------------|
-| IEEE floating-point scalar `P`                    | `NDual{P,N}`, containing the value and partials |
-| `Complex{P}` with IEEE floating-point `P`         | `Complex{NDual{P,N}}`                           |
-| `Array{T,D}` with concrete `T <: FloatOrComplex`  | `NDualArray`                                    |
-| Other `Array{T,D}`                                | `Array{dual_type(Val(N), T),D}`                 |
-| Differentiable tuple or named tuple               | Per-element forward representations             |
-| Struct with the default structural representation | `ImmutableDual` or `MutableDual` over fields    |
-| Type whose tangent is `NoTangent`                 | `NoDual`                                        |
+| Primal type                                            | Forward representation                          |
+|--------------------------------------------------------|-------------------------------------------------|
+| IEEE floating-point scalar `P`                         | `NDual{P,N}`, containing the value and partials |
+| `Complex{P}` with IEEE floating-point `P`              | `Complex{NDual{P,N}}`                           |
+| `Array{T,D}` with concrete `T <: FloatOrComplex`       | `NDualArray`                                    |
+| `Base.RefValue{T}` with concrete `T <: FloatOrComplex` | `NDualRef{T,N}`                                 |
+| Other `Array{T,D}`                                     | `Array{dual_type(Val(N), T),D}`                 |
+| `Ptr{T}`                                               | `PointerDual{N}`                                |
+| Differentiable tuple or named tuple                    | Per-element forward representations             |
+| Struct with the default structural representation      | `ImmutableDual` or `MutableDual` over fields    |
+| Fieldless differentiable `P`, e.g. `Core.BFloat16`     | `NTuple{N,tangent_type(P)}`, one per lane       |
+| Concrete type whose tangent is `NoTangent`             | `NoDual`                                        |
+
+The representation of a struct field that may be uninitialised is wrapped in
+`PossiblyUninitTangent`, as in the struct's tangent type. A non-concrete primal
+type gives an upper bound, often `Any`.
 
 `FloatOrComplex` includes IEEE floats and their complex counterparts. Thus a
 `Vector{Int}` has a `Vector{NoDual}` representation, while a

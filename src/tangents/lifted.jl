@@ -5,10 +5,10 @@
 """
     ImmutableDual{T<:NamedTuple}
 
-Single-field immutable wrapper used as the canonical V for *immutable struct*
-primals under the forward-mode structural lift. Its `fields::T` holds
-the recursive `NamedTuple{fieldnames(P), Tuple{V_i...}}` of canonical field
-Vs, where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
+Forward representation of an immutable struct `P` under the structural lift. Its
+`fields::T` is a `NamedTuple{fieldnames(P)}` whose `i`th entry has type
+`V_i = dual_type(Val(N), fieldtype(P, i))`, or `PossiblyUninitTangent{V_i}` where the field
+may be uninitialised, as in `tangent_type`.
 """
 struct ImmutableDual{T<:NamedTuple}
     fields::T
@@ -178,11 +178,21 @@ Return the canonical `N`-width forward-mode value type for a primal of
 type `P`. This is the type of the inner `V` carried by a
 `Lifted{P, N, V}` slot.
 
-Shapes: `NDual{P,N}` for a float, `Complex{NDual{R,N}}` for a complex float; `NDualArray` for a
-float or complex `Array` (and `Memory` on 1.11+), whose primal aliases user storage and whose
-partials are a slot-local `(N, size...)` block; `NDualMemoryRef` for a `MemoryRef`; element-wise
-for tuples, named tuples and other arrays; `ImmutableDual`/`MutableDual` over the per-field
-`NamedTuple` for other structs; `NoDual` where `tangent_type(P) === NoTangent`.
+Shapes:
+
+- `NDual{P,N}` for a float `P`; `Complex{NDual{R,N}}` for a complex float `Complex{R}`;
+- for a concrete float or complex element type: `NDualArray` for an `Array` (and `Memory` on
+  1.11+), whose primal aliases user storage and whose partials are a slot-local
+  `(N, size...)` block; `NDualMemoryRef` for a `MemoryRef`; `NDualRef` for a `Base.RefValue`;
+- element-wise for other `Array`, `Memory` and `MemoryRef` types, tuples and named tuples;
+- `PointerDual{N}` for a `Ptr`;
+- `ImmutableDual`/`MutableDual` over the per-field `NamedTuple` for other structs, with
+  `PossiblyUninitTangent` around a field that may be uninitialised;
+- `NTuple{N,tangent_type(P)}`, one tangent per lane, for a fieldless `P` whose tangent is not
+  `NoTangent`, such as `Core.BFloat16`, which has no `NDual`;
+- `NoDual` for a concrete `P` whose tangent is `NoTangent`.
+
+A non-concrete `P` gives an upper bound, often `Any`.
 """
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
     return isconcretetype(P) ? NDual{P,N} : Any
@@ -260,14 +270,14 @@ end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{NamedTuple{names,T}}
 ) where {N,names,T<:Tuple}
-    # Non-differentiable NamedTuples collapse to NoDual, matching reverse and kwargs seeds.
+    # Non-differentiable NamedTuples collapse to NoDual, matching reverse.
     tangent_type(NamedTuple{names,T}) === NoTangent && return NoDual
     # As in `tangent_type`: `Any` unless `DT` is concrete, which an abstract field prevents.
     DT = dual_type(Val(N), T)
     return isconcretetype(DT) ? NamedTuple{names,DT} : Any
 end
 @foldable @inline dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T} = PointerDual{N}
-# MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
+# MemoryRef canonical V (Julia 1.11+); `NDualMemoryRef` is defined in `src/nfwd/Nfwd.jl`.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
 # an NDualArray over `Memory{T}`: `Memory{T} → NDualArray{T, N, 1, Memory{T}}`.
 @static if VERSION >= v"1.11-rc4"
@@ -294,13 +304,10 @@ end
 end
 
 # Structural fallback: abstract P widens to Any; non-differentiable P gives NoDual.
-# Fields recurse uniformly, with seed factories coercing into the declared backing NamedTuple.
 @foldable @inline dual_type(w::Val, P::Type) = _dual_type(StructuralStorage(), w, P)
 @foldable @generated function _dual_type(
     ::StructuralStorage, ::Val{N}, ::Type{P}
 ) where {N,P}
-    # No union splitting, unlike `tangent_type`: `Lifted` is invariant in `P`, so a
-    # union-distributed V would let `PiNode`s lower a valid branch to `unreachable`.
     isconcretetype(P) || return Any
     # Resolve extension-overloadable tangent_type in the returned expression at the call
     # world. Only the world-independent structural skeleton belongs in the generator.
@@ -319,8 +326,8 @@ end
     end
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-    # Only a structural reverse tangent has a structural lift; a custom one would otherwise fail
-    # late at the reverse bridge. Deferred, so a later extension overload takes effect.
+    # Only a structural reverse tangent has a structural lift. Deferred, so a later extension
+    # overload takes effect.
     Tt = ismutabletype(P) ? :MutableTangent : :Tangent
     msg =
         "`$P` has a custom reverse tangent type but no `dual_type` method, and the structural " *
@@ -337,14 +344,6 @@ end
     )
 end
 
-"""
-    lifted_type(::Val{N}, ::Type{P}) -> Type
-
-Return the canonical `Lifted{P, N, V}` slot type for a primal of type `P`
-at width `N`. For concrete `P`, equals `Lifted{P, N, dual_type(Val(N), P)}`.
-
-Abstract `P` and the metatype kinds give a `UnionAll` slot, since `Lifted` is invariant in `P`.
-"""
 # Metatype kinds are concrete, but their runtime slots are `Lifted{Type{X}}`, which a bounded
 # slot cannot hold.
 @inline _is_metatype_kind(@nospecialize(T)) =
@@ -368,8 +367,8 @@ end
         (Lifted{T,N,V} where {T<:P,V})
     end
 end
-# True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so its
-# `lifted_type` is a concrete `NoDual`-V `Lifted` that union-splits safely (see `lifted_type` below).
+# True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so
+# `lifted_type` can split `U` into its members' slots.
 function _all_nodual_union_members(@nospecialize(U))
     if U isa Union
         _all_nodual_union_members(U.a) && _all_nodual_union_members(U.b)
@@ -378,14 +377,25 @@ function _all_nodual_union_members(@nospecialize(U))
     end
 end
 
-# Abstract P and metatypes need a UnionAll slot: Lifted is invariant in P.
 # @foldable preserves folding under coverage and exempts the phantom-P guard from
 # DispatchDoctor's unconditional static-parameter reads, as in the Tuple overload.
+"""
+    lifted_type(::Val{N}, ::Type{P}) -> Type
+
+Return the slot type for a primal of type `P` at width `N`.
+
+When `P` and `dual_type(Val(N), P)` are both concrete, this is
+`Lifted{P, N, dual_type(Val(N), P)}`, except for the metatype kinds `DataType`, `UnionAll`,
+`Union` and `Core.TypeofBottom`, whose runtime slots are `Lifted{Type{X}}`. `Type{X}` gives its
+exact slot, and a union of non-differentiable non-tuple types the union of its members' slots.
+Any other `P` except `Union{}` gives a `UnionAll` that leaves the unknown parameters free, since
+`Lifted` is invariant in `P` and `V`.
+"""
 @foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # A phantom `TypeVar` leaves `P` unbound.
     @isdefined(P) || return Lifted
-    # A union of non-differentiable members splits into concrete slots, which do not box; any
-    # other union keeps the UnionAll, as a split tripped an OpaqueClosure return assertion.
+    # A union of non-differentiable members splits into its members' slots, which do not box;
+    # any other union keeps the UnionAll, since splitting it trips an OpaqueClosure assertion.
     P isa Union &&
         _all_nodual_union_members(P) &&
         return Union{lifted_type(Val(N), P.a),lifted_type(Val(N), P.b)}
