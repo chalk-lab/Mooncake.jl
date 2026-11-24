@@ -190,11 +190,26 @@ for tuples, named tuples and other arrays; `ImmutableDual`/`MutableDual` over th
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
     return isconcretetype(P) ? NDual{P,N} : Any
 end
-# Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
-# in reverse mode, returning the forward-mode V sentinel `NoDual`.
+# Each member mirrors a `tangent_type` method returning `NoTangent`. Other `Integer` subtypes
+# can hold differentiable fields, so they take the structural method.
 @foldable @inline dual_type(
     ::Val{N},
-    ::Type{<:Union{Integer,Char,Symbol,Nothing,Type,TypeVar,Module,Expr,Cstring,Cwstring}},
+    ::Type{
+        <:Union{
+            Bool,
+            Base.BitInteger,
+            BigInt,
+            Char,
+            Symbol,
+            Nothing,
+            Type,
+            TypeVar,
+            Module,
+            Expr,
+            Cstring,
+            Cwstring,
+        },
+    },
 ) where {N} = NoDual
 # Bottom type, mirroring `tangent_type(Union{}) === Union{}` and
 # `lifted_type(Val(N), Union{}) === Union{}` (e.g. a Bottom-typed IR node after a
