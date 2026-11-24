@@ -67,30 +67,33 @@ Base.:(==)(x::PointerDual, y::PointerDual) = x.source === y.source && x.lanes ==
 """
     Lifted{P, N, V}
 
-Forward-mode slot wrapper for a primal value of type `P` and its canonical
-`N`-width forward representation `V`. Two fields:
+Forward-mode slot holding a primal of type `P` and its width-`N` forward representation `V`.
 
-- `primal::P` — slot-level back-reference to the user's primal value. For
-  mutable struct primals this aliases user storage; for immutable primals
-  it carries the same value. Where `rep` names the primal itself
-  (`NDualArray`, `NDualMemoryRef`) the constructor takes it from there, so the
-  two names cannot disagree.
-- `rep::V` — the canonical `N`-width forward representation. For
-  concrete runtime wrappers `V === dual_type(Val(N), P)`.
+- `primal::P`: the user's primal value; a mutable primal is aliased, not copied. Where `rep`
+  holds the primal itself (`NDualArray`, `NDualMemoryRef`), the constructor takes it from
+  `rep`, so the two cannot disagree.
+- `rep::V`: the forward representation. A caller of `Lifted{P, N, V}` must ensure that `V` is
+  `dual_type(Val(N), P)` when that is concrete, and a subtype of it otherwise. Only a `Ptr`
+  slot is checked: its `rep` must be a `PointerDual{N}`.
 
-Rules dispatch on `Lifted{P, N}` (V left abstract) and use `primal`,
-`tangent`, and per-lane extractors to access tangent data. Outputs are
-constructed via `Lifted{P_out, N}(primal_out, rep_out)`.
+Rules dispatch on `Lifted{P, N}` and read a slot with `primal` and `tangent`. They build
+outputs with `Lifted{P, N}(primal, rep)`, which infers `V`; given a type `X` as its primal,
+it sets `P` to `Type{X}`, whatever `P` the caller wrote.
 
-Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward
-mode. Executable closure tangents retain cached capture slots as an internal exception
-to the otherwise unnested representation.
+Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward mode.
 """
 struct Lifted{P,N,V}
     primal::P
     rep::V
-    # Inner, so every construction path routes through `_slot_primal`.
+    # Inner, so every construction path takes the `Ptr` check and `_slot_primal`.
     function Lifted{P,N,V}(primal, rep) where {P,N,V}
+        P <: Ptr &&
+            !(rep isa PointerDual{N}) &&
+            throw(
+                ArgumentError(
+                    "Pointer lanes must have width $N and one source element type."
+                ),
+            )
         return new{P,N,V}(_slot_primal(primal, rep), rep)
     end
 end
@@ -121,12 +124,6 @@ struct NoDual end
     return Lifted{P,N,V}(primal, rep)
 end
 
-@inline function Lifted{P,N}(p::P, rep::V) where {P<:Ptr,N,V}
-    rep isa PointerDual{N} || throw(
-        ArgumentError("Pointer lanes must have width $N and one source element type.")
-    )
-    return Lifted{P,N,V}(p, rep)
-end
 @inline function Lifted{P,N}(p::P, lanes::Tuple{Ptr{T},Vararg{Ptr{T}}}) where {P<:Ptr,N,T}
     return Lifted{P,N}(p, PointerDual(lanes))
 end
