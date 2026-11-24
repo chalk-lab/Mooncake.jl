@@ -229,6 +229,8 @@ end
     @isdefined(P) || return Any
     # First, so a non-concrete but non-differentiable tuple collapses as in reverse.
     tangent_type(P) === NoTangent && return NoDual
+    # A union of tuples has no single element list; `fieldcount` reports one member's.
+    Base.unwrap_unionall(P) isa Union && return Any
     # A `Vararg` tuple has no finite element list.
     Base.isvatuple(P) && return Any
     V = _dual_tuple_v(Val(N), P)
