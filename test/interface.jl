@@ -338,6 +338,136 @@ end
             )
         end
 
+        @testset "pullback cache output checks" begin
+            # The reverse pass during preparation undoes the `push!`es.
+            pushed(x) = push!(Float64[], x[1], x[2])
+            grown(x, n) = (x .*= 2; repeat(x, n))
+            retyped(x, n) = (x .*= 2; Any[n == 1 ? copy(x) : (x[1], x[2])])
+            nodiff(x, n) = (x .*= 2; Any[(1, Int32(1), :a)[n], 3 .* x])
+            num(x, n) = (x .*= 2; n == 1 ? x[1] : Float32(x[1]))
+            # Each leaves `b` or `[1]` undefined for `n == 2`.
+            foo(x, n) = (x .*= 2; n == 1 ? MutableFoo(x[1], 3 .* x) : MutableFoo(x[1]))
+            sfoo(x, n) = (x .*= 2; n == 1 ? StructFoo(x[1], 3 .* x) : StructFoo(x[1]))
+            slot(x, n) = (x .*= 2; n == 1 ? Any[3 .* x] : Vector{Any}(undef, 1))
+            none(x, n) = (x .*= 2; n == 1 ? nothing : 2 .* x)
+            # `Dict(gen)` contains a try/catch, which reverse mode refuses on Julia 1.10.
+            dict(x, n) = Dict{Int,Float64}(i => i * x[1] for i in 1:n)
+            # Ten keys fill most of 16 slots, so keys `11:20` reuse slots of keys `1:10`.
+            dsz(x, n, m) = Dict{Int,Vector{Float64}}(k => fill(x[1], m) for k in n:(n + 9))
+            dbits(x, n) = Dict{Int,Float64}(k => x[1] for k in n:(n + 9))
+            @testset "friendly_tangents=$friendly" for friendly in (false, true)
+                config = Mooncake.Config(; friendly_tangents=friendly)
+                mk(y) = friendly ? y : zero_tangent(y)
+                cache = prepare_pullback_cache(pushed, [1.0, 2.0]; config)
+                @test value_and_pullback!!(cache, [1.0, 1.0], pushed, [3.0, 4.0]) ==
+                    ([3.0, 4.0], (NoTangent(), [1.0, 1.0]))
+
+                x = [1.0, 2.0]
+                cache = prepare_pullback_cache(grown, x, 1; config)
+                @test_throws(
+                    "size mismatch for `y`",
+                    value_and_pullback!!(cache, ones(2), grown, x, 3)
+                )
+                @test x == [1.0, 2.0]
+                @test value_and_pullback!!(cache, ones(2), grown, x, 1) ==
+                    ([2.0, 4.0], (NoTangent(), [2.0, 2.0], NoTangent()))
+
+                cache = prepare_pullback_cache(retyped, x, 1; config)
+                @test_throws(
+                    "type mismatch for `y[1]`",
+                    value_and_pullback!!(cache, Any[[1.0, 1.0]], retyped, x, 2),
+                )
+                @test x == [1.0, 2.0]
+                @test value_and_pullback!!(cache, Any[[1.0, 1.0]], retyped, x, 1) ==
+                    (Any[[2.0, 4.0]], (NoTangent(), [2.0, 2.0], NoTangent()))
+                # A value without a tangent may change number type there and back, but may
+                # not become a `Symbol`, which the copy cannot take.
+                cache = prepare_pullback_cache(nodiff, x, 1; config)
+                ȳ = Any[mk(1), [1.0, 1.0]]
+                for n in (2, 1)
+                    @test value_and_pullback!!(cache, ȳ, nodiff, x, n) ==
+                        (nodiff([1.0, 2.0], n), (NoTangent(), [6.0, 6.0], NoTangent()))
+                end
+                @test_throws(
+                    "type mismatch for `y[1]`",
+                    value_and_pullback!!(cache, ȳ, nodiff, x, 3),
+                )
+                @test x == [1.0, 2.0]
+
+                # A field or slot defined in the cached output must stay defined, or the
+                # copy would keep a stale value.
+                for (f, pos) in ((foo, ".b"), (slot, "[1]"))
+                    cache = prepare_pullback_cache(f, x, 1; config)
+                    @test_throws(
+                        "definedness mismatch for `y$pos`",
+                        value_and_pullback!!(cache, mk(f([1.0, 2.0], 1)), f, x, 2),
+                    )
+                    @test x == [1.0, 2.0]
+                end
+                # A struct field undefined there must stay so, since the copy reads it.
+                cache = prepare_pullback_cache(foo, x, 2; config)
+                @test_throws(
+                    "definedness mismatch for `y.b`",
+                    value_and_pullback!!(cache, mk(foo([1.0, 2.0], 2)), foo, x, 1),
+                )
+                # The copy accepts a number of another type, a slot that becomes defined and
+                # an immutable struct that loses a field. A friendly `ȳ` cannot follow them,
+                # as it takes the cached output's structure.
+                if !friendly
+                    cache = prepare_pullback_cache(num, x, 1; config)
+                    @test value_and_pullback!!(cache, 1.0f0, num, x, 2) ==
+                        (2.0f0, (NoTangent(), [2.0, 0.0], NoTangent()))
+                    cache = prepare_pullback_cache(slot, x, 2; config)
+                    @test value_and_pullback!!(
+                        cache, zero_tangent(slot([1.0, 2.0], 1)), slot, x, 1
+                    )[1] == Any[[6.0, 12.0]]
+                    cache = prepare_pullback_cache(sfoo, x, 1; config)
+                    ȳ = zero_tangent(StructFoo(2.0))
+                    @test value_and_pullback!!(cache, ȳ, sfoo, x, 2)[1] === StructFoo(2.0)
+                end
+
+                # A cached output of `nothing` is checked too.
+                cache = prepare_pullback_cache(none, x, 1; config)
+                @test_throws(
+                    "type mismatch for `y`",
+                    value_and_pullback!!(cache, mk(nothing), none, x, 2),
+                )
+                @test x == [1.0, 2.0]
+
+                # A value under an unchanged key must keep its size. A key that moved gets
+                # fresh storage, unless a friendly `ȳ`, matched slot by slot, forbids moves.
+                cache = prepare_pullback_cache(dsz, x, 1, 1; config)
+                @test_throws(
+                    "size mismatch for `y.vals",
+                    value_and_pullback!!(cache, mk(dsz(x, 1, 1)), dsz, x, 1, 2),
+                )
+                y = dsz(x, 11, 2)
+                if friendly
+                    @test_throws(
+                        "key mismatch for `y.keys",
+                        value_and_pullback!!(cache, dsz(x, 1, 1), dsz, x, 11, 2),
+                    )
+                    # Likewise where keys and values are bits types.
+                    bcache = prepare_pullback_cache(dbits, x, 1; config)
+                    @test_throws(
+                        "key mismatch for `y.keys",
+                        value_and_pullback!!(bcache, dbits(x, 1), dbits, x, 11),
+                    )
+                else
+                    @test value_and_pullback!!(cache, mk(y), dsz, x, 11, 2)[1] == y
+                end
+
+                cache = prepare_pullback_cache(dict, [1.0], 2; config)
+                dȳ = mk(dict([1.0], 2))
+                @test value_and_pullback!!(cache, dȳ, dict, [2.0], 2)[1] == dict([2.0], 2)
+                @test_throws(
+                    "size mismatch for `y.slots`",
+                    value_and_pullback!!(cache, dȳ, dict, [2.0], 40),
+                )
+                @test value_and_pullback!!(cache, dȳ, dict, [3.0], 2)[1] == dict([3.0], 2)
+            end
+        end
+
         @testset "friendly tangents" begin
             testf(x::SimplePair) = SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2)
             x = SimplePair(1.0, 2.0)

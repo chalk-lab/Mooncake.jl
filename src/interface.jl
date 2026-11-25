@@ -1,5 +1,7 @@
 """
-    __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
+    __value_and_pullback!!(
+        rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing, friendly=false
+    )
 
 *Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
 
@@ -7,19 +9,32 @@ In-place version of `value_and_pullback!!` in which the arguments have been wrap
 `CoDual`s. Note that any mutable data in `f` and `x` will be incremented in-place. As such,
 if calling this function multiple times with different values of `x`, should be careful to
 ensure that you zero-out the tangent fields of `x` each time.
+
+With `y_cache=Some(y)`, the output is checked against the cached output `y`, which may be
+`nothing`, and copied into it. With `friendly=true`, as for a cache with friendly tangents,
+a `Dict` in the output must also keep the same keys in the same slots.
 """
 function __value_and_pullback!!(
-    rule::R, ȳ::T, fx::Vararg{CoDual,N}; y_cache=nothing
+    rule::R, ȳ::T, fx::Vararg{CoDual,N}; y_cache=nothing, friendly=false
 ) where {R,N,T}
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
+    if !isnothing(y_cache)
+        mode = friendly ? :friendly_output : :output
+        y_misfit = _output_misfit(something(y_cache), primal(out), mode)
+        if !isnothing(y_misfit)
+            # Run the pullback before refusing: it restores inputs and resets the rule.
+            pb!!(zero_rdata(primal(out)))
+            _throw_output_mismatch(y_misfit)
+        end
+    end
     @assert _typeof(tangent(out)) == fdata_type(T)
     increment!!(tangent(out), fdata(ȳ))
     v = if y_cache === nothing
         _copy_output(primal(out))
     else
-        _copy_to_output!!(y_cache, primal(out))
+        _copy_to_output!!(something(y_cache), primal(out))
     end
     return v, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(rdata(ȳ)))
 end
@@ -408,6 +423,7 @@ const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of `dst` and `src` must be the same.
 Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
 For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
+An overload needs a matching `_output_misfit` method, which refuses what it cannot copy.
 """
 _copy_to_output!!(dst::Number, src::Number) = src
 
@@ -445,6 +461,28 @@ end
 function _copy_to_output!!(dst::P, src::P) where {P<:NamedTuple}
     isbitstype(P) && return src
     return P(map(_copy_to_output!!, values(dst), values(src)))
+end
+
+# A key that moved, or filled an empty slot, is a new entry: its value gets fresh storage,
+# since the value another key left in that slot may differ in size or type.
+function _copy_to_output!!(dst::P, src::P) where {P<:Dict}
+    for i in eachindex(src.slots)
+        Base.isslotfilled(src, i) || continue
+        if _same_key(dst, src, i)
+            dst.keys[i] = _copy_to_output!!(dst.keys[i], src.keys[i])
+            dst.vals[i] = _copy_to_output!!(dst.vals[i], src.vals[i])
+        else
+            dst.keys[i] = _copy_output(src.keys[i])
+            dst.vals[i] = _copy_output(src.vals[i])
+        end
+    end
+    copyto!(dst.slots, src.slots)
+    dst.ndel, dst.count, dst.age = src.ndel, src.count, src.age
+    dst.idxfloor, dst.maxprobe = src.idxfloor, src.maxprobe
+    return dst
+end
+function _same_key(dst::Dict, src::Dict, i)
+    return Base.isslotfilled(dst, i) && isequal(dst.keys[i], src.keys[i])
 end
 
 # Handling structs
@@ -505,6 +543,76 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
             "non-differentiable types (e.g. integers or booleans).",
         ),
     )
+end
+
+# `(path, "size", "type", "definedness" or "key", expected, got)` for the first value in
+# the output `src` that `_copy_to_output!!` cannot copy into `dst`, or `nothing`. The copy
+# accepts a number or a type for another, an element defined only in `src`, and an
+# immutable struct losing a field, but would keep a stale value wherever else `src` is
+# undefined. A friendly `ȳ` is converted slot by slot, so with `mode === :friendly_output`
+# a `Dict` must keep the same keys in the same slots.
+function _output_misfit(dst, src, mode)
+    dst isa Number && src isa Number && return nothing
+    dst isa Type && src isa Type && return nothing
+    return "", "type", typeof(dst), typeof(src)
+end
+_output_misfit(::P, ::P, _) where {P<:Union{Number,Type,Core.TypeName,Module}} = nothing
+function _output_misfit(dst::P, src::P, mode) where {P<:Union{_BuiltinArrays,SimpleVector}}
+    sz, cached = map(v -> v isa SimpleVector ? (length(v),) : size(v), (src, dst))
+    sz == cached || return "", "size", cached, sz
+    isbitstype(eltype(P)) && return nothing
+    for i in eachindex(src)
+        misfit = _element_misfit(dst, src, i, mode)
+        isnothing(misfit) || return misfit
+    end
+    return nothing
+end
+# Empty slots hold stale keys and values, which a `Dict` never reads.
+function _output_misfit(dst::P, src::P, mode) where {P<:Dict}
+    misfit = _output_misfit(dst.slots, src.slots, mode)
+    isnothing(misfit) || return ".slots" * misfit[1], Base.tail(misfit)...
+    mode === :output && isbitstype(keytype(P)) && isbitstype(valtype(P)) && return nothing
+    for i in eachindex(src.slots)
+        filled = Base.isslotfilled(src, i)
+        if filled ? !_same_key(dst, src, i) : Base.isslotfilled(dst, i)
+            # The copy gives a key that moved fresh storage, so its value need not fit.
+            mode === :output && continue
+            key(d) = Base.isslotfilled(d, i) ? repr(d.keys[i]) : "none"
+            return ".keys[$i]", "key", key(dst), key(src)
+        end
+        filled || continue
+        misfit = _element_misfit(dst.keys, src.keys, i, mode)
+        isnothing(misfit) || return ".keys" * misfit[1], Base.tail(misfit)...
+        misfit = _element_misfit(dst.vals, src.vals, i, mode)
+        isnothing(misfit) || return ".vals" * misfit[1], Base.tail(misfit)...
+    end
+    return nothing
+end
+function _element_misfit(dst, src, i, mode)
+    if isassigned(dst, i) && isassigned(src, i)
+        misfit = _output_misfit(dst[i], src[i], mode)
+        return isnothing(misfit) ? nothing : ("[$i]" * misfit[1], Base.tail(misfit)...)
+    elseif isassigned(dst, i)
+        return "[$i]", "definedness", "defined", "undefined"
+    end
+    return nothing
+end
+# Unrolled: reading a field by a runtime index boxes it and its parent on every call.
+@generated function _output_misfit(dst::P, src::P, mode) where {P}
+    checks = map(1:fieldcount(P)) do i
+        name = P <: Tuple ? "[$i]" : ".$(fieldname(P, i))"
+        quote
+            if isdefined(src, $i) && isdefined(dst, $i)
+                misfit = _output_misfit(getfield(dst, $i), getfield(src, $i), mode)
+                isnothing(misfit) || return $name * misfit[1], Base.tail(misfit)...
+            elseif isdefined(src, $i)
+                return $name, "definedness", "undefined", "defined"
+            elseif isdefined(dst, $i) && ismutabletype(P)
+                return $name, "definedness", "defined", "undefined"
+            end
+        end
+    end
+    return Expr(:block, checks..., nothing)
 end
 
 """
@@ -660,12 +768,13 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
-    # Run reverse-pass in order to reset stacks + state.
-    rvs!!(zero_rdata(primal(y)))
-
-    # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
+    # Copy the output before the reverse pass, which undoes its mutations such as `push!`.
+    # Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
+
+    # Run reverse-pass in order to reset stacks + state.
+    rvs!!(zero_rdata(primal(y)))
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -673,7 +782,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
             PreparedCacheInputSpec(typeof(x), ())
         end
     end
-    output_primal = primal(y)
+    output_primal = y_cache
     output_spec = if output_primal isa AbstractArray
         PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
     else
@@ -682,13 +791,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
-            rule,
-            y_cache,
-            tangents,
-            dests,
-            zero_tangent(primal(y)),
-            input_specs,
-            output_spec,
+            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
         )
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
@@ -708,7 +811,7 @@ associated to any fields of `f`, the second w.r.t the first element of `x`, etc.
 If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
 those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
-There are no restrictions on what `y = f(x...)` is permitted to return. However, `ȳ` must be
+`y = f(x...)` may be of any type that [`prepare_pullback_cache`](@ref) accepts. `ȳ` must be
 an acceptable tangent for `y`. If the cache was prepared with `config.friendly_tangents=false`,
 this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
 If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
@@ -721,6 +824,11 @@ will return both to their original state as part of the process of computing the
     `x` must be of the same size and shape as those used to construct the `cache`. This is
     to ensure that the gradient can be written to the memory allocated when the `cache` was
     built.
+    The output `y = f(x...)` must likewise fit the cached output, which is the output at
+    preparation with each accepted output copied into its mutable parts: for example, an
+    array may not change size or leave undefined an element defined there. With friendly
+    tangents, a `Dict` in it must also keep the same keys in the same slots, as `ȳ` is
+    matched to it slot by slot. Otherwise a `PreparedCacheSpecError` is raised.
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -766,11 +874,13 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
-        return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+        return __value_and_pullback!!(
+            cache.rule, ȳ, coduals...; y_cache=Some(cache.y_cache)
+        )
     end
     ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
     value, pb = __value_and_pullback!!(
-        cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
+        cache.rule, ȳ_tangent, coduals...; y_cache=Some(cache.y_cache), friendly=true
     )
     c = _friendly_cache(fx)
     friendly_pb = tuple_map(
@@ -1091,6 +1201,15 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level array sizes they were prepared with."
     end
+    throw(PreparedCacheSpecError(msg))
+end
+
+function _throw_output_mismatch((path, what, expected, got))
+    msg =
+        "Cached autodiff call has a $what mismatch for `y$path`.\n" *
+        "`y` must fit the cached output.\n" *
+        "Expected $what: $expected\n" *
+        "Got $what: $got"
     throw(PreparedCacheSpecError(msg))
 end
 
