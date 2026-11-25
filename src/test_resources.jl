@@ -586,6 +586,14 @@ function test_while_loop(x)
     return x
 end
 
+# A loop that opens the function and carries no SSA value: its header is the entry block.
+function test_entry_block_loop!(r)
+    while r[] > 1.0
+        r[] = r[] * 0.5
+    end
+    return r[]
+end
+
 function test_for_loop(x)
     for _ in 1:500
         x = sin(x)
@@ -956,6 +964,7 @@ function generate_test_functions()
         (false, :allocs, nothing, test_getindex, [1.0, 2.0]),
         (false, :allocs, nothing, test_mutation!, [1.0, 2.0]),
         (false, :allocs, nothing, test_while_loop, 2.0),
+        (false, :allocs, nothing, test_entry_block_loop!, Ref(5.0)),
         (false, :allocs, nothing, test_for_loop, 3.0),
         (false, :none, nothing, test_mutable_struct_basic, 5.0),
         (false, :none, nothing, test_mutable_struct_basic_sin, 5.0),
