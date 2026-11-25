@@ -11,8 +11,9 @@ if calling this function multiple times with different values of `x`, should be 
 ensure that you zero-out the tangent fields of `x` each time.
 
 With `y_cache=Some(y)`, the output is checked against the cached output `y`, which may be
-`nothing`, and copied into it. With `friendly=true`, as for a cache with friendly tangents,
-a `Dict` in the output must also keep the same keys in the same slots.
+`nothing`, and `ȳ` against the output, which is then copied into `y`. With `friendly=true`,
+as for a cache with friendly tangents, a `Dict` in the output must also keep the same keys
+in the same slots unless neither key nor value types carry derivatives.
 """
 function __value_and_pullback!!(
     rule::R, ȳ::T, fx::Vararg{CoDual,N}; y_cache=nothing, friendly=false
@@ -23,10 +24,19 @@ function __value_and_pullback!!(
     if !isnothing(y_cache)
         mode = friendly ? :friendly_output : :output
         y_misfit = _output_misfit(something(y_cache), primal(out), mode)
-        if !isnothing(y_misfit)
+        # `ȳ` must fit this call's output: its number type may differ from the cached one.
+        Tȳ = tangent_type(_typeof(primal(out)))
+        ȳ_misfit = if ȳ isa Tȳ
+            _output_misfit(tangent(out), fdata(ȳ), :tangent)
+        else
+            "", "type", Tȳ, T
+        end
+        if !isnothing(y_misfit) || !isnothing(ȳ_misfit)
             # Run the pullback before refusing: it restores inputs and resets the rule.
             pb!!(zero_rdata(primal(out)))
-            _throw_output_mismatch(y_misfit)
+            isnothing(y_misfit) ||
+                _throw_output_mismatch("y", "the cached output", y_misfit)
+            _throw_output_mismatch("ȳ", "this call's output", ȳ_misfit)
         end
     end
     @assert _typeof(tangent(out)) == fdata_type(T)
@@ -129,7 +139,8 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
     y = primal(out)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    # Run the pullback before throwing: it restores inputs and resets the rule.
+    y isa IEEEFloat || (pb!!(zero_rdata(y)); throw_val_and_grad_ret_type_error(y))
     return y, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(one(y)))
 end
 
@@ -545,22 +556,26 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
     )
 end
 
-# `(path, "size", "type", "definedness" or "key", expected, got)` for the first value in
-# the output `src` that `_copy_to_output!!` cannot copy into `dst`, or `nothing`. The copy
-# accepts a number or a type for another, an element defined only in `src`, and an
-# immutable struct losing a field, but would keep a stale value wherever else `src` is
-# undefined. A friendly `ȳ` is converted slot by slot, so with `mode === :friendly_output`
-# a `Dict` must keep the same keys in the same slots.
-function _output_misfit(dst, src, mode)
-    dst isa Number && src isa Number && return nothing
-    dst isa Type && src isa Type && return nothing
-    return "", "type", typeof(dst), typeof(src)
+function _has_no_derivative(::Type{T}) where {T}
+    tangent_type(T) == NoTangent ||
+        (T <: _BuiltinArrays && _has_no_derivative(eltype(T))) ||
+        (
+            isconcretetype(T) &&
+            T <: Union{Tuple,NamedTuple} &&
+            all(_has_no_derivative, fieldtypes(T))
+        )
 end
-_output_misfit(::P, ::P, _) where {P<:Union{Number,Type,Core.TypeName,Module}} = nothing
-function _output_misfit(dst::P, src::P, mode) where {P<:Union{_BuiltinArrays,SimpleVector}}
+
+_output_misfit(::P, ::P, _) where {P<:Union{Type,Core.TypeName,Module}} = nothing
+function _output_misfit(
+    dst::P, src::Q, mode
+) where {P<:Union{_BuiltinArrays,SimpleVector},Q<:Union{_BuiltinArrays,SimpleVector}}
+    if mode === :friendly ? tangent_type(P) != tangent_type(Q) : P !== Q
+        return "", "type", P, Q
+    end
     sz, cached = map(v -> v isa SimpleVector ? (length(v),) : size(v), (src, dst))
     sz == cached || return "", "size", cached, sz
-    isbitstype(eltype(P)) && return nothing
+    isbitstype(eltype(P)) && isbitstype(eltype(Q)) && return nothing
     for i in eachindex(src)
         misfit = _element_misfit(dst, src, i, mode)
         isnothing(misfit) || return misfit
@@ -568,7 +583,10 @@ function _output_misfit(dst::P, src::P, mode) where {P<:Union{_BuiltinArrays,Sim
     return nothing
 end
 # Empty slots hold stale keys and values, which a `Dict` never reads.
-function _output_misfit(dst::P, src::P, mode) where {P<:Dict}
+function _output_misfit(dst::P, src::Q, mode) where {P<:Dict,Q<:Dict}
+    if mode === :friendly ? tangent_type(P) != tangent_type(Q) : P !== Q
+        return "", "type", P, Q
+    end
     misfit = _output_misfit(dst.slots, src.slots, mode)
     isnothing(misfit) || return ".slots" * misfit[1], Base.tail(misfit)...
     mode === :output && isbitstype(keytype(P)) && isbitstype(valtype(P)) && return nothing
@@ -577,10 +595,19 @@ function _output_misfit(dst::P, src::P, mode) where {P<:Dict}
         if filled ? !_same_key(dst, src, i) : Base.isslotfilled(dst, i)
             # The copy gives a key that moved fresh storage, so its value need not fit.
             mode === :output && continue
-            key(d) = Base.isslotfilled(d, i) ? repr(d.keys[i]) : "none"
-            return ".keys[$i]", "key", key(dst), key(src)
+            if !(
+                if mode === :friendly
+                    tangent_type(keytype(P)) == NoTangent == tangent_type(valtype(P))
+                else
+                    _has_no_derivative(keytype(P)) && _has_no_derivative(valtype(P))
+                end
+            )
+                key(d) = Base.isslotfilled(d, i) ? repr(d.keys[i]) : "none"
+                return ".keys[$i]", "key", key(dst), key(src)
+            end
+            mode === :friendly_output && continue
         end
-        filled || continue
+        filled || mode === :friendly || continue
         misfit = _element_misfit(dst.keys, src.keys, i, mode)
         isnothing(misfit) || return ".keys" * misfit[1], Base.tail(misfit)...
         misfit = _element_misfit(dst.vals, src.vals, i, mode)
@@ -589,30 +616,58 @@ function _output_misfit(dst::P, src::P, mode) where {P<:Dict}
     return nothing
 end
 function _element_misfit(dst, src, i, mode)
+    mode === :friendly && tangent_type(eltype(dst)) == NoTangent && return nothing
     if isassigned(dst, i) && isassigned(src, i)
         misfit = _output_misfit(dst[i], src[i], mode)
         return isnothing(misfit) ? nothing : ("[$i]" * misfit[1], Base.tail(misfit)...)
     elseif isassigned(dst, i)
         return "[$i]", "definedness", "defined", "undefined"
+    elseif isassigned(src, i) && mode === :friendly && !_has_no_derivative(typeof(src[i]))
+        return "[$i]", "definedness", "undefined", "defined"
+    elseif mode === :friendly &&
+        !isassigned(src, i) &&
+        isbitstype(tangent_type(eltype(dst)))
+        return "[$i]", "definedness", "defined for conversion", "undefined"
     end
     return nothing
 end
 # Unrolled: reading a field by a runtime index boxes it and its parent on every call.
-@generated function _output_misfit(dst::P, src::P, mode) where {P}
+@generated function _output_misfit(dst::P, src::Q, mode) where {P,Q}
     checks = map(1:fieldcount(P)) do i
         name = P <: Tuple ? "[$i]" : ".$(fieldname(P, i))"
+        # Tangent wrappers add no position that the user's output has.
+        P <: Union{Tangent,MutableTangent,FData,PossiblyUninitTangent} && (name = "")
+        nodiff = :(mode === :friendly && tangent_type($(fieldtype(P, i))) == NoTangent)
         quote
-            if isdefined(src, $i) && isdefined(dst, $i)
+            if $nodiff
+                isdefined(src, $i) ||
+                    return $name, "definedness", "defined for conversion", "undefined"
+            elseif isdefined(src, $i) && isdefined(dst, $i)
                 misfit = _output_misfit(getfield(dst, $i), getfield(src, $i), mode)
                 isnothing(misfit) || return $name * misfit[1], Base.tail(misfit)...
             elseif isdefined(src, $i)
                 return $name, "definedness", "undefined", "defined"
-            elseif isdefined(dst, $i) && ismutabletype(P)
+            elseif isdefined(dst, $i) && (ismutabletype(P) || mode in (:tangent, :friendly))
                 return $name, "definedness", "defined", "undefined"
             end
         end
     end
-    return Expr(:block, checks..., nothing)
+    return quote
+        mode !== :friendly && P === Q && dst isa Number && return nothing
+        if mode === :friendly
+            tangent_type(P) == tangent_type(Q) || return "", "type", P, Q
+            tangent_type(P) == NoTangent && return nothing
+        elseif P !== Q
+            if mode === :output ||
+                mode === :friendly_output && tangent_type(P) == tangent_type(Q)
+                dst isa Number && src isa Number && return nothing
+                dst isa Type && src isa Type && return nothing
+            end
+            return "", "type", P, Q
+        end
+        $(checks...)
+        return nothing
+    end
 end
 
 """
@@ -814,7 +869,8 @@ those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and
 `y = f(x...)` may be of any type that [`prepare_pullback_cache`](@ref) accepts. `ȳ` must be
 an acceptable tangent for `y`. If the cache was prepared with `config.friendly_tangents=false`,
 this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
-If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
+If the cache was prepared with `config.friendly_tangents=true`, `ȳ` and the cached output
+must have equal tangent types, with compatible sizes and defined fields for conversion.
 
 As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
 will return both to their original state as part of the process of computing the gradient.
@@ -827,8 +883,12 @@ will return both to their original state as part of the process of computing the
     The output `y = f(x...)` must likewise fit the cached output, which is the output at
     preparation with each accepted output copied into its mutable parts: for example, an
     array may not change size or leave undefined an element defined there. With friendly
-    tangents, a `Dict` in it must also keep the same keys in the same slots, as `ȳ` is
-    matched to it slot by slot. Otherwise a `PreparedCacheSpecError` is raised.
+    tangents, a `Dict` in it must also keep the same keys in the same slots unless both
+    key and value types carry no derivatives. A `Dict` `ȳ` must keep the cached keys in
+    the same slots unless both key and value tangent types are `NoTangent`, as for `Int`,
+    `Symbol` or `String`, because conversion matches slot by slot.
+    `ȳ` must fit `y`, or the cached output with friendly tangents. Otherwise a
+    `PreparedCacheSpecError` is raised.
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -878,6 +938,9 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
             cache.rule, ȳ, coduals...; y_cache=Some(cache.y_cache)
         )
     end
+    # Before the call, a friendly `ȳ` must fit the cached output's tangent type.
+    misfit = _output_misfit(cache.y_cache, ȳ, :friendly)
+    isnothing(misfit) || _throw_output_mismatch("ȳ", "the cached output", misfit)
     ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
     value, pb = __value_and_pullback!!(
         cache.rule, ȳ_tangent, coduals...; y_cache=Some(cache.y_cache), friendly=true
@@ -904,8 +967,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
+    # Run the pullback before the output check: it restores inputs and resets the rule.
+    rvs!!(zero_rdata(primal(y)))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
-    rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -1204,10 +1268,10 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheSpecError(msg))
 end
 
-function _throw_output_mismatch((path, what, expected, got))
+function _throw_output_mismatch(name, against, (path, what, expected, got))
     msg =
-        "Cached autodiff call has a $what mismatch for `y$path`.\n" *
-        "`y` must fit the cached output.\n" *
+        "Cached autodiff call has a $what mismatch for `$name$path`.\n" *
+        "`$name` must fit $against.\n" *
         "Expected $what: $expected\n" *
         "Got $what: $got"
     throw(PreparedCacheSpecError(msg))

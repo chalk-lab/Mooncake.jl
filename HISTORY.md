@@ -1,3 +1,7 @@
+# 0.5.73
+
+- A prepared pullback cache now refuses a `ȳ` of another floating-point type, such as a `Float32` `ȳ` for `sin(1.0)`, which it accepted before.
+
 # 0.5.70
 
 - Friendly tangents of structs with custom tangent types (`Complex`, `Base.TwicePrecision`) no longer throw, and a non-differentiable struct's friendly tangent changes from `(n = NoTangent(),)` to `NoTangent()`.

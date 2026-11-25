@@ -74,6 +74,8 @@ function primal_to_tangent_internal!!(
 ) where {P,N}
     haskey(c, x) && return c[x]::Array{tangent_type(P),N}
     c[x] = t
+    # NoTangent storage is always assigned, even where the primal is undefined.
+    eltype(t) === NoTangent && size(t) == size(x) && return t
     return _map_if_assigned!(t, t, x) do txn, xn
         return primal_to_tangent_internal!!(txn, xn, c)
     end

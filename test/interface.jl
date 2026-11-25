@@ -49,6 +49,33 @@ mutable struct MaybeInitBox
     MaybeInitBox(x::Float64) = new(x)
 end
 
+struct LateLabel
+    a::Float64
+    b::String
+    LateLabel(a) = new(a)
+    LateLabel(a, b) = new(a, b)
+end
+
+mutable struct MutableVectorBox{T}
+    a::Vector{T}
+end
+
+struct VectorBox
+    a::Vector{Int}
+end
+
+struct ArrayNumber <: Number
+    a::Vector{Float64}
+end
+
+struct ParametricLabel{T}
+    a::Float64
+    n::T
+    s::String
+    ParametricLabel(a, n) = new{typeof(n)}(a, n)
+    ParametricLabel(a, n, s) = new{typeof(n)}(a, n, s)
+end
+
 const CHUNK_SCALAR_EVAL_COUNT = Ref(0)
 struct CountedChunkScalarCall end
 (::CountedChunkScalarCall)(x, y) = (CHUNK_SCALAR_EVAL_COUNT[] += 1; x * y + cos(x))
@@ -129,15 +156,18 @@ end
             end
         end
 
-        rule = build_rrule(identity, (5.0, 4.0))
+        doubled(a) = (a .*= 2; a)
+        a = [1.0, 2.0]
+        rule = build_rrule(doubled, a)
         @test_throws(
-            Mooncake.ValueAndGradientReturnTypeError,
-            value_and_gradient!!(rule, identity, (5.0, 4.0)),
+            Mooncake.ValueAndGradientReturnTypeError, value_and_gradient!!(rule, doubled, a)
         )
         @test_throws(
             Mooncake.ValueAndGradientReturnTypeError,
-            Mooncake.prepare_gradient_cache(identity, (5.0, 4.0)),
+            Mooncake.prepare_gradient_cache(doubled, a)
         )
+        # Both refusals run the reverse pass first, which undoes the mutation.
+        @test a == [1.0, 2.0]
 
         @testset "cache display" begin
             reverse_cache = Mooncake.prepare_gradient_cache(
@@ -338,23 +368,26 @@ end
             )
         end
 
-        @testset "pullback cache output checks" begin
+        @testset "pullback cache output and ȳ checks" begin
             # The reverse pass during preparation undoes the `push!`es.
             pushed(x) = push!(Float64[], x[1], x[2])
             grown(x, n) = (x .*= 2; repeat(x, n))
             retyped(x, n) = (x .*= 2; Any[n == 1 ? copy(x) : (x[1], x[2])])
             nodiff(x, n) = (x .*= 2; Any[(1, Int32(1), :a)[n], 3 .* x])
             num(x, n) = (x .*= 2; n == 1 ? x[1] : Float32(x[1]))
+            anyslot(x, n) = Any[num(x, n)]
             # Each leaves `b` or `[1]` undefined for `n == 2`.
             foo(x, n) = (x .*= 2; n == 1 ? MutableFoo(x[1], 3 .* x) : MutableFoo(x[1]))
             sfoo(x, n) = (x .*= 2; n == 1 ? StructFoo(x[1], 3 .* x) : StructFoo(x[1]))
             slot(x, n) = (x .*= 2; n == 1 ? Any[3 .* x] : Vector{Any}(undef, 1))
             none(x, n) = (x .*= 2; n == 1 ? nothing : 2 .* x)
+            inplace!(y, x) = (x .*= 2; copyto!(y, x); nothing)
             # `Dict(gen)` contains a try/catch, which reverse mode refuses on Julia 1.10.
             dict(x, n) = Dict{Int,Float64}(i => i * x[1] for i in 1:n)
             # Ten keys fill most of 16 slots, so keys `11:20` reuse slots of keys `1:10`.
             dsz(x, n, m) = Dict{Int,Vector{Float64}}(k => fill(x[1], m) for k in n:(n + 9))
             dbits(x, n) = Dict{Int,Float64}(k => x[1] for k in n:(n + 9))
+            dkey(x, n) = (x .*= 2; Dict{Any,Float64}((1, Int32(1))[n] => x[1]))
             @testset "friendly_tangents=$friendly" for friendly in (false, true)
                 config = Mooncake.Config(; friendly_tangents=friendly)
                 mk(y) = friendly ? y : zero_tangent(y)
@@ -367,6 +400,11 @@ end
                 @test_throws(
                     "size mismatch for `y`",
                     value_and_pullback!!(cache, ones(2), grown, x, 3)
+                )
+                # A friendly `ȳ` is checked before the call, against the cached output.
+                @test_throws(
+                    "`ȳ` must fit $(friendly ? "the cached" : "this call's") output",
+                    value_and_pullback!!(cache, ones(3), grown, x, 1),
                 )
                 @test x == [1.0, 2.0]
                 @test value_and_pullback!!(cache, ones(2), grown, x, 1) ==
@@ -394,13 +432,157 @@ end
                 )
                 @test x == [1.0, 2.0]
 
-                # A field or slot defined in the cached output must stay defined, or the
-                # copy would keep a stale value.
+                cache = prepare_pullback_cache(num, x, 1; config)
+                if friendly
+                    @test_throws(
+                        "type mismatch for `ȳ`",
+                        value_and_pullback!!(cache, 1.0f0, num, x, 2),
+                    )
+                else
+                    # `ȳ` must fit this call's `Float32` output, not the cached `Float64`.
+                    @test_throws(
+                        "type mismatch for `ȳ`",
+                        value_and_pullback!!(cache, 1.0, num, x, 2),
+                    )
+                    @test value_and_pullback!!(cache, 1.0f0, num, x, 2) ==
+                        (2.0f0, (NoTangent(), [2.0, 0.0], NoTangent()))
+                end
+                # A friendly `ȳ` matches the cached `Float64`, so `y` is refused.
+                cache = prepare_pullback_cache(anyslot, x, 1; config)
+                @test_throws(
+                    "type mismatch for `$(friendly ? "y" : "ȳ")[1]`",
+                    value_and_pullback!!(cache, Any[1.0], anyslot, x, 2),
+                )
+                @test x == [1.0, 2.0]
+                if friendly
+                    for (f, ȳ, dx) in (
+                        (x -> 1, NoTangent(), [0.0, 0.0]),
+                        (x -> 1, nothing, [0.0, 0.0]),
+                        (x -> :a, nothing, [0.0, 0.0]),
+                        (x -> "a", NoTangent(), [0.0, 0.0]),
+                        (x -> [1, 2], [NoTangent(), NoTangent()], [0.0, 0.0]),
+                        (x -> Int32[1, 2], [1, 2], [0.0, 0.0]),
+                        (x -> [1, 2], Int32[1, 2], [0.0, 0.0]),
+                        (x -> [[1, 2]], [[NoTangent(), NoTangent()]], [0.0, 0.0]),
+                        (x -> [(1, [1])], [(NoTangent(), [NoTangent()])], [0.0, 0.0]),
+                        (x -> [(x[1], 1), (x[2], 2)], [(1.0, "a"), (1.0, "b")], [1.0, 1.0]),
+                        (
+                            x -> (x[1], [1, 2]),
+                            (1.0, [NoTangent(), NoTangent()]),
+                            [1.0, 0.0],
+                        ),
+                        (x -> (x[1], 1), (1.0, NoTangent()), [1.0, 0.0]),
+                        (x -> (2 .* x, 1), ([1.0, 1.0], NoTangent()), [2.0, 2.0]),
+                        (x -> LateLabel(x[1]), LateLabel(1.0, "s"), [1.0, 0.0]),
+                        (
+                            x -> MutableVectorBox([1]),
+                            MutableVectorBox(Int32[1]),
+                            [0.0, 0.0],
+                        ),
+                        (x -> VectorBox([1]), TestResources.OneField([1]), [0.0, 0.0]),
+                        (x -> ScalarBox(x[1]), TestResources.StructNoFwds(1.0), [1.0, 0.0]),
+                        (x -> ArrayNumber(2 .* x), ArrayNumber([1.0, 1.0]), [2.0, 2.0]),
+                        (
+                            x -> Dict{Symbol,Int}(:a => 1),
+                            Dict{Symbol,Int}(:b => 1),
+                            [0.0, 0.0],
+                        ),
+                        (
+                            x -> ParametricLabel(x[1], 1),
+                            ParametricLabel(1.0, Int32(1), "s"),
+                            [1.0, 0.0],
+                        ),
+                        (
+                            x -> Vector{String}(undef, 2),
+                            Vector{String}(undef, 2),
+                            [0.0, 0.0],
+                        ),
+                        (
+                            x -> Vector{String}(undef, 2),
+                            Vector{Symbol}(undef, 2),
+                            [0.0, 0.0],
+                        ),
+                        (x -> Vector{Any}(undef, 1), Any[:a], [0.0, 0.0]),
+                        (x -> Vector{Any}(undef, 1), Any[[1]], [0.0, 0.0]),
+                        (x -> Vector{Any}(undef, 1), Any[[[1]]], [0.0, 0.0]),
+                        (
+                            x -> Dict{Int,Int}(k => 1 for k in 1:10),
+                            Dict{Int,Int}(k => 1 for k in 11:20),
+                            [0.0, 0.0],
+                        ),
+                    )
+                        cache = prepare_pullback_cache(f, x; config)
+                        @test value_and_pullback!!(cache, ȳ, f, x)[2] == (NoTangent(), dx)
+                        @test TestUtils.count_allocs(
+                            Mooncake._output_misfit, cache.y_cache, ȳ, :friendly
+                        ) == 0
+                    end
+                    for (f, ȳ) in (
+                        (
+                            x -> TestResources.OneField{Real}(x[1]),
+                            TestResources.OneField(1.0),
+                        ),
+                        (
+                            x -> Vector{Tuple{Float64,String}}(undef, 2),
+                            Vector{Tuple{Float64,String}}(undef, 2),
+                        ),
+                        (
+                            x -> [(x[1], 1), (x[2], 2)],
+                            Vector{Tuple{Float64,String}}(undef, 2),
+                        ),
+                        (
+                            x -> TestResources.OneField{Any}(1),
+                            TestResources.OneField{Any}(3.0),
+                        ),
+                        (x -> [1, 2], [NoTangent()]),
+                        (x -> [[1, 2]], [[NoTangent()]]),
+                        (x -> (1, [1, 2]), (NoTangent(), [NoTangent()])),
+                        (x -> x[1], 1.0f0),
+                        (x -> Vector{Any}(undef, 1), Any[1.0]),
+                        (x -> Any[:a], Vector{Any}(undef, 1)),
+                        (x -> LateLabel(x[1], "s"), LateLabel(1.0)),
+                        (x -> LateLabel(x[1]), LateLabel(1.0)),
+                        (x -> ArrayNumber(2 .* x), ArrayNumber([1.0])),
+                        (x -> Dict{Int,Vector{Float64}}(), Dict{Int,Vector{Float32}}()),
+                        (x -> Dict(1 => [1]), Dict(1 => [1], 2 => [1])),
+                        (
+                            x -> Dict{Int,Float64}(k => x[1] for k in 1:10),
+                            Dict{Int,Float64}(k => 1.0 for k in 11:20),
+                        ),
+                        (x -> [1, 2], [1.0, 2.0]),
+                        (x -> Vector{Any}(undef, 1), Any[[1.0]]),
+                    )
+                        cache = prepare_pullback_cache(f, x; config)
+                        @test_throws(
+                            Mooncake.PreparedCacheSpecError,
+                            value_and_pullback!!(cache, ȳ, f, x),
+                        )
+                    end
+                    if VERSION >= v"1.11"
+                        f = x -> Memory{String}(undef, 2)
+                        cache = prepare_pullback_cache(f, x; config)
+                        @test value_and_pullback!!(cache, f(x), f, x)[2] ==
+                            (NoTangent(), [0.0, 0.0])
+                    end
+                    # The first call caches the key `Int32(1)`, which is `isequal` to `1`.
+                    cache = prepare_pullback_cache(dkey, x, 1; config)
+                    ȳ = Dict{Any,Float64}(1 => 1.0)
+                    value_and_pullback!!(cache, ȳ, dkey, x, 2)
+                    @test value_and_pullback!!(cache, ȳ, dkey, x, 2)[2][2] == [2.0, 0.0]
+                end
+
+                # A field or slot defined in the cached output must stay defined: the copy
+                # would keep a stale `y` value, and `increment!!` reads the one in `ȳ`.
                 for (f, pos) in ((foo, ".b"), (slot, "[1]"))
                     cache = prepare_pullback_cache(f, x, 1; config)
+                    ȳ1, ȳ2 = mk(f([1.0, 2.0], 1)), mk(f([1.0, 2.0], 2))
                     @test_throws(
                         "definedness mismatch for `y$pos`",
-                        value_and_pullback!!(cache, mk(f([1.0, 2.0], 1)), f, x, 2),
+                        value_and_pullback!!(cache, ȳ1, f, x, 2),
+                    )
+                    @test_throws(
+                        "definedness mismatch for `ȳ$pos`",
+                        value_and_pullback!!(cache, ȳ2, f, x, 1),
                     )
                     @test x == [1.0, 2.0]
                 end
@@ -410,27 +592,42 @@ end
                     "definedness mismatch for `y.b`",
                     value_and_pullback!!(cache, mk(foo([1.0, 2.0], 2)), foo, x, 1),
                 )
-                # The copy accepts a number of another type, a slot that becomes defined and
-                # an immutable struct that loses a field. A friendly `ȳ` cannot follow them,
-                # as it takes the cached output's structure.
-                if !friendly
-                    cache = prepare_pullback_cache(num, x, 1; config)
-                    @test value_and_pullback!!(cache, 1.0f0, num, x, 2) ==
-                        (2.0f0, (NoTangent(), [2.0, 0.0], NoTangent()))
-                    cache = prepare_pullback_cache(slot, x, 2; config)
+                # A slot may become defined, but a friendly `ȳ` must match the cache.
+                cache = prepare_pullback_cache(slot, x, 2; config)
+                if friendly
+                    @test_throws(
+                        "definedness mismatch for `ȳ[1]`",
+                        value_and_pullback!!(cache, slot([1.0, 2.0], 1), slot, x, 1),
+                    )
+                else
+                    # `ȳ` may define a slot that the output leaves undefined.
+                    @test !isassigned(
+                        value_and_pullback!!(cache, Any[[1.0, 1.0]], slot, x, 2)[1], 1
+                    )
                     @test value_and_pullback!!(
                         cache, zero_tangent(slot([1.0, 2.0], 1)), slot, x, 1
                     )[1] == Any[[6.0, 12.0]]
-                    cache = prepare_pullback_cache(sfoo, x, 1; config)
-                    ȳ = zero_tangent(StructFoo(2.0))
-                    @test value_and_pullback!!(cache, ȳ, sfoo, x, 2)[1] === StructFoo(2.0)
                 end
+                # Likewise an immutable struct may lose a field, since the copy rebuilds it.
+                cache = prepare_pullback_cache(sfoo, x, 1; config)
+                ȳ = mk(StructFoo(2.0))
+                @test_throws(
+                    "definedness mismatch for `ȳ.b`",
+                    value_and_pullback!!(cache, ȳ, sfoo, x, 1),
+                )
+                friendly ||
+                    @test value_and_pullback!!(cache, ȳ, sfoo, x, 2)[1] === StructFoo(2.0)
 
                 # A cached output of `nothing` is checked too.
                 cache = prepare_pullback_cache(none, x, 1; config)
                 @test_throws(
                     "type mismatch for `y`",
                     value_and_pullback!!(cache, mk(nothing), none, x, 2),
+                )
+                cache = prepare_pullback_cache(inplace!, zeros(2), x; config)
+                @test_throws(
+                    "type mismatch for `ȳ`",
+                    value_and_pullback!!(cache, 1.0, inplace!, zeros(2), x),
                 )
                 @test x == [1.0, 2.0]
 
@@ -452,6 +649,17 @@ end
                     @test_throws(
                         "key mismatch for `y.keys",
                         value_and_pullback!!(bcache, dbits(x, 1), dbits, x, 11),
+                    )
+                    # A friendly `ȳ` must hold the cached keys in their slots, none missing.
+                    for ȳ in (y, delete!(dsz(x, 1, 1), 1))
+                        @test_throws(
+                            "key mismatch for `ȳ.keys",
+                            value_and_pullback!!(cache, ȳ, dsz, x, 1, 1),
+                        )
+                    end
+                    @test_throws(
+                        "key mismatch for `ȳ.keys",
+                        value_and_pullback!!(bcache, dbits(x, 11), dbits, x, 1),
                     )
                 else
                     @test value_and_pullback!!(cache, mk(y), dsz, x, 11, 2)[1] == y
