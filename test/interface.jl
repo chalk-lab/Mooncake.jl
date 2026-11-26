@@ -338,6 +338,16 @@ end
             )
         end
 
+        @testset "pullback cache outputs" begin
+            pushed(x) = push!(Float64[], x[1])
+            for friendly in (false, true)
+                config = Mooncake.Config(; friendly_tangents=friendly)
+                cache = prepare_pullback_cache(pushed, [1.0]; config)
+                @test value_and_pullback!!(cache, [1.0], pushed, [2.0]) ==
+                    ([2.0], (NoTangent(), [1.0]))
+            end
+        end
+
         @testset "friendly tangents" begin
             testf(x::SimplePair) = SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2)
             x = SimplePair(1.0, 2.0)

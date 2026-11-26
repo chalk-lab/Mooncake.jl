@@ -14,6 +14,15 @@ function __value_and_pullback!!(
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
+    if y_cache !== nothing && !_can_copy_to_output(y_cache, primal(out))
+        # Restore mutated inputs and pop the rule's stacks; `ȳ` is not validated yet.
+        pb!!(zero_rdata(primal(out)))
+        throw(
+            PreparedCacheSpecError(
+                "The output no longer fits the cached storage; prepare a new cache."
+            ),
+        )
+    end
     @assert _typeof(tangent(out)) == fdata_type(T)
     increment!!(tangent(out), fdata(ȳ))
     v = if y_cache === nothing
@@ -431,6 +440,8 @@ function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
             else
                 _copy_output(src[i])
             end
+        elseif isassigned(dst, i)
+            Base._unsetindex!(dst, i)
         end
     end
     return dst
@@ -505,6 +516,40 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
             "non-differentiable types (e.g. integers or booleans).",
         ),
     )
+end
+
+# Leave type compatibility to `_copy_to_output!!`.
+_can_copy_to_output(dst, src) = true
+_can_copy_to_output(::P, ::P) where {P<:Union{Number,Type,Core.TypeName}} = true
+function _can_copy_to_output(dst::P, src::P) where {P<:_BuiltinArrays}
+    size(dst) == size(src) || return false
+    isbitstype(eltype(P)) && return true
+    for i in eachindex(src)
+        if isassigned(dst, i) && isassigned(src, i)
+            _can_copy_to_output(dst[i], src[i]) || return false
+        end
+    end
+    return true
+end
+function _can_copy_to_output(dst::SimpleVector, src::SimpleVector)
+    length(src) <= length(dst) || return false
+    return all(i -> _can_copy_to_output(dst[i], src[i]), eachindex(src))
+end
+@generated function _can_copy_to_output(dst::P, src::P) where {P}
+    isbitstype(P) && return true
+    checks = map(1:fieldcount(P)) do i
+        quote
+            if isdefined(dst, $i)
+                if isdefined(src, $i)
+                    _can_copy_to_output(getfield(dst, $i), getfield(src, $i)) ||
+                        return false
+                elseif ismutabletype(P)
+                    return false
+                end
+            end
+        end
+    end
+    return Expr(:block, checks..., true)
 end
 
 """
@@ -660,12 +705,12 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
-    # Run reverse-pass in order to reset stacks + state.
-    rvs!!(zero_rdata(primal(y)))
-
-    # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
+    # The reverse pass undoes mutations that built the output.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
+
+    # Run reverse-pass in order to reset stacks + state.
+    rvs!!(zero_rdata(primal(y)))
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -673,7 +718,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
             PreparedCacheInputSpec(typeof(x), ())
         end
     end
-    output_primal = primal(y)
+    output_primal = y_cache
     output_spec = if output_primal isa AbstractArray
         PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
     else
@@ -682,13 +727,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
-            rule,
-            y_cache,
-            tangents,
-            dests,
-            zero_tangent(primal(y)),
-            input_specs,
-            output_spec,
+            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
         )
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
