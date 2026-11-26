@@ -25,5 +25,10 @@ end
         a = sizehint!(randn(2), 100)
         t = f((a, reshape(a, 2, 1).ref.mem))
         @test pointer(t[1]) === pointer(t[2])
+        @static if VERSION < v"1.12-"
+            m = reshape(push!(Union{String,Float64}[1.5, "a"], 2.5), 1, 3)
+            msg = "Julia 1.11 cannot share derivative storage"
+            TestUtils._test_throws(() -> f(m), ArgumentError, msg)
+        end
     end
 end

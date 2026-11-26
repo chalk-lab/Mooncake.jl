@@ -795,6 +795,11 @@ _seed_eq(a, b, _) = a === b || isequal(a, b) || a == b
     # A `Memory` header over a window of its owner (1.11 `reshape`) gets the same window of
     # the owner's tangent, which keeps ownership even for boxed elements.
     @inline function _tangent_memory_window(x::Memory, t::Memory{T}) where {T}
+        msg =
+            "Julia 1.11 cannot share derivative storage with part of a larger array " *
+            "whose elements are a Union (for example, a reshape of a Vector that has " *
+            "grown). Reshape a copy instead, or use Julia 1.12 or later."
+        Base.isbitsunion(T) && length(x) != length(t) && throw(ArgumentError(msg))
         ref = memoryref(t, _storage_offset(x))
         return ccall(
             :jl_genericmemory_slice,
