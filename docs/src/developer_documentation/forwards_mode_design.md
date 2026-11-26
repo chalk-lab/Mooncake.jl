@@ -83,6 +83,20 @@ type gives an upper bound, often `Any`.
 Default structural representations recurse through fields; specialised types can
 supply their own representation.
 
+Structural `lift` and the cache-threaded seed factories key each `Array` or `Memory` on
+its owning storage, so distinct headers over one buffer (`reshape`, an `Array` beside
+its `Memory`) use shared partial storage while keeping their own shapes. Seed wrappers
+are registered by header as well, so a header's V object remains stable when another
+header uses the same window. `lift` refuses two seeds that differ where they reach one
+storage, since the shared partials can hold only one of them. It builds storage whose
+elements are all `NoDual` afresh at each visit, since that holds nothing to share.
+
+Array, Memory, MemoryRef, and Ref factories select numeric or structural storage
+through `_storage_kind` before dispatching to their implementations.
+`Union{}`-element storage uses the structural representation: bottom is a subtype
+of every numeric type, but has no values or numeric partials. Its container shape
+is preserved, including when nested inside tuples or structs.
+
 ### Array block layout
 
 An `NDualArray` holds a primal array and its partials separately. The primal is the
