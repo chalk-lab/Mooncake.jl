@@ -572,6 +572,9 @@ const NDAC_VecC64 = NDualArray{
             fields = x isa LiftedTest_TwoArrays ? v.fields : v
             @test fields[1] === fields[2]
         end
+        a = [1, 2]
+        v = tangent(lift((a, a), zero_tangent((a, a))))
+        @test v[1] === v[2]
     end
 
     @testset "headers over one buffer share element-wise Vs" begin
