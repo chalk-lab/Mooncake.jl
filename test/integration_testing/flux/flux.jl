@@ -1,5 +1,7 @@
 using Pkg
 Pkg.activate(@__DIR__)
+include(joinpath(@__DIR__, "..", "..", "skip_if_not_compatible.jl"))
+skip_if_not_compatible("Flux", joinpath(@__DIR__, "..", "..", ".."))
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Test

@@ -213,6 +213,8 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.require_tangent_cache(P) == Val(expected_result)
     end
 
+    @test TestUtils.count_allocs(increment!!, zeros(2), ones(2)) == 0
+
     @testset "Union handling of possibly uninitialised structs" begin
         F = Mooncake.FData{
             @NamedTuple{
@@ -303,6 +305,13 @@ using DispatchDoctor: allow_unstable
 
         # 2-arg form: equivalent to 4-arg with fresh cache
         @test Mooncake.tangent_to_friendly!!(S, tx_S) == tx_S_data
+    end
+
+    @testset "friendly tangents of custom and non-differentiable structs are raw" begin
+        for p in (1 => 2, first(methods(sin)), 1.0 + 2.0im, TwicePrecision(1.0, 1e-17))
+            t = zero_tangent(p)
+            @test Mooncake.tangent_to_friendly!!(p, t) === t
+        end
     end
 
     @testset "friendly_tangent_cache recursive struct" begin

@@ -657,14 +657,17 @@ function _characterise_unique_predecessor_blocks(
 
     # Obtain the block IDs in order -- this ensures that we get the entry block first.
     blk_ids = ID[b.id for b in blks]
+    entry_id = blk_ids[1]
     preds = _compute_cfg_predecessors(blks)
     succs = _compute_cfg_successors(blks)
 
-    # The bulk of blocks can be handled by this general loop.
+    # The bulk of blocks can be handled by this general loop. Function entry is an implicit
+    # predecessor of the entry block, so no block that branches to it is a unique pred.
     is_unique_pred = Dict{ID,Bool}()
     for id in blk_ids
         ss = succs[id]
-        is_unique_pred[id] = !isempty(ss) && all(s -> length(preds[s]) == 1, ss)
+        is_unique_pred[id] =
+            !isempty(ss) && all(s -> s != entry_id && length(preds[s]) == 1, ss)
     end
 
     # If there is a single reachable return node, then that block is treated as a unique
@@ -689,7 +692,6 @@ function _characterise_unique_predecessor_blocks(
 
     # If the entry block has no predecessors, then it can only be entered once, when the
     # function is first entered. In this case, we treat it as having a unique predecessor.
-    entry_id = blk_ids[1]
     pred_is_unique_pred[entry_id] = isempty(preds[entry_id])
 
     return is_unique_pred, pred_is_unique_pred
@@ -1110,9 +1112,12 @@ Create the `:new` statements which initialise the reverse-data `Ref`s. Interpola
 initial rdata directly into the statement, which is safe because it is always a bits type.
 """
 function reverse_data_ref_stmts(info::ADInfo)
-    function make_ref_stmt(id::ID, P::Type)
-        ref_type = Base.RefValue{P<:Type ? NoRData : zero_like_rdata_type(P)}
-        init_ref_val = P <: Type ? NoRData() : Mooncake.zero_like_rdata_from_type(P)
+    function make_ref_stmt(id::ID, P::Type, is_phi::Bool=false)
+        # An unused phi's inferred type can exclude its incoming value.
+        init_ref_val =
+            is_phi ? ZeroRData() : (P <: Type ? NoRData() : zero_like_rdata_from_type(P))
+        R = P <: Type ? NoRData : zero_like_rdata_type(P)
+        ref_type = Base.RefValue{Union{R,typeof(init_ref_val)}}
         return (id, new_inst(Expr(:new, ref_type, QuoteNode(init_ref_val))))
     end
     return vcat(
@@ -1120,7 +1125,8 @@ function reverse_data_ref_stmts(info::ADInfo)
             return make_ref_stmt(id, CC.widenconst(info.arg_types[k]))
         end,
         map(collect(info.ssa_rdata_ref_ids)) do (k, id)
-            return make_ref_stmt(id, CC.widenconst(info.ssa_insts[k].type))
+            inst = info.ssa_insts[k]
+            return make_ref_stmt(id, CC.widenconst(inst.type), inst.stmt isa IDPhiNode)
         end,
     )
 end
@@ -1373,7 +1379,9 @@ function make_ad_stmts!(stmt::PiNode, line::ID, info::ADInfo)
         # Get the rdata from the output_rdata_ref, and set its new value to zero, and
         # increment the output ref.
         output_rdata_id = ID()
-        deref_stmts = deref_and_zero_stmts(P, output_rdata_ref_id, output_rdata_id)
+        deref_stmts = deref_and_zero_stmts(
+            zero_like_rdata_from_type(P), output_rdata_ref_id, output_rdata_id
+        )
         inc_exprs = increment_ref_stmts(val_rdata_ref_id, output_rdata_id)
         rvs = vcat(deref_stmts, inc_exprs)
     else
@@ -1407,7 +1415,8 @@ end
 
 # Helper used by `make_ad_stmts! ` for `GlobalRef`. Noinline to avoid IR bloat.
 @noinline function __verify_const(global_ref, stored_value)
-    @assert global_ref == primal(stored_value)
+    saved = primal(stored_value)
+    @assert global_ref === saved || global_ref == saved
     return uninit_fcodual(global_ref)
 end
 
@@ -1797,7 +1806,9 @@ function nvargs(pb::Pullback{sig}) where {sig}
     return Val{_isva(pb) ? _nargs(pb) - length(sig.parameters) + 1 : 0}
 end
 
-@inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[](dy), nvargs(pb)())
+@inline function (pb::Pullback)(dy)
+    return __flatten_varargs(_isva(pb), __call_rule(pb.pb_oc[], (dy,)), nvargs(pb)())
+end
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
@@ -1830,20 +1841,7 @@ end
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
-end
-
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
-# type parameters; the Pullback's nargs comes from the number of args at the call site.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
-    ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return __call_rule_erased!(
-            Base.inferencebarrier(rule), args
-        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
+    return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
 """
@@ -2150,6 +2148,7 @@ function generate_ir(
 
     # Grab code associated to the primal.
     ir, _ = lookup_ir(interp, sig_or_mi)
+    check_scopedvalue_entry(ir)
     @static if VERSION > v"1.12-"
         # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         ir = set_valid_world!(ir, interp.world)
@@ -2601,9 +2600,8 @@ function conclude_rvs_block(
     # Create statements which extract + zero the rdata refs associated to them.
     rdata_ids = map(_ -> ID(), phi_ids)
     tmp = map(phi_ids, rdata_ids) do phi_id, deref_id
-        P = get_primal_type(info, phi_id)
         r = get_rev_data_id(info, phi_id)
-        return deref_and_zero_stmts(P, r, deref_id)
+        return deref_and_zero_stmts(ZeroRData(), r, deref_id)
     end
     deref_stmts = reduce(vcat, tmp; init=IDInstPair[])
 
@@ -2630,18 +2628,17 @@ function __get_value(edge::ID, x::IDPhiNode)
 end
 
 """
-    deref_and_zero_stmts(P, ref_id, val_id)
+    deref_and_zero_stmts(zero, ref_id, val_id)
 
 Equivalent to something like
 ```julia
 val = ref[]
-ref[] = zero_rdata_from_type(P)
+ref[] = zero
 ```
 """
-function deref_and_zero_stmts(P, ref_id, val_id)
+function deref_and_zero_stmts(zero, ref_id, val_id)
     val = (val_id, new_inst(Expr(:call, getfield, ref_id, QuoteNode(:x))))
-    r = Mooncake.zero_like_rdata_from_type(P)
-    set_ref = (ID(), new_inst(Expr(:call, setfield!, ref_id, QuoteNode(:x), r)))
+    set_ref = (ID(), new_inst(Expr(:call, setfield!, ref_id, QuoteNode(:x), zero)))
     return IDInstPair[val, set_ref]
 end
 
@@ -2892,28 +2889,6 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
 end
 
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
-
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
-    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
-    @inline function __call_rule(
-        rule::LazyDerivedRule{
-            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
-        },
-        args::A,
-    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(
-            args...
-        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
-    end
-end
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)

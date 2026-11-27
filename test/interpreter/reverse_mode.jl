@@ -2,6 +2,8 @@ module S2SGlobals
 using LinearAlgebra, Mooncake
 
 non_const_global = 5.0
+observations = Union{Missing,Float64}[2.0, missing]
+scale_by_observation(x) = first(observations) * x
 const const_float = 5.0
 const const_int = 5
 const const_bool = true
@@ -19,6 +21,13 @@ end
 f(a, x) = dot(a.data, x)
 
 unstable_tester(x::Ref{Any}) = sin(x[])
+
+identity_union(x::Int) = x
+identity_union(x::Float64) = x
+function unused_phi(x, a, b)
+    y = a ? identity_union(b ? x : 1) : 1
+    return y isa Float64 ? y : 0.0
+end
 
 # used for regression test for issue 660
 struct MakeAUnionAll{T} end
@@ -476,6 +485,9 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
     # Tests designed to prevent accidentally re-introducing issues which we have fixed.
     @testset "regression tests" begin
+        TestUtils.test_rule(
+            Xoshiro(123456), S2SGlobals.unused_phi, 2.0, true, false; is_primitive=false
+        )
 
         # 184
         TestUtils.test_rule(
@@ -486,6 +498,11 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
             interface_only=false,
             is_primitive=false,
             mode=Mooncake.ReverseMode,
+        )
+
+        # 1476 -- reading a non-const global whose `==` with itself is not `true`
+        TestUtils.test_rule(
+            Xoshiro(123456), S2SGlobals.scale_by_observation, 3.0; is_primitive=false
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code
@@ -776,10 +793,10 @@ end
                 CFGBlock(blk_id_2, [ID()], [new_inst(ReturnNode(5))]),
             ]
             upreds, pred_is_upred = _characterise_unique_predecessor_blocks(blks)
-            @test upreds[blk_id_1] == true
+            @test upreds[blk_id_1] == false
             @test upreds[blk_id_2] == true
             @test pred_is_upred[blk_id_1] == false
-            @test pred_is_upred[blk_id_2] == true
+            @test pred_is_upred[blk_id_2] == false
         end
     end
     @testset "characterise_used_ids" begin

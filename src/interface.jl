@@ -14,6 +14,15 @@ function __value_and_pullback!!(
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
+    if y_cache !== nothing && !_can_copy_to_output(y_cache, primal(out))
+        # Restore mutated inputs and pop the rule's stacks; `ȳ` is not validated yet.
+        pb!!(zero_rdata(primal(out)))
+        throw(
+            PreparedCacheSpecError(
+                "The output no longer fits the cached storage; prepare a new cache."
+            ),
+        )
+    end
     @assert _typeof(tangent(out)) == fdata_type(T)
     increment!!(tangent(out), fdata(ȳ))
     v = if y_cache === nothing
@@ -37,12 +46,6 @@ __verify_sig(rule::DebugRRule, fx) = __verify_sig(rule.rule, fx)
 # rrule!! doesn't specify specific argument types which must be used, so there's nothing to
 # check here.
 __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
-
-@static if VERSION < v"1.11-"
-    # rrule!! is a plain Julia function (not an OpaqueClosure), so calling it directly is
-    # safe on Julia 1.10; the inferencebarrier workaround is not needed here.
-    @inline __call_rule(rule::typeof(rrule!!), args) = rule(args...)
-end
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String
@@ -437,6 +440,8 @@ function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
             else
                 _copy_output(src[i])
             end
+        elseif isassigned(dst, i)
+            Base._unsetindex!(dst, i)
         end
     end
     return dst
@@ -511,6 +516,40 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
             "non-differentiable types (e.g. integers or booleans).",
         ),
     )
+end
+
+# Leave type compatibility to `_copy_to_output!!`.
+_can_copy_to_output(dst, src) = true
+_can_copy_to_output(::P, ::P) where {P<:Union{Number,Type,Core.TypeName}} = true
+function _can_copy_to_output(dst::P, src::P) where {P<:_BuiltinArrays}
+    size(dst) == size(src) || return false
+    isbitstype(eltype(P)) && return true
+    for i in eachindex(src)
+        if isassigned(dst, i) && isassigned(src, i)
+            _can_copy_to_output(dst[i], src[i]) || return false
+        end
+    end
+    return true
+end
+function _can_copy_to_output(dst::SimpleVector, src::SimpleVector)
+    length(src) <= length(dst) || return false
+    return all(i -> _can_copy_to_output(dst[i], src[i]), eachindex(src))
+end
+@generated function _can_copy_to_output(dst::P, src::P) where {P}
+    isbitstype(P) && return true
+    checks = map(1:fieldcount(P)) do i
+        quote
+            if isdefined(dst, $i)
+                if isdefined(src, $i)
+                    _can_copy_to_output(getfield(dst, $i), getfield(src, $i)) ||
+                        return false
+                elseif ismutabletype(P)
+                    return false
+                end
+            end
+        end
+    end
+    return Expr(:block, checks..., true)
 end
 
 """
@@ -666,12 +705,12 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
-    # Run reverse-pass in order to reset stacks + state.
-    rvs!!(zero_rdata(primal(y)))
-
-    # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
+    # The reverse pass undoes mutations that built the output.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
+
+    # Run reverse-pass in order to reset stacks + state.
+    rvs!!(zero_rdata(primal(y)))
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -679,7 +718,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
             PreparedCacheInputSpec(typeof(x), ())
         end
     end
-    output_primal = primal(y)
+    output_primal = y_cache
     output_spec = if output_primal isa AbstractArray
         PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
     else
@@ -688,13 +727,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
-            rule,
-            y_cache,
-            tangents,
-            dests,
-            zero_tangent(primal(y)),
-            input_specs,
-            output_spec,
+            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
         )
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
@@ -1152,24 +1185,9 @@ end
 # cycles terminate locally instead of recursing forever.
 @inline _fcache_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
 @inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
-@inline _fcache_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
 @inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
 @inline function _fcache_gradient_input_dof(
-    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
-)
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 1)
-        end
-        return total
-    end
-    return length(x)
-end
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
+    x::AbstractArray{<:Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
 )
     haskey(seen, x) && return 0
     _fcache_mark_seen!(seen, x)
@@ -1183,6 +1201,18 @@ end
     return 2 * length(x)
 end
 @inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
+    if _is_ieee_or_bfloat(eltype(x))
+        haskey(seen, x) && return 0
+        _fcache_mark_seen!(seen, x)
+        if x isa _BuiltinArrays
+            total = 0
+            for i in eachindex(x)
+                isassigned(x, i) && (total += 1)
+            end
+            return total
+        end
+        return length(x)
+    end
     tangent_type(typeof(x)) == NoTangent && return 0
     haskey(seen, x) && return 0
     _fcache_mark_seen!(seen, x)
@@ -1214,6 +1244,7 @@ end
     return total
 end
 @inline function _fcache_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
+    _is_ieee_or_bfloat(P) && return 1
     tangent_type(P) == NoTangent && return 0
     if x isa AbstractArray || Base.ismutabletype(P)
         haskey(seen, x) && return 0
@@ -1242,12 +1273,6 @@ end
     return NoTangent()
 end
 @inline function _fcache_gradient_seed_tangent(
-    x::IEEEFloat, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    cursor[] += 1
-    return cursor[] == slot ? one(x) : zero(x)
-end
-@inline function _fcache_gradient_seed_tangent(
     x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 ) where {T<:IEEEFloat}
     cursor[] += 1
@@ -1255,20 +1280,6 @@ end
     cursor[] += 1
     imag_part = cursor[] == slot ? one(T) : zero(T)
     return complex(real_part, imag_part)
-end
-
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        dx[I] = cursor[] == slot ? one(T) : zero(T)
-    end
-    return dx
 end
 
 function _fcache_gradient_seed_tangent(
@@ -1294,13 +1305,21 @@ end
 function _fcache_gradient_seed_tangent(
     x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 )
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    is_float = _is_ieee_or_bfloat(eltype(x))
+    !is_float && tangent_type(typeof(x)) == NoTangent && return NoTangent()
     existing = get(dict, x, nothing)
     !isnothing(existing) && return existing
     dx = zero_tangent(x)
     dict[x] = dx
-    for I in eachindex(x)
-        dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
+    if is_float
+        @inbounds for I in eachindex(x)
+            cursor[] += 1
+            dx[I] = cursor[] == slot ? one(eltype(x)) : zero(eltype(x))
+        end
+    else
+        for I in eachindex(x)
+            dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
+        end
     end
     return dx
 end
@@ -1328,6 +1347,10 @@ end
 function _fcache_gradient_seed_tangent(
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {P}
+    if _is_ieee_or_bfloat(P)
+        cursor[] += 1
+        return cursor[] == slot ? one(x) : zero(x)
+    end
     tangent_type(P) == NoTangent && return NoTangent()
     if x isa AbstractArray || Base.ismutabletype(P)
         existing = get(dict, x, nothing)

@@ -878,7 +878,10 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+# The Val tag marks the deepcopy cache, whose Array method adds each shared Memory once.
+const MemoryIncCache = IdDict{Any,Union{Bool,Val{:per_buffer}}}
+
+const IncCache = Union{NoCache,IdDict{Any,Bool},MemoryIncCache}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
@@ -905,7 +908,9 @@ That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
 function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Bool}(), x, y)
+    return increment_internal!!(
+        require_tangent_cache(T) isa Val{false} ? NoCache() : IdDict{Any,Bool}(), x, y
+    )
 end
 
 """
@@ -1425,12 +1430,10 @@ live in `src/rules/linear_algebra.jl`.
         return :(($(dest_exprs...),))
     end
     # Immutable struct with fields: recurse element-wise and return a NamedTuple dest.
-    # Mutable types are excluded for two reasons:
-    #   1. They can be recursive (e.g. tree nodes), making field-by-field descent infinite.
-    #   2. Calling tangent_type(P) here would invoke a generated function from another
-    #      generated function's body, risking world-age cycles (see AGENTS.md).
-    # Immutable structs are safe: they cannot be self-referential (infinite memory) and
-    # always have a standard Tangent{...} tangent type.
+    # Recursion follows runtime field values, so it overflows on deep nesting or on a cycle,
+    # which must pass through a mutable object (`Ref`, `Vector`, mutable struct).
+    # Custom tangents (`Complex`, `TwicePrecision`) and `NoTangent` stay raw; tangent_type
+    # is checked in the returned expression so later methods remain visible.
     # AbstractArray and AbstractDict subtypes have dedicated overloads; exclude for clarity.
     if !isprimitivetype(P) &&
         !ismutabletype(P) &&
@@ -1456,7 +1459,13 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(NamedTuple{$names}(($(dest_exprs...),)))
+        return :(
+            if $P <: NamedTuple || tangent_type($P) <: Tangent
+                NamedTuple{$names}(($(dest_exprs...),))
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Resolve element tangents at runtime so later methods remain visible.
     if P <: AbstractArray && !(eltype(P) <: FloatOrComplex)
@@ -1492,9 +1501,15 @@ live in `src/rules/linear_algebra.jl`.
                 )
             end
         end
-        return :(FriendlyTangentCache{AsMutableFields}(
-            NamedTuple{$names}(($(dest_exprs...),))
-        ))
+        return :(
+            if tangent_type($P) <: MutableTangent
+                FriendlyTangentCache{AsMutableFields}(
+                    NamedTuple{$names}(($(dest_exprs...),))
+                )
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        )
     end
     # Everything else: primitives, zero-field types, and custom-tangent types.
     return :(friendly_tangent_cache_internal(x))
@@ -1568,8 +1583,6 @@ end
 # it provides the same field-by-field NamedTuple unwrapping generically for mutable structs
 # whose tangent type is MutableTangent (the Mooncake default for mutable structs with fields).
 # Per-field caches are pre-built into dest.buffer at prepare time (no per-call allocation).
-# Mutable structs with a custom tangent type (not MutableTangent) fall through to the
-# @unstable fallback below, which returns the raw tangent unchanged.
 @generated function tangent_to_friendly!!(
     dest::FriendlyTangentCache{AsMutableFields},
     primal::P,
@@ -1627,9 +1640,6 @@ end
     end
 end
 
-# Fallback: mutable struct with a custom tangent type (not MutableTangent).
-# Return the raw tangent unchanged — same as AsRaw behaviour.
-#
 # Dispatch note: the `where {M<:AsCustomised}` method above also matches
 # FriendlyTangentCache{AsMutableFields} (since AsMutableFields <: AsCustomised), but Julia
 # prefers this method because a concrete invariant type parameter (AsMutableFields) is more

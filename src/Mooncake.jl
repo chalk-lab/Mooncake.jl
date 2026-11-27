@@ -44,11 +44,19 @@ using DispatchDoctor: @stable, @unstable, DispatchDoctor
 
 @static if isdefined(Core, :BFloat16)
     const HalfFloat = Union{Float16,Core.BFloat16}
+    # Complex BFloat16 is listed but unsupported: its tangent is a structural Tangent.
+    const HalfFloatOrComplex = Union{HalfFloat,ComplexF16,Complex{Core.BFloat16}}
 else
     const HalfFloat = Float16
+    const HalfFloatOrComplex = Union{HalfFloat,ComplexF16}
 end
 # BFloat16s.jl supplies BFloat16 arithmetic; methods using it are in `MooncakeBFloat16sExt`.
 const IEEEOrBFloat = Union{IEEEFloat,HalfFloat}
+
+# MooncakeBFloat16sExt extends this for BFloat16s.jl's distinct BFloat16, which core cannot name.
+_is_ieee_or_bfloat(::Type) = false
+_is_ieee_or_bfloat(::Type{<:IEEEOrBFloat}) = true
+
 const FloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
 DispatchDoctor.register_macro!(
@@ -232,6 +240,9 @@ include(joinpath("rules", "bfloat16.jl"))
     include(joinpath("rules", "memory.jl"))
 else
     include(joinpath("rules", "array_legacy.jl"))
+end
+@static if VERSION >= v"1.11-"
+    include(joinpath("rules", "scopedvalues.jl"))
 end
 
 include(joinpath("rules", "threads.jl"))

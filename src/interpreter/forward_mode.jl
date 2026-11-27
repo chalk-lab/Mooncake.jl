@@ -120,17 +120,7 @@ end
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
     args::Vararg{Dual,N}
 ) where {P,sig,N,isva,nargs}
-    return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
-end
-
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type, which is encoded in the MistyClosure type parameter.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
-    ) where {P,A,R,isva,nargs}
-        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
-    end
+    return __call_rule(fwd.fwd_oc, __unflatten_dual_varargs(isva, args, Val(nargs)))
 end
 
 # Copy forward rule with recursively copied captures
@@ -187,6 +177,7 @@ function generate_dual_ir(
 
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    check_scopedvalue_entry(primal_ir)
     @static if VERSION > v"1.12-"
         # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         primal_ir = set_valid_world!(primal_ir, interp.world)
@@ -345,7 +336,11 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::Union{PhiNode,PhiCNode},
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    ::DualInfo,
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -374,19 +369,6 @@ function modify_fwd_ad_stmts!(
 )
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
-    end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
-    return nothing
-end
-
-function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
-)
-    for n in eachindex(stmt.values)
-        isassigned(stmt.values, n) || continue
-        stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
@@ -535,27 +517,6 @@ mutable struct LazyFRule{primal_sig,Trule}
 end
 
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
-
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyFRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyFRule{sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
-        args,
-    ) where {sig,P,A,R,isva,nargs}
-        return rule(args...)::R
-    end
-    @inline function __call_rule(
-        rule::LazyFRule{
-            sig,DebugFRule{DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}}
-        },
-        args,
-    ) where {sig,P,A,R,isva,nargs}
-        return rule(args...)::R
-    end
-end
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)

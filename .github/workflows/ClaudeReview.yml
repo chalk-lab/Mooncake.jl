@@ -61,7 +61,7 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
     steps:
       # Trusted copy of the reviewer and the repo's AGENTS.md/CLAUDE.md, from main.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: base
           persist-credentials: false
@@ -78,14 +78,14 @@ jobs:
           echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
 
       # The untrusted PR head, pinned to the SHA the diff was taken from. Only read, never run.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: pr
           ref: ${{ steps.pr.outputs.head_sha }}
           persist-credentials: false
 
       # Anthropic's official code-review plugin, pinned.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: anthropics/claude-code
           ref: 2301018b1f61073c501a8e7a4813ef48c239163b
@@ -93,7 +93,7 @@ jobs:
           sparse-checkout: plugins/code-review
           persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
@@ -153,7 +153,7 @@ jobs:
     steps:
       # always() on the steps too: still swap the 👀 if the whole run is cancelled by hand.
       - if: always()
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           sparse-checkout: .github/claude_review.py
           sparse-checkout-cone-mode: false

@@ -418,18 +418,19 @@ end
 # `mod2pi` return NaN coefficients at their discontinuity points.
 @inline _nfwd_pow_grad_x(x, p, y) = p * y / x
 @inline function _nfwd_pow_grad_x(x::P, p::P, y) where {P<:IEEEFloat}
-    return ifelse(
-        !iszero(x) || p < zero(P),
-        p * y / x,
-        ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
-    )
+    if !iszero(x) || p < zero(P)
+        return p * y / x
+    elseif p > one(P)
+        # Preserve the coefficient's direction and its positive zero at a zero base.
+        return isfinite(p) ? zero(y) + p * x^(p - one(P)) : zero(y)
+    else
+        return ifelse(isone(p), one(y), ifelse(iszero(p), zero(y), oftype(y, Inf)))
+    end
 end
 
 @inline _nfwd_pow_grad_p(x, p, y) = y * log(complex(x))
 @inline function _nfwd_pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
-    return ifelse(
-        !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
-    )
+    return ifelse(!iszero(x), y * log(abs(x)), ifelse(p > zero(P), zero(y), oftype(y, NaN)))
 end
 
 @inline function _nfwd_mod_grad_coeffs(x::P, y::P) where {P<:IEEEFloat}

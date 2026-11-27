@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.66"
+version = "0.5.73"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -45,14 +45,12 @@ MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistancesExt = "Distances"
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
-MooncakeFluxExt = "Flux"
 MooncakeFunctionWrappersExt = "FunctionWrappers"
 MooncakeJETExt = "JET"
 MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
 MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
-MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
@@ -71,17 +69,17 @@ Distances = "0.10.12"
 Distributions = "0.25"
 DynamicExpressions = "2"
 ExprTools = "0.1"
-Flux = "0.16.3"
+Flux = "0.16.15"
 FunctionWrappers = "1.1.3"
 GPUArraysCore = "0.1, 0.2"
 JET = "0.9, 0.10, 0.11, 0.12, 0.13"
 LinearAlgebra = "1"
-LogExpFunctions = "0.3, 1"
+LogExpFunctions = "0.3.28, 1"
 Logging = "1"
 LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
-NNlib = "0.9.45"
+NNlib = "0.9.58"
 PrecompileTools = "1"
 Pkg = "1"
 Random = "1"

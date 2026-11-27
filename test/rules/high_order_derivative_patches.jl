@@ -170,20 +170,7 @@ end
 
     rvscache = prepare_gradient_cache(rosen, z)
     grad(y) = value_and_gradient!!(rvscache, rosen, y)[2][2]
-    # On Julia 1.10, __call_rule's inferencebarrier makes __value_and_gradient!! opaque to
-    # Mooncake's rule compiler, so build_rrule fails with MooncakeRuleCompilationError
-    # before reaching the ArgumentError thrown by MistyClosure.rrule!!.
-    @static if VERSION >= v"1.11-"
-        @test_throws "not currently supported" prepare_gradient_cache(grad, z)
-    else
-        @test try
-            prepare_gradient_cache(grad, z)
-            false
-        catch e
-            e isa Mooncake.MooncakeRuleCompilationError ||
-                (e isa ArgumentError && occursin("not currently supported", e.msg))
-        end
-    end
+    @test_throws "not currently supported" prepare_gradient_cache(grad, z)
 end
 
 @testset "get_inner_rrule is forward-over-reverse only" begin

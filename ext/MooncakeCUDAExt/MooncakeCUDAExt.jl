@@ -95,9 +95,12 @@ import Mooncake.TestUtils:
 
 # NDual lives in Mooncake.Nfwd and is loaded as part of Mooncake core.
 
+const _GPUARRAYS_12 = pkgversion(GPUArrays) >= v"12"
+
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+const CuBFloatArray = CuArray{CUDACore.BFloat16}
 
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
@@ -112,10 +115,9 @@ const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 # `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
 const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
-# Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
-# Julia-visible fields — wrong for GPU arrays.
-Mooncake._copy_output(x::CuMaybeComplexArray) = copy(x)
-function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuMaybeComplexArray}
+# Copy GPU storage through CUDA; generic struct copying would descend into GPU contexts.
+Mooncake._copy_output(x::CuArray) = copy(x)
+function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuArray}
     copyto!(dst, src)
     return dst
 end
@@ -216,8 +218,10 @@ end
 @foldable fdata_type(::Type{CuPtr{T}}) where {T} =
     tangent_type(T) === NoTangent ? NoFData : CuPtr{T}
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
-@foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
-@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
+@foldable tangent_type(::Type{P}) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}} = P
+@foldable tangent_type(
+    ::Type{P}, ::Type{NoRData}
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}} = P
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
@@ -346,6 +350,11 @@ end
 
 _register_cuda_opaque_types!()
 
+@static if isdefined(CUDACore.GPUCompiler, :LookupCacheEntry)
+    # LookupCacheEntry.next is self-referential; generic tangent_type has no cycle handling.
+    tangent_type(::Type{<:CUDACore.GPUCompiler.LookupCacheEntry}) = NoTangent
+end
+
 # CUDA @cenum types are primitive types (integer-backed C enums) — never differentiable.
 # Mooncake's generic tangent_type @generated function errors on primitive types with no
 # registered method, so we register all of them here programmatically.
@@ -441,6 +450,12 @@ _register_cudataref_internal_types!()
 # active_state() wraps task_local_state!() and returns a NamedTuple{device,context,stream,
 # math_mode}.  Registering it separately covers call sites that bypass task_local_state!.
 @zero_derivative MinimalCtx Tuple{typeof(active_state)}
+@static if isdefined(CUDACore, :current_capture_scope)
+    # Capture scope is task-local runtime state with no derivative.
+    @zero_derivative MinimalCtx Tuple{typeof(CUDACore.current_capture_scope)}
+end
+# Device capability is a static query, not a differentiable value.
+@zero_derivative MinimalCtx Tuple{typeof(CUDACore.capability),CuDevice}
 # cuBLAS.version() queries the runtime library version via cublasGetProperty (a ccall).
 # Returns a constant VersionNumber — not differentiable.
 @zero_derivative MinimalCtx Tuple{typeof(cuBLAS.version)}
@@ -478,29 +493,33 @@ _register_cudataref_internal_types!()
 tangent_type(::Type{<:CuNonDiffArray}) = NoTangent
 tangent_type(::Type{<:CuNonDiffArray}, ::Type{NoRData}) = NoTangent
 
-tangent(p::CuMaybeComplexArray, ::NoRData) = p
+tangent(p::Union{CuMaybeComplexArray,CuBFloatArray}, ::NoRData) = p
 
-function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
+function arrayify(x::A, dx::A) where {A<:Union{CuMaybeComplexArray,CuBFloatArray}}
     return (x, dx)
 end
 
-function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
+function zero_tangent_internal(
+    x::Union{CuMaybeComplexArray,CuBFloatArray}, dict::MaybeCache
+)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = zero(x)
     dict[x] = t
     return t
 end
-function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::MaybeCache)
+function randn_tangent_internal(
+    rng::AbstractRNG, x::Union{CuMaybeComplexArray,CuBFloatArray}, dict::MaybeCache
+)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     # Use `similar` to match the memory kind of `x` (DeviceMemory, UnifiedMemory, or
     # HostMemory), then populate from a CPU-side randn so we don't need a GPU RNG.
-    t = copyto!(similar(x), randn(rng, eltype(x), size(x)...))
+    t = copyto!(similar(x), randn(rng, eltype(x), size(x)))
     dict[x] = t
     return t
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {P<:CuMaybeComplexArray}
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     # allow nan comparisons to return true, real() to cover complex case
     return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
 end
@@ -515,48 +534,67 @@ end
 # need no `set_to_zero!!`-style `fill!` workaround: they form `Broadcasted{CuArrayStyle}`,
 # so under HVP they hit the `materialize!` rule and route to the `_gpu_broadcast_dual`
 # chokepoint (a clear error), never a raw kernel escaping to `cufunction`.
-function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexArray}
+function increment_internal!!(
+    c::IncCache, x::A, y::A
+) where {A<:Union{CuMaybeComplexArray,CuBFloatArray}}
     (x === y || haskey(c, x)) && return x
     c[x] = true
     x .+= y
     return x
 end
-__increment_should_allocate(::Type{<:CuMaybeComplexArray}) = true
-# Use `fill!` (has Mooncake rules), not `x .= 0`: under HVP `set_to_zero!!` is itself
-# differentiated, and the broadcast inlines to a raw kernel launch whose forward-mode
-# trace descends into `cufunction`; `fill!` dispatches to its frule!! instead.
-set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = fill!(x, 0)
+__increment_should_allocate(::Type{<:Union{CuMaybeComplexArray,CuBFloatArray}}) = true
+# `fill!` avoids tracing a raw broadcast kernel under HVP for CuMaybeComplexArray.
+# BFloat16 arrays use it for zeroing only; their `fill!` has no AD rule.
+function set_to_zero_internal!!(
+    ::Mooncake.SetToZeroCache, x::Union{CuMaybeComplexArray,CuBFloatArray}
+)
+    fill!(x, 0)
+end
 
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
-) where {P<:CuMaybeComplexArray}
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
-    x′ = x + y
+    # `.+`, not `+`: CUBLAS `geam` scales by complex `one(T)`, giving `Inf + 0im` a NaN.
+    x′ = similar(x)
+    x′ .= x .+ y
     c[key] = x′
     return x′
 end
-function primal_to_tangent_internal!!(t, x::CuMaybeComplexArray, c::MaybeCache)
+function primal_to_tangent_internal!!(
+    t, x::Union{CuMaybeComplexArray,CuBFloatArray}, c::MaybeCache
+)
     haskey(c, x) && return c[x]::typeof(t)
     c[x] = t
     t .= x
     return t
 end
-function tangent_to_primal_internal!!(x::CuMaybeComplexArray, t, c::MaybeCache)
+function tangent_to_primal_internal!!(
+    x::Union{CuMaybeComplexArray,CuBFloatArray}, t, c::MaybeCache
+)
     haskey(c, x) && return c[x]::typeof(x)
     c[x] = x
     x .= t
     return x
 end
-function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
+function _dot_internal(
+    c::MaybeCache, x::P, y::P
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return Float64(real(dot(x, y)))
+    # Real dot of the components: `real(dot(x, y))` without complex `Inf * 0` terms.
+    T = real(eltype(P))
+    return Float64(dot(reinterpret(T, vec(x)), reinterpret(T, vec(y))))
 end
-function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
+function _scale_internal(
+    c::MaybeCache, x::Float64, y::P
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     haskey(c, y) && return c[y]::P
-    t′ = eltype(P)(x) * y
+    # Scale by a real `x`: a complex `x + 0im` turns `Inf + 0im` into `Inf + NaN*im`.
+    t′ = similar(y)
+    t′ .= real(eltype(P))(x) .* y
     c[y] = t′
     return t′
 end
@@ -576,9 +614,15 @@ end
 
 # ChainRules interop.  CuArray is its own tangent in both Mooncake and ChainRules,
 # so to_cr_tangent and mooncake_tangent are identity operations.
-mooncake_tangent(::CuMaybeComplexArray, t::CuMaybeComplexArray) = t
-to_cr_tangent(x::CuMaybeComplexArray) = x
-function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuMaybeComplexArray}
+function mooncake_tangent(
+    ::Union{CuMaybeComplexArray,CuBFloatArray}, t::Union{CuMaybeComplexArray,CuBFloatArray}
+)
+    t
+end
+to_cr_tangent(x::Union{CuMaybeComplexArray,CuBFloatArray}) = x
+function increment_and_get_rdata!(
+    f::T, ::NoRData, t::T
+) where {T<:Union{CuMaybeComplexArray,CuBFloatArray}}
     f .+= t
     return NoRData()
 end
@@ -593,15 +637,20 @@ end
 # which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
 # x.dx and gradient accumulation propagates automatically — NoPullback is correct.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
+    MinimalCtx,
+    Tuple{typeof(reshape),Union{CuMaybeComplexArray,CuBFloatArray},NTuple{N,Int}} where {N},
 )
 function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
+    ::Dual{typeof(reshape)},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
+    dims::Dual{<:NTuple},
 )
     return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 function rrule!!(
-    ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
+    ::CoDual{typeof(reshape)},
+    x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
+    dims::CoDual{<:NTuple},
 )
     _dims = primal(dims)
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
@@ -632,11 +681,13 @@ function _check_derive_eltype(::Type{T}, pa) where {T}
         _UNIMPL_MSG,
     )
 end
-@is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuMaybeComplexArray,Dims,Int})
+@is_primitive(
+    MinimalCtx, Tuple{typeof(derive),Type,Union{CuMaybeComplexArray,CuBFloatArray},Dims,Int}
+)
 function frule!!(
     ::Dual{typeof(derive)},
     ::Dual{Type{T}},
-    a::Dual{<:CuMaybeComplexArray},
+    a::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     dims::Dual,
     offset::Dual,
 ) where {T}
@@ -648,7 +699,7 @@ end
 function rrule!!(
     ::CoDual{typeof(derive)},
     ::CoDual{Type{T}},
-    a::CoDual{<:CuMaybeComplexArray},
+    a::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     dims::CoDual,
     offset::CoDual,
 ) where {T}
@@ -668,7 +719,7 @@ function frule!!(
     maxsize::Dual,
     offset::Dual,
     dims::Dual,
-) where {P<:CuMaybeComplexArray}
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
     return Dual(y, dy)
@@ -680,7 +731,7 @@ function rrule!!(
     maxsize::CoDual,
     offset::CoDual,
     dims::CoDual,
-) where {P<:CuMaybeComplexArray}
+) where {P<:Union{CuMaybeComplexArray,CuBFloatArray}}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, data.dx, primal(maxsize), primal(offset), primal(dims))
     return CoDual(y, dy), _nopb(Val(6))
@@ -857,12 +908,14 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Union{Integer,CartesianIndex}}
+        typeof(getindex),
+        Union{CuMaybeComplexArray,CuBFloatArray},
+        AbstractVector{<:Union{Integer,CartesianIndex}},
     },
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     idx::Dual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
     px, dx = arrayify(x)
@@ -889,7 +942,7 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
     MinimalCtx,
     Tuple{
         typeof(getindex),
-        CuMaybeComplexArray,
+        Union{CuMaybeComplexArray,CuBFloatArray},
         _CuSliceIndex,
         _CuSliceIndex,
         Vararg{_CuSliceIndex},
@@ -897,7 +950,7 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
 )
 function frule!!(
     ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     i::Dual{<:_CuSliceIndex},
     j::Dual{<:_CuSliceIndex},
     inds::Vararg{Dual{<:_CuSliceIndex}},
@@ -909,7 +962,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
-    x::CoDual{<:CuMaybeComplexArray},
+    x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     i::CoDual{<:_CuSliceIndex},
     j::CoDual{<:_CuSliceIndex},
     inds::Vararg{CoDual{<:_CuSliceIndex}},
@@ -1035,34 +1088,59 @@ _winner(i::CartesianIndex) = Ref(i)
 _winner(i::AbstractArray{<:CartesianIndex}) = i
 _winner(i::AbstractArray{<:Integer}) = CartesianIndex.(i)
 
-# Two reductions have an `init` whose derivative survives the folding, because theirs is
-# idempotent where sum's and prod's is not: maximum/minimum, where it competes with the
-# elements and takes the whole derivative of every slice it beats, and accumulate(+, …),
-# where it adds to each element.  `from_init` says where `init` decided the output: a mask
-# for max/min, `true` throughout for accumulate.  A tie counts against `init`, as findmax
-# breaks them.
+# from_init is ∂output/∂init; extrema ties count against init.
 _kw_init_tangent(dkw) = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
 _kw_init_jvp(dy, ::NoTangent, from_init) = dy
-_kw_init_jvp(dy, dinit::Number, from_init) = dy .+ dinit .* from_init
+function _kw_init_jvp(dy, dinit::Number, from_init)
+    return iszero(dinit) ? dy : dy .+ dinit .* from_init
+end
+function _kw_init_jvp(dy::AbstractArray, dinit::Number, from_init)
+    iszero(dinit) && return dy
+    out = similar(dy)
+    out .= dy .+ dinit .* from_init
+    return out
+end
 # Takes dy rather than a finished cotangent so that a call with no differentiable `init`
 # never launches the reduction.  `sum` also covers the scalar branch, where dy is a number.
 _kw_init_rdata(kw_rdata::NoRData, dy, from_init) = kw_rdata
 function _kw_init_rdata(kw_rdata::NamedTuple, dy, from_init)
-    (haskey(kw_rdata, :init) && !(kw_rdata.init isa NoRData)) || return kw_rdata
-    return merge(kw_rdata, (; init=oftype(kw_rdata.init, sum(dy .* from_init))))
+    (from_init === false || !haskey(kw_rdata, :init) || kw_rdata.init isa NoRData) &&
+        return kw_rdata
+    dinit = from_init === true ? sum(dy) : sum(Mooncake._mul_guarded_scale.(dy, from_init))
+    dinit = _project_cotangent(kw_rdata.init, dinit)
+    return merge(kw_rdata, (; init=oftype(kw_rdata.init, dinit)))
 end
 # findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
 _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 
-# Reducing over an empty extent has a well-defined primal — GPUArrays fills each slice with
-# `init`, or with the eltype's identity when there is none — but no argmax to report, and
-# findmax/findmin read out of bounds there: a device-side BoundsError that surfaces at some
-# later synchronisation.  A Colon reduction over an empty non-vector instead hands `_winner`
-# a linear index outside CartesianIndices.  Since no element competes, x's derivative is
-# zero and `init` takes all of it.
+# Empty slices have no argmax; the primal supplies their value or error.
 _empty_minmax_slice(px, ::Colon) = isempty(px)
 _empty_minmax_slice(px, dims::Integer) = size(px, dims) == 0
 _empty_minmax_slice(px, dims) = any(d -> size(px, d) == 0, dims)
+
+function _minmax_find(op, find, px, dims)
+    # GPUArrays 11 scalarises zero-dimensional inputs inside findmax/findmin.
+    if !_GPUARRAYS_12 && ndims(px) == 0 && !(dims isa Colon)
+        return op(px; dims=dims), CartesianIndex()
+    end
+    return find(px; dims=dims)
+end
+
+@is_primitive(
+    MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(_minmax_find),Any,Any,CuFloatArray,Any}
+)
+function frule!!(
+    ::Dual{typeof(_minmax_find)}, op::Dual, find::Dual, x::Dual{<:CuFloatArray}, dims::Dual
+)
+    px, dx = arrayify(x)
+    pdims = primal(dims)
+    m, ind = _minmax_find(primal(op), primal(find), px, pdims)
+    dm = sum(
+        Base.broadcasted((d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind));
+        dims=pdims,
+    )
+    return Dual((m, ind), (dm, zero_tangent(ind)))
+end
 
 for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
@@ -1079,7 +1157,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval function rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuFloatArray})
         px, dx = arrayify(x)
         isempty(px) && return CoDual($_fn(px), NoFData()), _nopb(Val(2))
-        y, ind = $_find(px)
+        y, ind = _minmax_find($_fn, $_find, px, :)
         function minmax_pb!!(dy)
             dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
             return NoRData(), NoRData()
@@ -1087,11 +1165,6 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         return CoDual(y, NoFData()), minmax_pb!!
     end
 
-    # Any keyword beyond `dims` needs the value from the primal call: `init` can beat every
-    # element, leaving the result independent of x, and it also fixes the output eltype, so
-    # the tangent is converted to follow it.  A keyword the primal rejects then still raises
-    # its MethodError.  `won` is a negated comparison so that a slice whose max is NaN keeps
-    # the argmax gradient, where the keyword-free rule puts it.
     @eval function frule!!(
         ::Dual{typeof(Core.kwcall)},
         kw::Dual{<:NamedTuple},
@@ -1103,18 +1176,40 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dims = get(pkw, :dims, :)
         if _empty_minmax_slice(px, dims)
             y_e = $_fn(px; pkw...)
-            return Dual(y_e, _kw_init_jvp(zero(y_e), _kw_init_tangent(tangent(kw)), true))
+            return Dual(
+                y_e, _kw_init_jvp(zero_tangent(y_e), _kw_init_tangent(tangent(kw)), true)
+            )
         end
-        m, ind = $_find(px; dims=dims)
+        m, ind = _minmax_find($_fn, $_find, px, dims)
         if _minmax_kw_is_plain(pkw)
-            return Dual(m, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
+            return Dual(
+                m,
+                sum(
+                    Base.broadcasted(
+                        (d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind)
+                    );
+                    dims=dims,
+                ),
+            )
         end
+        # Preserve init's value/type and unsupported-keyword errors.
         y = $_fn(px; pkw...)
+        tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
+        # Negated comparisons preserve NaN slices' argmax gradients.
         won = .!broadcast($_beat, m, y)
-        dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims)
-        return Dual(
-            y, _kw_init_jvp(eltype(y).(dy) .* won, _kw_init_tangent(tangent(kw)), .!won)
+        dy = sum(
+            Base.broadcasted(
+                (d, i, w) -> d * (i == w), dx, CartesianIndices(px), _winner(ind)
+            );
+            dims=dims,
         )
+        if dy isa AbstractArray
+            masked = similar(y)
+            masked .= dy .* won
+        else
+            masked = eltype(y)(dy) * won
+        end
+        return Dual(y, _kw_init_jvp(masked, _kw_init_tangent(tangent(kw)), .!won))
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -1128,65 +1223,58 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dims = get(pkw, :dims, :)
         if _empty_minmax_slice(px, dims)
             y_e = $_fn(px; pkw...)
-            if dims isa Colon
-                function minmax_empty_scalar_pb!!(dy)
-                    dkw = _kw_init_rdata(kw_rdata, dy, true)
-                    return NoRData(), dkw, NoRData(), NoRData()
-                end
-                return CoDual(y_e, NoFData()), minmax_empty_scalar_pb!!
-            end
-            dy_e = zero(y_e)
-            function minmax_empty_array_pb!!(::NoRData)
-                dkw = _kw_init_rdata(kw_rdata, dy_e, true)
+            tangent_type(typeof(y_e)) === NoTangent &&
+                return zero_fcodual(y_e), _nopb(Val(4))
+            dy_e = y_e isa AbstractArray ? zero(y_e) : NoFData()
+            function minmax_empty_pb!!(dy)
+                dy = dy isa NoRData ? dy_e : dy
+                dkw = _kw_init_rdata(kw_rdata, dy, true)
                 return NoRData(), dkw, NoRData(), NoRData()
             end
-            return CoDual(y_e, dy_e), minmax_empty_array_pb!!
+            return CoDual(y_e, dy_e), minmax_empty_pb!!
         end
-        m, ind = $_find(px; dims=dims)
+        m, ind = _minmax_find($_fn, $_find, px, dims)
         y, won = if _minmax_kw_is_plain(pkw)
             m, true
         else
             y_kw = $_fn(px; pkw...)
             y_kw, .!broadcast($_beat, m, y_kw)
         end
-        if dims isa Colon
-            function minmax_kw_scalar_pb!!(dy)
-                dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
-                dkw = _kw_init_rdata(kw_rdata, dy, .!won)
-                return NoRData(), dkw, NoRData(), NoRData()
-            end
-            return CoDual(y, NoFData()), minmax_kw_scalar_pb!!
-        end
-        dy_out = zero(y)
-        function minmax_kw_array_pb!!(::NoRData)
-            dx .+= dy_out .* (CartesianIndices(px) .== _winner(ind)) .* won
-            dkw = _kw_init_rdata(kw_rdata, dy_out, .!won)
+        tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
+        dy_out = y isa AbstractArray ? zero(y) : NoFData()
+        function minmax_kw_pb!!(dy)
+            dy = dy isa NoRData ? dy_out : dy
+            # A scalar lambda keeps this fused broadcast inferable on Julia 1.10.
+            dx .+= Base.broadcasted(
+                (d, i, w, b) -> d * (i == w) * b,
+                dy,
+                CartesianIndices(px),
+                _winner(ind),
+                won,
+            )
+            dkw = _kw_init_rdata(kw_rdata, dy, .!won)
             return NoRData(), dkw, NoRData(), NoRData()
         end
-        return CoDual(y, dy_out), minmax_kw_array_pb!!
+        return CoDual(y, dy_out), minmax_kw_pb!!
     end
 end
 
-# maximum(f, x) / minimum(f, x) are separate methods that escape the claims
-# above. A real rule needs sum(f, x)'s NDual machinery plus winner selection.
-for _fn in (:maximum, :minimum)
-    _msg = "Mooncake: $_fn(f, x) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Any,CuArray})
-    @eval @is_primitive(
-        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),Any,CuArray}
-    )
-    @eval frule!!(::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval rrule!!(::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
-    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
-        $_msg
-    )
+# `dims` and `extrema(f, x)` still reach the mapreduce error.
+@is_primitive(MinimalCtx, Tuple{typeof(extrema),CuFloatArray})
+function frule!!(::Dual{typeof(extrema)}, x::Dual{<:CuFloatArray})
+    lo = frule!!(Dual(minimum, NoTangent()), x)
+    hi = frule!!(Dual(maximum, NoTangent()), x)
+    return Dual((primal(lo), primal(hi)), (tangent(lo), tangent(hi)))
+end
+function rrule!!(::CoDual{typeof(extrema)}, x::CoDual{<:CuFloatArray})
+    lo, lo_pb!! = rrule!!(zero_fcodual(minimum), x)
+    hi, hi_pb!! = rrule!!(zero_fcodual(maximum), x)
+    function extrema_pb!!(dy)
+        lo_pb!!(dy[1])
+        hi_pb!!(dy[2])
+        return NoRData(), NoRData()
+    end
+    return CoDual((primal(lo), primal(hi)), NoFData()), extrema_pb!!
 end
 
 # Rules for `prod(x)` on GPU arrays, bare and `dims`.
@@ -1201,15 +1289,11 @@ end
 # Both quantities come from the same reduction the primal ran, over `px` with its zeros
 # replaced by ones, so a folded `init` scales the derivative exactly as it scaled the value.
 function _prod_exclusive(px, dims, kw)
-    T = eltype(px)
-    nonzero = ifelse.(iszero.(px), one(T), px)
+    nonzero = Base.broadcasted(x -> ifelse(iszero(x), one(x), x), px)
     pnz = prod(nonzero; kw...)
-    nzeros = sum(iszero.(px); dims=dims)
+    nzeros = sum(Base.broadcasted(iszero, px); dims=dims)
     contributes = ifelse.(iszero.(px), nzeros .== 1, iszero.(nzeros))
-    # `pnz` follows `init`'s type when there is one, since GPUArrays takes the output eltype
-    # from it, so the zero has to come from the quotient rather than from either side: `T`
-    # would join two eltypes into an `AbstractFloat` the kernel cannot hold, and `eltype(pnz)`
-    # would do the same the other way round when `init` is the narrower of the two.
+    # Use the quotient's zero: mixed precisions can produce an abstract GPU eltype.
     q = pnz ./ nonzero
     return ifelse.(contributes, q, zero(eltype(q)))
 end
@@ -1248,10 +1332,15 @@ function frule!!(
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
-    # `init` fixes the output eltype, and the tangent has to follow it.  Converting after
-    # the reduction rather than seeding it: a widening seed over a broadcast fails to
-    # compile a kernel.
-    return Dual(y, eltype(y).(sum(dx .* _prod_exclusive(px, dims, pkw); dims=dims)))
+    tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
+    # Convert after reduction: a widening broadcast seed can fail GPU compilation.
+    dy = sum(Base.broadcasted(*, dx, _prod_exclusive(px, dims, pkw)); dims=dims)
+    dinit = _kw_init_tangent(tangent(kw))
+    if !(dinit isa NoTangent || iszero(dinit))
+        dy = _kw_init_jvp(dy, dinit, _prod_init_partial(px, pkw, y))
+    end
+    dy = dims isa Colon ? eltype(y)(dy) : broadcast!(identity, similar(y), dy)
+    return Dual(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1265,20 +1354,17 @@ function rrule!!(
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
+    tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
     excl = conj.(_prod_exclusive(px, dims, pkw))
-    if dims isa Colon
-        function prod_kw_scalar_pb!!(dy)
-            dx .+= dy .* excl
-            return NoRData(), kw_rdata, NoRData(), NoRData()
-        end
-        return CoDual(y, NoFData()), prod_kw_scalar_pb!!
+    init_partial = conj.(_prod_init_partial(px, pkw, y))
+    dy_out = y isa AbstractArray ? zero(y) : NoFData()
+    function prod_kw_pb!!(dy)
+        dy = dy isa NoRData ? dy_out : dy
+        dx .+= _realprojector(eltype(dx)).(dy .* excl)
+        dkw = _kw_init_rdata(kw_rdata, dy, init_partial)
+        return NoRData(), dkw, NoRData(), NoRData()
     end
-    dy_out = zero(y)
-    function prod_kw_array_pb!!(::NoRData)
-        dx .+= dy_out .* excl
-        return NoRData(), kw_rdata, NoRData(), NoRData()
-    end
-    return CoDual(y, dy_out), prod_kw_array_pb!!
+    return CoDual(y, dy_out), prod_kw_pb!!
 end
 
 # Rules for `cumsum(x)` on GPU arrays.
@@ -1320,8 +1406,8 @@ end
 #   dx[i] += (Σ over k ≥ i of dy[k]·pnz[k], masked to the prefixes i contributes to) / denom[i]
 function _cumprod_pieces(px, d)
     T = eltype(px)
-    zero_at = iszero.(px)
-    denom = ifelse.(zero_at, one(T), px)
+    zero_at = broadcast!(iszero, similar(px, Bool), px)
+    denom = broadcast!(ifelse, similar(px), zero_at, one(T), px)
     return zero_at, cumsum(zero_at; dims=d), cumprod(denom; dims=d), denom
 end
 
@@ -1331,14 +1417,18 @@ function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     d = get(kw, :dims, 1)
     y = cumprod(px; kw...)
     zero_at, nzeros, pnz, denom = _cumprod_pieces(px, d)
-    from_nonzeros = cumsum(dx ./ denom; dims=d)
-    from_the_zero = cumsum(ifelse.(zero_at, dx, zero(eltype(dx))); dims=d)
-    contribution = ifelse.(
-        iszero.(nzeros),
-        from_nonzeros,
-        ifelse.(nzeros .== 1, from_the_zero, zero(eltype(dx))),
+    from_nonzeros = cumsum(broadcast!(/, similar(dx), dx, denom); dims=d)
+    from_the_zero = cumsum(
+        broadcast!(ifelse, similar(dx), zero_at, dx, zero(eltype(dx))); dims=d
     )
-    return Dual(y, pnz .* contribution)
+    dy = similar(y)
+    dy .=
+        pnz .* ifelse.(
+            iszero.(nzeros),
+            from_nonzeros,
+            ifelse.(nzeros .== 1, from_the_zero, zero(eltype(dx))),
+        )
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1357,8 +1447,8 @@ function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw
         dx .+=
             ifelse.(
                 zero_at,
-                _scan_pullback(weighted .* only_zero, d),
-                _scan_pullback(weighted .* clean, d),
+                _scan_pullback(broadcast!(*, similar(dy_out), weighted, only_zero), d),
+                _scan_pullback(broadcast!(*, similar(dy_out), weighted, clean), d),
             ) ./ cdenom
         return NoRData(), NoRData()
     end
@@ -1478,7 +1568,8 @@ function frule!!(
     px, dx = arrayify(x)
     d = get(pkw, :dims, nothing)
     y = accumulate(+, px; pkw...)
-    dy = eltype(y).(_scan_jvp(dx, d))
+    dy = similar(y)
+    dy .= _scan_jvp(dx, d)
     return Dual(
         y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), _scan_applies_init(px, d))
     )
@@ -1525,14 +1616,18 @@ function rrule!!(
     return rrule!!(f, op, x)
 end
 
-# Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
+# `sum(x)` covers real IEEE, complex IEEE, and BFloat16 CuArrays.
 # See also `src/rules/performance_patches`.
-@is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
+@is_primitive(DefaultCtx, Tuple{typeof(sum),Union{CuMaybeComplexArray,CuBFloatArray}})
+function frule!!(
+    ::Dual{typeof(sum)}, x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray}
+)
     px, dx = arrayify(x)
     return Dual(sum(px), sum(dx))
 end
-function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
+function rrule!!(
+    ::CoDual{typeof(sum)}, x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray}
+)
     _, dx = arrayify(x)
     function sum_pb!!(dz)
         dx .+= dz
@@ -1620,20 +1715,14 @@ function rrule!!(
     return out, accumulate_nodiff_kw_pb!!
 end
 
-# `count` returns an Integer for every array, float included, so it never has a derivative.
-# It reaches GPUArrays through `mapreduce(pred, add_sum, A; init=0)`, a Core.kwcall the
-# positional mapreduce catch-all does not claim, so claim `count` itself.
 @zero_derivative MinimalCtx Tuple{typeof(count),CuArray}
-@zero_derivative MinimalCtx Tuple{typeof(count),Any,CuArray}
 
-# The positional spellings above take no `init` and are zero-derivative outright.  The keyword
-# ones accept one, and GPUArrays folds it as it does `sum`'s: `count(>(0.0), x; init=1.0)`
-# returns 98.0 where the count is 3.  Same identity check, so the wrong value is refused
-# rather than its derivative silently zeroed.
+# GPUArrays 11 repeats count's init just like sum's; GPUArrays 12 adds it once.
 for _n_args in (0, 1)
     _pred_d = _n_args == 1 ? (:(pred::Dual),) : ()
     _pred_c = _n_args == 1 ? (:(pred::CoDual),) : ()
     _pred_v = _n_args == 1 ? (:(primal(pred)),) : ()
+    _pred_check = _n_args == 1 ? (:pred,) : ()
     _slot = _n_args == 1 ? (:Any,) : ()
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),$(_slot...),CuArray}
@@ -1645,11 +1734,14 @@ for _n_args in (0, 1)
         $(_pred_d...),
         x::Dual{<:CuArray},
     )
+        _check_gpu_nondiff_reduction(($(_pred_check...),))
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
         _check_reduction_init(tangent(kw))
         y = count($(_pred_v...), primal(x); pkw...)
-        return Dual(y, zero_tangent(y))
+        return Dual(
+            y, _kw_init_jvp(zero_tangent(y), _kw_init_tangent(tangent(kw)), _GPUARRAYS_12)
+        )
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -1658,50 +1750,63 @@ for _n_args in (0, 1)
         $(_pred_c...),
         x::CoDual{<:CuArray},
     )
+        _check_gpu_nondiff_reduction(($(_pred_check...),))
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
-        # The keyword slot owes `zero_rdata(pkw)`, not `NoRData()`: a float `init` makes the
-        # count a float, and its rdata is then a NamedTuple the caller increments into.
+        # A floating init needs the keyword slot's NamedTuple rdata.
         kw_rdata = zero_rdata(pkw)
         y = count($(_pred_v...), primal(x); pkw...)
-        function count_kw_pb!!(::Any)
-            return NoRData(), kw_rdata, $(fill(:(NoRData()), _n_args + 2)...)
+        out = zero_fcodual(y)
+        function count_kw_pb!!(dy)
+            dkw = _kw_init_rdata(
+                kw_rdata, dy isa NoRData ? tangent(out) : dy, _GPUARRAYS_12
+            )
+            return NoRData(), dkw, $(fill(:(NoRData()), _n_args + 2)...)
         end
-        return zero_fcodual(y), count_kw_pb!!
+        return out, count_kw_pb!!
     end
 end
 
-# GPUArrays folds `init` into a backend-defined number of partial reductions, so for the
-# non-idempotent ops it changes the value itself: sum(CuArray([1, 2, 3]); init=1.0) is 101.0,
-# not 7.0. Neither that value nor a derivative through it is defined, so both modes refuse a
-# non-identity `init` — a check on the value, which reverse mode can see too, unlike the
-# tangent check below. max and min fold exactly, so a non-identity `init` is the point of
-# passing one to them and they need no guard; diff/sort/sortperm take no `init` at all.
+# GPUArrays 11 repeats init across partial reductions; GPUArrays 12 applies it once.
 _reduction_identity(::typeof(sum)) = 0
 _reduction_identity(::typeof(count)) = 0
 _reduction_identity(::typeof(prod)) = 1
 _reduction_identity(_) = nothing
 function _check_reduction_identity(f, pkw)
+    _GPUARRAYS_12 && return nothing
     identity = _reduction_identity(f)
     (identity === nothing || !haskey(pkw, :init) || pkw.init == identity) && return nothing
     return _throw_gpu_argument_error(
         "Mooncake: $f over CuArray was given init=$(pkw.init), which is not its identity " *
-        "($identity). GPUArrays folds `init` into a backend-defined number of partial " *
-        "reductions, so the result itself is undefined — sum(CuArray([1, 2, 3]); init=1.0) " *
-        "returns 101.0, not 7.0. Pass the identity, or add `init` to the array instead. " *
+        "($identity). GPUArrays 11 repeats `init` across partial reductions, so the " *
+        "result depends on the backend configuration. Pass the identity and combine " *
+        "`init` with the reduction result instead. " *
         _UNIMPL_MSG,
     )
 end
 
 function _check_reduction_init(dkw)
+    _GPUARRAYS_12 && return nothing
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
     return _throw_gpu_argument_error(
-        "Mooncake: keyword reductions over CuArray treat `init` as a constant, but it " *
+        "Mooncake: GPUArrays 11 keyword reductions treat `init` as a constant, but it " *
         "received a nonzero tangent. Differentiating with respect to `init` is not " *
         "supported. " *
         _UNIMPL_MSG,
     )
+end
+
+function _prod_init_partial(px, pkw, y)
+    (
+        !_GPUARRAYS_12 ||
+        !haskey(pkw, :init) ||
+        tangent_type(typeof(pkw.init)) === NoTangent
+    ) && return false
+    # Divide out init even at one: its partial must stay independent of init in nested AD.
+    isone(pkw.init) && return y ./ pkw.init
+    # Seed prod with one(init) to retain the primal's accumulator precision.
+    return prod(px; dims=get(pkw, :dims, :), init=one(pkw.init))
 end
 
 for _fn in (:sum, :prod, :diff, :sort)
@@ -1717,7 +1822,11 @@ for _fn in (:sum, :prod, :diff, :sort)
         _check_reduction_identity($_fn, primal(kw))
         _check_reduction_init(tangent(kw))
         y = $_fn(primal(x); primal(kw)...)
-        return Dual(y, zero_tangent(y))
+        dinit = _kw_init_tangent(tangent(kw))
+        (dinit isa NoTangent || iszero(dinit)) && return Dual(y, zero_tangent(y))
+        partial =
+            $_fn === prod ? _prod_init_partial(primal(x), primal(kw), y) : _GPUARRAYS_12
+        return Dual(y, _kw_init_jvp(zero_tangent(y), dinit, partial))
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -1729,10 +1838,15 @@ for _fn in (:sum, :prod, :diff, :sort)
         _check_reduction_identity($_fn, pkw)
         kw_rdata = zero_rdata(pkw)
         y = $_fn(primal(x); pkw...)
-        # `::Any`: the output is an Integer without `init` and a float with one, so the
-        # incoming rdata is NoRData or a number depending on the call.
-        nodiff_reduction_kw_pb!!(::Any) = (NoRData(), kw_rdata, NoRData(), NoRData())
-        return zero_fcodual(y), nodiff_reduction_kw_pb!!
+        # Float init can make an integer reduction differentiable; use its output tangent.
+        out = zero_fcodual(y)
+        partial =
+            $_fn === prod ? conj.(_prod_init_partial(primal(x), pkw, y)) : _GPUARRAYS_12
+        function nodiff_reduction_kw_pb!!(dy)
+            dkw = _kw_init_rdata(kw_rdata, dy isa NoRData ? tangent(out) : dy, partial)
+            return NoRData(), dkw, NoRData(), NoRData()
+        end
+        return out, nodiff_reduction_kw_pb!!
     end
 end
 
@@ -1807,11 +1921,15 @@ end
         Integer,
     },
 )
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_copyto!),CuBFloatArray,Integer,CuBFloatArray,Integer,Integer},
+)
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    src::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     soffs::Dual{<:Integer,NoTangent},
     n::Dual{<:Integer,NoTangent},
 )
@@ -1824,9 +1942,9 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     doffs::CoDual{<:Integer,NoFData},
-    src::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    src::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     soffs::CoDual{<:Integer,NoFData},
     n::CoDual{<:Integer,NoFData},
 )
@@ -1862,11 +1980,18 @@ end
 # into the CPU src tangent via a synchronous device-to-host transfer.
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
+    Tuple{
+        typeof(unsafe_copyto!),
+        <:Union{CuMaybeComplexArray,CuBFloatArray},
+        Integer,
+        <:Array,
+        Integer,
+        Integer,
+    },
 )
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     doffs::Dual{<:Integer,NoTangent},
     src::Dual{<:Array,<:Array},
     soffs::Dual{<:Integer,NoTangent},
@@ -1881,7 +2006,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    dest::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
     doffs::CoDual{<:Integer,NoFData},
     src::CoDual{<:Array,<:Array},
     soffs::CoDual{<:Integer,NoFData},
@@ -2197,12 +2322,13 @@ function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_px, pkw)
+    tangent_type(typeof(decoded.primal_out)) === NoTangent &&
+        return Dual(decoded.primal_out, NoTangent())
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
         _gpu_reduced_jvp(out, flat_px, flat_dx, decoded.primal_out, get(pkw, :dims, :))
     else
-        T = tangent_type(typeof(decoded.primal_out))
-        T === NoTangent ? NoTangent() : zero_tangent(decoded.primal_out)
+        zero_tangent(decoded.primal_out)
     end
     return Dual(decoded.primal_out, dy)
 end
@@ -2212,37 +2338,31 @@ function _gpu_sum_f_rrule(f, x, pkw=NamedTuple())
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
-    if tangent_type(typeof(decoded.primal_out)) === NoTangent
-        function sum_f_nondiff_pb!!(::NoRData)
-            return NoRData(), NoRData(), NoRData()
-        end
-        return zero_fcodual(decoded.primal_out), sum_f_nondiff_pb!!
-    elseif get(pkw, :dims, :) isa Colon
-        function sum_f_scalar_pb!!(dy)
-            decoded.is_diff && _gpu_reduced_pullback!(flat_px, flat_dx, out, dy)
-            return NoRData(), NoRData(), NoRData()
-        end
-        return zero_fcodual(decoded.primal_out), sum_f_scalar_pb!!
-    else
-        dy_out = zero_tangent(decoded.primal_out)
-        function sum_f_array_pb!!(::NoRData)
-            decoded.is_diff && _gpu_reduced_pullback!(flat_px, flat_dx, out, dy_out)
-            return NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(decoded.primal_out, dy_out), sum_f_array_pb!!
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_px, pkw)
+    result = zero_fcodual(decoded.primal_out)
+    tangent_type(typeof(decoded.primal_out)) === NoTangent && return result, _nopb(Val(3))
+    dy_out = tangent(result)
+    function sum_f_pb!!(dy)
+        dy = dy isa NoRData ? dy_out : dy
+        decoded.is_diff && _gpu_reduced_pullback!(flat_px, flat_dx, out, dy)
+        return NoRData(), NoRData(), NoRData()
     end
+    return result, sum_f_pb!!
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Adjoint{<:IEEEFloat,<:CuFloatArray}})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Transpose{<:IEEEFloat,<:CuFloatArray}})
 
+# CUDA 6.4 loses inference through the multidimensional dot wrapper.
+# Remove the assertion when CUDA 6.4 support ends.
+_gpu_sum_abs2_jvp(px, dx) = 2 * real(dot(px, dx)::eltype(px))
+
 # `abs2` has a simple analytic derivative, so avoid the generic NDual reduction's temporary
 # arrays and partial-extraction kernels. This is the loss reduction used by Flux's model tests.
 function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:CuGpuSumFArray})
     px, dx = arrayify(x)
-    return Dual(sum(abs2, px), 2 * real(dot(px, dx)))
+    return Dual(sum(abs2, px), _gpu_sum_abs2_jvp(px, dx))
 end
 function rrule!!(::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:CuGpuSumFArray})
     px, dx = arrayify(x)
@@ -2271,226 +2391,198 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
 end
 
-# Rules for `mapreduce(f, op, x)` on GPU arrays.
-#
-# CUDA.jl uses opaque reduction kernels that Mooncake cannot trace.  We intercept
-# the op=+ and op=Base.add_sum cases by delegating to the sum frule!!/rrule!! above.
-#
-#   mapreduce(f, +, x)        ≡  sum(f, x)
-#   mapreduce(f, add_sum, x)  ≡  sum(f, x)   (add_sum is Base's internal alias for +)
-#
-# Both operators must be covered: Base.sum(f, x) dispatches through
-#   Base._sum(f, x, :) → mapreduce(f, add_sum, x)
-# in Julia 1.11, so op=+ alone is insufficient.
-#
-# The mapreduce pullback returns one extra NoRData for the `op` argument compared
-# to the sum pullback.
-for _op in (:(+), :(Base.add_sum))
-    @eval @is_primitive(
-        MinimalCtx, Tuple{typeof(mapreduce),Any,typeof($_op),CuMaybeComplexArray}
-    )
-    @eval function frule!!(
-        ::Dual{typeof(mapreduce)},
-        f::Dual,
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(Dual(sum, NoTangent()), f, x)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof(mapreduce)},
-        f::CoDual,
-        ::CoDual{typeof($_op)},
-        x::CoDual{<:CuMaybeComplexArray},
-    )
-        y, sum_pb!! = rrule!!(zero_fcodual(sum), f, x)
-        function mapreduce_pb!!(dy)
-            _, r_f, r_x = sum_pb!!(dy)          # sum pullback: (sum, f, x)
-            return NoRData(), r_f, NoRData(), r_x  # mapreduce: (mapreduce, f, op, x)
-        end
-        return y, mapreduce_pb!!
-    end
-end
+# Delegate only the supported operators; keyword calls retain their init cotangent.
+for (reduction, op, target, mapped) in (
+        (:reduce, :(+), :sum, false),
+        (:reduce, :(*), :prod, false),
+        (:mapreduce, :(+), :sum, true),
+        (:mapreduce, :(Base.add_sum), :sum, true),
+    ),
+    keywords in (false, true)
 
-# Rules for `reduce(op, x)` on GPU arrays.
-#
-#   reduce(+, x)  ≡  sum(x),   delegated to the sum rrule
-#   reduce(*, x)  ≡  prod(x),  delegated to the prod rrule
-#
-# Unlike mapreduce, reduce is user-facing and Base does not route through the
-# add_sum / mul_prod aliases here, so only the literal + and * are needed.
-# The reduce pullback returns one extra NoRData for `op` compared to sum/prod.
-for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
-    @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
-    @eval function frule!!(
-        ::Dual{typeof(reduce)}, ::Dual{typeof($_op)}, x::Dual{<:CuMaybeComplexArray}
-    )
-        return frule!!(Dual($_fn, NoTangent()), x)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
-    )
-        y, pb!! = rrule!!(zero_fcodual($_fn), x)
-        function reduce_pb!!(dy)
-            _, r_x = pb!!(dy)              # delegate pullback: (fn, x)
-            return NoRData(), NoRData(), r_x  # reduce: (reduce, op, x)
-        end
-        return y, reduce_pb!!
-    end
-end
-
-# The Core.kwcall spellings.  Mooncake lowers every keyword call to Core.kwcall, which the
-# positional claims above do not cover, so `reduce(+, x; dims=1)` and friends escaped to
-# GPUArrays' untraceable reduction kernel.  `reduce` forwards to the sum/prod *keyword* rules,
-# picking up `dims`, `init` and the identity check with them.
-for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
+    prefix = keywords ? (:(typeof(Core.kwcall)), :NamedTuple) : ()
+    mapper = mapped ? (:Any,) : ()
     @eval @is_primitive(
         MinimalCtx,
-        Tuple{
-            typeof(Core.kwcall),NamedTuple,typeof(reduce),typeof($_op),CuMaybeComplexArray
-        },
+        Tuple{$(prefix...),typeof($reduction),$(mapper...),typeof($op),CuMaybeComplexArray}
     )
-    @eval function frule!!(
-        kc::Dual{typeof(Core.kwcall)},
-        kw::Dual{<:NamedTuple},
-        ::Dual{typeof(reduce)},
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(kc, kw, Dual($_fn, NoTangent()), x)
-    end
-    @eval function rrule!!(
-        kc::CoDual{typeof(Core.kwcall)},
-        kw::CoDual{<:NamedTuple},
-        ::CoDual{typeof(reduce)},
-        ::CoDual{typeof($_op)},
-        x::CoDual{<:CuMaybeComplexArray},
-    )
-        y, pb!! = rrule!!(kc, kw, zero_fcodual($_fn), x)
-        function reduce_kw_pb!!(dy)
-            _, r_kw, _, r_x = pb!!(dy)     # delegate pullback: (kwcall, kw, fn, x)
-            return NoRData(), r_kw, NoRData(), NoRData(), r_x
+    for (rule, wrapper, zero_wrap) in
+        ((:frule!!, :Dual, :(Mooncake.zero_dual)), (:rrule!!, :CoDual, :zero_fcodual))
+        prefix_args = if keywords
+            (:(kc::$wrapper{typeof(Core.kwcall)}), :(kw::$wrapper{<:NamedTuple}))
+        else
+            ()
         end
-        return y, reduce_kw_pb!!
+        mapper_args = mapped ? (:(f::$wrapper),) : ()
+        args = (
+            (keywords ? (:kc, :kw) : ())...,
+            :($zero_wrap($target)),
+            (mapped ? (:f,) : ())...,
+            :x,
+        )
+        rvars = ((keywords ? (:_, :r_kw) : ())..., :_, (mapped ? (:r_f,) : ())..., :r_x)
+        result = (
+            (keywords ? (:(NoRData()), :r_kw) : ())...,
+            :(NoRData()),
+            (mapped ? (:r_f,) : ())...,
+            :(NoRData()),
+            :r_x,
+        )
+        body = if rule === :frule!!
+            :(return frule!!($(args...)))
+        else
+            quote
+                y, pb!! = rrule!!($(args...))
+                function reduction_pb!!(dy)
+                    ($(rvars...),) = pb!!(dy)
+                    return ($(result...),)
+                end
+                return y, reduction_pb!!
+            end
+        end
+        @eval function $rule(
+            $(prefix_args...),
+            ::$wrapper{typeof($reduction)},
+            $(mapper_args...),
+            ::$wrapper{typeof($op)},
+            x::$wrapper{<:CuMaybeComplexArray},
+        )
+            $body
+        end
     end
 end
 
-for _op in (:(+), :(Base.add_sum))
+@foldable function _may_contain_gpu_array(::Type{T}) where {T}
+    isbitstype(T) || return true
+    T <: Union{GPUArrays.AbstractGPUArray,CUDACore.CuDeviceArray} && return true
+    return any(_may_contain_gpu_array, fieldtypes(T))
+end
+
+function _has_gpu_capture(x, seen=nothing)
+    x isa Union{GPUArrays.AbstractGPUArray,CUDACore.CuDeviceArray} && return true
+    # Raw device pointers do not expose the GPU arrays they address.
+    (x isa Type || !_may_contain_gpu_array(typeof(x))) && return false
+    seen === nothing && (seen = Base.IdSet{Any}())
+    if ismutabletype(typeof(x))
+        x in seen && return false
+        push!(seen, x)
+    end
+    return any(1:fieldcount(typeof(x))) do i
+        isdefined(x, i) && _has_gpu_capture(getfield(x, i), seen)
+    end
+end
+
+function _check_gpu_nondiff_reduction(fs::Tuple)
+    any(f -> _has_gpu_capture(primal(f)), fs) || return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: CuArray reductions do not support captured GPU arrays in the mapper " *
+        "or reduction operator. " *
+        _UNIMPL_MSG,
+    )
+end
+
+function _check_gpu_nondiff_reduction(y, x, fs...; kw=NamedTuple())
+    if tangent_type(typeof(y)) === NoTangent
+        # Refuse fdata-holding captures: reads cannot be distinguished from writes.
+        all(f -> fdata_type(tangent_type(typeof(primal(f)))) === NoFData, fs) && return true
+    else
+        tangent_type(eltype(primal(x))) === NoTangent || return false
+    end
+    all(f -> tangent_type(typeof(primal(f))) === NoTangent, fs) ||
+        return _throw_gpu_argument_error(
+            "Mooncake: CuArray reductions do not support " *
+            "differentiable captured state in the mapper or reduction operator. " *
+            _UNIMPL_MSG,
+        )
+    tangent_type(typeof(kw)) === NoTangent || return _throw_gpu_argument_error(
+        "Mooncake: non-differentiable CuArray reductions do not support differentiable " *
+        "keyword arguments. " *
+        _UNIMPL_MSG,
+    )
+    return true
+end
+
+for op in (all, any)
+    @eval @zero_derivative MinimalCtx Tuple{typeof($op),CuArray{Bool}}
+    @eval @zero_derivative MinimalCtx Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof($op),CuArray{Bool}
+    }
+end
+
+# Opaque GPU reductions need explicit rules even when their derivatives are zero.
+# Differentiable mapped extrema need sum(f, x)'s NDual machinery plus winner selection.
+for (reduction, slots) in (
+        (:mapreduce, (:f, :op)),
+        (:reduce, (:op,)),
+        (:maximum, (:f,)),
+        (:minimum, (:f,)),
+        (:sum, (:f,)),
+        (:count, (:f,)),
+        (:all, (:f,)),
+        (:any, (:f,)),
+    ),
+    keywords in (false, true)
+
+    # Positional sum(f, x) reaches mapreduce; keyword count has its own init-derivative rules.
+    (reduction === :sum && !keywords || reduction === :count && keywords) && continue
+    slot_type = reduction in (:all, :any) ? :Function : :Any
+    prefix = keywords ? (:(typeof(Core.kwcall)), :NamedTuple) : ()
     @eval @is_primitive(
         MinimalCtx,
-        Tuple{
-            typeof(Core.kwcall),
-            NamedTuple,
-            typeof(mapreduce),
-            Any,
-            typeof($_op),
-            CuMaybeComplexArray,
-        },
+        Tuple{$(prefix...),typeof($reduction),$(fill(slot_type, length(slots))...),CuArray}
     )
-    @eval function frule!!(
-        kc::Dual{typeof(Core.kwcall)},
-        kw::Dual{<:NamedTuple},
-        ::Dual{typeof(mapreduce)},
-        f::Dual,
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(kc, kw, Dual(sum, NoTangent()), f, x)
+    message = if reduction === :mapreduce
+        :(
+            "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
+            "IEEE float or complex arrays; got op=$(primal(op)) over $(eltype(primal(x))). "
+        )
+    elseif reduction === :reduce
+        :(
+            "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
+            "got op=$(primal(op)). "
+        )
+    elseif reduction === :sum
+        :(
+            "Mooncake: sum(f, x; ...) on CuArray only supports IEEE float or complex arrays; " *
+            "got $(eltype(primal(x))). "
+        )
+    elseif reduction in (:maximum, :minimum)
+        "Mooncake: $reduction(f, x) on CuArray is not yet differentiable. "
     end
-    @eval function rrule!!(
-        kc::CoDual{typeof(Core.kwcall)},
-        kw::CoDual{<:NamedTuple},
-        ::CoDual{typeof(mapreduce)},
-        f::CoDual,
-        ::CoDual{typeof($_op)},
-        x::CoDual{<:CuMaybeComplexArray},
-    )
-        y, pb!! = rrule!!(kc, kw, zero_fcodual(sum), f, x)
-        function mapreduce_kw_pb!!(dy)
-            _, r_kw, _, r_f, r_x = pb!!(dy)
-            return NoRData(), r_kw, NoRData(), r_f, NoRData(), r_x
+    for (rule, wrapper, zero_rule) in
+        ((:frule!!, :Dual, :zero_derivative), (:rrule!!, :CoDual, :zero_adjoint))
+        prefix_args = if keywords
+            (:(kc::$wrapper{typeof(Core.kwcall)}), :(kw::$wrapper{<:NamedTuple}))
+        else
+            ()
         end
-        return y, mapreduce_kw_pb!!
+        slot_args = [:($slot::$wrapper{<:$slot_type}) for slot in slots]
+        args = ((keywords ? (:kc, :kw) : ())..., :r, slots..., :x)
+        output = rule === :frule!! ? :result : :(result[1])
+        primal_kw = keywords ? :(primal(kw)) : :(NamedTuple())
+        check = if message === nothing
+            nothing
+        else
+            quote
+                if !_check_gpu_nondiff_reduction(
+                    primal($output), x, $(slots...); kw=($primal_kw)
+                )
+                    _throw_gpu_argument_error($message * _UNIMPL_MSG)
+                end
+            end
+        end
+        @eval function $rule(
+            $(prefix_args...),
+            r::$wrapper{typeof($reduction)},
+            $(slot_args...),
+            x::$wrapper{<:CuArray},
+        )
+            _check_gpu_nondiff_reduction(($(slots...),))
+            result = $zero_rule($(args...))
+            $check
+            return result
+        end
     end
-end
-
-# Catch-all rules for unsupported operators — give a clear error rather than letting
-# Mooncake attempt to trace into an opaque CUDA reduction kernel.
-@is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
-function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "float or complex arrays; got op=$(primal(op)) over " *
-        "$(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
-end
-function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
-        "float or complex arrays; got op=$(primal(op)) over " *
-        "$(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
-end
-
-@is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
-function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
-        "got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
-end
-function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
-    return _throw_gpu_argument_error(
-        "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
-        "got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
-end
-
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mapreduce),Any,Any,CuArray}
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    f::Dual{typeof(mapreduce)},
-    mf::Dual,
-    op::Dual,
-    x::Dual{<:CuArray},
-)
-    return frule!!(f, mf, op, x)
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    f::CoDual{typeof(mapreduce)},
-    mf::CoDual,
-    op::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return rrule!!(f, mf, op, x)
-end
-@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(reduce),Any,CuArray})
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    f::Dual{typeof(reduce)},
-    op::Dual,
-    x::Dual{<:CuArray},
-)
-    return frule!!(f, op, x)
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    f::CoDual{typeof(reduce)},
-    op::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return rrule!!(f, op, x)
 end
 
 # repeat on GPU arrays, both the `counts...` and the `inner=`/`outer=` spellings.
@@ -2591,54 +2683,48 @@ end
 # mapreducedim! and finally `cufunction`, whose `@lock` try/finally kills
 # reverse-mode tracing (#1273).
 #
-# `init` is treated as a non-differentiated constant: Julia requires it to be a
-# neutral element, and GPUArrays folds it into a backend-defined number of
-# partial reductions, so a derivative through it is not well-defined; the frule
-# rejects a nonzero `init` tangent instead. Reverse mode gets no such signal, so
-# `dx` is correct and `init`'s component is silently zero. `init` also sets the
-# output eltype (GPUArrays takes it from typeof(init), so init=0.0 on a Float32
-# array gives a Float64 result), hence the output-typed zero seeding the tangent
-# reduction.
+# Seed the tangent reduction with the output's zero to preserve dimensional result types.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
+    MinimalCtx,
+    Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof(sum),Union{CuMaybeComplexArray,CuBFloatArray}
+    }
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
     ::Dual{typeof(sum)},
-    x::Dual{<:CuMaybeComplexArray},
+    x::Dual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
 )
     pkw = primal(kw)
     _check_reduction_identity(sum, pkw)
     _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
     y = sum(px; pkw...)
-    return Dual(y, sum(dx; dims=get(pkw, :dims, :), init=zero(eltype(y))))
+    tangent_type(typeof(y)) === NoTangent && return Dual(y, NoTangent())
+    dy = sum(dx; dims=get(pkw, :dims, :), init=zero(eltype(y)))
+    return Dual(y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), _GPUARRAYS_12))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(sum)},
-    x::CoDual{<:CuMaybeComplexArray},
+    x::CoDual{<:Union{CuMaybeComplexArray,CuBFloatArray},<:CuArray},
 )
     pkw = primal(kw)
     _check_reduction_identity(sum, pkw)
     kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
     y = sum(px; pkw...)
-    if get(pkw, :dims, :) isa Colon
-        function sum_kw_scalar_pb!!(dy)
-            dx .+= dy
-            return NoRData(), kw_rdata, NoRData(), NoRData()
-        end
-        return CoDual(y, NoFData()), sum_kw_scalar_pb!!
+    tangent_type(typeof(y)) === NoTangent && return zero_fcodual(y), _nopb(Val(4))
+    dy_out = y isa AbstractArray ? zero(y) : NoFData()
+    function sum_kw_pb!!(dy)
+        dy = dy isa NoRData ? dy_out : dy
+        dx .+= _realprojector(eltype(dx)).(dy)
+        dkw = _kw_init_rdata(kw_rdata, dy, _GPUARRAYS_12)
+        return NoRData(), dkw, NoRData(), NoRData()
     end
-    dy_out = zero(y)
-    function sum_kw_array_pb!!(::NoRData)
-        dx .+= dy_out
-        return NoRData(), kw_rdata, NoRData(), NoRData()
-    end
-    return CoDual(y, dy_out), sum_kw_array_pb!!
+    return CoDual(y, dy_out), sum_kw_pb!!
 end
 
 @is_primitive(
@@ -2654,7 +2740,9 @@ function frule!!(
     pkw = primal(kw)
     _check_reduction_identity(sum, pkw)
     _check_reduction_init(tangent(kw))
-    return _gpu_sum_f_frule(primal(f), x, pkw)
+    y = _gpu_sum_f_frule(primal(f), x, pkw)
+    dy = _kw_init_jvp(tangent(y), _kw_init_tangent(tangent(kw)), _GPUARRAYS_12)
+    return Dual(primal(y), dy)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -2669,37 +2757,10 @@ function rrule!!(
     y, pb!! = _gpu_sum_f_rrule(primal(f), x, pkw)
     function sum_f_kw_pb!!(dy)
         _, r_f, r_x = pb!!(dy)
-        return NoRData(), kw_rdata, NoRData(), r_f, r_x
+        dkw = _kw_init_rdata(kw_rdata, dy isa NoRData ? tangent(y) : dy, _GPUARRAYS_12)
+        return NoRData(), dkw, NoRData(), r_f, r_x
     end
     return y, sum_f_kw_pb!!
-end
-
-@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),Any,CuArray})
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    ::Dual{typeof(sum)},
-    ::Dual,
-    x::Dual{<:CuArray},
-)
-    return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
-        "$(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(sum)},
-    ::CoDual,
-    x::CoDual{<:CuArray},
-)
-    return _throw_gpu_argument_error(
-        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
-        "$(eltype(primal(x))). " *
-        _UNIMPL_MSG,
-    )
 end
 
 # vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that
@@ -2934,10 +2995,12 @@ for BDim in (2, 1)
     @eval begin
         @is_primitive MinimalCtx Tuple{
             typeof(*),CuArray{P,2},CuArray{P,$BDim}
-        } where {P<:CuFloatOrComplex}
+        } where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
         function frule!!(
-            ::Dual{typeof(*)}, A::Dual{<:CuArray{P,2}}, B::Dual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+            ::Dual{typeof(*)},
+            A::Dual{<:CuArray{P,2},<:CuArray{P,2}},
+            B::Dual{<:CuArray{P,$BDim},<:CuArray{P,$BDim}},
+        ) where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -2946,8 +3009,10 @@ for BDim in (2, 1)
             return Dual(C, dC)
         end
         function rrule!!(
-            ::CoDual{typeof(*)}, A::CoDual{<:CuArray{P,2}}, B::CoDual{<:CuArray{P,$BDim}}
-        ) where {P<:CuFloatOrComplex}
+            ::CoDual{typeof(*)},
+            A::CoDual{<:CuArray{P,2},<:CuArray{P,2}},
+            B::CoDual{<:CuArray{P,$BDim},<:CuArray{P,$BDim}},
+        ) where {P<:Union{CuFloatOrComplex,CUDACore.BFloat16}}
             pA, dA = arrayify(A)
             pB, dB = arrayify(B)
             C = pA * pB
@@ -3553,7 +3618,7 @@ end
 # added to the parent array's gradient.
 #
 # Intercept point: `Base.Broadcast.materialize` (not `broadcasted`) because:
-#   - `materialize` : Broadcasted -> CuArray (types match rrule signature)
+#   - `materialize` evaluates the Broadcasted and returns an array or scalar.
 #   - `Base.Broadcast.flatten` fuses nested broadcast trees into one function,
 #     so a single kernel handles arbitrarily deep `.`-fusion (e.g. sin.(x .^ 2)).
 #
@@ -3734,14 +3799,17 @@ end
     return dest
 end
 
-@inline function _gpu_decode_ndual_output(::Val{:sum}, out, pkw=NamedTuple())
+@inline function _gpu_decode_ndual_output(
+    ::Val{:sum}, out, x::AbstractArray, pkw=NamedTuple()
+)
+    out isa Number && (out = fill!(similar(x, typeof(out)), out))
     is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
     reduction_kw = merge((; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))), pkw)
     primal_out = sum(Nfwd._nfwd_dual_value, out; reduction_kw...)
     return (; is_diff, primal_out)
 end
 
-# Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
+# Replace any nested array-style Broadcasted sub-expression whose tangent/fdata tree is
 # `NoTangent`/`NoFData`, or whose broadcast tree has zero effective differentiable
 # degrees of freedom and flattens to a non-isbits function, with its primal materialized
 # value. This catches zero-DOF subtrees such as `Float64.(b .> 0)`, where flattening the
@@ -3810,6 +3878,12 @@ end
     (_gpu_bcast_effective_dof(bc) == 0 || _gpu_is_simple_cast_broadcast(bc)) &&
     !isbitstype(typeof(Base.Broadcast.flatten(bc).f))
 
+_gpu_materialize_leaf(bc::Broadcasted) = Base.Broadcast.materialize(bc)
+# Internal array leaves must retain their shape so their tangents stay aligned.
+function _gpu_materialize_leaf(bc::Broadcasted{<:CuArrayStyle{0}})
+    return copyto!(similar(bc, Base.Broadcast.combine_eltypes(bc.f, bc.args)), bc)
+end
+
 _premat_nondiff_args(bc::Broadcasted) = _premat_nondiff_args(bc, NoTangent())
 
 function _premat_nondiff_args(bc::Broadcasted, td)
@@ -3822,15 +3896,16 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         a = bc.args[i]
         ta = targs[i]
         if a isa Broadcasted
-            # Scalars always report NoFData (their grad flows via RData), even when
-            # differentiable — so also require zero DOF before collapsing, or a
-            # differentiable scalar leaf here silently drops out of flat_pargs.
-            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
-                Base.Broadcast.materialize(a)
+            # Fuse: a materialised scalar leaf would be taken for an explicit argument.
+            if a isa Broadcasted{<:Base.Broadcast.DefaultArrayStyle{0}}
+                _desugar_casts(_premat_nondiff_args(a, ta))
+            elseif ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
+                # Scalar gradients flow through RData, so NoFData alone does not imply zero DOF.
+                _gpu_materialize_leaf(a)
             else
                 a_prepared = _premat_nondiff_args(a, ta)
                 if _gpu_bcast_needs_premat(a_prepared)
-                    Base.Broadcast.materialize(a_prepared)
+                    _gpu_materialize_leaf(a_prepared)
                 else
                     a_prepared
                 end
@@ -3919,6 +3994,7 @@ function _unbroadcast(dx::CuArray, sz::Tuple)
     reduce_dims = filter(!iszero, reduce_dims)  # Tuple filter — no heap alloc
     return isempty(reduce_dims) ? reshape(dx, sz) : reshape(sum(dx; dims=reduce_dims), sz)
 end
+_unbroadcast(dx::Number, ::Tuple{}) = dx
 
 # Reverse mode: accumulate `contrib` (same shape as broadcast output) into leaf fdata.
 # Unbroadcast before accumulating so that broadcast-expanded inputs get the correct shape.
@@ -4042,6 +4118,9 @@ function _check_gpu_bcast_captures(args::Tuple)
     if a isa Broadcasted
         _check_gpu_bcast_captures(a)
     elseif !_gpu_threads_leaf(a)
+        a isa CuArray && _throw_gpu_argument_error(
+            "Mooncake: broadcasting over CuArray does not support element type $(eltype(a)).",
+        )
         _throw_gpu_unthreaded(typeof(a), "broadcasting", "a differentiable argument")
     end
     return _check_gpu_bcast_captures(Base.tail(args))
@@ -4078,9 +4157,7 @@ end
     re = _CastTo{real(T)}()(x)
     return Complex(re, zero(re))
 end
-# Only the outermost function needs this. A cast nested inside the tree is materialized by
-# `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
-# that survives, because nothing materializes the tree's own root.
+# Root casts and casts in scalar-only subtrees reach the kernel without materialisation.
 function _desugar_casts(bc::Broadcasted{S}) where {S}
     bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
 end
@@ -4198,13 +4275,13 @@ function _gpu_reduced_jvp(out, px, dx, y, dims)
     meta = _gpu_leaf_slot_meta(px, 0)
     if meta.dof == 1
         return sum(
-            broadcast((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
+            Base.broadcasted((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
             dims,
             init=zero(eltype(y)),
         )
     elseif meta.dof == 2
         return sum(
-            broadcast(
+            Base.broadcasted(
                 (o, t) ->
                     Nfwd._nfwd_dual_partial(o, meta.slot1) * real(t) +
                     Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(t),
@@ -4217,13 +4294,6 @@ function _gpu_reduced_jvp(out, px, dx, y, dims)
     end
     return zero_tangent(y)
 end
-
-# Detect mixed-eltype GPU broadcasts: when CuArray leaves have different element types
-# (e.g. Float32 and Float64 in the same broadcast), the Dual wrapping would produce
-# incompatible Dual widths and cause a cryptic GPU compiler error.  Raise a clear error.
-# Note: scalar args (IEEEFloat/Complex) are not checked here; a Float64 scalar mixed
-# with a Float32 CuArray silently promotes the broadcast to Float64, which may be slow
-# or unsupported on some GPUs.  Cast the scalar explicitly if needed.
 
 # Shared pullback accumulation for materialize and materialize! rrules.
 #
@@ -4299,7 +4369,7 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
         contrib = broadcast(
             (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out, dy
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        dx .+= contrib
     elseif meta.dof == 2
         contrib = broadcast(
             (o, d) -> complex(
@@ -4309,11 +4379,14 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
             dual_out,
             dy,
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        dx .+= contrib
     end
     return nothing
 end
 
+# Array leaves must share one precision (Float64 with ComplexF64 is accepted, Float32 with
+# ComplexF64 refused): some `NDual` methods, e.g. `muladd`, do not promote, and the kernel
+# fails to compile. Scalar leaves are not checked.
 function _check_mixed_gpu_eltype(flat_pargs)
     # Walk flat_pargs with an early-exit loop rather than building a temporary array.
     # In the common case (all same element type), this allocates nothing.
@@ -4327,12 +4400,13 @@ function _check_mixed_gpu_eltype(flat_pargs)
         et = eltype(pa)
         if first_et === nothing
             first_et = et
-        elseif et !== first_et
+        elseif real(et) !== real(first_et)
             throw(
                 ArgumentError(
-                    "Mooncake: GPU broadcast over arrays with mixed element types " *
-                    "($first_et and $et) is not supported. " *
-                    "Cast all inputs to the same type before broadcasting.",
+                    "Mooncake: GPU broadcast over arrays of different precision " *
+                    "($first_et and $et) is not supported. Convert them to one " *
+                    "precision; a real and a complex array of the same precision, " *
+                    "e.g. Float64 and ComplexF64, are supported.",
                 ),
             )
         end
@@ -4351,18 +4425,12 @@ function frule!!(
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
-    # `is_diff` says the kernel's element type carried no partials, which is not the same as
-    # the output being non-differentiable: a float array built only from index arrays, say
-    # `cnt ./ 2`, carries a tangent type even though nothing flows into it. Bool output from
-    # a comparison is the case this branch was written for, and there tangent_type really is
-    # NoTangent.
-    if !decoded.is_diff
-        T = tangent_type(typeof(out))
-        return Dual(out, T === NoTangent ? NoTangent() : zero_tangent(out))
-    end
+    decoded.is_diff || return Mooncake.zero_dual(out)
 
-    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
-    return Dual(decoded.primal_out, dy)
+    dy = zero(decoded.primal_out)
+    dy isa Number && (dy = CuArray(fill(dy)))
+    _gpu_accumulate_jvp!(dy, flat_pargs, flat_ts, out)
+    return Dual(decoded.primal_out, decoded.primal_out isa Number ? sum(dy) : dy)
 end
 
 function rrule!!(
@@ -4381,23 +4449,24 @@ function rrule!!(
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
-    # As in the frule: a float output with no differentiable leaf still needs an fdata of
-    # its declared type, or the caller is handed a NoFData where it expects a CuArray.
-    if !decoded.is_diff
-        fd = tangent_type(typeof(out)) === NoTangent ? NoFData() : zero_tangent(out)
-        return CoDual(out, fd), NoPullback(mat_fn, bc)
-    end
+    decoded.is_diff || return zero_fcodual(out), NoPullback(mat_fn, bc)
 
-    dy_out = zero(decoded.primal_out)  # accumulated into by the downstream reverse pass
+    y = zero_fcodual(decoded.primal_out)
 
-    function materialize_pb!!(::NoRData)
+    function materialize_pb!!(dy)
         r_bc = _gpu_accum_pullback!(
-            flat_pargs, flat_fdatas, out, dy_out, bc_primal, scalar_map, scalar_count
+            flat_pargs,
+            flat_fdatas,
+            out,
+            tangent(tangent(y), dy),
+            bc_primal,
+            scalar_map,
+            scalar_count,
         )
         return NoRData(), r_bc
     end
 
-    return CoDual(decoded.primal_out, dy_out), materialize_pb!!
+    return y, materialize_pb!!
 end
 
 # Julia 1.10 can expose the `copy` inside `materialize` as the call boundary.  Claim that
@@ -4529,6 +4598,73 @@ function rrule!!(
     return dest, materialize!_pb!!
 end
 
+for f in (triu, tril)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{
+            typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
+        }
+        function frule!!(
+            ::Dual{typeof($f)},
+            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::Dual{<:Integer},
+        )
+            dx = tangent(x)
+            return Dual($f(primal(x), primal(k)), dx isa NoTangent ? dx : $f(dx, primal(k)))
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)},
+            x::CoDual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::CoDual{<:Integer},
+        )
+            y = $f(primal(x), primal(k))
+            dx = tangent(x)
+            dx isa NoFData && return CoDual(y, NoFData()), _nopb(Val(3))
+            dy = zero_tangent(y)
+            function triangle_pb!!(::NoRData)
+                dx .+= $f(dy, primal(k))
+                return NoRData(), NoRData(), NoRData()
+            end
+            return CoDual(y, dy), triangle_pb!!
+        end
+    end
+end
+for f in (triu!, tril!)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{
+            typeof($f),CuArray{<:Union{CuFloatOrComplex,Integer},2},Integer
+        }
+        function frule!!(
+            ::Dual{typeof($f)},
+            x::Dual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::Dual{<:Integer},
+        )
+            $f(primal(x), primal(k))
+            tangent(x) isa NoTangent || $f(tangent(x), primal(k))
+            return x
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)},
+            x::CoDual{<:CuArray{<:Union{CuFloatOrComplex,Integer},2}},
+            k::CoDual{<:Integer},
+        )
+            px, dx = primal(x), tangent(x)
+            old_px = copy(px)
+            old_dx = dx isa NoFData ? dx : copy(dx)
+            $f(px, primal(k))
+            dx isa NoFData || fill!(dx, 0)
+            function triangle!_pb!!(::NoRData)
+                copyto!(px, old_px)
+                if !(dx isa NoFData)
+                    $f(dx, primal(k))
+                    dx .+= old_dx
+                end
+                return NoRData(), NoRData(), NoRData()
+            end
+            return x, triangle!_pb!!
+        end
+    end
+end
+
 # Rules for `permutedims(x, perm)` on CuArrays, and on Adjoint/Transpose/SubArray
 # wrapping a CuArray (via `arrayify`, same convention as vcat/hcat/cat above).
 # frule:    permute the tangent with the same permutation — permutedims is linear.
@@ -4616,7 +4752,15 @@ function frule!!(
     _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
     n = prod(d -> size(px, d), unique(_dims); init=1)
     λ = convert(T, inv(n - Int(corrected)))
-    return Dual(σ², sum((2λ) .* (px .- pm) .* (dx .- dm); dims=_dims))
+    return Dual(
+        σ²,
+        sum(
+            Base.broadcasted(
+                (x, m, dx, dm, λ) -> (2λ) * (x - m) * (dx - dm), px, pm, dx, dm, λ
+            );
+            dims=_dims,
+        ),
+    )
 end
 
 function rrule!!(
@@ -4633,7 +4777,10 @@ function rrule!!(
     _raw_dims = pkw.dims  # required by GPUArrays' method; validated by the call above
     corrected = get(pkw, :corrected, true)
     T = eltype(px)
-    diff = px .- pm
+    diff = similar(
+        px, promote_type(eltype(px), eltype(pm)), Base.Broadcast.combine_axes(px, pm)
+    )
+    diff .= px .- pm
     _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
     # Same denominator and Float64-inverted λ as the frule above. Assigned once,
     # outside the branch, so the pullbacks capture coeff as a typed closure field
@@ -4649,7 +4796,8 @@ function rrule!!(
         # Scalar output: σ² gets NoFData, and the pullback receives its cotangent
         # functionally rather than via a pre-accumulated fdata mutation.
         function varm_colon_pb!!(dσ²)
-            g = coeff * dσ² .* diff
+            g = similar(diff)
+            g .= coeff * dσ² .* diff
             dx .+= _unbroadcast(g, size(px))
             dm .-= _unbroadcast(g, size(pm))
             return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
@@ -4660,7 +4808,8 @@ function rrule!!(
     function varm_pb!!(::NoRData)
         # dσ² varies along the non-reduced dims, so it must sit inside the
         # unbroadcast reductions rather than factoring out.
-        g = coeff .* dσ² .* diff
+        g = similar(diff)
+        g .= coeff .* dσ² .* diff
         dx .+= _unbroadcast(g, size(px))
         dm .-= _unbroadcast(g, size(pm))
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
@@ -4796,71 +4945,203 @@ function rrule!!(
     return CoDual(σ², NoFData()), varm_scalar_bare_pb!!
 end
 
-# mean(x; dims) on CuArrays, real and complex. GPUArrays' _mean uses a mapreduce with
-# a captured scalar Mooncake can't trace. dims=: returns a scalar (NoFData tangent);
-# an explicit dims returns a CuArray.
+# GPUArrays before 12.2 prescales dimensional means; 12.2 divides after reduction.
+const _GPU_MEAN_PRESCALES = pkgversion(GPUArrays) < v"12.2.0"
 
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    kw::Dual{<:NamedTuple},
-    ::Dual{typeof(mean)},
-    x::Dual{<:CuMaybeComplexArray},
-)
-    pkw = primal(kw)
-    px = primal(x)
-    dx = tangent(x)
-    μ = mean(px; pkw...)
-    raw_dims = get(pkw, :dims, :)
-    if raw_dims isa Colon
-        # The primal's Colon branch is sum(A)/length(A); dividing after summing keeps
-        # the gradient identical to the traced bare-mean decomposition (at Float16
-        # n > 65504 both give exactly zero, where a λ-prescale would not). n == 0:
-        # the primal is a constant NaN, so the JVP is the zero map, consistent with
-        # the rrule — 0/0 would manufacture a NaN tangent.
-        n = length(px)
-        return Dual(μ, n == 0 ? zero(μ) : sum(dx) / n)
+function _gpu_mean_setup(f, px, dims)
+    _check_gpu_captured_state(f, "mean(f, x)")
+    n = if dims isa Colon
+        length(px)
+    else
+        prod(d -> size(px, d), unique(dims isa Integer ? (dims,) : dims); init=1)
     end
-    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    n = prod(d -> size(px, d), unique(_dims); init=1)
-    λ = eltype(px)(inv(n))
-    return Dual(μ, sum(λ .* dx; dims=_dims))
+    prescale = _GPU_MEAN_PRESCALES && !(dims isa Colon)
+    # Float16 division by n > 65504 gives zero; prescaling would not.
+    λ = prescale ? eltype(px)(inv(n)) : nothing
+    mapper = f isa Type ? _CastTo{f}() : f
+    if prescale
+        mapper = Base.Fix1(*, λ) ∘ mapper
+    end
+    out = f === identity || f === abs2 ? nothing : _gpu_broadcast_dual(mapper, px)
+    return out, prescale ? nothing : n, λ
 end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    kw::CoDual{<:NamedTuple},
-    ::CoDual{typeof(mean)},
-    x::CoDual{<:CuMaybeComplexArray},
-)
-    pkw = primal(kw)
-    px, dx = arrayify(x)
-    μ = mean(px; pkw...)
-    raw_dims = get(pkw, :dims, :)
-    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    # Assigned once, outside the branch, so the pullbacks capture n un-boxed.
-    n = _dims isa Colon ? length(px) : prod(d -> size(px, d), unique(_dims); init=1)
-    if _dims isa Colon
-        # Scalar output: pullback receives scalar rdata. Same divide-after
-        # arithmetic as the frule above.
-        function mean_scalar_pb!!(dμ)
-            dx .+= dμ / n
-            return NoRData(), NoRData(), NoRData(), NoRData()
+
+# Inline both mean helpers to avoid allocating intermediate results.
+@inline function _gpu_mean_frule(f, x, pkw)
+    px, dx = primal(x), tangent(x)
+    μ = f === identity ? mean(px; pkw...) : mean(f, px; pkw...)
+    dims = get(pkw, :dims, :)
+    out, n, λ = _gpu_mean_setup(f, px, dims)
+    # An empty mean is constant even when its primal is NaN.
+    dμ = if isempty(px)
+        zero(μ)
+    elseif f === identity
+        # Linearity lets native mean preserve GPUArrays' Float16 arithmetic.
+        mean(dx; pkw...)
+    elseif f === abs2
+        if dims isa Colon
+            _gpu_sum_abs2_jvp(px, dx) / n
+        elseif λ === nothing
+            sum(Base.broadcasted((x, dx) -> 2 * real(conj(x) * dx), px, dx); dims) / n
+        else
+            sum(Base.broadcasted((x, dx) -> λ * (2 * real(conj(x) * dx)), px, dx); dims)
         end
-        return CoDual(μ, NoFData()), mean_scalar_pb!!
+    else
+        reduced = _gpu_reduced_jvp(out, px, dx, μ, dims)
+        λ === nothing ? reduced / n : reduced
     end
-    λ = eltype(px)(inv(n))
-    dμ = zero(μ)
-    function mean_array_pb!!(::NoRData)
-        dx .+= dμ .* λ
-        return NoRData(), NoRData(), NoRData(), NoRData()
-    end
-    return CoDual(μ, dμ), mean_array_pb!!
+    return Dual(μ, dμ)
 end
 
-# NOTE: no bare `mean(x)` primitive here, unlike scalar-m `varm` above. `mean`'s
-# Colon branch is just `sum(A)/length(A)`, with no closure over a differentiable
-# value, so ordinary decomposition already differentiates it correctly.
+@inline function _gpu_mean_rrule(f, x, pkw)
+    px, dx = arrayify(x)
+    μ = f === identity ? mean(px; pkw...) : mean(f, px; pkw...)
+    dims = get(pkw, :dims, :)
+    out, n, λ = _gpu_mean_setup(f, px, dims)
+    dμ = dims isa Colon ? NoFData() : zero(μ)
+    pb_x = f === identity ? nothing : px
+    function mean_pb!!(dy)
+        seed = dμ isa NoFData ? dy : dμ
+        if f === identity
+            if λ === nothing
+                dx .+= seed ./ n
+            else
+                dx .+= seed .* λ
+            end
+        elseif f === abs2
+            # Keep the scaled seed outside the accumulation broadcast for Julia 1.10 inference.
+            scale = λ === nothing ? 2 .* real.(seed ./ n) : 2 .* real.(seed .* conj(λ))
+            dx .+= scale .* pb_x
+        else
+            _gpu_reduced_pullback!(pb_x, dx, out, λ === nothing ? seed ./ n : seed)
+        end
+        return nothing
+    end
+    return CoDual(μ, dμ), mean_pb!!
+end
+
+# dims=: returns a scalar with NoFData; explicit dims returns a CuArray.
+for mapped in (false, true)
+    ftype = mapped ? (Any,) : ()
+    fdual = mapped ? (:(f::Dual),) : ()
+    fcodual = mapped ? (:(f::CoDual),) : ()
+    mapper = mapped ? :(primal(f)) : :identity
+    result = mapped ? :((NoRData(), NoRData(), NoRData())) : :((NoRData(), NoRData()))
+    kwresult = if mapped
+        :((NoRData(), NoRData(), NoRData(), NoRData(), NoRData()))
+    else
+        :((NoRData(), NoRData(), NoRData(), NoRData()))
+    end
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof(mean),$(ftype...),CuMaybeComplexArray}
+        function frule!!(::Dual{typeof(mean)}, $(fdual...), x::Dual{<:CuMaybeComplexArray})
+            return _gpu_mean_frule($mapper, x, NamedTuple())
+        end
+        function rrule!!(
+            ::CoDual{typeof(mean)}, $(fcodual...), x::CoDual{<:CuMaybeComplexArray}
+        )
+            y, pb!! = _gpu_mean_rrule($mapper, x, NamedTuple())
+            function mean_bare_pb!!(dy)
+                pb!!(dy)
+                return $result
+            end
+            return y, mean_bare_pb!!
+        end
+        @is_primitive MinimalCtx Tuple{
+            typeof(Core.kwcall),NamedTuple,typeof(mean),$(ftype...),CuMaybeComplexArray
+        }
+        function frule!!(
+            ::Dual{typeof(Core.kwcall)},
+            kw::Dual{<:NamedTuple},
+            ::Dual{typeof(mean)},
+            $(fdual...),
+            x::Dual{<:CuMaybeComplexArray},
+        )
+            return _gpu_mean_frule($mapper, x, primal(kw))
+        end
+        function rrule!!(
+            ::CoDual{typeof(Core.kwcall)},
+            kw::CoDual{<:NamedTuple},
+            ::CoDual{typeof(mean)},
+            $(fcodual...),
+            x::CoDual{<:CuMaybeComplexArray},
+        )
+            y, pb!! = _gpu_mean_rrule($mapper, x, primal(kw))
+            function mean_kw_pb!!(dy)
+                pb!!(dy)
+                return $kwresult
+            end
+            return y, mean_kw_pb!!
+        end
+    end
+end
+
+# MooncakeBFloat16sExt is absent while this extension precompiles: top-level code here must
+# not call BFloat16 tangent methods, or their fallback results are cached.
+const CuBFloatWrappedArray = Union{
+    Adjoint{CUDACore.BFloat16,<:CuBFloatArray},
+    Transpose{CUDACore.BFloat16,<:CuBFloatArray},
+    SubArray{CUDACore.BFloat16,N,P} where {N,P<:CuBFloatArray},
+}
+function tangent_type(::Type{<:CuBFloatWrappedArray})
+    return _throw_gpu_argument_error(
+        "Mooncake: wrapped CUDA BFloat16 arrays, including those CUDA builds for mixed-eltype products, are unsupported; use plain CuArrays of one eltype.",
+    )
+end
+_cu_isa_gpu_side(::Type{<:CuBFloatArray}) = true
+
+# BFloat16 atomic scatter is unavailable for the reverse vector-index rule.
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuBFloatArray,<:CuBFloatArray},
+    idx::CoDual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: vector-index getindex does not support $(eltype(primal(x)))."
+    )
+end
+
+const CuCatArray = Union{CuBFloatArray,CuMaybeWrappedArray}
+@is_primitive MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(cat),CuCatArray,Vararg{CuCatArray}
+}
+for f in (vcat, hcat)
+    @eval @is_primitive MinimalCtx Tuple{typeof($f),CuCatArray,Vararg{CuCatArray}}
+end
+# NDual broadcast kernels do not support BFloat16.
+@is_primitive MinimalCtx Tuple{
+    typeof(Base.Broadcast.materialize!),CuBFloatArray,Broadcasted
+}
+
+for (D, rule) in ((Dual, :frule!!), (CoDual, :rrule!!))
+    @eval begin
+        function $rule(
+            ::$D{typeof(Core.kwcall)},
+            ::$D{<:NamedTuple},
+            ::$D{typeof(cat)},
+            args::$D{<:CuCatArray}...,
+        )
+            return _throw_gpu_argument_error(
+                "Mooncake: CUDA concatenation does not support BFloat16."
+            )
+        end
+        function $rule(
+            ::$D{typeof(Base.Broadcast.materialize!)},
+            dest::$D{<:CuBFloatArray},
+            ::$D{<:Broadcasted},
+        )
+            return _throw_gpu_argument_error(
+                "Mooncake: in-place CUDA broadcast does not support $(eltype(primal(dest))).",
+            )
+        end
+    end
+    for f in (vcat, hcat)
+        @eval function $rule(::$D{typeof($f)}, args::$D{<:CuCatArray}...)
+            return _throw_gpu_argument_error(
+                "Mooncake: CUDA concatenation does not support BFloat16."
+            )
+        end
+    end
+end
 
 end

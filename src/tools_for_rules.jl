@@ -544,6 +544,17 @@ zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
     end
 end
 
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(nan_tangent_guard),L,T
+} where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
+function frule!!(
+    ::Dual{typeof(nan_tangent_guard)}, dy::Dual{L}, t::Dual{T}
+) where {L<:Union{FloatOrComplex,HalfFloat},T<:Union{FloatOrComplex,HalfFloat}}
+    # Mask the direction only when both the factor and its direction are zero.
+    dt = iszero(primal(dy)) ? nan_tangent_guard(tangent(dy), tangent(t)) : tangent(t)
+    return Dual(nan_tangent_guard(primal(dy), primal(t)), dt)
+end
+
 """
     nondifferentiable_tangent_guard(dy::L, tangent::T) where {L,T}
 

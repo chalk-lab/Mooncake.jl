@@ -27,6 +27,12 @@ struct ScalarBox
     x::Float64
 end
 
+# AbstractFloat subtypes can have multiple differentiable fields requiring structural tangents.
+struct TwoFieldFloat <: AbstractFloat
+    hi::Float64
+    lo::Float64
+end
+
 mutable struct AliasedPair
     a::Vector{Float64}
     b::Vector{Float64}
@@ -330,6 +336,16 @@ end
             @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_pullback!!(
                 cache, 1.0, f_arr, reshape([1.0, 2.0], 2, 1)
             )
+        end
+
+        @testset "pullback cache outputs" begin
+            pushed(x) = push!(Float64[], x[1])
+            for friendly in (false, true)
+                config = Mooncake.Config(; friendly_tangents=friendly)
+                cache = prepare_pullback_cache(pushed, [1.0]; config)
+                @test value_and_pullback!!(cache, [1.0], pushed, [2.0]) ==
+                    ([2.0], (NoTangent(), [1.0]))
+            end
         end
 
         @testset "friendly tangents" begin
@@ -837,6 +853,15 @@ end
             )
             @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x) ==
                 (f_scalar(x), (Mooncake.NoTangent(), 2 * x + cos(x)))
+
+            f_struct = v -> v[1].hi * v[1].lo
+            struct_x = [TwoFieldFloat(1.0, 2.0)]
+            struct_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                f_struct, struct_x; config=Mooncake.Config(; kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(
+                struct_cache_grad_fwd, f_struct, struct_x
+            ) == (2.0, (Mooncake.NoTangent(), [Mooncake.Tangent((; hi=2.0, lo=1.0))]))
 
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)

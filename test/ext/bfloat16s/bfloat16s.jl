@@ -3,18 +3,17 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
+using Mooncake: CRC
 using LinearAlgebra: mul!
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
-# Core.BFloat16 requires Julia >= 1.11.
-# BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
-if VERSION < v"1.11-" || BFloat16s.BFloat16 !== Core.BFloat16
-    @info "Skipping Core.BFloat16 tests: BFloat16s.BFloat16 !== Core.BFloat16 on this platform/Julia version."
-    exit(0)
-end
-
 const sr = StableRNG
-const P = Core.BFloat16
+const P = BFloat16s.BFloat16
+
+double(x) = 2 .* x
+CRC.rrule(::typeof(double), x) = double(x), dy -> (CRC.NoTangent(), 2 .* dy)
+CRC.frule((_, dx), ::typeof(double), x) = double(x), double(dx)
+Mooncake.@from_chainrules Mooncake.DefaultCtx Tuple{typeof(double),Union{P,Array{P}}}
 
 # NNlib's `sigmoid` shape: `exp(-abs(x))` under an `ifelse`, smooth at zero even though
 # `abs` is not, because the kink cancels between the two branches.
@@ -29,7 +28,29 @@ end
         test_tangent_splitting(rng, P(1.5))
     end
 
+    @testset "cache gradients ($prepare)" for prepare in (
+        Mooncake.prepare_derivative_cache, Mooncake.prepare_gradient_cache
+    )
+        for (f, x, expected) in (
+            (x -> Float32(x * x), P(3), P(6)),
+            (
+                x -> Float32(abs2(x)),
+                complex(P(1), P(2)),
+                Mooncake.Tangent((; re=P(2), im=P(4))),
+            ),
+            (x -> Float32(sum(x .* x)), P[1, 2, 3], P[2, 4, 6]),
+        )
+            cache = prepare(f, x)
+            y, (_, dx) = Mooncake.value_and_gradient!!(cache, f, x)
+            @test y == f(x)
+            @test dx == expected
+        end
+    end
+
     cases = [
+        (double, P(0.25)),
+        (double, P[0.125, 0.25]),
+        (-, P(0.25)),
         (
             mul!,
             zeros(P, 2, 2),
@@ -95,6 +116,13 @@ end
                 P(0.25),
             ),
         )
+    end
+
+    for wrap in (identity, transpose, adjoint)
+        push!(cases, (mul!, ones(P, 2), wrap(zeros(P, 2, 2)), ones(P, 2), true, zero(P)))
+    end
+    for A in (view(zeros(P, 4, 2), 1:2:4, :), reshape(view(zeros(P, 6), 1:4), 2, 2))
+        push!(cases, (mul!, ones(P, 2, 2), A, ones(P, 2, 2), true, zero(P)))
     end
 
     # Tolerances reflect BFloat16's ~3-digit precision. Test values are in [0.125, 0.25)

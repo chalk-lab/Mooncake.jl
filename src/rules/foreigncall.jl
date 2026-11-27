@@ -110,6 +110,10 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
+# Derived forward rules for `promote_op(::Function, ::Type)` segfault: the opaque closure's
+# `specptr` expects an argument array, but compiled callers pass arguments separately.
+@zero_derivative MinimalCtx Tuple{typeof(Base.promote_op),Vararg}
+
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function _objref_tangent(y, dx::Ptr)
     tangent_type(typeof(y)) == NoTangent && return NoTangent()
@@ -308,7 +312,8 @@ function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     y = deepcopy(x)
     fdy = tangent(y)
     function deepcopy_pb!!(dy)
-        increment!!(fdx, fdy)
+        # Only fdata hold buffers, and `fdy` shares them as `fdx` does: add each once.
+        increment_internal!!(MemoryIncCache(), fdx, fdy)
         return NoRData(), increment!!(dx, dy)
     end
     return y, deepcopy_pb!!
@@ -333,7 +338,17 @@ function rrule!!(
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
 end
 
-for name in (:jl_get_world_counter, :jl_matching_methods)
+for name in (
+    :jl_get_world_counter,
+    :jl_matching_methods,
+    :utf8proc_isupper,
+    :utf8proc_islower,
+    :utf8proc_category,
+    :utf8proc_toupper,
+    :utf8proc_tolower,
+    :utf8proc_totitle,
+    :utf8proc_charwidth,
+)
     @eval function frule!!(
         f::Dual{typeof(_foreigncall_)},
         n::Dual{Val{$(QuoteNode(name))}},
@@ -466,6 +481,28 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _c, _d = [1, 2], [3, 4]
 
     test_cases = Any[
+        [
+            (
+                false,
+                :stability_and_allocs,
+                nothing,
+                _foreigncall_,
+                Val(name),
+                Val(RT),
+                (Val(UInt32),),
+                Val(0),
+                Val(:ccall),
+                UInt32('α'),
+            ) for (name, RT) in (
+                (:utf8proc_isupper, Cint),
+                (:utf8proc_islower, Cint),
+                (:utf8proc_category, Cint),
+                (:utf8proc_toupper, UInt32),
+                (:utf8proc_tolower, UInt32),
+                (:utf8proc_totitle, UInt32),
+                (:utf8proc_charwidth, Cint),
+            )
+        ]...,
         (false, :stability, nothing, Base.allocatedinline, Float64),
         (false, :stability, nothing, Base.allocatedinline, Vector{Float64}),
         (false, :stability, nothing, objectid, 5.0),
@@ -482,6 +519,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
+        (false, :none, nothing, Base.promote_op, abs2, Float64),
         (
             false,
             :none,

@@ -24,6 +24,89 @@ using ..Mooncake:
 
 using LinearAlgebra, Random
 
+function structured_output_cases(f)
+    cases = Any[]
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
+        g = M -> begin
+            f(view(W(M), i:i, j:j), view(M, 1:1, 1:1))
+            return sum(M)
+        end
+        push!(cases, (false, :none, (is_primitive=false,), g, [0.2 0.3; 0.4 0.5]))
+    end
+    return cases
+end
+
+function structured_rule_cases(f)
+    cases = Any[]
+    for (W, i, j) in ((UnitUpperTriangular, 1, 2), (UnitLowerTriangular, 2, 1))
+        x = W([0.2 0.3; 0.4 0.5])
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (
+                    mode=Mooncake.ForwardMode,
+                    oracle=(_, f, x, dx) -> begin
+                        _, actual = f(x, dx)
+                        expected = W === UnitUpperTriangular ? [0 1; 0 0] : [0 0; 1 0]
+                        return actual == expected &&
+                               Base.mightalias(actual, dx.fields.data) &&
+                               dx.fields.data == ones(2, 2)
+                    end,
+                ),
+                Mooncake.arrayify,
+                x,
+                Tangent((data=ones(2, 2),)),
+            ),
+        )
+        push!(
+            cases,
+            (
+                false,
+                :none,
+                (is_primitive=false,),
+                M -> sum(f(W(M); dims=1)),
+                [0.2 0.3; 0.4 0.5],
+            ),
+        )
+        for y in (
+            x,
+            view(x, [i, i], j:j),
+            reshape(x, 4),
+            Adjoint(x),
+            Diagonal(view(x, :, j)),
+            UpperTriangular(x),
+            LowerTriangular(x),
+        )
+            push!(cases, (false, :none, (;), f, y))
+        end
+    end
+    push!(cases, (false, :none, (;), f, Hermitian([1.0 2.0; 3.0 4.0])))
+    push!(
+        cases,
+        (false, :none, (;), f, UpperTriangular(view([0.2 0.3 9.0; 0.4 0.5 9.0], :, 1:2))),
+    )
+    return cases
+end
+
+function cuda_tangent_cases(array)
+    x = array(fill(complex(Inf, 0.0), 1, 1))
+    check = (_, f, args...) -> isequal(Array(f(args...)), fill(complex(Inf, 0.0), 1, 1))
+    return [
+        (false, :none, (oracle=check,), Mooncake._add_to_primal, x, zero(x), true),
+        (false, :none, (oracle=check,), Mooncake._scale, 1.0, x),
+        (
+            false,
+            :none,
+            (oracle=(_, f, args...)->f(args...) === Inf,),
+            Mooncake._dot,
+            vec(x),
+            array(ones(ComplexF64, 1)),
+        ),
+    ]
+end
+
 #
 # Types used for testing purposes
 #
@@ -503,6 +586,14 @@ function test_while_loop(x)
     return x
 end
 
+# A loop that opens the function and carries no SSA value: its header is the entry block.
+function test_entry_block_loop!(r)
+    while r[] > 1.0
+        r[] = r[] * 0.5
+    end
+    return r[]
+end
+
 function test_for_loop(x)
     for _ in 1:500
         x = sin(x)
@@ -757,6 +848,7 @@ function generate_test_functions()
         (false, :none, nothing, globalref_tester_5),
         (false, :allocs, nothing, globalref_tester_6),
         (false, :none, (lb=1e-3, ub=1_000), type_unstable_tester_0, Ref{Any}(5.0)),
+        (false, :none, nothing, getindex, Ref{Union{Float32,Float64}}(5.0)),
         (false, :none, nothing, type_unstable_tester, Ref{Any}(5.0)),
         (false, :none, nothing, type_unstable_tester_2, Ref{Real}(5.0)),
         (false, :none, (lb=1e-3, ub=500), type_unstable_tester_3, Ref{Any}(5.0)),
@@ -867,6 +959,7 @@ function generate_test_functions()
         (false, :allocs, nothing, test_getindex, [1.0, 2.0]),
         (false, :allocs, nothing, test_mutation!, [1.0, 2.0]),
         (false, :allocs, nothing, test_while_loop, 2.0),
+        (false, :allocs, nothing, test_entry_block_loop!, Ref(5.0)),
         (false, :allocs, nothing, test_for_loop, 3.0),
         (false, :none, nothing, test_mutable_struct_basic, 5.0),
         (false, :none, nothing, test_mutable_struct_basic_sin, 5.0),

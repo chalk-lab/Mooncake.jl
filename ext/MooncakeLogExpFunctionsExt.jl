@@ -31,31 +31,17 @@ using Mooncake.Nfwd: NDual, _promote_matching_nduals
     return inv(exp(-x) + one(T))
 end
 
-# _log1pexp_thresholds(x::Real) computes branch thresholds using oftype(x, logtwo),
-# producing zero-partial NDuals and running NDual arithmetic on pure constants.
-# Float64/Float32 have hardcoded overloads; redirect NDual to those.
-@inline function LogExpFunctions._log1pexp_thresholds(x::NDual{T,N}) where {T<:IEEEFloat,N}
-    return LogExpFunctions._log1pexp_thresholds(x.value)
-end
-
-# log1pexp, _log1pexp, and logcosh are not @inline in LogExpFunctions, so the
-# compiler cannot fuse their branch structure with the caller's loop body.
-# Specialize here so the entire computation inlines at the call site.
-@inline function LogExpFunctions._log1pexp(x::NDual{T,N}) where {T<:IEEEFloat,N}
-    x1, x2, x3, x4 = LogExpFunctions._log1pexp_thresholds(x)
-    x < x1 && return zero(x)
-    x < x2 && return exp(x)
-    x < x3 && return log1p(exp(x))
-    x < x4 && return x + exp(-x)
-    return x
+# Scalar log1pexp delegation avoids dependence on private approximation thresholds.
+@inline function LogExpFunctions.log1pexp(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    z = log1pexp(x.value)
+    d = logistic(x.value)
+    return NDual(z, ntuple(i -> d * x.partials[i], Val(N)))
 end
 
 @inline function LogExpFunctions.logcosh(x::NDual{T,N}) where {T<:IEEEFloat,N}
-    abs_x = abs(x)
-    # Call _log1pexp directly (inline) rather than log1pexp, to avoid inlining the
-    # 5-branch body into logaddexp (which also calls log1pexp) and bloating that path.
-    return abs_x + LogExpFunctions._log1pexp(-2 * abs_x) -
-           T(LogExpFunctions.IrrationalConstants.logtwo)
+    z = logcosh(x.value)
+    d = tanh(x.value)
+    return NDual(z, ntuple(i -> d * x.partials[i], Val(N)))
 end
 
 # logsumexp(x::AbstractVector{NDual}): direct scalar-then-differentiate implementation.

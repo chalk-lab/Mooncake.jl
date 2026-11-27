@@ -25,7 +25,8 @@ function randn_tangent_internal(rng::AbstractRNG, d::P, dict::MaybeCache) where 
 end
 
 function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
-    haskey(c, p) && return p
+    (p === q || haskey(c, p)) && return p
+    c[p] = true
     for k in keys(p)
         p[k] = increment_internal!!(c, p[k], q[k])
     end

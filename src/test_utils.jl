@@ -700,8 +700,8 @@ rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_reuse(x_ẋ...; frule)
     @nospecialize x_ẋ
-    x_ẋ_a = map(_deepcopy, x_ẋ)
-    x_ẋ_b = map(_deepcopy, x_ẋ)
+    x_ẋ_a = _deepcopy(x_ẋ)
+    x_ẋ_b = _deepcopy(x_ẋ)
 
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
@@ -780,7 +780,7 @@ function test_frule_interface(x_ẋ...; frule)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
-    x_ẋ = map(_deepcopy, x_ẋ)
+    x_ẋ = _deepcopy(x_ẋ)
     x = map(primal, x_ẋ)
 
     # Run the primal programme. Bail out early if this doesn't work.
@@ -817,7 +817,8 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
     f̄ = tangent(f_f̄)
-    x_x̄ = map(_deepcopy, x_x̄)
+    # One `deepcopy` of the whole tuple keeps aliased arguments aliased.
+    x_x̄ = _deepcopy(x_x̄)
     x = map(primal, x_x̄)
     x̄ = map(tangent, x_x̄)
 
@@ -952,14 +953,8 @@ function test_frule_performance(
         end
 
         # Test allocations in forwards-mode.
-        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
-        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
-        # nested rule callsite inside the compiled OC, producing non-zero alloc counts
-        # even for correct rules. Skip this check on Julia < 1.11.
-        @static if VERSION >= v"1.11-"
-            __forwards(rule, f_ḟ, x_ẋ...)
-            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
-        end
+        __forwards(rule, f_ḟ, x_ẋ...)
+        @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
     end
 end
 
@@ -1003,16 +998,10 @@ function test_rrule_performance(
         end
 
         # Test allocations in round-trip.
-        # Skip on Julia < 1.11 for the same reason as the frule check above: the
-        # inferencebarrier workaround in __call_rule boxes isbits values at every
-        # nested rule callsite inside the compiled OC, producing spurious non-zero
-        # alloc counts on Julia 1.10.
-        @static if VERSION >= v"1.11-"
-            f_f̄_fwds = to_fwds(f_f̄)
-            x_x̄_fwds = map(to_fwds, x_x̄)
-            __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-            @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
-        end
+        f_f̄_fwds = to_fwds(f_f̄)
+        x_x̄_fwds = map(to_fwds, x_x̄)
+        __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
+        @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
     end
 end
 
@@ -1136,9 +1125,8 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
     both are subgradients, so a disagreement is not evidence of a defect, and an agreement
     is not evidence of correctness.
 
-Accepting a caller-supplied reference derivative would close the first two. Until then, a
-rule whose derivative depends on any of these needs pinning some other way — calling the
-rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
+For cases outside finite differences, `oracle(mode, f, args...)` must return a Boolean
+checking an analytic reference. It replaces the ordinary rule checks.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1156,9 +1144,12 @@ function test_rule(
     frule=nothing,
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
+    oracle=nothing,
 )
-    # Take a copy of `x` to ensure that we do not mutate the original.
-    x = deepcopy(x)
+    isnothing(oracle) || return @test oracle(mode, deepcopy(x)...)
+    # Independently seeded arguments require independent primal copies.
+    d = IdDict()
+    x = map(x -> x isa CoDual ? Base.deepcopy_internal(x, d) : _deepcopy(x), x)
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
@@ -1357,10 +1348,13 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+        interface_only, perf_flag, options, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
+        opts =
+            options isa NamedTuple ? Base.structdiff(options, NamedTuple{(:lb, :ub)}) : (;)
+        get(opts, :mode, mode) === mode || continue
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode, opts...)
     end
 end
 
