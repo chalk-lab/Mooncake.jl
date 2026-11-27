@@ -922,8 +922,8 @@ for C in _STRUCTURAL_CONTAINERS
         ::StructuralStorage, x::$C, ẋ::$C, c::Union{Nothing,IdDict}
     )
         V = dual_type(Val(1), typeof(x))
-        # `NoDual` elements hold nothing to lift, and bottom storage nothing to read.
-        if ẋ isa $C{NoTangent} && eltype(V) === NoDual
+        # Uncached `NoDual` arrays have nothing to lift; cached ones must share one header.
+        if c === nothing && ẋ isa $C{NoTangent} && eltype(V) === NoDual
             return Lifted{typeof(x),1,V}(
                 x, fill!(_structural_dual_shell(x, NoDual), NoDual())
             )
