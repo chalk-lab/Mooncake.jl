@@ -1,3 +1,25 @@
+# True when `x` reaches itself. Only ancestors count, so a value merely shared between two
+# fields (a DAG) is not self-referential — hence the removal on the way out.
+function _self_referential(@nospecialize(x), seen=Base.IdSet{Any}())
+    (isbits(x) || x isa Type || x isa Symbol) && return false
+    x in seen && return true
+    push!(seen, x)
+    try
+        if x isa AbstractArray && !isbitstype(eltype(x))
+            for i in eachindex(x)
+                isassigned(x, i) && _self_referential(x[i], seen) && return true
+            end
+        else
+            for f in 1:nfields(x)
+                isdefined(x, f) && _self_referential(getfield(x, f), seen) && return true
+            end
+        end
+    finally
+        delete!(seen, x)
+    end
+    return false
+end
+
 struct LiftedTest_Point
     x::Float64
     y::Float64
@@ -5,11 +27,49 @@ end
 mutable struct LiftedTest_RefF
     v::Float64
 end
+mutable struct LiftedTest_Cycle
+    next::Any
+    w::Float64
+end
+mutable struct LiftedTest_Aliased
+    a::Vector{Float64}
+    b::Vector{Float64}
+end
+mutable struct LiftedTest_AliasedNested
+    a::Vector{Vector{Float64}}
+    b::Vector{Vector{Float64}}
+end
+# An `Any` field holding an aggregate exercises recursive lane materialisation.
+struct LiftedTest_AbstractHeld
+    x::Any
+end
+# An immutable struct holding a `Ref`, whose reverse tangent field is a `MutableTangent`.
+struct LiftedTest_RefContainer
+    r::Base.RefValue{Float64}
+end
+mutable struct LiftedTest_MaybeInit
+    x::Float64
+    y::Float64
+    LiftedTest_MaybeInit(x::Float64) = new(x)
+end
 struct LiftedTest_TwoArrays  # two fields that may alias one mutable (non-float-eltype) array
     p::Vector{Vector{Float64}}
     q::Vector{Vector{Float64}}
 end
+abstract type LiftedTest_AbsScalar end
+struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
+    μ::Float64
+    σ::Float64
+end
 
+# An opaque handle, the shape CUDA's `DataRef` has: no forward derivative (`dual_type` is
+# `NoDual`); its reverse tangent is the handle itself, reused as shared cotangent storage.
+struct LiftedTest_Handle
+    id::Int
+end
+Mooncake.tangent_type(::Type{LiftedTest_Handle}) = LiftedTest_Handle
+Mooncake.dual_type(::Val{N}, ::Type{LiftedTest_Handle}) where {N} = Mooncake.NoDual
+Mooncake.zero_tangent_internal(x::LiftedTest_Handle, ::Mooncake.MaybeCache) = x
 # A custom reverse tangent with no `dual_type`: the structural lift must refuse it.
 struct LiftedTest_CustomTangent
     id::Int
@@ -38,8 +98,11 @@ using Mooncake:
     randn_lifted,
     uninit_dual,
     randn_dual,
+    basis_lifted!!,
     lift,
+    unlift,
     extract
+using Mooncake.TestUtils: test_lifted, test_lifted_type
 
 # Shorthands for the table-driven type tests below (top level: parametric aliases are
 # not allowed in local scope).
@@ -69,8 +132,9 @@ const NDAC_VecC64 = NDualArray{
     nd(v::T, parts::Vararg{T,N}) where {T,N} = NDual{T,N}(v, parts)
 
     @testset "one `Ref` reached twice lifts to one V" begin
-        # Repeated Refs must share V storage, on both the seed and lift paths, so a mutation
-        # through one updates the partial read through the other.
+        # Repeated Refs must share V storage on both the seed and lift paths. Bespoke:
+        # test_lifted counts storages but never writes through one position and reads the
+        # other.
         mk() = (r=Ref(1.0); (r, r))
         p = mk()
         v = Mooncake.tangent(Mooncake.lift(p, Mooncake.zero_tangent(p)))
@@ -196,6 +260,33 @@ const NDAC_VecC64 = NDualArray{
         @test lifted_type(Val(N), P) === Lifted{P,N,V}
     end
 
+    @testset "abstract field holding a structured value" begin
+        # Child slots take the held value's type: a declared `Any` reads tuple elements as
+        # lanes. The `P<:Tuple` container branch is reached only through an abstract slot
+        # the IR annotates, which no seed factory builds, so annotate one by hand.
+        tp = (LiftedTest_Point(1.0, 2.0),)
+        @test tangent(Lifted{Tuple{Any},1}(tp, tangent(zero_lifted(Val(1), tp))), 1)[1] isa
+            Mooncake.Tangent
+        # Each lane of a held tuple is the whole tuple's lane, not one element's V.
+        tt = ((1.0, 2.0),)
+        @test tangent(Lifted{Tuple{Any},3}(tt, tangent(zero_lifted(Val(3), tt))), 2) ==
+            ((0.0, 0.0),)
+    end
+
+    @testset "the unlift terminal refuses a non-leaf" begin
+        # A malformed NoDual over a differentiable aggregate must fail at the boundary.
+        s = TestResources.StructFoo(6.0, [1.0, 2.0])
+        @test_throws ArgumentError unlift(
+            Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
+        )
+    end
+
+    @testset "a canonical NoDual over a non-`NoTangent` primal is not refused" begin
+        # dual_type licenses NoDual despite a real reverse placeholder, as for CUDA DataRef.
+        h = LiftedTest_Handle(7)
+        @test unlift(Lifted{LiftedTest_Handle,1,NoDual}(h, NoDual())) === (h, h)
+    end
+
     @testset "metatype kinds get an unbounded slot" begin
         # All four concrete metatype kinds need unbounded slots for runtime Type{X} primals.
         for T in (DataType, UnionAll, Union, Core.TypeofBottom), N in (1, 3)
@@ -272,7 +363,8 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "a custom reverse tangent without a `dual_type` is refused" begin
-        # The refusal is deferred to the call, so each query names the missing method.
+        # Bespoke: `test_lifted` asserts a coherent V, and this is a refusal, deferred to
+        # the call so that the type query and a rule's seed both name the missing method.
         @test_throws "no `dual_type` method" dual_type(Val(2), LiftedTest_CustomTangent)
         @test_throws "no `dual_type` method" zero_lifted(
             Val(2), LiftedTest_CustomTangent(1)
@@ -388,9 +480,9 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "`uninit_dual` on a float array allocates the block only" begin
-        # Per-lane `similar` copies packed into the block would cost `N` extra allocations on
-        # every `getfield` off a non-differentiable parent, for content that is garbage by
-        # definition.
+        # Bespoke: `test_lifted` has no performance half. Per-lane `similar` copies packed
+        # into the block would cost `N` extra allocations on every `getfield` off a
+        # non-differentiable parent, for content that is garbage by definition.
         x = randn(StableRNG(1), 100)
         uninit_dual(Val(8), x)
         zero_dual(Val(8), x)
@@ -529,6 +621,40 @@ const NDAC_VecC64 = NDualArray{
         end
     end
 
+    @testset "a non-differentiable element array's lane matches reverse" begin
+        # A pointer has no forward partial, but its reverse tangent carries the address:
+        # `Vector{Ptr{Int}}` has reverse tangent `Vector{Ptr{NoTangent}}`, not `NoTangent`s.
+        # The element type must come from the primal, not the V. Bespoke: no registered
+        # `test_lifted` case holds a pointer-element array, and this also pins the values.
+        pv = Ptr{Int}[Ptr{Int}(0), Ptr{Int}(8)]
+        @test tangent(zero_lifted(Val(2), pv), 1) == zero_tangent(pv)
+        @test typeof(tangent(zero_lifted(Val(2), pv), 1)) === tangent_type(Vector{Ptr{Int}})
+        # The ordinary non-differentiable elements are unchanged.
+        for v in ([1, 2], [:a, :b])
+            @test tangent(zero_lifted(Val(2), v), 1) == zero_tangent(v)
+        end
+    end
+
+    @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin
+        # Each element's lane must be read through its concrete `typeof(pe)`: the abstract
+        # `eltype(P)` has no fields to lift.
+        v = LiftedTest_AbsScalar[
+            LiftedTest_ConcScalar(1.0, 2.0), LiftedTest_ConcScalar(3.0, 4.0)
+        ]
+        slot = zero_lifted(Val(2), v)
+        @test slot isa Lifted{Vector{LiftedTest_AbsScalar},2}
+        for lane in 1:2
+            t = tangent(slot, lane)
+            @test t isa AbstractVector && length(t) == 2
+            @test t[1] isa Tangent
+            nt = getfield(t[1], :fields)
+            @test nt.μ === 0.0 && nt.σ === 0.0
+        end
+        # Width-1 boundary unpack (the `unlift` path used by `test_frule_correctness`).
+        _, ts = unlift(zero_lifted(Val(1), v))
+        @test ts isa AbstractVector && ts[1] isa Tangent
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(zero_dual(Val(2), 1.0)) isa NDual{Float64,2}
@@ -537,9 +663,138 @@ const NDAC_VecC64 = NDualArray{
         @test @inferred(lifted_type(Val(2), Float64)) === Lifted{Float64,2,NDual{Float64,2}}
     end
 
+    @testset "basis_lifted!!" begin
+        # `basis_lifted!!(zero_lifted(...), slots)` sets lane k hot at the slots[k]-th
+        # scalar dimension, in `tangent_dim`/`zero_tangent` order, mutating mutable V in
+        # place and rebuilding immutable V.
+        bl(x, slots) = basis_lifted!!(zero_lifted(Val(length(slots)), x), slots)
+
+        @test tangent(bl(3.0, (1,)), 1) == 1.0
+        @test tangent(bl([5.0, 6.0, 7.0], (2,)), 1) == [0.0, 1.0, 0.0]
+        @test tangent(bl(1.0 + 2.0im, (2,)), 1) == 0.0 + 1.0im  # imag tangent_dim
+        let t = tangent(bl(([1.0, 2.0], 9.0), (3,)), 1)
+            @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is tangent_dim 3
+        end
+
+        # Aliased fields: `tangent_dim` dedups the shared array, so both fields share one V.
+        shared = [10.0, 20.0]
+        let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).rep.fields
+            @test nt.a === nt.b
+            @test tangent_view(nt.a, 1) == [1.0, 0.0]
+        end
+
+        # Headers over one storage share one seed, so they have no basis positions of their
+        # own; one object reached twice is one header.
+        let a = [1.0, 2.0], b = Any[1.0, 2.0]
+            shared = Any[(a, reshape(a, 1, 2)), (b, vec(reshape(b, 1, 2)))]
+            @static if VERSION >= v"1.11-rc4"
+                h = sizehint!([1.0, 2.0], 8)
+                # The empty `y` reaches the `Memory` first; both later headers carry.
+                y = empty!([1.0, 2.0])
+                ym = y.ref.mem
+                push!(shared, (h, h.ref.mem), (y, ym, Base.wrap(Array, ym, 1)))
+            end
+            @testset "refuse $(typeof(x))" for x in shared
+                TestUtils._test_throws(ArgumentError, "different headers") do
+                    Mooncake.tangent_dim(x)
+                end
+                TestUtils._test_throws(ArgumentError, "different headers") do
+                    bl(x, (1,))
+                end
+            end
+            @test Mooncake.tangent_dim((a, a, b)) == 4
+            @test tangent(bl((a, a), (2,)), 1) == ([0.0, 1.0], [0.0, 1.0])
+            # Shared storage without degrees of freedom holds no basis position.
+            ai, e = Any[1, 2], Float64[]
+            for x in ((ai, reshape(ai, 1, 2), 3.0), (e, reshape(e, 0, 1), 3.0))
+                @test Mooncake.tangent_dim(x) == 1
+                @test tangent(bl(x, (1,)), 1)[3] == 1.0
+            end
+            @static if VERSION >= v"1.11-rc4"
+                # Only the `Memory` carries a derivative, in either order or reached twice.
+                v = sizehint!(Any[2, 3], 4)
+                m = v.ref.mem
+                m[3] = 1.0
+                for (x, d) in
+                    (((ym, y), 2), ((y, ym), 2), ((y, ym, ym), 2), ((m, v), 1), ((v, m), 1))
+                    @test Mooncake.tangent_dim(x) == d
+                end
+                @test tangent(bl((y, ym), (2,)), 1)[2] == [0.0, 1.0]
+                @test tangent(bl((m, v), (1,)), 1)[1][3] == 1.0
+            end
+        end
+
+        # The control: the storage key must not merge unrelated stores, and a REUSED seed
+        # must be cleared on every reseed. A false merge would skip the clear and leave the
+        # previous chunk's hot lane behind.
+        let s = zero_lifted(Val(1), ([1.0, 2.0], [3.0, 4.0]))
+            @test tangent(basis_lifted!!(s, (1,)), 1) == ([1.0, 0.0], [0.0, 0.0])
+            @test tangent(basis_lifted!!(s, (4,)), 1) == ([0.0, 0.0], [0.0, 1.0])
+        end
+
+        # Aliasing on the `lift` (reverse→forward) path, non-float-element array: the
+        # element-wise array lift must register the shared array in the cache so both
+        # fields get one V (matching reverse). Float-element fields are safe via
+        # `ẋ`-aliasing; this exercises the gap.
+        let h = LiftedTest_AliasedNested([[1.0, 2.0], [3.0]], [[1.0, 2.0], [3.0]])
+            h.b = h.a
+            nt = tangent(lift(h, randn_tangent(Xoshiro(1), h))).fields
+            @test nt.a === nt.b
+        end
+
+        # Self-cyclic mutable struct: terminates; `.next` V is the node's own V.
+        c = LiftedTest_Cycle(nothing, 5.0)
+        c.next = c
+        let b = bl(c, (1,))
+            @test b.rep.fields.next === b.rep
+            @test b.rep.fields.w.partials[1] == 1.0  # `w` is the only tangent_dim
+        end
+
+        # Uninit field stays uninit/zero; the defined field gets the basis.
+        let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).rep.fields
+            @test nt.x.partials[1] == 1.0
+        end
+
+        @static if VERSION >= v"1.11-rc4"
+            # Structural MemoryRefs leave the following scalar at the first basis position.
+            for T in (Int, Union{})
+                p = (memoryref(Memory{T}(undef, 0)), 1.0)
+                @test tangent(bl(p, (1,)), 1)[2] == 1.0
+            end
+
+            # A complex `MemoryRef` seeds two dimensions per element, real then imaginary.
+            let m = Memory{ComplexF64}(undef, 2)
+                m .= [1.0 + 0.0im, 2.0 + 0.0im]
+                b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
+                # `tangent(b)` is the `NDualMemoryRef` V; its `tangent` rebuilds the block.
+                @test tangent(tangent(b))[1, :] == [0.0 + 1.0im, 0.0 + 0.0im]
+            end
+        end
+
+        # Memory and MemoryRef contribute one set of dimensions. Check a later array's basis
+        # positions too, so a duplicate cursor advance cannot silently drop its gradient.
+        # test_lifted compares basis seeds with each other, never with known positions.
+        @static if VERSION >= v"1.11-rc4"
+            let m = Memory{Float64}(undef, 2), b = [3.0, 4.0]
+                m .= [1.0, 2.0]
+                x = (m, Core.memoryref(m), b)
+                @test tangent_view(tangent(bl(x, (2,)))[1], 1) == [0.0, 1.0]
+                @test tangent_view(tangent(bl(x, (3,)))[3], 1) == [1.0, 0.0]
+                @test tangent_view(tangent(bl(x, (4,)))[3], 1) == [0.0, 1.0]
+            end
+        end
+
+        # Pointer fields carry no basis direction.
+        let b = bl((Ptr{Float64}(0), 2.0), (1,))
+            @test tangent(b)[1] == Mooncake.uninit_dual(Val(1), Ptr{Float64}(0))
+            @test tangent(b)[2].partials[1] == 1.0      # Float64 lane seeded hot
+        end
+    end
+
     @static if VERSION < v"1.11-rc4"
         @testset "structural headers with unequal extents" begin
-            # Raw-pointer aliases need independent tangents.
+            # Raw-pointer aliases need independent tangents; `test_lifted` only bounds
+            # storage counts.
             for T in (Tuple{Float64}, Any)
                 a = T[(1.0,), (2.0,), (3.0,), (4.0,)]
                 GC.@preserve a begin
@@ -556,6 +811,8 @@ const NDAC_VecC64 = NDualArray{
                         )
                             v = tangent(s)
                             @test pointer(v[1]) != pointer(v[2])
+                            lane = tangent(s, 1)
+                            @test pointer(lane[1]) != pointer(lane[2])
                         end
                     end
                 end
@@ -681,6 +938,132 @@ const NDAC_VecC64 = NDualArray{
             b32 = unsafe_wrap(Array, Ptr{Float32}(pointer(buf)), 3)
             v = tangent(lift((a, b32), (ones(3), fill(10.0f0, 3))))
             @test tangent_view(v[2], 1) == fill(10.0f0, 3)
+        end
+    end
+
+    @testset "test_lifted (representation interface)" begin
+        # Drive the forward representation contract over the SAME canonical primal table
+        # that `test_tangent` / `test_data` use for reverse mode, so the two stay in sync.
+        @testset "$(typeof(p))" for (interface_only, p, t...) in
+                                    Mooncake.tangent_test_cases()
+            # The cache-free seed factories recurse with no visited set, so a
+            # self-referential primal overflows the stack there — only the cache-threading
+            # path can seed one. Detect the cycle rather than listing the cases, so a new
+            # cyclic table entry needs no bookkeeping here.
+            # `SimpleVector`'s V is defined beside its rules.
+            p isa Core.SimpleVector && continue
+            test_lifted(Xoshiro(123456), p; cache_free=(!_self_referential(p)))
+        end
+
+        # Storage kinds: a union or bottom element type is structural, a concrete float or
+        # complex one numeric. A cycle through a tuple, an array of mutable structs, and one
+        # array in two positions.
+        tuple_cycle = Any[]
+        push!(tuple_cycle, (tuple_cycle,))
+        aliased = randn(5)
+        @testset "test_lifted $(typeof(p))" for p in Any[
+            Union{}[],
+            (Union{}[], 1.0),
+            Ref(Union{}[]),
+            Ref{Union{}}(),
+            Union{Float32,Float64}[2.0f0, 3.0],
+            Ref{Union{Float32,Float64}}(2.0),
+            Union{Float32,ComplexF64}[2.0f0, 3.0 + 1.0im],
+            Ref{Union{Float32,ComplexF64}}(3.0 + 1.0im),
+            1.0 + 2.0im,
+            ComplexF64[1.0 + 2.0im, -3.0 + 0.5im],
+            [TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0)],
+            tuple_cycle,
+            (aliased, aliased),
+        ]
+            test_lifted(Xoshiro(123456), p; cache_free=(!_self_referential(p)))
+        end
+
+        # Arrays of two lengths, a `MemoryRef` and their backing `Memory`: lane reads tie
+        # each numeric `Array` and `MemoryRef` to the `Memory`, as reverse derives them.
+        @static if VERSION >= v"1.11-rc4"
+            test_lifted(Xoshiro(123456), TestResources.make_array_and_its_buffer())
+        end
+
+        # Headers over one storage, not in `tangent_test_cases`: reverse checks there fail
+        # (1.10's `deepcopy` splits reshapes; `increment!!` dispatches on `Any` elements).
+        @testset "test_lifted shared storage $(eltype(a))" for a in (
+            [(3.0,), (4.0,)], Any[(3.0,), (4.0,)]
+        )
+            p = (a, reshape(a, 1, 2), view(a, 1:1))
+            # 1.10's reverse seeds give reshaped headers independent tangents, so the round
+            # trip through `lift` cannot hold there.
+            @static if VERSION >= v"1.11-rc4"
+                test_lifted(Xoshiro(123456), p)
+                test_lifted(Xoshiro(123456), (a, vec(reshape(a, 1, 2)), a))
+                test_lifted(Xoshiro(123456), (vec(reshape(a, 1, 2)), a))
+            end
+            for width in (1, 8),
+                seed in (
+                    zero_lifted(Val(width), p),
+                    uninit_lifted(Val(width), p),
+                    randn_lifted(Val(width), Xoshiro(123), p),
+                )
+
+                @test TestUtils._count_storages(tangent(seed)) == 1
+            end
+        end
+
+        @testset "test_lifted Ref fields $(typeof(p))" for p in (
+            Ref(3.0), LiftedTest_RefContainer(Ref(2.5))
+        )
+            test_lifted(Xoshiro(123456), p; widths=(1, 2, 8))
+        end
+
+        # Type-level widening / sentinel cases the value-drive cannot reach (abstract and
+        # `Union` primals). Free-TypeVar `Tuple` phantoms are exercised in `codual.jl`.
+        @testset "test_lifted_type $P (N=$N)" for P in (
+                Real,
+                AbstractVector{Float64},
+                Union{Float64,Float32},
+                Union{Float64,Int},
+                Complex{Float64},
+                Vector{Any},
+                Ptr{Tuple{Int32,Int32,Float64}},
+                Ptr{Ptr{Float64}},
+            ),
+            N in (1, 2, 3, 8)
+
+            test_lifted_type(P, Val(N))
+        end
+
+        for N in (1, 8)
+            @test isbits(tangent(zero_lifted(Val(N), Ptr{Float64}(0))))
+        end
+
+        for lanes in ((Ptr{Float64}(0),), (Ptr{Float64}(0), Ptr{Float32}(0)))
+            @test_throws ArgumentError Lifted{Ptr{Float64},2}(Ptr{Float64}(0), lanes)
+        end
+
+        # Primals whose `dual_type` widens to an upper bound instead of the exact V — one
+        # per `lifted_type` method that can widen (the `Tuple` overload and the generic
+        # one). The slot must stay inhabited: `Lifted` is invariant in V, so an exact
+        # `Lifted{P,N,Any}` annotation admits no runtime value at all.
+        @testset "test_lifted widened V $(typeof(p))" for p in (
+            convert(@NamedTuple{x::Any}, (x=3.0,)),
+            # Same widening with a NON-differentiable value, whose V is a `NoDual`: the
+            # per-lane read must decide from the value, not from the widened `Any`.
+            convert(@NamedTuple{x::Any}, (x=nothing,)),
+            # An AGGREGATE in the widened field, or in a struct's `Any` field: the child
+            # slot must take the value's type, not the declared `Any`, or a struct throws
+            # from `fieldtype(Any, ·)` and a tuple takes the per-lane accessor, which the
+            # round trip catches as another value.
+            convert(@NamedTuple{x::Any}, (x=TestResources.StructFoo(6.0, [1.0, 2.0]),)),
+            convert(@NamedTuple{x::Any}, (x=(1.0, 2.0),)),
+            LiftedTest_AbstractHeld(LiftedTest_Point(1.0, 2.0)),
+            LiftedTest_AbstractHeld((1.0, 2.0)),
+        )
+            test_lifted(Xoshiro(123456), p)
+        end
+
+        # Keyed Dict tangents compose with mutable array values.
+        @testset "test_lifted Dict" begin
+            test_lifted(Xoshiro(123456), Dict(:a => randn(Xoshiro(1), 2)))
         end
     end
 end

@@ -83,13 +83,22 @@ type gives an upper bound, often `Any`.
 Default structural representations recurse through fields; specialised types can
 supply their own representation.
 
+At width one, `lift(p, dp)` and `unlift(x)` convert to and from a primal and an
+ordinary Mooncake tangent. `tangent(slot, k)` materialises lane `k` as a reverse
+tangent of type `tangent_type(P)`. For a numeric array this is a copy; use
+`tangent_view(slot, k)` for writable access to the lane's storage.
+
 Structural `lift` and the cache-threaded seed factories key each `Array` or `Memory` on
 its owning storage, so distinct headers over one buffer (`reshape`, an `Array` beside
 its `Memory`) use shared partial storage while keeping their own shapes. Seed wrappers
 are registered by header as well, so a header's V object remains stable when another
 header uses the same window. `lift` refuses two seeds that differ where they reach one
 storage, since the shared partials can hold only one of them. It builds storage whose
-elements are all `NoDual` afresh at each visit, since that holds nothing to share.
+elements are all `NoDual` afresh at each visit, since that holds nothing to share. Lane
+materialisation shares a representation when the first header's allocated window reaches
+the later header; callers should put the widest header first when that sharing is
+required. A lane is allocated up to the end of its header's window, not to the owner's
+capacity.
 
 Array, Memory, MemoryRef, and Ref factories select numeric or structural storage
 through `_storage_kind` before dispatching to their implementations.

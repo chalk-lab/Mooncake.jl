@@ -91,6 +91,7 @@ using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
+    NoDual,
     PossiblyUninitTangent,
     Tangent,
     MutableTangent,
@@ -124,7 +125,17 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
+    lifted_type,
+    randn_lifted,
+    zero_lifted,
+    uninit_lifted,
+    basis_lifted!!,
     randn_dual,
+    zero_dual,
+    uninit_dual,
+    Lifted,
+    lift,
+    unlift,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -1430,6 +1441,149 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
     @test tangent_type(primal_type) == expected_tangent_type
     @test is_foldable(tangent_type, (Type{expected_tangent_type},))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
+    return nothing
+end
+
+"""
+    test_lifted_type(primal_type, ::Val{N})
+
+Forward-mode analogue of [`test_tangent_type`](@ref). Checks that `dual_type(Val(N), P)` and
+`lifted_type(Val(N), P)` return types, that `NoDual` is used wherever the reverse tangent is
+`NoTangent`, and, for a concrete non-type `P`, that the slot is `Lifted{P,N,V}` (or
+`Lifted{P,N,W} where {W}` when `dual_type` widens) and that both functions fold. The fold
+check catches a sub-call baked into a `@generated` generator body.
+"""
+function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
+    V = dual_type(Val(N), primal_type)
+    @test V isa Type
+    L = lifted_type(Val(N), primal_type)
+    @test L isa Type
+    # The converse fails: an opaque handle can have reverse storage but no forward partials.
+    tangent_type(primal_type) === NoTangent && @test V === Mooncake.NoDual
+    # Type-valued slots sharpen to `Lifted{Type{X}}`, not the metatype's widened slot.
+    if isconcretetype(primal_type) && !(primal_type <: Type)
+        exact = isconcretetype(V)
+        @test L === (exact ? Lifted{primal_type,N,V} : (Lifted{primal_type,N,W} where {W}))
+        @test is_foldable(dual_type, (Val{N}, Type{primal_type}))
+        @test is_foldable(lifted_type, (Val{N}, Type{primal_type}))
+        test_opt(dual_type, Tuple{Val{N},Type{primal_type}})
+        test_opt(lifted_type, Tuple{Val{N},Type{primal_type}})
+    end
+    return nothing
+end
+
+# Distinct backing storages reachable from a value, counted by identity: arrays, `Memory`s
+# and forward blocks are what two positions can share. A dual wrapper's primal aliases user
+# storage, so only its partials count.
+function _count_storages(x)
+    seen = Base.IdSet{Any}()
+    _walk_storages!(seen, x, Base.IdSet{Any}())
+    return length(seen)
+end
+
+function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
+    (isbits(x) || x in visited) && return nothing
+    push!(visited, x)
+    if x isa Mooncake.MistyClosureTangent
+        # Only captures hold derivative storage; `dual_callable` reaches compiled IR.
+        _walk_storages!(seen, x.captures_tangent, visited)
+    elseif x isa Mooncake.Nfwd.PartialsBlock
+        _walk_storages!(seen, getfield(x, :parent), visited)
+    elseif x isa Array || x isa _Memory
+        push!(seen, Mooncake._storage_id(x))
+        isbitstype(eltype(x)) && return nothing
+        for i in eachindex(x)
+            isassigned(x, i) && _walk_storages!(seen, x[i], visited)
+        end
+    else
+        for f in fieldnames(typeof(x))
+            x isa _DUAL_WRAPPERS && f === :primal && continue
+            isdefined(x, f) && _walk_storages!(seen, getfield(x, f), visited)
+        end
+    end
+    return nothing
+end
+const _DUAL_WRAPPERS = @static if VERSION >= v"1.11-rc4"
+    Union{Lifted,Mooncake.NDualArray,Mooncake.NDualRef,Mooncake.NDualMemoryRef}
+else
+    Union{Lifted,Mooncake.NDualArray,Mooncake.NDualRef}
+end
+const _Memory = @static VERSION >= v"1.11-rc4" ? Memory : Union{}
+
+"""
+    test_lifted(rng, p; widths=(1, 8), cache_free=true)
+
+Forward-mode analogue of [`test_tangent`](@ref): check the `Lifted` representation of `p` at
+each chunk width in `widths`. The seed factories must return a slot of type
+`lifted_type(Val(N), typeof(p))` whose primal aliases `p` and whose partials use no more
+storages than `zero_tangent(p)`. Every lane read `tangent(slot, lane)` must materialise a
+`tangent_type(typeof(p))`, and a `basis_lifted!!` seed must keep the slot's type, each lane
+reading as the width-1 seed of its direction, unless `tangent_dim` refuses `p`. A reverse
+tangent must round-trip through `unlift(lift(p, ẋ))` without gaining partial storages: a
+lift that fails to thread its aliasing cache gives two positions over one array independent
+partials.
+
+`cache_free=false` skips the cache-free factories `zero_dual`/`uninit_dual`/`randn_dual`,
+which cannot seed a self-referential primal.
+"""
+function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
+    @nospecialize rng p
+    P = typeof(p)
+    for N in widths
+        test_lifted_type(P, Val(N))
+        z = zero_lifted(Val(N), p)
+        u = uninit_lifted(Val(N), p)
+        r = randn_lifted(Val(N), rng, p)
+        @test primal(z) === p
+        @test primal(r) === p
+        L = lifted_type(Val(N), P)
+        if !(p isa Type)
+            isconcretetype(L) ? (@test typeof(z) === L) : (@test typeof(z) <: L)
+        end
+        @test typeof(u) === typeof(z)
+        @test typeof(r) === typeof(z)
+        # A factory that drops its cache gives two positions over one storage two partials.
+        for x in (z, u, r)
+            @test _count_storages(tangent(x)) <= _count_storages(zero_tangent(p))
+        end
+
+        # Random seeds distinguish lanes, which catches an accessor stuck on lane 1.
+        for lane in 1:N
+            @test tangent(z, lane) isa tangent_type(P)
+            @test tangent(r, lane) isa tangent_type(P)
+        end
+        if N > 1 && !has_equal_data(tangent(r, 1), tangent(z, 1))
+            @test !has_equal_data(tangent(r, 1), tangent(r, 2))
+        end
+        # Lane k of a basis seed must read as the width-1 seed of direction `mod1(k, d)`.
+        # With `d >= 2` this catches an accessor that reads another lane's direction.
+        d = Mooncake.tangent_dim(zero_tangent(p), IdDict{Any,Any}())
+        if d > 0 && !Mooncake._shares_headers(p)
+            slots = ntuple(k -> mod1(k, d), N)
+            b = basis_lifted!!(zero_lifted(Val(N), p), slots)
+            @test typeof(b) === typeof(z)
+            for k in 1:N
+                bk = basis_lifted!!(zero_lifted(Val(1), p), (slots[k],))
+                @test has_equal_data(tangent(b, k), tangent(bk, 1))
+            end
+        end
+
+        if cache_free
+            V = dual_type(Val(N), P)
+            for x in
+                (zero_dual(Val(N), p), uninit_dual(Val(N), p), randn_dual(Val(N), rng, p))
+                isconcretetype(V) ? (@test typeof(x) === V) : (@test typeof(x) <: V)
+            end
+        end
+    end
+
+    ẋ = randn_tangent(rng, p)
+    s = lift(p, ẋ)
+    @test _count_storages(tangent(s)) <= _count_storages(ẋ)
+    p2, ẋ2 = unlift(s)
+    @test has_equal_data(p2, p)
+    @test has_equal_data(ẋ2, ẋ)
+    @test _count_storages(ẋ2) <= _count_storages(ẋ)
     return nothing
 end
 
