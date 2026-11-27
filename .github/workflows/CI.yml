@@ -82,14 +82,7 @@ jobs:
           include-all-prereleases: ${{ matrix.version == '1.14' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
-        if: matrix.version != '1.14'
       - uses: julia-actions/julia-runtest@v1
-        if: matrix.version != '1.14'
-        env:
-          TEST_GROUP: ${{ matrix.test_group }}
-      - name: Prerelease tests (AllocCheck analysis skipped)
-        if: matrix.version == '1.14'
-        run: julia --check-bounds=yes --code-coverage=user --project=test/prerelease test/prerelease/runtests.jl
         env:
           TEST_GROUP: ${{ matrix.test_group }}
       - uses: julia-actions/julia-processcoverage@v1

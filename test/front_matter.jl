@@ -1,13 +1,6 @@
 using Aqua, BenchmarkTools, JET, LinearAlgebra, Logging, Random, StableRNGs, Mooncake, Test
 
-const test_profile = get(ENV, "MOONCAKE_TEST_PROFILE", "full")
-if test_profile == "prerelease"
-    include(joinpath("prerelease", "hooks.jl"))
-elseif test_profile == "full"
-    using AllocCheck: AllocCheck # load to enable testing functionality
-else
-    error("Unknown MOONCAKE_TEST_PROFILE: $test_profile")
-end
+using AllocCheck: AllocCheck # load to enable testing functionality
 
 using ChainRules
 using ChainRulesCore: ChainRulesCore

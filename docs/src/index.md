@@ -22,8 +22,8 @@ Check that you're running a version of Julia that Mooncake.jl supports.
 See the [`SUPPORT_POLICY.md`](https://github.com/chalk-lab/Mooncake.jl/blob/main/SUPPORT_POLICY.md) for more info.
 
 Julia 1.10 (LTS) and 1.13 (stable) are officially supported. Julia 1.14 prerelease
-compatibility is experimental, with non-blocking core CI that skips AllocCheck static
-analysis. It is not a guarantee that every prerelease or package extension will work, or that
+compatibility is experimental, with non-blocking CI for `basic` and `rules/misc`.
+It is not a guarantee that every prerelease or package extension will work, or that
 inference/performance on 1.14 matches supported Julia versions.
 
 The main entry point to `Mooncake.jl` is its API, using `Mooncake.prepare_gradient_cache` and `Mooncake.value_and_gradient!!`.

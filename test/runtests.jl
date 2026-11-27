@@ -1,5 +1,5 @@
 #=
-  Three ways to run tests (from Mooncake.jl root):
+  Two ways to run tests (from Mooncake.jl root):
 
   1. Interactive — iterate on individual files; TestEnv makes deps like Aqua.jl and JET.jl available.
 
@@ -17,13 +17,6 @@
        julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
 
      If test_args is omitted, the "basic" group runs (not the full suite).
-
-  3. Julia prerelease profile (no AllocCheck dependency):
-       julia --project=test/prerelease test/prerelease/runtests.jl basic
-       julia --project=test/prerelease test/prerelease/runtests.jl rules/misc
-
-     AllocCheck checks are recorded as skipped; JET and runtime allocation checks still run.
-     Use this runner, not Pkg.test, which installs the full test target's dependencies.
 =#
 # Note: Julia 1.10 can mis-measure scalar allocations when Mooncake is loaded from
 # the precompiled package image inside Pkg.test's temporary merged test environment.
@@ -39,7 +32,6 @@
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
-    test_profile == "prerelease" && include(joinpath("prerelease", "profile_tests.jl"))
     if test_group == "basic"
         Aqua.test_all(Mooncake)
         include("utils.jl")
