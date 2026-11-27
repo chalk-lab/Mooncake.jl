@@ -2845,6 +2845,26 @@ function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     return CoDual(out, dy_out), pb!!
 end
 
+# Base's `reduce(vcat, xs)` method fills its output with GPU kernels AD cannot trace, so
+# give it the same rule as the vararg `vcat` above.
+@is_primitive MinimalCtx Tuple{typeof(reduce),typeof(vcat),Vector{<:CuMaybeComplexVec}}
+function frule!!(
+    ::Dual{typeof(reduce)}, ::Dual{typeof(vcat)}, xs::Dual{<:Vector{<:CuMaybeComplexVec}}
+)
+    return Dual(reduce(vcat, primal(xs)), reduce(vcat, tangent(xs)))
+end
+function rrule!!(
+    ::CoDual{typeof(reduce)},
+    ::CoDual{typeof(vcat)},
+    xs::CoDual{<:Vector{<:CuMaybeComplexVec}},
+)
+    out = reduce(vcat, primal(xs))
+    dy_out = zero(out)
+    fdatas = tangent(xs)
+    pb!!(::NoRData) = (_cu_concat_pb!(fdatas, dy_out, 1); (NoRData(), NoRData(), NoRData()))
+    return CoDual(out, dy_out), pb!!
+end
+
 @is_primitive(
     MinimalCtx, Tuple{typeof(hcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
 )

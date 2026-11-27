@@ -1317,6 +1317,7 @@ end
             case(_vcat_cu_sum, _rand(rng, Float32, 8), _rand(rng, Float32, 4)),
             case(_vcat_cu_sum, _rand(rng, Float32, 8, 3), _rand(rng, Float32, 4, 3)),
             case(_vcat_cu_sum, _rand(rng, Float64, 6), _rand(rng, Float64, 6)),
+            primitive_case(reduce, vcat, [_rand(rng, Float64, 4), _rand(rng, Float64, 2)]),
             # hcat on CuArrays
             case(_hcat_cu_sum, _rand(rng, Float32, 4, 3), _rand(rng, Float32, 4, 2)),
             case(_hcat_cu_sum, _rand(rng, Float64, 4, 3), _rand(rng, Float64, 4, 2)),
