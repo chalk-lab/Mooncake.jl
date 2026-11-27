@@ -673,18 +673,20 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
+    # The constructor lowers to memorynew without passing a field alias directly to the
+    # builtin during inference (Julia 1.14.0-beta1 rejects a nested MustAlias there).
     function frule!!(
         ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
     ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+        x = Memory{P}(undef, primal(n))
+        dx = Memory{tangent_type(P)}(undef, primal(n))
         return Dual(x, dx)
     end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+        x = Memory{P}(undef, primal(n))
+        dx = Memory{tangent_type(P)}(undef, primal(n))
         return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
     end
 end

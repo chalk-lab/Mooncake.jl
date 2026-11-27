@@ -86,6 +86,22 @@
         @test dual_type(phantom_tuple) === Dual
     end
 
+    @static if isdefined(Core, :TypeEgal)
+        @testset "type-valued wrappers" begin
+            open_type = AbstractArray{TypeVar(:T),1}
+            for (wrapper, data, wrapper_type) in (
+                (Dual, NoTangent(), dual_type),
+                (CoDual, NoTangent(), codual_type),
+                (CoDual, NoFData(), Mooncake.fcodual_type),
+            )
+                d = wrapper(open_type, data)
+                @test primal(d) === open_type
+                @test d isa wrapper_type(Type{open_type})
+                @test wrapper_type(Core.Typeof(Float64)) == wrapper_type(Type{Float64})
+            end
+        end
+    end
+
     @testset "NoPullback" begin
         @test Base.issingletontype(typeof(NoPullback(zero_fcodual(5.0))))
         @test NoPullback(zero_codual(5.0))(4.0) == (0.0,)

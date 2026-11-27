@@ -1,7 +1,10 @@
 # Like BLAS and LAPACK, the rules here and in `lapack.jl` assume outputs overlap no operand.
 
 function blas_name(name::Symbol)
-    return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
+    return (
+        BLAS.USE_BLAS64 ? Symbol(name, "64_") : name,
+        foreigncall_library_name(BLAS.libblastrampoline),
+    )
 end
 
 function _trans(flag, mat)

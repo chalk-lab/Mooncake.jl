@@ -19,6 +19,14 @@
             Val((:foo, :libfoo))
         @test_throws ErrorException Mooncake.__extract_foreigncall_name(:(sin(1.0)))
 
+        if isdefined(Base.Libc.Libdl, :LazyLibrary)
+            lib = Base.Libc.Libdl.LazyLibrary(
+                Base.Libc.Libdl.dlpath(BLAS.libblastrampoline)
+            )
+            @test Mooncake.__extract_foreigncall_name((:foo, lib)) ===
+                Val((:foo, Symbol(Base.Libc.Libdl.dlpath(lib))))
+        end
+
         foreigncall = Expr(
             :foreigncall,
             :(:jl_array_isassigned),
@@ -34,6 +42,30 @@
         call = Mooncake.foreigncall_to_call(foreigncall, sp_map)
         @test Meta.isexpr(call, :call)
         @test call.args[1] == Mooncake._foreigncall_
+    end
+    @testset "foreignglobal_to_call" begin
+        foreignglobal = Expr(:foreignglobal, Expr(:tuple, QuoteNode(:jl_n_threads)))
+        call = Mooncake.foreignglobal_to_call(foreignglobal)
+        @test Meta.isexpr(call, :call)
+        @test call.args[1] === Mooncake.IntrinsicsWrappers.__cglobal
+        @test call.args[1](call.args[2]) === cglobal(:jl_n_threads)
+    end
+    @testset "static_parameter_to_value" begin
+        sptype = if applicable(CC.VarState, Core.Const(:value), false)
+            CC.VarState(Core.Const(:value), false)
+        else
+            CC.VarState(Core.Const(:value), typemin(Int), false)
+        end
+        sptypes = CC.VarState[sptype]
+        @test Mooncake.static_parameter_to_value(Expr(:static_parameter, 1), sptypes) ==
+            Expr(:call, identity, QuoteNode(:value))
+        sptypes[1] = if applicable(CC.VarState, Type{Float64}, false)
+            CC.VarState(Type{Float64}, false)
+        else
+            CC.VarState(Type{Float64}, typemin(Int), false)
+        end
+        @test Mooncake.static_parameter_to_value(Expr(:static_parameter, 1), sptypes) ==
+            Expr(:call, identity, QuoteNode(Float64))
     end
     @testset "fix_up_invoke_inference!" begin
         if VERSION >= v"1.11" # Base.method_instance does not exist on 1.10.
