@@ -116,10 +116,18 @@ const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
 # Copy GPU storage through CUDA; generic struct copying would descend into GPU contexts.
+# The output checks below stop at the array for the same reason: the stream handle is a
+# `Ptr`, and CUDA's task-local state forms cycles.
 Mooncake._copy_output(x::CuArray) = copy(x)
 function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuArray}
     copyto!(dst, src)
     return dst
+end
+Mooncake._can_copy_to_output(dst::P, src::P) where {P<:CuArray} = size(dst) == size(src)
+function Mooncake.__exclude_unsupported_output_internal!(y::CuArray, address_set::Set{UInt})
+    objectid(y) in address_set && Mooncake.throw_circular_reference_or_alias_error(y)
+    push!(address_set, objectid(y))
+    return nothing
 end
 
 const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
