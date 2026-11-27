@@ -159,6 +159,25 @@ end
             @test p_copy == p2
         end
 
+        @testset "prepare_pullback_cache with a CuArray output" begin
+            head_sq(x, n) = x[1:n] .^ 2
+            x = CuArray([1.0, 2.0, 3.0])
+            cache = Mooncake.prepare_pullback_cache(head_sq, x, 3)
+            for xi in (x, CuArray([4.0, 5.0, 6.0]))
+                y, (_, dx, _) = Mooncake.value_and_pullback!!(
+                    cache, CUDA.ones(Float64, 3), head_sq, xi, 3
+                )
+                @test Array(y) == Array(xi) .^ 2
+                @test Array(dx) == 2 .* Array(xi)
+            end
+            @test_throws Mooncake.PreparedCacheSpecError Mooncake.value_and_pullback!!(
+                cache, CUDA.ones(Float64, 2), head_sq, x, 2
+            )
+            @test_throws Mooncake.ValueAndPullbackReturnTypeError Mooncake.prepare_pullback_cache(
+                x -> (y=x .^ 2; (y, y)), x
+            )
+        end
+
         @testset "$f ($T, distribution=$distribution) restores arrays but not the RNG" for (
             f, T, distribution
         ) in vcat(
